@@ -13,6 +13,7 @@ import {
   emptyChat,
   type Workspace,
 } from "@pi-spore/shared";
+import { modelArgs, type RoleDefaults } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
 import { readTranscript } from "./transcript.js";
 
@@ -32,8 +33,8 @@ export interface ManagerOptions {
   sessionsDir: string;
   /** Launch arguments that load the user's Pi setup (ADR 0025), for a working folder. */
   resourceArgs(cwd: string): Promise<string[]>;
-  /** Model arguments for a new session of a role (ADR 0013). */
-  modelArgs(role: string): Promise<string[]>;
+  /** The model and thinking level a new session of a role starts with (ADR 0013). */
+  roleDefaults(role: string): Promise<RoleDefaults>;
   /** Environment for an agent's process. */
   env(agent: AgentRecord, workspace: Workspace): Promise<Record<string, string>>;
   workspace(id: string): Workspace;
@@ -293,17 +294,33 @@ export class AgentManager {
     });
   }
 
+  /**
+   * Reads what a stopped agent's page needs: its history from the session file, and the model it will run with
+   * (the session's last selection, else the role default), so the page shows it before Pi starts.
+   */
   private async loadHistory(live: Live): Promise<void> {
-    if (live.loaded || !live.record.sessionFile) return;
-    try {
-      const transcript = await readTranscript(live.record.sessionFile);
-      // Live events may have arrived already; keep them after the history.
-      live.chat = transcript.messages.reduce(
-        (chat, message) => applyPiEvent(chat, { type: "message_end", message }),
-        { ...emptyChat(), queue: live.chat.queue, busy: live.chat.busy },
-      );
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    if (live.loaded) return;
+    if (live.record.sessionFile) {
+      try {
+        const transcript = await readTranscript(live.record.sessionFile);
+        // Live events may have arrived already; keep them after the history.
+        live.chat = transcript.messages.reduce(
+          (chat, message) => applyPiEvent(chat, { type: "message_end", message }),
+          { ...emptyChat(), queue: live.chat.queue, busy: live.chat.busy },
+        );
+        if (!live.model && transcript.model) live.model = transcript.model;
+        if (!live.thinkingLevel && transcript.thinkingLevel)
+          live.thinkingLevel = transcript.thinkingLevel;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+      }
+    }
+    if (!live.model || !live.thinkingLevel) {
+      const defaults = await this.options.roleDefaults(live.record.role);
+      if (!live.model && defaults.provider && defaults.modelId) {
+        live.model = { provider: defaults.provider, id: defaults.modelId };
+      }
+      if (!live.thinkingLevel && defaults.thinking) live.thinkingLevel = defaults.thinking;
     }
     live.loaded = true;
   }
@@ -413,7 +430,7 @@ export class AgentManager {
       }
       return ["--session", file];
     }
-    const role = await this.options.modelArgs(live.record.role);
+    const role = modelArgs(await this.options.roleDefaults(live.record.role));
     return ["--session-dir", join(this.options.sessionsDir, workspace.id), ...role];
   }
 

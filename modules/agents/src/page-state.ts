@@ -104,3 +104,25 @@ export function reducePage(state: PageState, raw: unknown): PageState {
       return state;
   }
 }
+
+/**
+ * What the agent is doing right now, for the working indicator, or undefined when it is not working. Derived from
+ * the state, so it follows reconnects and snapshots without extra events.
+ */
+export function activity(state: PageState): string | undefined {
+  const status = state.agent?.status;
+  if (status === "waiting") return "Waiting for a free agent slot";
+  if (status === "starting") return "Starting the agent";
+  if (status !== "busy" && !state.chat.busy) return undefined;
+  if (state.chat.running.length > 0) {
+    return `Running ${state.chat.running.map((tool) => tool.toolName).join(", ")}`;
+  }
+  const content = state.chat.streaming?.content;
+  const last = Array.isArray(content)
+    ? (content.at(-1) as { type?: unknown; name?: unknown } | undefined)
+    : undefined;
+  if (last?.type === "text") return "Writing";
+  if (last?.type === "toolCall") return `Preparing ${String(last.name ?? "a tool")}`;
+  // No output yet, or thinking: models think before their first visible token.
+  return "Thinking";
+}

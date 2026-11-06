@@ -4,7 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useReducer, useRef, useState }
 import Type from "typebox";
 import { Composer, DialogCard } from "./composer.js";
 import { MessageList } from "./messages.js";
-import { emptyPage, reducePage } from "./page-state.js";
+import { activity, emptyPage, reducePage } from "./page-state.js";
 
 const WorkspaceBody = Type.Object({ workspace: Workspace });
 const AgentBody = Type.Object({ agent: Type.Object({ id: Type.String() }) });
@@ -31,6 +31,31 @@ function ContextMeter({
       <span className="meter-bar" style={{ width: `${Math.min(100, percent ?? 0)}%` }} />
       <span className="meter-text">context {shown}</span>
     </span>
+  );
+}
+
+/** A spinner with what the agent is doing and how long it has been at it. */
+function WorkingIndicator({ label }: { label: string | undefined }) {
+  const [since, setSince] = useState<number | undefined>();
+  const [, tick] = useState(0);
+  const working = label !== undefined;
+  useEffect(() => {
+    if (!working) {
+      setSince(undefined);
+      return;
+    }
+    setSince((current) => current ?? Date.now());
+    const timer = setInterval(() => tick((n) => n + 1), 1_000);
+    return () => clearInterval(timer);
+  }, [working]);
+  if (!working) return null;
+  const seconds = since === undefined ? 0 : Math.floor((Date.now() - since) / 1_000);
+  return (
+    <div className="working" role="status" aria-live="polite">
+      <span className="spinner" aria-hidden="true" />
+      <span>{label}</span>
+      <span className="muted">{seconds}s</span>
+    </div>
   );
 }
 
@@ -121,6 +146,7 @@ function ChatPage({ params }: { params: Readonly<Record<string, string>> }) {
               void call("POST", "model", { provider, modelId: rest.join("/") });
             }}
             disabled={!agentId || !active}
+            className="model-select"
             title="Model for the next message"
           >
             {!currentModel && <option value="">Model</option>}
@@ -135,6 +161,7 @@ function ChatPage({ params }: { params: Readonly<Record<string, string>> }) {
             onFocus={loadModels}
             onChange={(event) => void call("POST", "thinking", { level: event.target.value })}
             disabled={!agentId || !active}
+            className="thinking-select"
             title="Thinking level"
           >
             {!state.thinkingLevel && <option value="">Thinking</option>}
@@ -197,9 +224,6 @@ function ChatPage({ params }: { params: Readonly<Record<string, string>> }) {
         running={chat.running}
         {...(chat.streaming ? { streaming: chat.streaming } : {})}
       />
-      {chat.running.length > 0 && (
-        <p className="muted">Running: {chat.running.map((tool) => tool.toolName).join(", ")}</p>
-      )}
       {(chat.queue.steering.length > 0 || chat.queue.followUp.length > 0) && (
         <div className="queue muted">
           {chat.queue.steering.map((queued) => (
@@ -223,6 +247,7 @@ function ChatPage({ params }: { params: Readonly<Record<string, string>> }) {
         />
       ))}
 
+      <WorkingIndicator label={activity(state)} />
       <Composer
         busy={busy}
         disabled={!agentId || !active}

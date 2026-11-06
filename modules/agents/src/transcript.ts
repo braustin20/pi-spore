@@ -6,6 +6,9 @@ export interface Transcript {
   cwd: string | undefined;
   /** Messages on the active branch, oldest first, including those before a compaction. System messages are left out. */
   messages: ChatMessage[];
+  /** The model selected last on the active branch: Pi resumes with it. */
+  model?: { provider: string; id: string };
+  thinkingLevel?: string;
 }
 
 interface Entry {
@@ -15,6 +18,9 @@ interface Entry {
   message?: unknown;
   summary?: unknown;
   timestamp?: unknown;
+  provider?: unknown;
+  modelId?: unknown;
+  thinkingLevel?: unknown;
 }
 
 /**
@@ -55,8 +61,22 @@ export async function readTranscript(path: string): Promise<Transcript> {
   branch.reverse();
 
   const messages: ChatMessage[] = [];
+  let model: Transcript["model"];
+  let thinkingLevel: string | undefined;
   for (const entry of branch) {
-    if (entry.type === "message" && typeof entry.message === "object" && entry.message !== null) {
+    if (
+      entry.type === "model_change" &&
+      typeof entry.provider === "string" &&
+      typeof entry.modelId === "string"
+    ) {
+      model = { provider: entry.provider, id: entry.modelId };
+    } else if (entry.type === "thinking_level_change" && typeof entry.thinkingLevel === "string") {
+      thinkingLevel = entry.thinkingLevel;
+    } else if (
+      entry.type === "message" &&
+      typeof entry.message === "object" &&
+      entry.message !== null
+    ) {
       const message = entry.message as ChatMessage;
       if (typeof message.role === "string" && message.role !== "system") messages.push(message);
     } else if (entry.type === "compaction" && typeof entry.summary === "string") {
@@ -68,5 +88,10 @@ export async function readTranscript(path: string): Promise<Transcript> {
       });
     }
   }
-  return { cwd, messages };
+  return {
+    cwd,
+    messages,
+    ...(model ? { model } : {}),
+    ...(thinkingLevel ? { thinkingLevel } : {}),
+  };
 }

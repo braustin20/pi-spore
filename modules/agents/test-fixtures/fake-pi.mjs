@@ -53,14 +53,12 @@ if (sessionFile) {
   );
 }
 
-const appendMessage = (message) => {
+const appendEntry = (entry) => {
   const id = `e${++entryCount}`;
-  appendFileSync(
-    sessionFile,
-    `${JSON.stringify({ type: "message", id, parentId: lastEntryId, message })}\n`,
-  );
+  appendFileSync(sessionFile, `${JSON.stringify({ ...entry, id, parentId: lastEntryId })}\n`);
   lastEntryId = id;
 };
+const appendMessage = (message) => appendEntry({ type: "message", message });
 
 let model = {
   provider: arg("--provider") ?? "fake",
@@ -175,9 +173,11 @@ const handle = (command) => {
       return setTimeout(() => respond(id, type), 5);
     case "set_model":
       model = { ...model, provider: command.provider, id: command.modelId, name: command.modelId };
+      appendEntry({ type: "model_change", provider: command.provider, modelId: command.modelId });
       return respond(id, type, model);
     case "set_thinking_level":
       thinkingLevel = command.level;
+      appendEntry({ type: "thinking_level_change", thinkingLevel: command.level });
       write({ type: "thinking_level_changed", level: command.level });
       return respond(id, type);
     case "get_available_models":

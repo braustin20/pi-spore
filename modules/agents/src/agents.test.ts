@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -24,7 +32,7 @@ async function setup(options: AgentsModuleOptions = {}, extraEnv: Record<string,
   agentsModule = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
-    modelArgs: async () => ["--provider", "fake", "--model", "fake-1"],
+    roleDefaults: async () => ({ provider: "fake", modelId: "fake-1", thinking: "high" }),
     baseEnv: {
       PATH: process.env.PATH,
       ORCA_PANE_KEY: "pane",
@@ -150,6 +158,8 @@ describe("agents", () => {
       "fake",
       "--model",
       "fake-1",
+      "--thinking",
+      "high",
     ]);
     expect(launch?.env).toEqual({ PI_SPORE_AGENT_ID: agentId, PI_SPORE_WORKSPACE_ID: workspaceId });
     expect(statuses(agentId)).toEqual(["starting", "idle", "busy", "idle"]);
@@ -373,6 +383,32 @@ describe("agents", () => {
     expect(lastModel).toMatchObject({
       model: { provider: "fake", id: "fake-2" },
       thinkingLevel: "high",
+    });
+  });
+
+  it("shows the role model before the first start, and keeps the selected model after a stop", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    const [fresh] = (await server.events.snapshot(`agent:${agentId}`)) as AgentEvent[];
+    expect(fresh).toMatchObject({
+      model: { provider: "fake", id: "fake-1" },
+      thinkingLevel: "high",
+    });
+    // Showing it did not start Pi: the fake records every launch.
+    expect(existsSync(record)).toBe(false);
+
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/model`, {
+        provider: "fake",
+        modelId: "fake-2",
+      }),
+    );
+    await json(await server.request("POST", `/api/agents/${agentId}/thinking`, { level: "low" }));
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+    const [stopped] = (await server.events.snapshot(`agent:${agentId}`)) as AgentEvent[];
+    expect(stopped).toMatchObject({
+      model: { provider: "fake", id: "fake-2" },
+      thinkingLevel: "low",
     });
   });
 

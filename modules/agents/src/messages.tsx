@@ -124,6 +124,18 @@ function AssistantMessage({
   );
 }
 
+/** A reply that has produced nothing to read yet shows only as the working indicator, not as an empty box. */
+function hasVisibleContent(message: ChatMessage): boolean {
+  return blocksOf(message).some(
+    (block) =>
+      block.type === "toolCall" ||
+      (block.type === "text" && typeof block.text === "string" && block.text.trim() !== "") ||
+      (block.type === "thinking" &&
+        typeof block.thinking === "string" &&
+        block.thinking.trim() !== ""),
+  );
+}
+
 export function MessageList({
   messages,
   streaming,
@@ -192,7 +204,7 @@ export function MessageList({
             return null;
         }
       })}
-      {streaming && (
+      {streaming && hasVisibleContent(streaming) && (
         <AssistantMessage message={streaming} results={results} running={runningById} streaming />
       )}
     </div>

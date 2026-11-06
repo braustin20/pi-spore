@@ -1,6 +1,6 @@
 import type { Agent } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { emptyPage, reducePage } from "./page-state.js";
+import { activity, emptyPage, reducePage } from "./page-state.js";
 
 const agent: Agent = { id: "A", workspaceId: "W", role: "worker", status: "idle", createdAt: 1 };
 const snapshot = {
@@ -66,5 +66,53 @@ describe("reducePage", () => {
   it("ignores status changes before the snapshot, and garbage", () => {
     expect(reducePage(emptyPage(), { type: "status", status: "busy" }).agent).toBeUndefined();
     expect(reducePage(emptyPage(), 42)).toEqual(emptyPage());
+  });
+});
+
+describe("activity", () => {
+  const base = reducePage(emptyPage(), snapshot);
+  const busy = reducePage(reducePage(base, { type: "status", status: "busy" }), {
+    type: "pi",
+    event: { type: "agent_start" },
+  });
+  const stream = (content: unknown[]) =>
+    reducePage(busy, {
+      type: "pi",
+      event: { type: "message_start", message: { role: "assistant", content, timestamp: 9 } },
+    });
+
+  it("says nothing while idle", () => {
+    expect(activity(base)).toBeUndefined();
+  });
+
+  it("names waiting and starting", () => {
+    expect(activity(reducePage(base, { type: "status", status: "waiting" }))).toBe(
+      "Waiting for a free agent slot",
+    );
+    expect(activity(reducePage(base, { type: "status", status: "starting" }))).toBe(
+      "Starting the agent",
+    );
+  });
+
+  it("says Thinking before any output and while thinking, then Writing", () => {
+    expect(activity(busy)).toBe("Thinking");
+    expect(activity(stream([{ type: "thinking", thinking: "hm" }]))).toBe("Thinking");
+    expect(
+      activity(
+        stream([
+          { type: "thinking", thinking: "hm" },
+          { type: "text", text: "Hi" },
+        ]),
+      ),
+    ).toBe("Writing");
+  });
+
+  it("names the tool being prepared or run", () => {
+    expect(activity(stream([{ type: "toolCall", name: "bash" }]))).toBe("Preparing bash");
+    const running = reducePage(busy, {
+      type: "pi",
+      event: { type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: {} },
+    });
+    expect(activity(running)).toBe("Running read");
   });
 });

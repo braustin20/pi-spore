@@ -11,7 +11,7 @@ import {
   SetModelRequest,
   SetThinkingRequest,
 } from "@pi-spore/shared";
-import { agentEnv, modelArgs, readRoleDefaults, resolveResourceArgs } from "./launch.js";
+import { agentEnv, readRoleDefaults, resolveResourceArgs } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
 import type { PiCommand } from "./rpc.js";
 
@@ -55,7 +55,7 @@ export interface AgentsModuleOptions {
   startTimeoutMs?: number;
   /** Replaces the resolution of the user's Pi setup; tests use it to keep the real one out. */
   resourceArgs?: ManagerOptions["resourceArgs"];
-  modelArgs?: ManagerOptions["modelArgs"];
+  roleDefaults?: ManagerOptions["roleDefaults"];
   baseEnv?: Readonly<Record<string, string | undefined>>;
 }
 
@@ -87,8 +87,7 @@ export function createAgentsModule(
         sessionsDir: host.home.sessions,
         resourceArgs:
           options.resourceArgs ?? ((cwd) => resolveResourceArgs(cwd, agentDir, exclude)),
-        modelArgs:
-          options.modelArgs ?? (async (role) => modelArgs(await readRoleDefaults(agentDir, role))),
+        roleDefaults: options.roleDefaults ?? ((role) => readRoleDefaults(agentDir, role)),
         env: async (agent, workspace) => {
           const extra: Record<string, string> = {
             PI_SPORE_AGENT_ID: agent.id,
