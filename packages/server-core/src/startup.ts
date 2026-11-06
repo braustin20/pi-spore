@@ -1,9 +1,27 @@
 import {
   createInterfaceBroker,
+  type Exec,
+  type HomePaths,
   type Logger,
   resolveModules,
   type ServerModule,
+  type Store,
 } from "@pi-spore/module-api";
+import { Hono } from "hono";
+
+export interface HostServices {
+  log: Logger;
+  store: Store;
+  home: HomePaths;
+  exec: Exec;
+  now: () => number;
+  newId: () => string;
+}
+
+export interface SetUpModule {
+  id: string;
+  routes: Hono;
+}
 
 /**
  * Validates the registry and sets modules up in dependency order. Any registry error stops startup: a server with a
@@ -12,12 +30,15 @@ import {
 export async function setupModules(
   registry: readonly ServerModule[],
   disabled: readonly string[],
-  log: Logger,
-): Promise<ServerModule[]> {
+  services: HostServices,
+): Promise<SetUpModule[]> {
   const ordered = resolveModules(registry, disabled);
   const broker = createInterfaceBroker();
+  const result: SetUpModule[] = [];
   for (const module of ordered) {
-    await module.setup({ ...broker.forModule(module), log });
+    const routes = new Hono();
+    await module.setup({ ...broker.forModule(module), ...services, routes });
+    result.push({ id: module.id, routes });
   }
-  return ordered;
+  return result;
 }

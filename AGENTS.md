@@ -24,12 +24,16 @@ agents across Git projects, with first-class Unity support. Read these before ch
 
 ## Module rules
 
-- Every feature beyond the core lives in `modules/<id>/` with `index.ts` (manifest), `server/`, and `web/`.
+- Every feature beyond the core lives in `modules/<id>/`, an npm package `@pi-spore/mod-<id>` with `src/server.ts`
+  (the ServerModule) and `src/web.tsx` (the WebModule). The web entry must not import Node modules.
 - A module reaches another module only through `host.use(key)` with an interface key the other module exports, and
   only if that module is in its `requires`. No imports of another module's internals.
 - A module owns its tables and migrations. It never queries another module's tables.
 - Register new modules in `packages/server/src/modules.ts` and `packages/web/src/modules.ts`. Keep the lists plain.
 - Shared types and API schemas go in `packages/shared`. The module contract goes in `packages/module-api`.
+- Module tests use `createTestServer` from `@pi-spore/server-core/testing`: real modules, a temp home, an in-memory
+  store, a deterministic clock and ids. Real `git` in temp folders is fine.
+- Read request bodies with `parseJsonBody`, so broken JSON answers 400. Throw `ApiError` for expected failures.
 
 ## Tooling
 

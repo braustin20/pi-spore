@@ -73,15 +73,16 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 
 ```text
 packages/
-  module-api/   module contract types, host interface, shared TypeBox helpers (no runtime deps)
-  shared/       domain types and API schemas used by server, web, and CLI
-  server/       Hono app, ws, module registry, store, job runner, agent process manager
+  module-api/   module contract types, host interface, error types, web API context
+  shared/       domain types, API schemas, and helpers used by server, web, and CLI
+  server-core/  Hono app, request guards, store, lock, token, module setup, test server
+  server/       the runnable server: startup and the plain-list module registry
   web/          React app shell and web module registry
   cli/          pi-spore CLI over the HTTP API
-modules/<id>/
-  server/       server entry: setup(host), routes, jobs, operations
-  web/          web entry: routes, panels, Home cards
-  index.ts      manifest: id, requires, core
+modules/<id>/   one npm package per module, @pi-spore/mod-<id>
+  src/server.ts server entry: exports the ServerModule and any interface keys and types
+  src/web.tsx   web entry: exports the WebModule (pages)
+  src/*.test.ts tests, run against server-core's test server
 pi-extensions/
   spore-bridge/ workbench tools for agents (loaded with -e)
   router/       router virtual model; also installable into plain pi
@@ -121,6 +122,8 @@ export interface ServerHost {
 ```
 
 - One plain-list registry in `packages/server/src/modules.ts` and one in `packages/web/src/modules.ts`.
+- `server-core` holds everything except the registry, so module tests can use its test server without a package
+  cycle (server → modules → server-core).
 - Startup validation, each failure stops the server with a clear message:
   - ids are unique;
   - every required module is present and enabled;
@@ -380,7 +383,7 @@ Actions are argv arrays, not shell strings. A shell is used only when the action
 
 ```text
 ~/.pi-spore/
-  settings.json          global settings, projects, disabled modules
+  settings.json          global settings and disabled modules (projects live in the store)
   token                  API token (0600)
   data/pi-spore.sqlite   store (+ .lock)
   sessions/<workspace>/  Pi session JSONL files

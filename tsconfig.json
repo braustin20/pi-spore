@@ -1,10 +1,38 @@
 {
   "files": [],
   "references": [
-    { "path": "packages/module-api" },
-    { "path": "packages/shared" },
-    { "path": "packages/server" },
-    { "path": "packages/cli" },
-    { "path": "packages/web" }
+    {
+      "path": "packages/module-api"
+    },
+    {
+      "path": "packages/shared"
+    },
+    {
+      "path": "packages/server-core"
+    },
+    {
+      "path": "modules/projects"
+    },
+    {
+      "path": "modules/vcs-git"
+    },
+    {
+      "path": "modules/vcs-folder"
+    },
+    {
+      "path": "modules/workspaces"
+    },
+    {
+      "path": "modules/unity"
+    },
+    {
+      "path": "packages/server"
+    },
+    {
+      "path": "packages/cli"
+    },
+    {
+      "path": "packages/web"
+    }
   ]
 }

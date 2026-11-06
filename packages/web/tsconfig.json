@@ -7,8 +7,22 @@
     "jsx": "react-jsx",
     "rootDir": "src",
     "outDir": ".tsbuild",
-    "emitDeclarationOnly": true
+    "emitDeclarationOnly": true,
+    "types": ["vite/client"]
   },
   "include": ["src"],
-  "references": [{ "path": "../module-api" }, { "path": "../shared" }]
+  "references": [
+    {
+      "path": "../module-api"
+    },
+    {
+      "path": "../shared"
+    },
+    {
+      "path": "../../modules/projects"
+    },
+    {
+      "path": "../../modules/workspaces"
+    }
+  ]
 }

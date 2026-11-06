@@ -1,19 +1,44 @@
-import { createInterfaceBroker, resolveModules } from "@pi-spore/module-api";
+import {
+  ApiContext,
+  createInterfaceBroker,
+  resolveModules,
+  type WebPage,
+} from "@pi-spore/module-api";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
+import { createApiClient } from "./api.js";
+import { HomePage } from "./HomePage.js";
 import { webModules } from "./modules.js";
+import "./styles.css";
+
+const api = createApiClient();
+const pages: WebPage[] = [{ path: "/", title: "Home", navOrder: 0, component: HomePage }];
 
 // Same registry rules as the server: an invalid module list stops the app at load.
-const modules = resolveModules(webModules);
 const broker = createInterfaceBroker();
-for (const module of modules) module.setup(broker.forModule(module));
+for (const module of resolveModules(webModules)) {
+  module.setup({
+    ...broker.forModule(module),
+    api,
+    addPage: (page) => {
+      if (pages.some((existing) => existing.path === page.path)) {
+        throw new Error(
+          `Module "${module.id}" adds page ${page.path}, which another module already added`,
+        );
+      }
+      pages.push(page);
+    },
+  });
+}
 
 const root = document.getElementById("root");
 if (!root) throw new Error("index.html has no #root element");
 
 createRoot(root).render(
   <StrictMode>
-    <App modules={modules.map((module) => module.id)} />
+    <ApiContext value={api}>
+      <App pages={pages} />
+    </ApiContext>
   </StrictMode>,
 );

@@ -1,4 +1,6 @@
+import { projectsWeb } from "@pi-spore/mod-projects/web";
+import { workspacesWeb } from "@pi-spore/mod-workspaces/web";
 import type { WebModule } from "@pi-spore/module-api";
 
 /** Every web module, in a plain list. */
-export const webModules: readonly WebModule[] = [];
+export const webModules: readonly WebModule[] = [projectsWeb, workspacesWeb];

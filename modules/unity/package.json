@@ -1,0 +1,28 @@
+{
+  "name": "@pi-spore/mod-unity",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": {
+      "@pi-spore/source": "./src/server.ts",
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./web": {
+      "@pi-spore/source": "./src/web.tsx",
+      "types": "./dist/web.d.ts",
+      "default": "./dist/web.js"
+    }
+  },
+  "dependencies": {
+    "@pi-spore/module-api": "0.0.0",
+    "@pi-spore/shared": "0.0.0",
+    "hono": "4.13.16",
+    "react": "19.3.1",
+    "@pi-spore/mod-projects": "0.0.0"
+  },
+  "devDependencies": {
+    "@pi-spore/server-core": "0.0.0"
+  }
+}

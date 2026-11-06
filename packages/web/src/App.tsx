@@ -1,37 +1,40 @@
-import { HealthResponse, parse } from "@pi-spore/shared";
-import { useEffect, useState } from "react";
+import type { WebPage } from "@pi-spore/module-api";
+import { findPage, useHashPath } from "./router.js";
 
-type State =
-  | { kind: "loading" }
-  | { kind: "ok"; health: HealthResponse }
-  | { kind: "error"; message: string };
-
-export function App({ modules }: { modules: readonly string[] }) {
-  const [state, setState] = useState<State>({ kind: "loading" });
-
-  useEffect(() => {
-    fetch("/api/health")
-      .then(async (response) => {
-        if (!response.ok) throw new Error(`Server answered ${response.status}`);
-        return parse(HealthResponse, await response.json(), "health response");
-      })
-      .then((health) => setState({ kind: "ok", health }))
-      .catch((error: unknown) => setState({ kind: "error", message: String(error) }));
-  }, []);
+export function App({ pages }: { pages: readonly WebPage[] }) {
+  const path = useHashPath();
+  const found = findPage(pages, path);
+  const nav = pages
+    .filter((page) => page.navOrder !== undefined)
+    .sort((a, b) => (a.navOrder ?? 0) - (b.navOrder ?? 0));
 
   return (
-    <main style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}>
-      <h1>pi-spore</h1>
-      <p>Placeholder page. Features arrive as modules.</p>
-      {state.kind === "loading" && <p>Checking the server...</p>}
-      {state.kind === "error" && <p>Server not reachable: {state.message}</p>}
-      {state.kind === "ok" && (
-        <p>
-          Server ok, version {state.health.version}, server modules:{" "}
-          {state.health.modules.join(", ") || "none"}.
-        </p>
-      )}
-      <p>Web modules: {modules.join(", ") || "none"}.</p>
-    </main>
+    <div className="shell">
+      <header className="topbar">
+        <a className="brand" href="#/">
+          pi-spore
+        </a>
+        <nav>
+          {nav.map((page) => (
+            <a
+              key={page.path}
+              href={`#${page.path}`}
+              className={path === page.path ? "active" : undefined}
+            >
+              {page.title}
+            </a>
+          ))}
+        </nav>
+      </header>
+      <main className="content">
+        {found ? (
+          <found.page.component params={found.params} />
+        ) : (
+          <p>
+            No page at <code>{path}</code>.
+          </p>
+        )}
+      </main>
+    </div>
   );
 }

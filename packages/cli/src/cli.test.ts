@@ -1,92 +1,269 @@
 import { describe, expect, it } from "vitest";
 import { type CliDeps, run } from "./cli.js";
 
-function fakeDeps(fetchImpl: (url: URL) => Promise<Response>, env: CliDeps["env"] = {}) {
-  const out: string[] = [];
-  const err: string[] = [];
-  const requested: string[] = [];
-  const deps: CliDeps = {
-    fetch: ((input: URL) => {
-      requested.push(input.toString());
-      return fetchImpl(input);
-    }) as typeof fetch,
-    env,
-    out: (line) => out.push(line),
-    err: (line) => err.push(line),
-  };
-  return { deps, out, err, requested };
+interface Sent {
+  method: string;
+  url: string;
+  headers: Record<string, string>;
+  body?: unknown;
 }
 
+/** A fake server: `answer` maps "METHOD /path" to a response. Every request is recorded. */
+function fakeDeps(
+  answer: (key: string, sent: Sent) => Response | Promise<Response>,
+  overrides: Partial<CliDeps> = {},
+) {
+  const out: string[] = [];
+  const err: string[] = [];
+  const sent: Sent[] = [];
+  let keys = 0;
+  const deps: CliDeps = {
+    fetch: (async (input: URL, init?: RequestInit) => {
+      const url = new URL(input);
+      const request: Sent = {
+        method: init?.method ?? "GET",
+        url: url.toString(),
+        headers: (init?.headers ?? {}) as Record<string, string>,
+        ...(typeof init?.body === "string" ? { body: JSON.parse(init.body) } : {}),
+      };
+      sent.push(request);
+      return answer(`${request.method} ${url.pathname}${url.search}`, request);
+    }) as typeof fetch,
+    env: {},
+    out: (line) => out.push(line),
+    err: (line) => err.push(line),
+    readToken: () => "secret",
+    resolvePath: (path) => (path.startsWith("/") ? path : `/home/me/${path}`),
+    newKey: () => `key-${++keys}`,
+    ...overrides,
+  };
+  return { deps, out, err, sent };
+}
+
+const project = {
+  id: "P1",
+  name: "Game",
+  slug: "game",
+  path: "/home/me/game",
+  vcs: "git",
+  traits: [{ id: "unity", detail: "6000.3.10f1" }],
+  createdAt: 1,
+};
+const workspace = {
+  id: "W1",
+  projectId: "P1",
+  name: "Fix UI",
+  slug: "fix-ui",
+  isolation: "new",
+  path: "/home/me/.pi-spore/worktrees/game/fix-ui-abc123",
+  line: "spore/fix-ui-abc123",
+  state: "active",
+  createdAt: 2,
+  updatedAt: 2,
+};
+
 const healthy = () =>
-  Promise.resolve(
-    Response.json({ status: "ok", version: "0.1.0", uptimeMs: 65_400, modules: ["projects"] }),
-  );
+  Response.json({ status: "ok", version: "0.1.0", uptimeMs: 65_400, modules: ["projects"] });
 
 describe("pi-spore health", () => {
-  it("prints a one-line summary from the default address", async () => {
-    const { deps, out, err, requested } = fakeDeps(healthy);
+  it("prints a one-line summary from the default address, without a token", async () => {
+    const { deps, out, sent } = fakeDeps(healthy, { readToken: () => undefined });
 
     expect(await run(["health"], deps)).toBe(0);
-    expect(requested).toEqual(["http://127.0.0.1:7420/api/health"]);
+    expect(sent.map((request) => request.url)).toEqual(["http://127.0.0.1:7420/api/health"]);
     expect(out).toEqual(["ok  version 0.1.0  up 65s  modules: projects"]);
-    expect(err).toEqual([]);
   });
 
   it("prints the raw response with --json", async () => {
     const { deps, out } = fakeDeps(healthy);
-
     expect(await run(["health", "--json"], deps)).toBe(0);
-    expect(JSON.parse(out[0] ?? "")).toEqual({
-      status: "ok",
-      version: "0.1.0",
-      uptimeMs: 65_400,
-      modules: ["projects"],
-    });
+    expect(JSON.parse(out[0] ?? "")).toMatchObject({ status: "ok", version: "0.1.0" });
   });
 
   it("uses PI_SPORE_URL when set", async () => {
-    const { deps, requested } = fakeDeps(healthy, { PI_SPORE_URL: "http://127.0.0.1:9999" });
-
+    const { deps, sent } = fakeDeps(healthy, { env: { PI_SPORE_URL: "http://127.0.0.1:9999" } });
     await run(["health"], deps);
-    expect(requested).toEqual(["http://127.0.0.1:9999/api/health"]);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:9999/api/health");
   });
 
   it("fails with exit 1 when the server is not reachable", async () => {
     const { deps, err } = fakeDeps(() => Promise.reject(new TypeError("fetch failed")));
-
     expect(await run(["health"], deps)).toBe(1);
     expect(err[0]).toContain("pi-spore server is not reachable at http://127.0.0.1:7420");
   });
 
   it("fails with exit 1 on an error status", async () => {
-    const { deps, err } = fakeDeps(() =>
-      Promise.resolve(new Response("", { status: 500, statusText: "Internal Server Error" })),
+    const { deps, err } = fakeDeps(
+      () => new Response("", { status: 500, statusText: "Internal Server Error" }),
     );
-
     expect(await run(["health"], deps)).toBe(1);
     expect(err[0]).toContain("answered 500 Internal Server Error");
   });
 
   it("fails with exit 1 on a response that does not match the schema", async () => {
-    const { deps, err } = fakeDeps(() => Promise.resolve(Response.json({ status: "ok" })));
-
+    const { deps, err } = fakeDeps(() => Response.json({ status: "ok" }));
     expect(await run(["health"], deps)).toBe(1);
     expect(err[0]).toContain("sent a bad health response");
+  });
+});
+
+describe("pi-spore project", () => {
+  it("adds a project from a relative path with the token and an idempotency key", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json({ project }, { status: 201 }));
+
+    expect(await run(["project", "add", "game", "--name", "Game"], deps)).toBe(0);
+
+    expect(sent[0]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:7420/api/projects",
+      headers: { "x-pi-spore-token": "secret", "idempotency-key": "key-1" },
+      body: { path: "/home/me/game", name: "Game" },
+    });
+    expect(out[0]).toContain("Added game");
+    expect(out[0]).toContain("[unity 6000.3.10f1]");
+  });
+
+  it("lists projects, or says how to add one", async () => {
+    const one = fakeDeps(() => Response.json({ projects: [project] }));
+    await run(["project", "list"], one.deps);
+    expect(one.out[0]).toMatch(/^game\s+git\s+\/home\/me\/game/);
+
+    const none = fakeDeps(() => Response.json({ projects: [] }));
+    await run(["project", "list"], none.deps);
+    expect(none.out[0]).toContain("pi-spore project add <path>");
+  });
+
+  it("removes a project found by slug", async () => {
+    const { deps, sent } = fakeDeps((key) =>
+      key === "GET /api/projects"
+        ? Response.json({ projects: [project] })
+        : Response.json({ removed: "P1" }),
+    );
+    expect(await run(["project", "rm", "game"], deps)).toBe(0);
+    expect(sent[1]).toMatchObject({
+      method: "DELETE",
+      url: "http://127.0.0.1:7420/api/projects/P1",
+    });
+  });
+
+  it("shows the server's error message and exits 1", async () => {
+    const { deps, err } = fakeDeps(() =>
+      Response.json(
+        { error: { code: "project_exists", message: "/home/me/game is already registered" } },
+        { status: 409 },
+      ),
+    );
+    expect(await run(["project", "add", "/home/me/game"], deps)).toBe(1);
+    expect(err).toEqual(["/home/me/game is already registered"]);
+  });
+
+  it("explains a missing token", async () => {
+    const { deps, err, sent } = fakeDeps(healthy, { readToken: () => undefined });
+    expect(await run(["project", "list"], deps)).toBe(1);
+    expect(err[0]).toContain("No API token");
+    expect(sent).toEqual([]);
+  });
+
+  it("names an unknown project", async () => {
+    const { deps, err } = fakeDeps(() => Response.json({ projects: [project] }));
+    expect(await run(["project", "rm", "nope"], deps)).toBe(1);
+    expect(err[0]).toContain('No project "nope"');
+  });
+});
+
+describe("pi-spore ws", () => {
+  it("creates a workspace, prints warnings to stderr, and lists the copied files", async () => {
+    const { deps, out, err, sent } = fakeDeps((key) =>
+      key === "GET /api/projects"
+        ? Response.json({ projects: [project] })
+        : Response.json(
+            {
+              workspace,
+              copied: ["Library", "game.sln"],
+              warnings: ["Unity may have the main project open."],
+            },
+            { status: 201 },
+          ),
+    );
+
+    expect(await run(["ws", "new", "game", "Fix", "UI"], deps)).toBe(0);
+
+    expect(sent[1]?.body).toEqual({ projectId: "P1", name: "Fix UI", isolation: "new" });
+    expect(err).toEqual(["warning: Unity may have the main project open."]);
+    expect(out[0]).toContain("Created W1");
+    expect(out[1]).toBe("Copied: Library, game.sln");
+  });
+
+  it("passes the mode and branch for an existing branch", async () => {
+    const { deps, sent } = fakeDeps((key) =>
+      key === "GET /api/projects"
+        ? Response.json({ projects: [project] })
+        : Response.json({ workspace, copied: [], warnings: [] }, { status: 201 }),
+    );
+    await run(["ws", "new", "game", "x", "--mode", "existing", "--line", "feature/x"], deps);
+    expect(sent[1]?.body).toEqual({
+      projectId: "P1",
+      name: "x",
+      isolation: "existing",
+      line: "feature/x",
+    });
+  });
+
+  it("rejects an unknown mode before calling the server", async () => {
+    const { deps, sent } = fakeDeps(healthy);
+    expect(await run(["ws", "new", "game", "x", "--mode", "copy"], deps)).toBe(2);
+    expect(sent).toEqual([]);
+  });
+
+  it("filters the list by project slug and state", async () => {
+    const { deps, sent, out } = fakeDeps((key) =>
+      key === "GET /api/projects"
+        ? Response.json({ projects: [project] })
+        : Response.json({ workspaces: [workspace] }),
+    );
+    await run(["ws", "list", "--project", "game", "--state", "active"], deps);
+    expect(sent[1]?.url).toBe("http://127.0.0.1:7420/api/workspaces?projectId=P1&state=active");
+    expect(out[0]).toContain("W1  active");
+  });
+
+  it("archives with --force", async () => {
+    const { deps, sent } = fakeDeps(() =>
+      Response.json({ workspace: { ...workspace, state: "archived" } }),
+    );
+    expect(await run(["ws", "archive", "W1", "--force"], deps)).toBe(0);
+    expect(sent[0]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:7420/api/workspaces/W1/archive",
+      body: { force: true },
+    });
+  });
+
+  it("renames, parks, and resumes", async () => {
+    const { deps, sent } = fakeDeps(() => Response.json({ workspace }));
+    await run(["ws", "rename", "W1", "New", "name"], deps);
+    await run(["ws", "park", "W1"], deps);
+    await run(["ws", "resume", "W1"], deps);
+    expect(sent.map((request) => `${request.method} ${new URL(request.url).pathname}`)).toEqual([
+      "PATCH /api/workspaces/W1",
+      "POST /api/workspaces/W1/park",
+      "POST /api/workspaces/W1/resume",
+    ]);
+    expect(sent[0]?.body).toEqual({ name: "New name" });
   });
 });
 
 describe("pi-spore usage", () => {
   it("prints usage and exits 2 with no command", async () => {
     const { deps, out } = fakeDeps(healthy);
-
     expect(await run([], deps)).toBe(2);
     expect(out[0]).toContain("Usage: pi-spore");
   });
 
-  it("rejects an unknown command with exit 2", async () => {
+  it("rejects unknown commands and options with exit 2", async () => {
     const { deps, err } = fakeDeps(healthy);
-
     expect(await run(["frobnicate"], deps)).toBe(2);
     expect(err[0]).toContain("Unknown command: frobnicate");
+    expect(await run(["ws", "list", "--nope"], deps)).toBe(2);
+    expect(err[1]).toContain("Unknown option --nope");
   });
 });

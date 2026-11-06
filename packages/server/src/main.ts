@@ -1,11 +1,22 @@
 #!/usr/bin/env node
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import type { Logger } from "@pi-spore/module-api";
+import {
+  acquireLock,
+  CORE_MIGRATIONS,
+  createApp,
+  ensureHome,
+  ensureToken,
+  exec,
+  newId,
+  resolveHome,
+  SqliteStore,
+  setupModules,
+} from "@pi-spore/server-core";
 import { DEFAULT_PORT } from "@pi-spore/shared";
-import { createApp } from "./app.js";
 import { serverModules } from "./modules.js";
-import { setupModules } from "./startup.js";
 
 const log: Logger = {
   info: (message, fields) => console.log(message, fields ?? ""),
@@ -44,16 +55,45 @@ function readPort(): number {
 
 const startedAt = Date.now();
 const port = readPort();
+const paths = resolveHome(process.env);
+ensureHome(paths);
+const releaseLock = acquireLock(paths.lock);
+const store = new SqliteStore(paths.database);
+store.migrate("core", CORE_MIGRATIONS);
+const token = ensureToken(paths.token);
+
 // Disabled modules come from ~/.pi-spore/settings.json once the settings module lands.
-const modules = await setupModules(serverModules, [], log);
+const modules = await setupModules(serverModules, [], {
+  log,
+  store,
+  home: paths,
+  exec,
+  now: Date.now,
+  newId: () => newId(),
+});
+
+const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
 const app = createApp({
   version: readVersion(),
-  modules: modules.map((module) => module.id),
+  modules,
   startedAt,
   now: Date.now,
+  token,
+  store,
+  log,
+  ...(existsSync(webDist) ? { webDist } : {}),
 });
 
 // Loopback only (R1.2).
-serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) => {
+const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) => {
   log.info(`pi-spore server listening on http://127.0.0.1:${info.port}`);
 });
+
+for (const signal of ["SIGINT", "SIGTERM"] as const) {
+  process.once(signal, () => {
+    server.close();
+    store.close();
+    releaseLock();
+    process.exit(0);
+  });
+}

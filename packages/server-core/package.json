@@ -1,0 +1,23 @@
+{
+  "name": "@pi-spore/server-core",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@pi-spore/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./testing": {
+      "@pi-spore/source": "./src/testing.ts",
+      "types": "./dist/testing.d.ts",
+      "default": "./dist/testing.js"
+    }
+  },
+  "dependencies": {
+    "@pi-spore/module-api": "0.0.0",
+    "@pi-spore/shared": "0.0.0",
+    "hono": "4.13.16"
+  }
+}
