@@ -16,12 +16,13 @@ That stack has two ways in:
 - In-process SDK (`createAgentSession`). All agents share one Node process. Extensions with process-level state
   break: `strata-model.ts` keys its lease on `process.pid`, so the first agent to shut down would stop Strata
   under the others. Extensions also change `process.env`. One bad extension can crash the server.
-- RPC mode (`pi --mode rpc`, driven by `RpcClient`). One process per agent, the same as running `pi` in a
+- RPC mode (`pi --mode rpc`). One process per agent, the same as running `pi` in a
   terminal. Extension dialogs come over the wire as `extension_ui_request`.
 
 ## Decision
 
-Each agent is a `pi --mode rpc` child process driven by `RpcClient`. Workbench tools come from a pi-spore
+Each agent is a `pi --mode rpc` child process driven by pi-spore's own RPC client (Pi's `RpcClient` cannot answer
+extension dialogs). Workbench tools come from a pi-spore
 extension (`spore-bridge`) loaded with `-e`. Workbench state lives in SQLite (ADR 0004), not Durable documents.
 
 ## Consequences

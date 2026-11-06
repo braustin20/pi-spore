@@ -16,7 +16,7 @@ Open questions are marked **[Q]** and collected in [open-questions.md](open-ques
  │   pipelines · runs · changes · github-pr · kanban · attention · actions ·  │
  │   terminals · artifacts · routing · usage · unity                          │
  └───────┬───────────────────────┬──────────────────────┬─────────────────────┘
-         │ RpcClient (stdio)     │ git / gh / unity     │ node-pty
+         │ RPC over stdio        │ git / gh / unity     │ node-pty
          ▼                       ▼ (no shell)           ▼
   pi --mode rpc  (one process    git worktrees,        terminals in
   per agent; loads your normal   GitHub, Unity         workspace dirs
@@ -31,9 +31,11 @@ Open questions are marked **[Q]** and collected in [open-questions.md](open-ques
 
 See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 
-- Each agent is one `pi --mode rpc` child process. The server drives it with `RpcClient` from
-  `@earendil-works/pi-coding-agent`. The process loads the user's normal Pi setup: `~/.pi/agent/settings.json`
-  packages, extensions, skills, prompt templates, `models.json`, auth, and MCP config.
+- Each agent is one `pi --mode rpc` child process, driven by pi-spore's own small RPC client
+  (`modules/agents/src/rpc.ts`). Pi's `RpcClient` cannot answer extension dialogs and hides the process, so it is
+  not used. The process loads the user's normal Pi setup through `--no-extensions`, `--no-skills`, and
+  `--no-prompt-templates` plus one explicit flag per resource, as resolved by Pi's `DefaultPackageManager`
+  (ADR 0025).
 - One process per agent keeps the behavior of the `pi` CLI exactly. Extensions that keep per-process state still
   work. Examples: the Strata pid leases in `strata-model.ts`, and `process.env` changes. One crashing extension
   takes down one agent, not the server.

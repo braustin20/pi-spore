@@ -231,7 +231,9 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
           <tbody>
             {shown.map((workspace) => (
               <tr key={workspace.id}>
-                <td>{workspace.name}</td>
+                <td>
+                  <a href={`#/chat/${workspace.id}`}>{workspace.name}</a>
+                </td>
                 {!project && <td>{projectName(workspace.projectId)}</td>}
                 <td>
                   <span className="badge">{workspace.state}</span>
