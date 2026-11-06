@@ -14,9 +14,6 @@ Each question names where it is used. Settle a question by writing or updating a
 - **Q11. Codex plan windows.** Where do Codex 5-hour and weekly numbers come from in Pi? pi-ai 1.5.0 shows no
   `x-codex-*` headers. Candidates: response headers on the `openai-codex` provider, or Codex session `token_count`
   events. (ADR 0022)
-- **Q12. TypeScript version.** TypeScript 7 is current. Confirm `tsc -b` with project references works before
-  pinning it, or pin the last 6.x. (ADR 0021)
-
 
 ## Later
 

@@ -1,0 +1,10 @@
+{
+  "files": [],
+  "references": [
+    { "path": "packages/module-api" },
+    { "path": "packages/shared" },
+    { "path": "packages/server" },
+    { "path": "packages/cli" },
+    { "path": "packages/web" }
+  ]
+}

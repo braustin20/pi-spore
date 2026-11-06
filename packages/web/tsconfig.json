@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "jsx": "react-jsx",
+    "rootDir": "src",
+    "outDir": ".tsbuild",
+    "emitDeclarationOnly": true
+  },
+  "include": ["src"],
+  "references": [{ "path": "../module-api" }, { "path": "../shared" }]
+}

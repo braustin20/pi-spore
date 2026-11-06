@@ -1,0 +1,12 @@
+{
+  "name": "@pi-spore/cli",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "pi-spore": "./dist/main.js"
+  },
+  "dependencies": {
+    "@pi-spore/shared": "0.0.0"
+  }
+}

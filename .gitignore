@@ -5,3 +5,4 @@ dist/
 .env.*
 coverage/
 .pi-spore/config.local.toml
+.tsbuild/

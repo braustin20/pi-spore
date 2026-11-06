@@ -1,0 +1,16 @@
+{
+  "name": "@pi-spore/shared",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": {
+      "@pi-spore/source": "./src/index.ts",
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "dependencies": {
+    "typebox": "1.4.5"
+  }
+}

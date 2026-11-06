@@ -37,7 +37,9 @@ agents across Git projects, with first-class Unity support. Read these before ch
 - Install: `npm ci`
 - Check: `npm run check` (Biome, then `tsc -b`). Must pass before every commit.
 - Test: `npm test` (Vitest). Must pass before every commit.
-- Format: `npm run format`
+- Format and safe lint fixes: `npm run format`
+- Build everything: `npm run build`. Start the server: `npm start` (port 7420, or `PI_SPORE_PORT`).
+- CLI after a build: `node packages/cli/dist/main.js health`
 - Add a dependency only when code uses it, at an exact version. Check the current version with `npm view` first.
   Do not rely on memory for library APIs; read the installed package's docs or types.
 

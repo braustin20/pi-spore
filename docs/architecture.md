@@ -387,7 +387,7 @@ Actions are argv arrays, not shell strings. A shell is used only when the action
 
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
 - One WebSocket at `/api/ws` for server events (agent stream, job state, Home updates) and one per terminal.
-- `GET /api/health` returns version, uptime, store status, and enabled modules.
+- `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
 
 ## 16. Open questions
