@@ -40,7 +40,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - Launch arguments: `--session <path>` (or `--session-dir` for a new one), `--model`, `--thinking`, `--tools` for
   read-only roles, `-e <repo>/pi-extensions/spore-bridge`, and `--append-system-prompt <role prompt file>`. The cwd
   is the workspace directory.
-- Env given to each agent: `PI_SPORE_URL`, `PI_SPORE_TOKEN` (scoped to this agent), `PI_SPORE_AGENT_ID`,
+- Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (scoped to this agent), `PI_SPORE_AGENT_ID`,
   `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_RUN_ID` (in a run), `PI_SPORE_UNITY_PROJECT` (Unity projects), and the
   workspace action env.
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
@@ -59,7 +59,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     new message, so a long wait survives restarts.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
   Restarting it with `--session` restores the conversation.
-- **[Q1]** Spike: confirm that RPC mode loads every package in your settings, and measure memory per process.
+- Spike Q1 ([notes](spikes/q1-rpc-agents.md)) confirmed the full setup loads in RPC mode. Rules from it:
+  - Agent env drops `ORCA_*` and `HERDR_*`, so agents do not report into the terminal that started pi-spore.
+  - Pi hangs when a session's stored working folder is gone. Before `--session`, pi-spore checks that folder.
+    Archived transcripts are read from the session file directly, without starting Pi.
+  - Every agent start has a timeout. On timeout, pi-spore stops the process and shows its stderr.
+  - Agent env sets `PI_LENS_LSP_IDLE_EVICT_MS`, so idle language servers release memory sooner (Q13).
 
 ## 3. Repo layout
 

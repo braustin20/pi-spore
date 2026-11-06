@@ -28,7 +28,11 @@ extension (`spore-bridge`) loaded with `-e`. Workbench state lives in SQLite (AD
 
 - Every Pi extension, skill, MCP server, and model works as in the CLI, with no port.
 - Per-agent env is easy (unity-mcp project path, workbench token).
-- Each agent costs a Node process (memory to be measured in a spike, [Q1]).
+- Each agent costs about 0.5 GB idle and 0.9 GB busy, mostly language servers that pi-lens starts and the `claude`
+  process claude-bridge runs per request (measured in [spike Q1](../spikes/q1-rpc-agents.md)). Live agents are
+  limited ([Q13]).
+- Spike Q1 confirmed that RPC mode loads every package, extension, skill, prompt template, provider, and MCP tool of
+  the user's setup, and that extension dialogs round-trip over `extension_ui_request`.
 - Crash recovery is ours to build: jobs with checkpoints, durable deliveries, and receipts. A model turn cut off
   by a crash is not replayed; the session file keeps everything up to the last completed message.
 - Pi upgrades are one `pi` update, shared with the CLI.

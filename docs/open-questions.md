@@ -4,10 +4,6 @@ Each question names where it is used. Settle a question by writing or updating a
 
 ## Spikes (answer with a small experiment before or during the skeleton)
 
-- **Q1. RPC agents.** Does `pi --mode rpc` load every package in `~/.pi/agent/settings.json` (claude-bridge,
-  pi-subagents, pi-mcp-adapter, pi-lens) and route their dialogs over `extension_ui_request`? Memory, first measure (2026-11-06): one idle agent process uses about 340 MB while loading and
-  about 170 MB after it settles. Running `pi` sessions on this machine use 40-120 MB. Measure again with a busy
-  agent and a long session. This sets the default for the maximum number of live agents. (ADR 0002)
 - **Q3. Strata concurrency.** What does `serve/server.py --engine strata` do with a second request while one is
   running: queue it, run it in parallel, or reject it? The slot lock (ADR 0010) is required either way, but the
   error handling differs.
@@ -15,12 +11,17 @@ Each question names where it is used. Settle a question by writing or updating a
   `x-codex-*` headers. Candidates: response headers on the `openai-codex` provider, or Codex session `token_count`
   events. (ADR 0022)
 
+- **Q15. C# language server cost.** In a Unity worktree, pi-lens starts a C# language server (`csharp-ls` or
+  OmniSharp). Measure its memory and start time per agent, and decide whether read-only roles skip it.
+
 ## Later
 
 - **Q5. pi-subagents child runs.** How does pi-spore observe helpers a worker starts through pi-subagents: their
   run files under `~/.pi/agent/pi-subagents/`, or events the extension emits? (ADR 0013)
 - **Q13. Agent process limits.** Idle timeout before an agent process stops, and the maximum number of live agent
-  processes, given Unity editors also need RAM. Set after Q1.
+  processes. Spike Q1 measured about 0.5 GB per idle agent and 0.9 GB per busy one
+  ([spike notes](spikes/q1-rpc-agents.md)). Proposal: at most 4 live agents by default, stop an agent process after
+  10 idle minutes, and set `PI_LENS_LSP_IDLE_EVICT_MS` to 2 minutes for agents.
 - **Q14. GitHub workflows.** Some projects have Claude GitHub workflows (for example `claude.yml` and
   `claude-code-review.yml`). They may
   review the same PRs pi-spore watches. Decide whether PR watch ignores their comments or feeds them to the worker.
