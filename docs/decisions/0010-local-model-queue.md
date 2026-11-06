@@ -17,5 +17,9 @@ lock file does the same. A second local server is added as another target in set
 
 ## Consequences
 
+- Strata itself queues a second request and never rejects it in the user's setup
+  ([spike Q3](../spikes/q3-strata-concurrency.md)). The slot exists to avoid reprocessing long prompts, not to avoid
+  errors. pi-spore treats a `queue_wait_timeout` error as busy and retries.
+
 - Local lanes run one after another. Throughput is lower but cost is zero.
 - Strata start and stop stay with `strata-model.ts`.
