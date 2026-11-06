@@ -15,6 +15,7 @@
     "@pi-spore/mod-vcs-git": "0.0.0",
     "@pi-spore/mod-vcs-folder": "0.0.0",
     "@pi-spore/mod-workspaces": "0.0.0",
-    "@pi-spore/mod-unity": "0.0.0"
+    "@pi-spore/mod-unity": "0.0.0",
+    "@pi-spore/mod-agents": "0.0.0"
   }
 }

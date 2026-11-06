@@ -1,5 +1,6 @@
 #!/usr/bin/env node
 import { existsSync, readFileSync } from "node:fs";
+import { Server } from "node:http";
 import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import type { Logger } from "@pi-spore/module-api";
@@ -14,6 +15,7 @@ import {
   resolveHome,
   SqliteStore,
   setupModules,
+  WebSocketHub,
 } from "@pi-spore/server-core";
 import { DEFAULT_PORT } from "@pi-spore/shared";
 import { serverModules } from "./modules.js";
@@ -63,7 +65,9 @@ store.migrate("core", CORE_MIGRATIONS);
 const token = ensureToken(paths.token);
 
 // Disabled modules come from ~/.pi-spore/settings.json once the settings module lands.
+const events = new WebSocketHub(log);
 const modules = await setupModules(serverModules, [], {
+  events,
   log,
   store,
   home: paths,
@@ -89,8 +93,12 @@ const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) =
   log.info(`pi-spore server listening on http://127.0.0.1:${info.port}`);
 });
 
+if (!(server instanceof Server)) throw new Error("pi-spore expects a plain HTTP/1 server");
+events.attach(server, token);
+
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
+    events.close();
     server.close();
     store.close();
     releaseLock();

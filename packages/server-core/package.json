@@ -18,6 +18,10 @@
   "dependencies": {
     "@pi-spore/module-api": "0.0.0",
     "@pi-spore/shared": "0.0.0",
-    "hono": "4.13.16"
+    "hono": "4.13.16",
+    "ws": "8.22.1"
+  },
+  "devDependencies": {
+    "@types/ws": "8.18.2"
   }
 }

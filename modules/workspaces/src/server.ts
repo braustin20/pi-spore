@@ -13,7 +13,10 @@ import {
   type Workspace,
   type WorkspaceState,
 } from "@pi-spore/shared";
+import { type LeaveListener, type Workspaces, WorkspacesKey } from "./contract.js";
 import { copyIgnoredFiles } from "./copy.js";
+
+export * from "./contract.js";
 
 const MIGRATIONS = [
   `CREATE TABLE workspaces_workspaces (
@@ -83,6 +86,19 @@ export const workspacesModule: ServerModule = {
       const row = host.store.get<Row>("SELECT * FROM workspaces_workspaces WHERE id = ?", id);
       if (!row) throw new ApiError(404, "workspace_not_found", `No workspace ${id}`);
       return row;
+    };
+
+    const leaveListeners: LeaveListener[] = [];
+    const workspaces: Workspaces = {
+      get: (id) => toWorkspace(load(id)),
+      beforeLeaveActive: (listener) => {
+        leaveListeners.push(listener);
+      },
+    };
+    host.provide(WorkspacesKey, workspaces);
+
+    const leaveActive = async (row: Row, next: "parked" | "archived") => {
+      for (const listener of leaveListeners) await listener(toWorkspace(row), next);
     };
 
     const setState = (row: Row, state: WorkspaceState): Workspace => {
@@ -227,10 +243,11 @@ export const workspacesModule: ServerModule = {
       return c.json({ workspace: toWorkspace({ ...row, name: request.name, updated_at: now }) });
     });
 
-    host.routes.post("/:id/park", (c) => {
+    host.routes.post("/:id/park", async (c) => {
       const row = load(c.req.param("id"));
       if (row.state !== "active")
         throw new ApiError(409, "bad_state", `Workspace is ${row.state}, not active`);
+      await leaveActive(row, "parked");
       return c.json({ workspace: setState(row, "parked") });
     });
 
@@ -246,6 +263,7 @@ export const workspacesModule: ServerModule = {
       const row = load(c.req.param("id"));
       if (row.state === "archived")
         throw new ApiError(409, "bad_state", "Workspace is already archived");
+      if (row.state === "active") await leaveActive(row, "archived");
       if (row.isolation !== "in-place") {
         const project = await projects.get(row.project_id);
         await projects

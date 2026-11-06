@@ -1,3 +1,27 @@
+export {
+  Agent,
+  AgentDialog,
+  AgentList,
+  AgentModel,
+  AgentRole,
+  AgentStatus,
+  CommandList,
+  ContextUsage,
+  CreateAgentRequest,
+  DialogAnswer,
+  ModelList,
+  PromptRequest,
+  SetModelRequest,
+  SetThinkingRequest,
+  ThinkingLevel,
+} from "./agents.js";
+export {
+  applyPiEvent,
+  type ChatMessage,
+  type ChatState,
+  emptyChat,
+  type RunningTool,
+} from "./chat.js";
 export { HealthResponse } from "./health.js";
 export {
   AddProjectRequest,

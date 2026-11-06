@@ -1,0 +1,387 @@
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { projectsModule } from "@pi-spore/mod-projects/server";
+import { unityModule } from "@pi-spore/mod-unity/server";
+import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
+import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
+import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
+import type { ChatState } from "@pi-spore/shared";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { AgentsModuleOptions } from "./server.js";
+import { type AgentEvent, createAgentsModule } from "./server.js";
+
+const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
+
+let server: TestServer;
+let scratch: string;
+let record: string;
+let agentsModule: ReturnType<typeof createAgentsModule>;
+
+async function setup(options: AgentsModuleOptions = {}, extraEnv: Record<string, string> = {}) {
+  agentsModule = createAgentsModule({
+    pi: { command: process.execPath, args: [FAKE_PI] },
+    resourceArgs: async () => ["--no-extensions"],
+    modelArgs: async () => ["--provider", "fake", "--model", "fake-1"],
+    baseEnv: {
+      PATH: process.env.PATH,
+      ORCA_PANE_KEY: "pane",
+      HERDR_ENV: "x",
+      FAKE_PI_RECORD: record,
+      ...extraEnv,
+    },
+    idleStopMs: 60_000,
+    startTimeoutMs: 5_000,
+    ...options,
+  });
+  server = await createTestServer([
+    projectsModule,
+    vcsGitModule,
+    vcsFolderModule,
+    workspacesModule,
+    unityModule,
+    agentsModule,
+  ]);
+}
+
+beforeEach(() => {
+  scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-agents-")));
+  record = join(scratch, "launches.jsonl");
+});
+afterEach(async () => {
+  await agentsModule?.manager().stopAll();
+  server?.close();
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+async function json<T = Record<string, unknown>>(response: Response, status = 200): Promise<T> {
+  const body = (await response.json()) as T;
+  if (response.status !== status)
+    throw new Error(`Expected ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  return body;
+}
+
+/** A folder project with one in-place workspace and its worker agent. */
+async function makeAgent(name = "notes", files: Record<string, string> = {}) {
+  const folder = join(scratch, name);
+  mkdirSync(folder, { recursive: true });
+  for (const [path, text] of Object.entries(files)) {
+    mkdirSync(join(folder, path, ".."), { recursive: true });
+    writeFileSync(join(folder, path), text);
+  }
+  const { project } = await json<{ project: { id: string } }>(
+    await server.request("POST", "/api/projects", { path: folder }),
+    201,
+  );
+  const { workspace } = await json<{ workspace: { id: string; path: string } }>(
+    await server.request("POST", "/api/workspaces", {
+      projectId: project.id,
+      name: "Chat",
+      isolation: "in-place",
+    }),
+    201,
+  );
+  const { agent } = await json<{ agent: { id: string } }>(
+    await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+    201,
+  );
+  return { agentId: agent.id, workspaceId: workspace.id, folder };
+}
+
+const events = (agentId: string) => server.events.eventsOf(`agent:${agentId}`) as AgentEvent[];
+const statuses = (agentId: string) =>
+  events(agentId).flatMap((event) => (event.type === "status" ? [event.status] : []));
+const status = (agentId: string) => statuses(agentId).at(-1);
+
+async function until(check: () => boolean, ms = 5_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > end) throw new Error("Timed out waiting");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+const prompt = (agentId: string, message: string, whileBusy?: string) =>
+  server.request("POST", `/api/agents/${agentId}/prompt`, {
+    message,
+    ...(whileBusy ? { whileBusy } : {}),
+  });
+
+async function chat(agentId: string): Promise<ChatState> {
+  const [snapshot] = (await server.events.snapshot(`agent:${agentId}`)) as AgentEvent[];
+  if (snapshot?.type !== "snapshot") throw new Error("No snapshot");
+  return snapshot.chat;
+}
+
+const texts = (state: ChatState) =>
+  state.messages.map((message) =>
+    typeof message.content === "string"
+      ? `${message.role}: ${message.content}`
+      : `${message.role}: ${(message.content as { text?: string }[]).map((block) => block.text).join("")}`,
+  );
+
+const launches = () =>
+  readFileSync(record, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map(
+      (line) => JSON.parse(line) as { argv: string[]; env: Record<string, string>; cwd: string },
+    );
+
+describe("agents", () => {
+  it("starts Pi in the workspace on the first prompt, with a clean env and a new session", async () => {
+    await setup();
+    const { agentId, workspaceId, folder } = await makeAgent();
+
+    expect(await json(await prompt(agentId, "hello"))).toEqual({ disposition: "started" });
+    await until(() => (statuses(agentId).filter((s) => s === "idle").length ?? 0) >= 2);
+
+    const [launch] = launches();
+    expect(launch?.cwd).toBe(folder);
+    expect(launch?.argv).toEqual([
+      "--mode",
+      "rpc",
+      "--no-extensions",
+      "--session-dir",
+      join(server.paths.sessions, workspaceId),
+      "--provider",
+      "fake",
+      "--model",
+      "fake-1",
+    ]);
+    expect(launch?.env).toEqual({ PI_SPORE_AGENT_ID: agentId, PI_SPORE_WORKSPACE_ID: workspaceId });
+    expect(statuses(agentId)).toEqual(["starting", "idle", "busy", "idle"]);
+    expect(texts(await chat(agentId))).toEqual(["user: hello", "assistant: echo: hello"]);
+    const row = server.store.get<{ session_file: string }>(
+      "SELECT session_file FROM agents_agents WHERE id = ?",
+      agentId,
+    );
+    expect(row?.session_file.startsWith(join(server.paths.sessions, workspaceId))).toBe(true);
+  });
+
+  it("streams live Pi events to subscribers", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "hi"));
+    await until(() => statuses(agentId).at(-1) === "idle" && statuses(agentId).length >= 4);
+    const piTypes = events(agentId).flatMap((event) =>
+      event.type === "pi" ? [(event.event as { type: string }).type] : [],
+    );
+    expect(piTypes).toEqual(
+      expect.arrayContaining([
+        "agent_start",
+        "message_start",
+        "message_update",
+        "message_end",
+        "agent_settled",
+      ]),
+    );
+    expect(events(agentId).some((event) => event.type === "stats")).toBe(true);
+  });
+
+  it("resumes the same session after a stop, without forcing the role model", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "one"));
+    await until(() => statuses(agentId).length >= 4);
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+    expect(status(agentId)).toBe("stopped");
+
+    // A stopped agent's snapshot still shows its history, read from the session file.
+    expect(texts(await chat(agentId))).toEqual(["user: one", "assistant: echo: one"]);
+
+    await json(await prompt(agentId, "two"));
+    await until(() => statuses(agentId).filter((s) => s === "idle").length >= 4);
+    const second = launches()[1];
+    expect(second?.argv).toContain("--session");
+    expect(second?.argv).not.toContain("--model");
+    expect(texts(await chat(agentId))).toEqual([
+      "user: one",
+      "assistant: echo: one",
+      "user: two",
+      "assistant: echo: two",
+    ]);
+  });
+
+  it("passes extension dialogs to the page and the answer back to Pi", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "/dialog"));
+    await until(() => events(agentId).some((event) => event.type === "dialog"));
+    const dialogEvent = events(agentId).find((event) => event.type === "dialog");
+    expect(dialogEvent).toMatchObject({
+      dialog: { id: "dlg-1", method: "confirm", title: "Proceed?" },
+    });
+
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/dialog`, {
+        dialogId: "dlg-1",
+        confirmed: true,
+      }),
+    );
+    await until(() => statuses(agentId).filter((s) => s === "idle").length >= 2);
+    expect(texts(await chat(agentId)).at(-1)).toBe("assistant: confirmed: true");
+    expect(events(agentId).some((event) => event.type === "dialog_closed")).toBe(true);
+
+    const again = await server.request("POST", `/api/agents/${agentId}/dialog`, {
+      dialogId: "dlg-1",
+      confirmed: true,
+    });
+    expect(again.status).toBe(409);
+  });
+
+  it("queues a message sent while the agent works, and aborts a run", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "slow:400"));
+    await until(() => status(agentId) === "busy");
+
+    expect(await json(await prompt(agentId, "also this"))).toEqual({ disposition: "queued" });
+    await json(await server.request("POST", `/api/agents/${agentId}/abort`));
+    await until(() => status(agentId) === "idle" && statuses(agentId).length >= 4);
+    const settled = events(agentId).flatMap((event) =>
+      event.type === "pi" && (event.event as { type: string }).type === "agent_settled"
+        ? [event.event]
+        : [],
+    );
+    expect(settled.at(-1)).toMatchObject({ aborted: true });
+  });
+
+  it("reports a crash with Pi's stderr and starts again on the next prompt", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await prompt(agentId, "crash");
+    await until(() => status(agentId) === "failed");
+    const failure = events(agentId)
+      .filter((event) => event.type === "status")
+      .at(-1);
+    expect(failure).toMatchObject({ status: "failed" });
+    expect((failure as { error: string }).error).toContain("boom: the fake agent crashed");
+
+    await json(await prompt(agentId, "again"));
+    // Idle after the first start, idle again after the restart, and a third time after the reply.
+    await until(
+      () => status(agentId) === "idle" && statuses(agentId).filter((s) => s === "idle").length >= 3,
+    );
+    expect(texts(await chat(agentId)).at(-1)).toBe("assistant: echo: again");
+  });
+
+  it("fails a start that does not answer in time instead of hanging", async () => {
+    await setup({ startTimeoutMs: 300 }, { FAKE_PI_HANG: "1" });
+    const { agentId } = await makeAgent();
+    const response = await prompt(agentId, "hello");
+    expect(response.status).toBe(503);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "agent_start_failed",
+    );
+    expect(status(agentId)).toBe("failed");
+    expect(agentsModule.manager().liveCount()).toBe(0);
+  });
+
+  it("refuses to resume a session whose folder is gone, without starting Pi", async () => {
+    await setup();
+    const { agentId, folder } = await makeAgent();
+    await json(await prompt(agentId, "one"));
+    await until(() => statuses(agentId).length >= 4);
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+    rmSync(folder, { recursive: true, force: true });
+
+    const response = await prompt(agentId, "two");
+
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "session_folder_missing",
+    );
+    expect(launches()).toHaveLength(1);
+    // The history stays readable.
+    expect(texts(await chat(agentId))).toEqual(["user: one", "assistant: echo: one"]);
+  });
+
+  it("keeps at most maxLive agents running; others wait until one stops", async () => {
+    await setup({ maxLive: 1, idleStopMs: 300 });
+    const first = await makeAgent("a");
+    const second = await makeAgent("b");
+    await json(await prompt(first.agentId, "one"));
+    await until(() => status(first.agentId) === "idle" && statuses(first.agentId).length >= 4);
+
+    const pending = prompt(second.agentId, "two");
+    await until(() => status(second.agentId) === "waiting");
+
+    // The first agent stops after 300 ms idle, which frees the slot.
+    expect(await json(await pending)).toEqual({ disposition: "started" });
+    expect(statuses(first.agentId).at(-1)).toBe("stopped");
+    await until(
+      () =>
+        status(second.agentId) === "idle" &&
+        statuses(second.agentId).filter((s) => s === "idle").length >= 2,
+    );
+  });
+
+  it("stops an agent when its workspace is parked, and will not start it while parked", async () => {
+    await setup();
+    const { agentId, workspaceId } = await makeAgent();
+    await json(await prompt(agentId, "hello"));
+    await until(() => statuses(agentId).length >= 4);
+
+    await json(await server.request("POST", `/api/workspaces/${workspaceId}/park`));
+    expect(status(agentId)).toBe("stopped");
+    const refused = await prompt(agentId, "again");
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string } }).error.code).toBe(
+      "workspace_not_active",
+    );
+  });
+
+  it("tells agents in Unity projects which editor is theirs", async () => {
+    await setup();
+    const { folder } = await makeAgent("game", {
+      "ProjectSettings/ProjectVersion.txt": "m_EditorVersion: 6000.3.10f1\n",
+    });
+    const agentId = (
+      (await json<{ agents: { id: string }[] }>(await server.request("GET", "/api/agents")))
+        .agents[0] as { id: string }
+    ).id;
+    await json(await prompt(agentId, "hi"));
+    expect(launches()[0]?.env.PI_SPORE_UNITY_PROJECT).toBe(folder);
+  });
+
+  it("lists models, thinking levels, and commands, and switches model and thinking", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    const models = await json<{ models: { id: string }[]; thinkingLevels: string[] }>(
+      await server.request("GET", `/api/agents/${agentId}/models`),
+    );
+    expect(models.models.map((model) => model.id)).toEqual(["fake-1", "fake-2"]);
+    expect(models.thinkingLevels).toEqual(["off", "low", "medium", "high"]);
+    const commands = await json<{ commands: { name: string }[] }>(
+      await server.request("GET", `/api/agents/${agentId}/commands`),
+    );
+    expect(commands.commands.map((command) => command.name)).toEqual(["review"]);
+
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/model`, {
+        provider: "fake",
+        modelId: "fake-2",
+      }),
+    );
+    await json(await server.request("POST", `/api/agents/${agentId}/thinking`, { level: "high" }));
+    const lastModel = events(agentId)
+      .filter((event) => event.type === "model")
+      .at(-1);
+    expect(lastModel).toMatchObject({
+      model: { provider: "fake", id: "fake-2" },
+      thinkingLevel: "high",
+    });
+  });
+
+  it("gives each workspace one worker", async () => {
+    await setup();
+    const { agentId, workspaceId } = await makeAgent();
+    const again = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId }),
+    );
+    expect(again.agent.id).toBe(agentId);
+  });
+});

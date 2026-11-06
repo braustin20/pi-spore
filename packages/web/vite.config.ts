@@ -24,6 +24,12 @@ export default defineConfig({
   server: {
     host: "127.0.0.1",
     proxy: {
+      "/api/ws": {
+        target: `ws://127.0.0.1:${process.env.PI_SPORE_PORT ?? "7420"}`,
+        ws: true,
+        rewrite: (path) =>
+          `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(devToken())}`,
+      },
       "/api": {
         target: `http://127.0.0.1:${process.env.PI_SPORE_PORT ?? "7420"}`,
         headers: { "x-pi-spore-token": devToken() },

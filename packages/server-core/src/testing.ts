@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { Exec, Logger, ServerModule } from "@pi-spore/module-api";
+import type { EventHub, Exec, Logger, ServerModule } from "@pi-spore/module-api";
 import { CORE_MIGRATIONS, createApp } from "./app.js";
 import { exec as realExec } from "./exec.js";
 import { ensureHome, resolveHome, type ServerPaths } from "./home.js";
@@ -10,12 +10,44 @@ import { SqliteStore } from "./store.js";
 
 export const TEST_TOKEN = "t".repeat(64);
 
+/** An in-process EventHub for tests: records every published event and runs subscription snapshots on demand. */
+export class MemoryHub implements EventHub {
+  readonly published: { topic: string; event: unknown }[] = [];
+  private readonly handlers: {
+    prefix: string;
+    handler: (topic: string) => unknown[] | Promise<unknown[]>;
+  }[] = [];
+
+  publish(topic: string, event: unknown): void {
+    this.published.push({ topic, event });
+  }
+
+  onSubscribe(prefix: string, handler: (topic: string) => unknown[] | Promise<unknown[]>): void {
+    this.handlers.push({ prefix, handler });
+  }
+
+  /** The snapshot a new subscriber to `topic` would get. */
+  async snapshot(topic: string): Promise<unknown[]> {
+    const match = this.handlers
+      .filter((candidate) => topic.startsWith(candidate.prefix))
+      .sort((a, b) => b.prefix.length - a.prefix.length)[0];
+    if (!match) throw new Error(`No handler for topic ${topic}`);
+    return match.handler(topic);
+  }
+
+  /** Events published to `topic` so far. */
+  eventsOf(topic: string): unknown[] {
+    return this.published.filter((entry) => entry.topic === topic).map((entry) => entry.event);
+  }
+}
+
 export const silentLog: Logger = { info: () => {}, warn: () => {}, error: () => {} };
 
 export interface TestServer {
   paths: ServerPaths;
   store: SqliteStore;
   services: HostServices;
+  events: MemoryHub;
   /** Sends a request as the CLI would: loopback host, the token, JSON. */
   request(
     method: string,
@@ -41,7 +73,9 @@ export async function createTestServer(
   store.migrate("core", CORE_MIGRATIONS);
   let clock = options.startAt ?? 1_700_000_000_000;
   let counter = 0;
+  const events = new MemoryHub();
   const services: HostServices = {
+    events,
     log: silentLog,
     store,
     home: paths,
@@ -63,6 +97,7 @@ export async function createTestServer(
     paths,
     store,
     services,
+    events,
     request: async (method, path, body, headers = {}) =>
       await app.request(path, {
         method,

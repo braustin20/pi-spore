@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { ApiError, type Logger, type Store } from "@pi-spore/module-api";
 import { type HealthResponse, ValidationError } from "@pi-spore/shared";
 import { Hono } from "hono";
+import { isLoopbackHost } from "./guards.js";
 import { tokensMatch } from "./token.js";
 import { serveWeb } from "./web.js";
 
@@ -18,7 +19,6 @@ export interface AppOptions {
   webDist?: string;
 }
 
-const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "[::1]"]);
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
 
 export const CORE_MIGRATIONS = [
@@ -31,17 +31,12 @@ export const CORE_MIGRATIONS = [
   )`,
 ];
 
-function hostname(host: string | undefined): string | undefined {
-  if (!host) return undefined;
-  return host.startsWith("[") ? host.slice(0, host.indexOf("]") + 1) : host.split(":")[0];
-}
-
 export function createApp(options: AppOptions): Hono {
   const app = new Hono();
 
   // DNS rebinding: a web page can point its own domain at 127.0.0.1. Its requests then carry that domain as Host.
   app.use("*", async (c, next) => {
-    if (!LOOPBACK_HOSTS.has(hostname(c.req.header("host")) ?? "")) {
+    if (!isLoopbackHost(c.req.header("host"))) {
       return c.json(
         { error: { code: "bad_host", message: "pi-spore answers only on loopback hosts" } },
         403,

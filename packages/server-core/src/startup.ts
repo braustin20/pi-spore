@@ -1,5 +1,6 @@
 import {
   createInterfaceBroker,
+  type EventHub,
   type Exec,
   type HomePaths,
   type Logger,
@@ -10,6 +11,7 @@ import {
 import { Hono } from "hono";
 
 export interface HostServices {
+  events: EventHub;
   log: Logger;
   store: Store;
   home: HomePaths;

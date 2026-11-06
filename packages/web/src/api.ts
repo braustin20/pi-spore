@@ -1,4 +1,5 @@
 import { type ApiClient, ApiRequestError } from "@pi-spore/module-api";
+import { EventSocket } from "./socket.js";
 
 function tokenFromPage(): string | undefined {
   return (
@@ -32,7 +33,13 @@ async function readAnswer(response: Response): Promise<unknown> {
 export function createApiClient(): ApiClient {
   const token = tokenFromPage();
   const auth: Record<string, string> = token ? { "x-pi-spore-token": token } : {};
+  const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
+  // In Vite dev the page has no token; the dev proxy adds it to the socket URL.
+  const socket = new EventSocket(
+    `${scheme}//${window.location.host}/api/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`,
+  );
   return {
+    subscribe: (topic, onEvent) => socket.subscribe(topic, onEvent),
     get: async (path) => readAnswer(await fetch(`/api/${path}`, { headers: auth })),
     send: async (method, path, body) =>
       readAnswer(

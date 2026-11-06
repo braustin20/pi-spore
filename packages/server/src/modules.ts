@@ -1,3 +1,4 @@
+import { agentsModule } from "@pi-spore/mod-agents/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { unityModule } from "@pi-spore/mod-unity/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
@@ -12,4 +13,5 @@ export const serverModules: readonly ServerModule[] = [
   vcsFolderModule,
   workspacesModule,
   unityModule,
+  agentsModule,
 ];

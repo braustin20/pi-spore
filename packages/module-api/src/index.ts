@@ -8,6 +8,7 @@ export {
 } from "./manifest.js";
 export type {
   ApiClient,
+  EventHub,
   Exec,
   ExecOptions,
   ExecResult,

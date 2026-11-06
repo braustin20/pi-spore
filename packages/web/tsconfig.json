@@ -23,6 +23,9 @@
     },
     {
       "path": "../../modules/workspaces"
+    },
+    {
+      "path": "../../modules/agents"
     }
   ]
 }

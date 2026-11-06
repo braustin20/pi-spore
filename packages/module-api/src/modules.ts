@@ -52,8 +52,21 @@ export interface HomePaths {
   sessions: string;
 }
 
-/** What a server module gets during setup. Settings, jobs, and events are added with the modules that need them. */
+/** Live events for browsers, by topic such as `agent:<id>`. */
+export interface EventHub {
+  /** Sends an event to every browser subscribed to `topic`. */
+  publish(topic: string, event: unknown): void;
+  /**
+   * Handles subscriptions to topics that start with `prefix`. The handler returns the events a new subscriber gets
+   * first (a snapshot); events published while it runs are delivered after them, in order. Throw an ApiError to
+   * refuse the subscription.
+   */
+  onSubscribe(prefix: string, handler: (topic: string) => unknown[] | Promise<unknown[]>): void;
+}
+
+/** What a server module gets during setup. Settings and jobs are added with the modules that need them. */
 export interface ServerHost extends ModuleInterfaces {
+  readonly events: EventHub;
   readonly log: Logger;
   readonly store: Store;
   /** Routes of this module, mounted at `/api/<module id>/`. */
@@ -74,6 +87,11 @@ export interface ApiClient {
   get(path: string): Promise<unknown>;
   /** Sends a mutating request with a fresh idempotency key. */
   send(method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<unknown>;
+  /**
+   * Receives the events of a topic: the snapshot first, then live events. Survives reconnects by subscribing again,
+   * which sends a fresh snapshot. Returns a function that unsubscribes.
+   */
+  subscribe(topic: string, onEvent: (event: unknown) => void): () => void;
 }
 
 export interface WebPage {
