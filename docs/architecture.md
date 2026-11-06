@@ -38,7 +38,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   work. Examples: the Strata pid leases in `strata-model.ts`, and `process.env` changes. One crashing extension
   takes down one agent, not the server.
 - Launch arguments: `--session <path>` (or `--session-dir` for a new one), `--model`, `--thinking`, `--tools` for
-  read-only roles, `-e <repo>/pi-extensions/spore-bridge`, and `--append-system-prompt <role prompt file>`. The cwd
+  read-only roles, `--no-extensions` plus one `-e` per extension from the user's setup minus
+  `agents.excludeExtensions` (ADR 0025), `-e <repo>/pi-extensions/spore-bridge`, and `--append-system-prompt <role prompt file>`. The cwd
   is the workspace directory.
 - Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (scoped to this agent), `PI_SPORE_AGENT_ID`,
   `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_RUN_ID` (in a run), `PI_SPORE_UNITY_PROJECT` (Unity projects), and the
@@ -54,6 +55,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - `report`: the structured stage result (verdict, findings, artifacts).
   - `kanban_add_card`, `kanban_update_card`.
   - `run_action`: run a project action.
+  - `check`: run the project's `check` action and return its errors (ADR 0025).
   - Coordinator only: `start_lane`, `answer_lane`, `merge_lane`.
   - Questions do not block the tool. The tool files the question and ends the turn. The answer arrives later as a
     new message, so a long wait survives restarts.
@@ -64,7 +66,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Pi hangs when a session's stored working folder is gone. Before `--session`, pi-spore checks that folder.
     Archived transcripts are read from the session file directly, without starting Pi.
   - Every agent start has a timeout. On timeout, pi-spore stops the process and shows its stderr.
-  - Agent env sets `PI_LENS_LSP_IDLE_EVICT_MS`, so idle language servers release memory sooner (Q13).
+  - Agents run without pi-lens and get a `check` tool instead (ADR 0025).
+- Limits: at most 4 live agent processes; an idle agent process stops after 10 minutes (ADR 0026).
 
 ## 3. Repo layout
 

@@ -50,7 +50,7 @@ lower bounds.
 Where the memory goes:
 
 - **pi-lens** starts language servers for the agent's working folder about 10 s after launch. TypeScript costs about
-  410 MB. In Unity projects it would start a C# server (`csharp-ls` or OmniSharp), not measured yet (Q15). pi-lens
+  410 MB. In Unity projects it would start a C# server (`csharp-ls` or OmniSharp), not measured. pi-lens
   stops idle servers after 20 minutes by default (`PI_LENS_LSP_IDLE_EVICT_MS`).
 - **claude-bridge** runs a `claude` process while a request is in flight, about 190 MB.
 - **Pi itself** uses 170 to 335 MB, depending on session size.
@@ -68,7 +68,7 @@ Rough budget: 0.5 GB for an idle agent with its language server, 0.9 GB for a bu
    - check the stored folder before it starts Pi with `--session`;
    - show archived transcripts by reading the session file itself, without starting Pi;
    - time out every agent start, and report its stderr.
-3. **Language servers dominate memory.** pi-spore sets a short `PI_LENS_LSP_IDLE_EVICT_MS` for agents (proposal: 2
-   minutes) and limits live agents (Q13).
+3. **Language servers dominate memory.** Decided later: agents run without pi-lens (ADR 0025) and live agents are
+   limited (ADR 0026).
 4. **Only one `claude` process per request.** claude-bridge does not keep one running between requests, so idle
    agents on Claude do not pay for it.

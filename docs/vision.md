@@ -16,7 +16,8 @@ not built in v1.
 - R1.3 pi-spore replaces Orca for agent and Unity work: worktrees, setup, terminals, Unity launch, agent status.
 - R1.4 Every agent is a Pi agent that loads the same auth, models, settings, skills, extensions, prompt templates,
   AGENTS.md files, and MCP config as the `pi` CLI. Extensions that work in `pi` today (Strata auto-start,
-  claude-bridge, pi-subagents, pi-mcp-adapter, pi-lens) work unchanged in pi-spore.
+  claude-bridge, pi-subagents, pi-mcp-adapter) work unchanged in pi-spore. Extensions the user excludes for
+  agents (R3.7; by default pi-lens) do not load in agents.
 - R1.5 Features beyond a small core are modules in this repo with a typed contract (see architecture).
 - R1.6 State survives a server restart: workspaces, runs, pipeline stages, questions, approvals, cards, and
   transcripts. Work that was cut off resumes or is clearly marked as interrupted. Nothing is silently lost.
@@ -47,6 +48,7 @@ not built in v1.
   for every model that router picks.
 - R3.5 Agents have a `request_human_input` tool. Agents in a run ask their coordinator instead (R7).
 - R3.6 Concurrency and nesting limits for agents are settings, with safe defaults.
+- R3.7 The user can exclude extensions from pi-spore agents while keeping them in the `pi` CLI.
 
 ## R4. Model routing and local models
 
