@@ -14,6 +14,7 @@ function fakeDeps(
   overrides: Partial<CliDeps> = {},
 ) {
   const out: string[] = [];
+  const written: string[] = [];
   const err: string[] = [];
   const sent: Sent[] = [];
   let keys = 0;
@@ -31,13 +32,14 @@ function fakeDeps(
     }) as typeof fetch,
     env: {},
     out: (line) => out.push(line),
+    write: (text) => written.push(text),
     err: (line) => err.push(line),
     readToken: () => "secret",
     resolvePath: (path) => (path.startsWith("/") ? path : `/home/me/${path}`),
     newKey: () => `key-${++keys}`,
     ...overrides,
   };
-  return { deps, out, err, sent };
+  return { deps, out, written, err, sent };
 }
 
 const project = {
@@ -181,6 +183,7 @@ describe("pi-spore ws", () => {
               workspace,
               copied: ["Library", "game.sln"],
               warnings: ["Unity may have the main project open."],
+              steps: [{ name: "setup", ok: true, message: "setup succeeded" }],
             },
             { status: 201 },
           ),
@@ -192,13 +195,41 @@ describe("pi-spore ws", () => {
     expect(err).toEqual(["warning: Unity may have the main project open."]);
     expect(out[0]).toContain("Created W1");
     expect(out[1]).toBe("Copied: Library, game.sln");
+    expect(out[2]).toBe("setup succeeded");
+  });
+
+  it("exits 1 when setup failed, after it printed the new workspace", async () => {
+    const { deps, out, err } = fakeDeps((key) =>
+      key === "GET /api/projects"
+        ? Response.json({ projects: [project] })
+        : Response.json(
+            {
+              workspace,
+              copied: [],
+              warnings: [],
+              steps: [
+                {
+                  name: "setup",
+                  ok: false,
+                  message: "setup failed with exit code 2; log: /logs/R1.log",
+                  runId: "R1",
+                  logPath: "/logs/R1.log",
+                },
+              ],
+            },
+            { status: 201 },
+          ),
+    );
+    expect(await run(["ws", "new", "game", "x"], deps)).toBe(1);
+    expect(out[0]).toContain("Created W1");
+    expect(err).toEqual(["setup failed with exit code 2; log: /logs/R1.log"]);
   });
 
   it("passes the mode and branch for an existing branch", async () => {
     const { deps, sent } = fakeDeps((key) =>
       key === "GET /api/projects"
         ? Response.json({ projects: [project] })
-        : Response.json({ workspace, copied: [], warnings: [] }, { status: 201 }),
+        : Response.json({ workspace, copied: [], warnings: [], steps: [] }, { status: 201 }),
     );
     await run(["ws", "new", "game", "x", "--mode", "existing", "--line", "feature/x"], deps);
     expect(sent[1]?.body).toEqual({
@@ -228,9 +259,13 @@ describe("pi-spore ws", () => {
 
   it("archives with --force", async () => {
     const { deps, sent } = fakeDeps(() =>
-      Response.json({ workspace: { ...workspace, state: "archived" } }),
+      Response.json({
+        workspace: { ...workspace, state: "archived" },
+        steps: [{ name: "teardown", ok: false, message: "teardown failed with exit code 1" }],
+      }),
     );
-    expect(await run(["ws", "archive", "W1", "--force"], deps)).toBe(0);
+    // Forced past a failed teardown: archived, but the failure still shows in the exit code.
+    expect(await run(["ws", "archive", "W1", "--force"], deps)).toBe(1);
     expect(sent[0]).toMatchObject({
       method: "POST",
       url: "http://127.0.0.1:7420/api/workspaces/W1/archive",
@@ -249,6 +284,93 @@ describe("pi-spore ws", () => {
       "POST /api/workspaces/W1/resume",
     ]);
     expect(sent[0]?.body).toEqual({ name: "New name" });
+  });
+});
+
+const actionRun = {
+  id: "R1",
+  workspaceId: "W1",
+  action: "test",
+  trigger: "user",
+  status: "running",
+  logPath: "/logs/actions/W1/R1.log",
+  createdAt: 3,
+  startedAt: 3,
+};
+
+describe("pi-spore action", () => {
+  it("lists actions with their command and source", async () => {
+    const { deps, out, sent } = fakeDeps(() =>
+      Response.json({
+        actions: [
+          {
+            name: "dev",
+            run: "npm run dev",
+            shell: true,
+            exclusive: false,
+            source: "local override",
+          },
+          {
+            name: "test",
+            run: ["npm", "test"],
+            shell: false,
+            exclusive: true,
+            source: "project file",
+          },
+        ],
+      }),
+    );
+    expect(await run(["action", "list", "W1"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/actions/workspaces/W1");
+    expect(out).toEqual([
+      "dev              sh -c npm run dev  (local override)",
+      "test             npm test  (project file)  [exclusive]",
+    ]);
+  });
+
+  it("runs an action and follows its log until it ends", async () => {
+    const pages = [
+      { run: actionRun, text: "$ npm test\n", start: 0, end: 11, size: 11 },
+      {
+        run: { ...actionRun, status: "succeeded", exitCode: 0, endedAt: 4 },
+        text: "ok\n",
+        start: 11,
+        end: 14,
+        size: 14,
+      },
+    ];
+    const { deps, written, sent } = fakeDeps((key) =>
+      key.startsWith("POST")
+        ? Response.json({ run: actionRun }, { status: 201 })
+        : Response.json(pages.shift()),
+    );
+    expect(await run(["action", "run", "W1", "test"], deps)).toBe(0);
+    expect(sent[0]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:7420/api/actions/workspaces/W1/runs",
+      body: { action: "test" },
+    });
+    expect(sent.slice(1).map((request) => new URL(request.url).search)).toEqual([
+      "?from=0&wait=15000",
+      "?from=11&wait=15000",
+    ]);
+    expect(written.join("")).toBe("$ npm test\nok\n");
+  });
+
+  it("exits 1 when the action fails", async () => {
+    const { deps, err } = fakeDeps((key) =>
+      key.startsWith("POST")
+        ? Response.json({ run: actionRun }, { status: 201 })
+        : Response.json({
+            run: { ...actionRun, status: "failed", exitCode: 3 },
+            text: "",
+            start: 0,
+            end: 0,
+            size: 0,
+          }),
+    );
+    expect(await run(["action", "run", "W1", "test"], deps)).toBe(1);
+    expect(err.at(-1)).toBe("Action test failed (exit code 3)");
   });
 });
 

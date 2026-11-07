@@ -29,6 +29,9 @@
       "path": "modules/agents"
     },
     {
+      "path": "modules/actions"
+    },
+    {
       "path": "packages/server"
     },
     {

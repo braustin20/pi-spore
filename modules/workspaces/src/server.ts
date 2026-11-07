@@ -4,16 +4,24 @@ import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import {
   ArchiveWorkspaceRequest,
+  type ArchiveWorkspaceResponse,
   CreateWorkspaceRequest,
   type CreateWorkspaceResponse,
   type Isolation,
   parseJsonBody,
   RenameWorkspaceRequest,
+  type StepReport,
   slugify,
   type Workspace,
   type WorkspaceState,
 } from "@pi-spore/shared";
-import { type LeaveListener, type Workspaces, WorkspacesKey } from "./contract.js";
+import {
+  type CopyCreatedListener,
+  type LeaveListener,
+  type RemoveCopyListener,
+  type Workspaces,
+  WorkspacesKey,
+} from "./contract.js";
 import { copyIgnoredFiles } from "./copy.js";
 
 export * from "./contract.js";
@@ -88,11 +96,38 @@ export const workspacesModule: ServerModule = {
       return row;
     };
 
+    const listRows = (filter: { projectId?: string; state?: string }): Row[] => {
+      const where: string[] = [];
+      const params: string[] = [];
+      if (filter.projectId) {
+        where.push("project_id = ?");
+        params.push(filter.projectId);
+      }
+      if (filter.state) {
+        where.push("state = ?");
+        params.push(filter.state);
+      }
+      return host.store.all<Row>(
+        `SELECT * FROM workspaces_workspaces ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
+         ORDER BY created_at DESC`,
+        ...params,
+      );
+    };
+
     const leaveListeners: LeaveListener[] = [];
+    const createdListeners: CopyCreatedListener[] = [];
+    const removeListeners: RemoveCopyListener[] = [];
     const workspaces: Workspaces = {
       get: (id) => toWorkspace(load(id)),
+      list: (filter = {}) => listRows(filter).map(toWorkspace),
       beforeLeaveActive: (listener) => {
         leaveListeners.push(listener);
+      },
+      afterCopyCreated: (listener) => {
+        createdListeners.push(listener);
+      },
+      beforeRemoveCopy: (listener) => {
+        removeListeners.push(listener);
       },
     };
     host.provide(WorkspacesKey, workspaces);
@@ -115,21 +150,10 @@ export const workspacesModule: ServerModule = {
     host.routes.get("/", (c) => {
       const projectId = c.req.query("projectId");
       const state = c.req.query("state");
-      const where: string[] = [];
-      const params: string[] = [];
-      if (projectId) {
-        where.push("project_id = ?");
-        params.push(projectId);
-      }
-      if (state) {
-        where.push("state = ?");
-        params.push(state);
-      }
-      const rows = host.store.all<Row>(
-        `SELECT * FROM workspaces_workspaces ${where.length ? `WHERE ${where.join(" AND ")}` : ""}
-         ORDER BY created_at DESC`,
-        ...params,
-      );
+      const rows = listRows({
+        ...(projectId ? { projectId } : {}),
+        ...(state ? { state } : {}),
+      });
       return c.json({ workspaces: rows.map(toWorkspace) });
     });
 
@@ -224,7 +248,22 @@ export const workspacesModule: ServerModule = {
         row.created_at,
         row.updated_at,
       );
-      const body: CreateWorkspaceResponse = { workspace: toWorkspace(row), copied, warnings };
+      const workspace = toWorkspace(row);
+      const steps: StepReport[] = [];
+      if (request.isolation !== "in-place") {
+        for (const listener of createdListeners) {
+          // The workspace exists now; a step that breaks is reported, not allowed to hide it.
+          const report = await listener(workspace).catch(
+            (error: unknown): StepReport => ({
+              name: "after create",
+              ok: false,
+              message: (error as Error).message,
+            }),
+          );
+          if (report) steps.push(report);
+        }
+      }
+      const body: CreateWorkspaceResponse = { workspace, copied, warnings, steps };
       return c.json(body, 201);
     });
 
@@ -264,17 +303,32 @@ export const workspacesModule: ServerModule = {
       if (row.state === "archived")
         throw new ApiError(409, "bad_state", "Workspace is already archived");
       if (row.state === "active") await leaveActive(row, "archived");
+      const steps: StepReport[] = [];
+      const force = request.force === true;
       if (row.isolation !== "in-place") {
+        for (const listener of removeListeners) {
+          const report = await listener(toWorkspace(row), { force });
+          if (!report) continue;
+          if (!report.ok && !force) {
+            throw new ApiError(
+              409,
+              `${report.name}_failed`,
+              `${report.message}. Archive with force to remove the copy anyway.`,
+            );
+          }
+          steps.push(report);
+        }
         const project = await projects.get(row.project_id);
         await projects
           .vcsFor(project)
           .removeCopy(
             project,
             { path: row.path, ...(row.line === null ? {} : { line: row.line }) },
-            { force: request.force === true },
+            { force },
           );
       }
-      return c.json({ workspace: setState(row, "archived") });
+      const body: ArchiveWorkspaceResponse = { workspace: setState(row, "archived"), steps };
+      return c.json(body);
     });
   },
 };

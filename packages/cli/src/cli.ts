@@ -1,4 +1,8 @@
 import {
+  ActionList,
+  ActionLog,
+  ActionRun,
+  ArchiveWorkspaceResponse,
   CreateWorkspaceResponse,
   DEFAULT_URL,
   HealthResponse,
@@ -6,6 +10,7 @@ import {
   Project,
   ProjectList,
   parse,
+  type StepReport,
   type Workspace,
   WorkspaceList,
   Workspace as WorkspaceSchema,
@@ -16,6 +21,8 @@ export interface CliDeps {
   fetch: typeof fetch;
   env: Readonly<Record<string, string | undefined>>;
   out: (line: string) => void;
+  /** Writes text as is, for streamed logs. */
+  write: (text: string) => void;
   err: (line: string) => void;
   /** The API token from `PI_SPORE_TOKEN` or the server's token file; undefined if neither exists. */
   readToken: () => string | undefined;
@@ -37,8 +44,12 @@ Commands:
   ws rename <id> <name>
   ws park <id> | ws resume <id>
   ws archive <id> [--force]                Remove the copy; --force also deletes uncommitted work
+                                           and goes on after a failed teardown
+  action list <workspace>                  List a workspace's actions
+  action run <workspace> <name>            Run an action and follow its log; exits 1 if it fails
+  action cancel <run id>
 
-<project> is a project id or slug.
+<project> is a project id or slug. <workspace> is a workspace id.
 
 Environment:
   PI_SPORE_URL    Server address (default ${DEFAULT_URL})
@@ -255,11 +266,13 @@ async function workspaceCommand(
       ...(options.line ? { line: options.line } : {}),
       ...(options.base ? { base: options.base } : {}),
     });
-    if (json) return deps.out(JSON.stringify(result));
-    for (const warning of result.warnings) deps.err(`warning: ${warning}`);
-    print(result.workspace, "Created");
-    if (result.copied.length > 0) deps.out(`Copied: ${result.copied.join(", ")}`);
-    return;
+    if (json) deps.out(JSON.stringify(result));
+    else {
+      for (const warning of result.warnings) deps.err(`warning: ${warning}`);
+      print(result.workspace, "Created");
+      if (result.copied.length > 0) deps.out(`Copied: ${result.copied.join(", ")}`);
+    }
+    return reportSteps(deps, result.steps, json);
   }
   if (sub === "rename" && rest.length >= 2) {
     const [id, ...name] = rest;
@@ -275,17 +288,83 @@ async function workspaceCommand(
   if (sub === "archive") {
     const { positional, on } = parseArgs(rest, [], ["force"]);
     if (positional.length !== 1) throw usageError("ws archive takes one workspace id");
-    const { workspace } = await api.call(
+    const result = await api.call(
       "POST",
       `workspaces/${positional[0]}/archive`,
-      WorkspaceBody,
+      ArchiveWorkspaceResponse,
       {
         ...(on.has("force") ? { force: true } : {}),
       },
     );
-    return print(workspace, "Archived");
+    if (json) deps.out(JSON.stringify(result));
+    else print(result.workspace, "Archived");
+    return reportSteps(deps, result.steps, json);
   }
   throw usageError(`Unknown command: ws ${args.join(" ")}`);
+}
+
+/** Prints what setup or teardown did. A failed step exits 1, though the workspace change happened. */
+function reportSteps(deps: CliDeps, steps: readonly StepReport[], json: boolean): void {
+  const failed = steps.filter((step) => !step.ok);
+  if (!json) for (const step of steps.filter((candidate) => candidate.ok)) deps.out(step.message);
+  if (failed.length > 0) throw new CliError(failed.map((step) => step.message).join("\n"), 1);
+}
+
+const ActionRunBody = Type.Object({ run: ActionRun });
+
+async function actionCommand(
+  api: Api,
+  deps: CliDeps,
+  args: string[],
+  json: boolean,
+): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub === "list" && rest.length === 1) {
+    const { actions } = await api.call("GET", `actions/workspaces/${rest[0]}`, ActionList);
+    if (json) return deps.out(JSON.stringify(actions));
+    if (actions.length === 0) return deps.out("No actions in .pi-spore/config.toml.");
+    for (const action of actions) {
+      const command = typeof action.run === "string" ? `sh -c ${action.run}` : action.run.join(" ");
+      const flags = action.exclusive ? "  [exclusive]" : "";
+      deps.out(`${action.name.padEnd(16)} ${command}  (${action.source})${flags}`);
+    }
+    return;
+  }
+  if (sub === "run" && rest.length === 2) {
+    const { run: started } = await api.call(
+      "POST",
+      `actions/workspaces/${rest[0]}/runs`,
+      ActionRunBody,
+      { action: rest[1] },
+    );
+    if (!json) deps.err(`Run ${started.id} (${started.status}), log: ${started.logPath}`);
+    // The server holds each request until there is new output or the run ends, so this loop does not spin.
+    let from = 0;
+    let run = started;
+    for (;;) {
+      const log = await api.call(
+        "GET",
+        `actions/runs/${started.id}/log?from=${from}&wait=15000`,
+        ActionLog,
+      );
+      if (!json) deps.write(log.text);
+      from = log.end;
+      run = log.run;
+      if (run.status !== "queued" && run.status !== "running" && log.end >= log.size) break;
+    }
+    if (json) deps.out(JSON.stringify(run));
+    if (run.status !== "succeeded") {
+      const how =
+        run.exitCode !== undefined ? `exit code ${run.exitCode}` : (run.error ?? run.status);
+      throw new CliError(`Action ${run.action} ${run.status} (${how})`, 1);
+    }
+    return;
+  }
+  if (sub === "cancel" && rest.length === 1) {
+    const { run } = await api.call("POST", `actions/runs/${rest[0]}/cancel`, ActionRunBody);
+    return deps.out(json ? JSON.stringify(run) : `Run ${run.id} ${run.status}`);
+  }
+  throw usageError(`Unknown command: action ${args.join(" ")}`);
 }
 
 /** Runs one CLI invocation and returns the process exit code. */
@@ -304,6 +383,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "project") await projectCommand(new Api(deps, base), deps, rest, json);
     else if (command === "ws" || command === "workspace")
       await workspaceCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "action") await actionCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;
   } catch (error) {

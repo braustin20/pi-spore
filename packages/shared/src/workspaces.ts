@@ -51,11 +51,23 @@ export const CreateWorkspaceRequest = Type.Object(
 );
 export type CreateWorkspaceRequest = Static<typeof CreateWorkspaceRequest>;
 
+/** The result of a step another module ran around a copy, such as the `setup` action (R2.7). */
+export const StepReport = Type.Object({
+  name: Type.String(),
+  ok: Type.Boolean(),
+  message: Type.String(),
+  runId: Type.Optional(Type.String()),
+  logPath: Type.Optional(Type.String()),
+});
+export type StepReport = Static<typeof StepReport>;
+
 export const CreateWorkspaceResponse = Type.Object({
   workspace: Workspace,
   /** Gitignored files copied into the new copy (R2.6). */
   copied: Type.Array(Type.String()),
   warnings: Type.Array(Type.String()),
+  /** Steps that ran after the copy was made. A failed one leaves the workspace in place. */
+  steps: Type.Array(StepReport),
 });
 export type CreateWorkspaceResponse = Static<typeof CreateWorkspaceResponse>;
 
@@ -67,9 +79,16 @@ export type RenameWorkspaceRequest = Static<typeof RenameWorkspaceRequest>;
 
 export const ArchiveWorkspaceRequest = Type.Object(
   {
-    /** Remove the copy even with uncommitted work in it. */
+    /** Remove the copy even with uncommitted work in it, or after a failed step such as `teardown`. */
     force: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
 export type ArchiveWorkspaceRequest = Static<typeof ArchiveWorkspaceRequest>;
+
+export const ArchiveWorkspaceResponse = Type.Object({
+  workspace: Workspace,
+  /** Steps that ran before the copy was removed. */
+  steps: Type.Array(StepReport),
+});
+export type ArchiveWorkspaceResponse = Static<typeof ArchiveWorkspaceResponse>;

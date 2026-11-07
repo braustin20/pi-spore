@@ -133,6 +133,8 @@ function ChatPage({ params }: { params: Readonly<Record<string, string>> }) {
       <header className="chat-header">
         <div>
           <a href={`#/workspaces/in/${workspace?.projectId ?? ""}`}>Workspaces</a>
+          {" / "}
+          <a href={`#/workspace/${workspaceId}`}>Workspace</a>
           <h1>{workspace?.name ?? "Chat"}</h1>
           {workspace && <code className="muted">{workspace.line ?? workspace.path}</code>}
         </div>

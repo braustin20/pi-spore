@@ -10,7 +10,7 @@ import {
   parseJsonBody,
   slugify,
 } from "@pi-spore/shared";
-import { resolveConfig } from "./config.js";
+import { checkConfigSection, readConfigFiles, resolveConfig } from "./config.js";
 import {
   type Projects,
   ProjectsKey,
@@ -129,6 +129,8 @@ export const projectsModule: ServerModule = {
           },
         };
       },
+      configFiles: (project) => readConfigFiles(project.path),
+      checkConfigSection,
     };
     host.provide(ProjectsKey, projects);
 

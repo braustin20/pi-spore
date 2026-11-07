@@ -1,5 +1,6 @@
 import { defineInterface } from "@pi-spore/module-api";
 import type { Isolation, Project, ProjectConfigView, ProjectTrait } from "@pi-spore/shared";
+import type { Static, TSchema } from "typebox";
 
 /** Where a workspace's copy lives, as a provider made it. */
 export interface WorkspaceLocation {
@@ -59,6 +60,19 @@ export interface ResolvedProjectConfig extends ProjectConfigView {
   copyWarnings(): Promise<string[]>;
 }
 
+/** A config file parsed as TOML and checked for model keys (R17.3). Each module checks its own sections. */
+export interface RawConfigFile {
+  path: string;
+  data: Record<string, unknown>;
+}
+
+export interface RawConfigFiles {
+  /** `<project>/.pi-spore/config.toml` */
+  project?: RawConfigFile;
+  /** `<project>/.pi-spore/config.local.toml`, which wins over the project file. */
+  local?: RawConfigFile;
+}
+
 /** Throws an ApiError to stop a project from being removed. */
 export type RemovalGuard = (project: Project) => void;
 
@@ -71,6 +85,10 @@ export interface Projects {
   list(): Promise<Project[]>;
   vcsFor(project: Project): VcsProvider;
   config(project: Project): Promise<ResolvedProjectConfig>;
+  /** Reads the config files of a project. Bad TOML or a model key answers 422 `bad_project_config`. */
+  configFiles(project: Project): Promise<RawConfigFiles>;
+  /** Checks a section against its schema; a mismatch answers 422 `bad_project_config`. */
+  checkConfigSection<const S extends TSchema>(schema: S, value: unknown, what: string): Static<S>;
 }
 
 export const ProjectsKey = defineInterface<Projects>("projects", "projects");

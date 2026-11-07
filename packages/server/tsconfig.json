@@ -33,6 +33,9 @@
     },
     {
       "path": "../../modules/agents"
+    },
+    {
+      "path": "../../modules/actions"
     }
   ]
 }

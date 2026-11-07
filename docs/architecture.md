@@ -375,11 +375,58 @@ branch_prefix = "spore"
 run = ["./tools/setup.sh"]
 
 [actions.test]
-run = ["unity", "test", "--mode", "EditMode", "--output", "${ARTIFACTS}/editmode.xml"]
+run = ["npm", "test"]
 exclusive = true
+
+[actions.dev]
+run = "npm run dev -- --port 4000"
+shell = true
+description = "Dev server"
 ```
 
-Actions are argv arrays, not shell strings. A shell is used only when the action says `shell = true`.
+### Actions
+
+See [ADR 0027](decisions/0027-actions.md). The `actions` module reads `[actions.<name>]` tables:
+
+| Key | Type | Meaning |
+|---|---|---|
+| `run` | argv array, or string | The command. A string needs `shell = true`; an array must not have it. |
+| `shell` | bool, default false | Run `run` as `/bin/sh -c <run>`. |
+| `exclusive` | bool, default false | At most one exclusive run per folder; others wait in line (R12.2). |
+| `description` | string | Shown in the UI and CLI. |
+
+- Names are lowercase letters, digits, `-` and `_` (up to 64). Other keys and model keys are rejected with 422
+  `bad_project_config`.
+- The local override replaces a whole action of the same name. Each action shows its source.
+- `setup` runs after a new copy is made and the copy list is done. `teardown` runs on archive before the copy is
+  removed. Neither runs for a workspace in the main checkout.
+- A run's cwd is the workspace folder. Its env is the server's plus `PI_SPORE_WORKSPACE_ID`,
+  `PI_SPORE_WORKSPACE_PATH`, and `PI_SPORE_PROJECT_ROOT`. Relative programs such as `./tools/setup.sh` resolve in
+  the workspace folder.
+- Output goes to `~/.pi-spore/logs/actions/<workspace id>/<run id>.log`. Run records (status, exit code, times) are
+  in the `actions_runs` table.
+- Run states: `queued`, `running`, `succeeded`, `failed`, `cancelled`, `interrupted` (the server stopped).
+
+API under `/api/actions`:
+
+| Route | Does |
+|---|---|
+| `GET /workspaces/:id` | The workspace's actions with their source. |
+| `GET /workspaces/:id/runs` | The last 50 runs. |
+| `POST /workspaces/:id/runs` `{ action }` | Starts a run (active workspaces only). |
+| `GET /runs/:id?wait=<ms>` | One run; with `wait`, answers when it ends or the time is up (at most 30 s). |
+| `GET /runs/:id/log?from=<byte>&wait=<ms>` | Log bytes from `from` (or the tail), up to 256 KiB. With `wait`, holds the request until there is new output or the run ends. |
+| `POST /runs/:id/cancel` | SIGTERM to the run's process group, SIGKILL after 5 s. |
+
+CLI: `pi-spore action list <workspace>`, `pi-spore action run <workspace> <name>` (follows the log, exits 1 if the
+run fails), `pi-spore action cancel <run>`. The web workspace page has an Actions panel.
+
+The workspaces module calls other modules around a copy through its contract: `afterCopyCreated` and
+`beforeRemoveCopy` return step reports, which the create and archive responses list in `steps`. A failed
+`beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced.
+
+The workspace web page (`#/workspace/<id>`) shows panels that other web modules add through the workspaces web
+interface `WorkspacePanelsKey`.
 
 ## 14. Data layout
 

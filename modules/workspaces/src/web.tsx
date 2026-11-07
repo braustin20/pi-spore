@@ -1,15 +1,36 @@
 import { ApiRequestError, useApi, type WebModule } from "@pi-spore/module-api";
 import {
+  ArchiveWorkspaceResponse,
   CreateWorkspaceResponse,
   type Isolation,
   type Project,
   ProjectLines,
   ProjectList,
   parse,
-  type Workspace,
+  type StepReport,
+  Workspace,
   WorkspaceList,
 } from "@pi-spore/shared";
 import { type SubmitEvent, useCallback, useEffect, useState } from "react";
+import Type from "typebox";
+import { type WorkspacePanel, WorkspacePanelsKey } from "./web-contract.js";
+
+export * from "./web-contract.js";
+
+interface Note {
+  text: string;
+  error?: boolean;
+}
+
+const stepNote = (step: StepReport): Note => ({
+  text: step.message,
+  ...(step.ok ? {} : { error: true }),
+});
+
+const WorkspaceBody = Type.Object({ workspace: Workspace });
+
+/** Filled by other web modules during setup; read when a workspace page renders. */
+const panels: WorkspacePanel[] = [];
 
 const MODE_LABELS: Record<Isolation, string> = {
   new: "New worktree on a new branch",
@@ -24,7 +45,7 @@ function CreateForm({
   onCreated,
 }: {
   project: Project;
-  onCreated: (notes: string[]) => void;
+  onCreated: (notes: Note[]) => void;
 }) {
   const api = useApi();
   const [name, setName] = useState("");
@@ -65,10 +86,11 @@ function CreateForm({
         const result = parse(CreateWorkspaceResponse, body, "create workspace");
         setName("");
         onCreated([
-          ...result.warnings,
+          ...result.warnings.map((text) => ({ text })),
           ...(result.copied.length
-            ? [`Copied into the worktree: ${result.copied.join(", ")}`]
+            ? [{ text: `Copied into the worktree: ${result.copied.join(", ")}` }]
             : []),
+          ...result.steps.map(stepNote),
         ]);
       })
       .catch((caught: unknown) => setError(message(caught)))
@@ -122,7 +144,7 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
   const [projects, setProjects] = useState<Project[]>([]);
   const [workspaces, setWorkspaces] = useState<Workspace[] | undefined>();
   const [showArchived, setShowArchived] = useState(false);
-  const [notes, setNotes] = useState<string[]>([]);
+  const [notes, setNotes] = useState<Note[]>([]);
   const [error, setError] = useState<string | undefined>();
 
   const load = useCallback(() => {
@@ -154,17 +176,29 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
     const what =
       workspace.isolation === "in-place" ? "" : " Its copy will be removed; the branch stays.";
     if (!window.confirm(`Archive "${workspace.name}"?${what}`)) return;
+    const send = async (force: boolean) =>
+      parse(
+        ArchiveWorkspaceResponse,
+        await api.send("POST", `workspaces/${workspace.id}/archive`, force ? { force } : {}),
+        "archive",
+      );
     try {
-      await api.send("POST", `workspaces/${workspace.id}/archive`, {});
+      setNotes((await send(false)).steps.map(stepNote));
     } catch (caught) {
-      if (!(caught instanceof ApiRequestError && caught.code === "uncommitted_work")) {
+      // A failed step such as teardown answers `<step>_failed`; force skips it and any uncommitted-work check.
+      const question =
+        caught instanceof ApiRequestError && caught.code === "uncommitted_work"
+          ? "Delete the uncommitted work and archive anyway?"
+          : caught instanceof ApiRequestError && caught.code.endsWith("_failed")
+            ? "Archive anyway? This also deletes any uncommitted work in the copy."
+            : undefined;
+      if (!question) {
         setError(message(caught));
         return;
       }
-      if (!window.confirm(`${caught.message}\n\nDelete the uncommitted work and archive anyway?`))
-        return;
-      await api
-        .send("POST", `workspaces/${workspace.id}/archive`, { force: true })
+      if (!window.confirm(`${(caught as Error).message}\n\n${question}`)) return;
+      await send(true)
+        .then((result) => setNotes(result.steps.map(stepNote)))
         .catch((forced: unknown) => {
           setError(message(forced));
         });
@@ -201,8 +235,8 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
         </>
       )}
       {notes.map((note) => (
-        <p key={note} className="warning">
-          {note}
+        <p key={note.text} className={note.error ? "error" : "warning"}>
+          {note.text}
         </p>
       ))}
       {error && <p className="error">{error}</p>}
@@ -232,7 +266,7 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
             {shown.map((workspace) => (
               <tr key={workspace.id}>
                 <td>
-                  <a href={`#/chat/${workspace.id}`}>{workspace.name}</a>
+                  <a href={`#/workspace/${workspace.id}`}>{workspace.name}</a>
                 </td>
                 {!project && <td>{projectName(workspace.projectId)}</td>}
                 <td>
@@ -245,6 +279,7 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
                   <code>{workspace.path}</code>
                 </td>
                 <td>
+                  <a href={`#/chat/${workspace.id}`}>Chat</a>{" "}
                   {workspace.state !== "archived" && (
                     <>
                       <button type="button" onClick={() => rename(workspace)}>
@@ -280,11 +315,57 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
   );
 }
 
+/** One workspace: what it is, a link to its chat, and the panels other modules add. */
+function WorkspacePage({ params }: { params: Readonly<Record<string, string>> }) {
+  const api = useApi();
+  const id = params.workspaceId ?? "";
+  const [workspace, setWorkspace] = useState<Workspace | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    api
+      .get(`workspaces/${encodeURIComponent(id)}`)
+      .then((body) => setWorkspace(parse(WorkspaceBody, body, "workspace").workspace))
+      .catch((caught: unknown) => setError(message(caught)));
+  }, [api, id]);
+
+  if (error) return <p className="error">{error}</p>;
+  if (!workspace) return <p className="muted">Loading...</p>;
+  return (
+    <section>
+      <p>
+        <a href={`#/workspaces/in/${workspace.projectId}`}>Workspaces</a>
+      </p>
+      <h1>{workspace.name}</h1>
+      <p>
+        <span className="badge">{workspace.state}</span>{" "}
+        <code>{workspace.line ?? workspace.isolation}</code> <code>{workspace.path}</code>
+      </p>
+      <p>
+        <a href={`#/chat/${workspace.id}`}>Open the chat</a>
+      </p>
+      {[...panels]
+        .sort((a, b) => a.order - b.order)
+        .map((panel) => (
+          <panel.component key={panel.id} workspace={workspace} />
+        ))}
+    </section>
+  );
+}
+
 export const workspacesWeb: WebModule = {
   id: "workspaces",
   requires: ["projects"],
   core: true,
   setup(host) {
+    host.provide(WorkspacePanelsKey, {
+      add: (panel) => {
+        if (panels.some((existing) => existing.id === panel.id))
+          throw new Error(`Workspace panel "${panel.id}" is added twice`);
+        panels.push(panel);
+      },
+    });
+    host.addPage({ path: "/workspace/:workspaceId", title: "Workspace", component: WorkspacePage });
     host.addPage({
       path: "/workspaces",
       title: "Workspaces",

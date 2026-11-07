@@ -4,7 +4,8 @@ import { ApiError } from "@pi-spore/module-api";
 import type { ProjectConfigView, ProjectTrait, SettingSource } from "@pi-spore/shared";
 import { parse, ValidationError } from "@pi-spore/shared";
 import { parse as parseToml } from "smol-toml";
-import Type from "typebox";
+import Type, { type Static, type TSchema } from "typebox";
+import type { RawConfigFile, RawConfigFiles } from "./contract.js";
 
 /** The parts of `<project>/.pi-spore/config.toml` this module reads. Other modules own other sections. */
 const ConfigFile = Type.Object(
@@ -36,10 +37,11 @@ function findModelKey(value: unknown, path: string): string | undefined {
   return undefined;
 }
 
-type ConfigFile = ReturnType<typeof parseConfigText>;
-
-export function parseConfigText(text: string, file: string) {
-  let raw: unknown;
+/** Parses TOML and applies the rules every section shares, such as no model keys. Sections are checked by the
+ * modules that own them. */
+function parseRawConfig(text: string, file: string): Record<string, unknown> {
+  let raw: Record<string, unknown>;
+  // smol-toml returns a plain table for any valid document.
   try {
     raw = parseToml(text);
   } catch (error) {
@@ -57,8 +59,17 @@ export function parseConfigText(text: string, file: string) {
       `${file} sets "${modelKey}". Project files never choose models; use Pi settings or a local override.`,
     );
   }
+  return raw;
+}
+
+/** Checks one section of a config file against its schema; a mismatch answers 422 `bad_project_config`. */
+export function checkConfigSection<const S extends TSchema>(
+  schema: S,
+  value: unknown,
+  what: string,
+): Static<S> {
   try {
-    return parse(ConfigFile, raw, file);
+    return parse(schema, value, what);
   } catch (error) {
     if (error instanceof ValidationError)
       throw new ApiError(422, "bad_project_config", error.message);
@@ -66,7 +77,7 @@ export function parseConfigText(text: string, file: string) {
   }
 }
 
-async function readConfigFile(path: string): Promise<ConfigFile | undefined> {
+async function readRawConfig(path: string): Promise<RawConfigFile | undefined> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -74,7 +85,15 @@ async function readConfigFile(path: string): Promise<ConfigFile | undefined> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
     throw error;
   }
-  return parseConfigText(text, path);
+  return { path, data: parseRawConfig(text, path) };
+}
+
+/** The project file and the local override of a project, parsed but with sections not yet checked. */
+export async function readConfigFiles(projectPath: string): Promise<RawConfigFiles> {
+  const dir = join(projectPath, ".pi-spore");
+  const project = await readRawConfig(join(dir, "config.toml"));
+  const local = await readRawConfig(join(dir, "config.local.toml"));
+  return { ...(project ? { project } : {}), ...(local ? { local } : {}) };
 }
 
 export const DEFAULT_BRANCH_PREFIX = "spore";
@@ -88,9 +107,11 @@ export async function resolveConfig(
   traits: readonly ProjectTrait[],
   traitCopy: (traitId: string) => readonly string[] | undefined,
 ): Promise<ProjectConfigView> {
-  const dir = join(projectPath, ".pi-spore");
-  const projectFile = await readConfigFile(join(dir, "config.toml"));
-  const localFile = await readConfigFile(join(dir, "config.local.toml"));
+  const files = await readConfigFiles(projectPath);
+  const projectFile =
+    files.project && checkConfigSection(ConfigFile, files.project.data, files.project.path);
+  const localFile =
+    files.local && checkConfigSection(ConfigFile, files.local.data, files.local.path);
 
   let worktreeCopy: { value: string[]; source: SettingSource } = { value: [], source: "default" };
   const detected = [...new Set(traits.flatMap((trait) => traitCopy(trait.id) ?? []))];

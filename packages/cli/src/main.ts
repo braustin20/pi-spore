@@ -21,6 +21,7 @@ process.exitCode = await run(process.argv.slice(2), {
   fetch,
   env: process.env,
   out: (line) => console.log(line),
+  write: (text) => process.stdout.write(text),
   err: (line) => console.error(line),
   readToken,
   resolvePath: (path) => resolve(process.cwd(), path),

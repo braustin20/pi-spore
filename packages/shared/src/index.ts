@@ -1,4 +1,14 @@
 export {
+  ActionList,
+  ActionLog,
+  ActionRun,
+  ActionRunList,
+  ActionRunStatus,
+  ActionTrigger,
+  ActionView,
+  StartActionRequest,
+} from "./actions.js";
+export {
   Agent,
   AgentDialog,
   AgentList,
@@ -36,10 +46,12 @@ export { slugify } from "./slug.js";
 export { parse, parseJsonBody, ValidationError } from "./validate.js";
 export {
   ArchiveWorkspaceRequest,
+  ArchiveWorkspaceResponse,
   CreateWorkspaceRequest,
   CreateWorkspaceResponse,
   Isolation,
   RenameWorkspaceRequest,
+  StepReport,
   Workspace,
   WorkspaceList,
   WorkspaceState,
