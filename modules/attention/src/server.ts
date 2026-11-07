@@ -5,16 +5,26 @@ import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import {
   type Agent,
   AnswerQuestionRequest,
+  type Approval,
+  ApproveRequest,
+  DeclineRequest,
   type Inbox,
   type InboxChat,
   type InboxEvent,
   type InboxItem,
   type InboxWorkspace,
+  parse,
   parseJsonBody,
   type Question,
   type RunningItem,
 } from "@pi-spore/shared";
-import { type Questions, QuestionsKey } from "./contract.js";
+import {
+  type ApprovalKind,
+  type Approvals,
+  ApprovalsKey,
+  type Questions,
+  QuestionsKey,
+} from "./contract.js";
 
 export * from "./contract.js";
 
@@ -33,7 +43,74 @@ const MIGRATIONS = [
     answered_at INTEGER
   )`,
   "CREATE INDEX attention_questions_by_state ON attention_questions (state, created_at)",
+  // ADR 0100: decision gates on Home.
+  `CREATE TABLE attention_approvals (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    reason TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    state TEXT NOT NULL,
+    outcome TEXT,
+    created_at INTEGER NOT NULL,
+    decided_at INTEGER
+  )`,
+  "CREATE INDEX attention_approvals_by_state ON attention_approvals (state, created_at)",
 ];
+
+interface ApprovalRow {
+  id: string;
+  kind: string;
+  agent_id: string;
+  workspace_id: string;
+  title: string;
+  reason: string;
+  /** JSON, written only by this module after the kind's schema checked it. */
+  subject: string;
+  state: Approval["state"];
+  outcome: string | null;
+  created_at: number;
+  decided_at: number | null;
+}
+
+function toApproval(row: ApprovalRow): Approval {
+  let subject: unknown;
+  try {
+    subject = JSON.parse(row.subject);
+  } catch {
+    throw new Error(`Approval ${row.id} has a broken subject in the store`);
+  }
+  return {
+    id: row.id,
+    kind: row.kind,
+    agentId: row.agent_id,
+    workspaceId: row.workspace_id,
+    title: row.title,
+    reason: row.reason,
+    subject,
+    state: row.state,
+    ...(row.outcome === null ? {} : { outcome: row.outcome }),
+    createdAt: row.created_at,
+    ...(row.decided_at === null ? {} : { decidedAt: row.decided_at }),
+  };
+}
+
+/** The message that tells the asking agent what the user decided. It names the request, so the agent can go on. */
+export function decisionMessage(approval: Approval, approved: boolean, outcome: string): string {
+  return [
+    `The user ${approved ? "approved" : "declined"} your request (approval ${approval.id}).`,
+    "",
+    `Request: ${approval.title}`,
+    "",
+    approved
+      ? `Outcome: ${outcome}`
+      : outcome
+        ? `The user's note: ${outcome}`
+        : "The user gave no note.",
+  ].join("\n");
+}
 
 interface Row {
   id: string;
@@ -126,7 +203,15 @@ export const attentionModule: ServerModule = {
       const open = host.store
         .all<Row>("SELECT * FROM attention_questions WHERE state = 'open'")
         .map(toQuestion);
-      const asking = new Set(open.map((question) => question.agentId));
+      // An open question or approval already says why the agent stopped.
+      const asking = new Set([
+        ...open.map((question) => question.agentId),
+        ...host.store
+          .all<{ agent_id: string }>(
+            "SELECT agent_id FROM attention_approvals WHERE state = 'open'",
+          )
+          .map((row) => row.agent_id),
+      ]);
       const items: InboxItem[] = [];
       for (const question of open) {
         const workspace = places.get(question.workspaceId);
@@ -141,6 +226,21 @@ export const attentionModule: ServerModule = {
             question,
           });
       }
+      for (const approval of host.store
+        .all<ApprovalRow>("SELECT * FROM attention_approvals WHERE state = 'open'")
+        .map(toApproval)) {
+        const workspace = places.get(approval.workspaceId);
+        const chat = chats.get(approval.agentId);
+        if (workspace && chat)
+          items.push({
+            kind: "approval",
+            at: approval.createdAt,
+            agentId: approval.agentId,
+            workspace,
+            chat,
+            approval,
+          });
+      }
       const running: RunningItem[] = [];
       for (const { agent, since, dialogs, waitingSince } of all) {
         const workspace = places.get(agent.workspaceId);
@@ -150,7 +250,6 @@ export const attentionModule: ServerModule = {
           items.push({ kind: "dialog", at: openedAt, ...base, dialog });
         if (agent.status === "failed")
           items.push({ kind: "failed", at: since, ...base, error: agent.error ?? "Agent failed" });
-        // An open question already says why the agent stopped.
         else if (
           waitingSince !== undefined &&
           !asking.has(agent.id) &&
@@ -228,6 +327,145 @@ export const attentionModule: ServerModule = {
       },
     };
     host.provide(QuestionsKey, questions);
+
+    const kinds = new Map<string, ApprovalKind>();
+    const loadApproval = (id: string): ApprovalRow => {
+      const row = host.store.get<ApprovalRow>("SELECT * FROM attention_approvals WHERE id = ?", id);
+      if (!row) throw new ApiError(404, "approval_not_found", `No approval ${id}`);
+      return row;
+    };
+    const kindOf = (name: string): ApprovalKind => {
+      const kind = kinds.get(name);
+      if (!kind) {
+        throw new ApiError(
+          409,
+          "approval_kind_unknown",
+          `No enabled module handles "${name}" approvals; decline it instead`,
+        );
+      }
+      return kind;
+    };
+    const approvals: Approvals = {
+      register: (kind) => {
+        if (kinds.has(kind.kind))
+          throw new Error(`Approval kind "${kind.kind}" is registered twice`);
+        // SAFETY: every subject is parsed with this kind's own schema before approve() sees it.
+        kinds.set(kind.kind, kind as unknown as ApprovalKind);
+      },
+      file: (caller, request) => {
+        const kind = kindOf(request.kind);
+        const subject = parse(kind.subject, request.subject, `${request.kind} approval`);
+        const workspace = workspaces.get(caller.workspaceId);
+        const row: ApprovalRow = {
+          id: host.newId(),
+          kind: kind.kind,
+          agent_id: caller.agentId,
+          workspace_id: workspace.id,
+          title: request.title,
+          reason: request.reason,
+          subject: JSON.stringify(subject),
+          state: "open",
+          outcome: null,
+          created_at: host.now(),
+          decided_at: null,
+        };
+        host.store.run(
+          `INSERT INTO attention_approvals (id, kind, agent_id, workspace_id, title, reason, subject, state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+          row.id,
+          row.kind,
+          row.agent_id,
+          row.workspace_id,
+          row.title,
+          row.reason,
+          row.subject,
+          row.created_at,
+        );
+        changed();
+        return toApproval(row);
+      },
+    };
+    host.provide(ApprovalsKey, approvals);
+
+    /** Approvals being carried out, so a second click does not start the work twice. */
+    const deciding = new Set<string>();
+    const openApproval = (id: string): ApprovalRow => {
+      const row = loadApproval(id);
+      if (row.state !== "open")
+        throw new ApiError(409, "approval_decided", `That approval was already ${row.state}`);
+      if (deciding.has(row.id))
+        throw new ApiError(409, "approval_deciding", "That approval is being carried out");
+      return row;
+    };
+    /** Stores the decision and queues it for the asking agent in one transaction (architecture 6). */
+    const decide = (row: ApprovalRow, approved: boolean, subject: string, outcome: string) =>
+      host.store.transaction(() => {
+        const now = host.now();
+        const state = approved ? "approved" : "declined";
+        host.store.run(
+          "UPDATE attention_approvals SET state = ?, subject = ?, outcome = ?, decided_at = ? WHERE id = ?",
+          state,
+          subject,
+          outcome === "" ? null : outcome,
+          now,
+          row.id,
+        );
+        const decided = toApproval({
+          ...row,
+          state,
+          subject,
+          outcome: outcome === "" ? null : outcome,
+          decided_at: now,
+        });
+        agents.deliver(row.agent_id, decisionMessage(decided, approved, outcome));
+        return decided;
+      });
+
+    host.routes.get("/approvals", (c) => {
+      const state = c.req.query("state");
+      if (state !== undefined && !["open", "approved", "declined"].includes(state))
+        throw new ApiError(400, "bad_query", '"state" must be open, approved, or declined');
+      const rows = state
+        ? host.store.all<ApprovalRow>(
+            "SELECT * FROM attention_approvals WHERE state = ? ORDER BY created_at DESC",
+            state,
+          )
+        : host.store.all<ApprovalRow>("SELECT * FROM attention_approvals ORDER BY created_at DESC");
+      return c.json({ approvals: rows.map(toApproval) });
+    });
+
+    host.routes.get("/approvals/:id", (c) =>
+      c.json({ approval: toApproval(loadApproval(c.req.param("id"))) }),
+    );
+
+    host.routes.post("/approvals/:id/approve", async (c) => {
+      const request = parseJsonBody(ApproveRequest, await c.req.text(), "approve request");
+      const row = openApproval(c.req.param("id"));
+      const kind = kindOf(row.kind);
+      const subject = parse(
+        kind.subject,
+        request.subject === undefined ? toApproval(row).subject : request.subject,
+        `${row.kind} approval`,
+      );
+      deciding.add(row.id);
+      let outcome: string;
+      try {
+        outcome = await kind.approve(subject, toApproval(row));
+      } finally {
+        deciding.delete(row.id);
+      }
+      const approval = decide(row, true, JSON.stringify(subject), outcome);
+      changed();
+      return c.json({ approval });
+    });
+
+    host.routes.post("/approvals/:id/decline", async (c) => {
+      const request = parseJsonBody(DeclineRequest, await c.req.text(), "decline request");
+      const row = openApproval(c.req.param("id"));
+      const approval = decide(row, false, row.subject, request.note?.trim() ?? "");
+      changed();
+      return c.json({ approval });
+    });
 
     host.routes.get("/inbox", async (c) => c.json(await inbox()));
 

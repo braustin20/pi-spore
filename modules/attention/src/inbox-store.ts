@@ -6,6 +6,8 @@ export function itemKey(item: InboxItem): string {
   switch (item.kind) {
     case "question":
       return `question:${item.question.id}`;
+    case "approval":
+      return `approval:${item.approval.id}`;
     case "dialog":
       return `dialog:${item.agentId}:${item.dialog.id}`;
     default:
@@ -20,6 +22,8 @@ export function notification(item: InboxItem): { title: string; body: string } {
   switch (item.kind) {
     case "question":
       return { title: `Question from ${where}`, body: item.question.question };
+    case "approval":
+      return { title: `${where} asks for approval`, body: item.approval.title };
     case "dialog":
       return {
         title: `${where} asks`,

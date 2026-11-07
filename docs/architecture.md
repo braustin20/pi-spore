@@ -188,7 +188,7 @@ export interface ServerHost {
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, current stage, state |
 | Stage | One stage execution | id, pipeline run, name, round, agent, verdict, findings |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state |
-| Approval | A decision gate on Home | id, kind (model upgrade, close editor, ...), subject, state |
+| Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, blocked by, workspace |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
@@ -458,7 +458,23 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   count through `RailItem.useBadge`.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not.
-- Not built yet: approvals, usage warnings, and a CLI command for the inbox.
+- **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
+  subject as JSON, state `open`, `approved`, or `declined`, outcome, times). The module that owns a gate registers
+  its kind through `ApprovalsKey.register({ kind, subject, approve })` and files approvals with
+  `ApprovalsKey.file(caller, ...)`; the kind's TypeBox schema checks the subject both times. Open approvals are Home
+  items (`kind: "approval"`); an agent with an open approval is not also shown as finished.
+  - `GET /api/attention/approvals?state=` lists them, newest first; `GET /api/attention/approvals/:id` reads one.
+  - `POST /api/attention/approvals/:id/approve` `{ subject? }` runs the kind's `approve` with the filed subject or a
+    changed one, then stores the decision and delivers the outcome to the asking agent in one transaction. A throw
+    leaves the approval open and answers with the error. A second approve while one runs is 409
+    `approval_deciding`; a decided one is 409 `approval_decided`; a kind no enabled module handles is 409
+    `approval_kind_unknown`.
+  - `POST /api/attention/approvals/:id/decline` `{ note? }` stores the decline and delivers it with the note.
+  - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
+    its own request.
+  - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
+    plain one (title, reason, approve, decline with a note).
+- Not built yet: usage warnings, and a CLI command for the inbox.
 
 ## 11c. Terminals
 

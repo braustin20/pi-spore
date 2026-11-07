@@ -7,16 +7,41 @@ import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { Inbox, InboxEvent } from "@pi-spore/shared";
+import type { Approval, Inbox, InboxEvent } from "@pi-spore/shared";
+import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { attentionModule, INBOX_TOPIC } from "./server.js";
+import { type Approvals, ApprovalsKey, attentionModule, INBOX_TOPIC } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 
 let server: TestServer;
 let scratch: string;
 let agents: ReturnType<typeof createAgentsModule>;
+let approvals: Approvals;
+/** What the test gate was asked to carry out; `fail` makes it throw. */
+let gate: { approved: unknown[]; fail: boolean; release?: () => void; hold?: Promise<void> };
+
+/** Another module with its own gate, as a model upgrade or "close Unity?" would register one (ADR 0100). */
+const gateModule: ServerModule = {
+  id: "gate",
+  requires: ["attention"],
+  core: false,
+  setup(host) {
+    approvals = host.use(ApprovalsKey);
+    approvals.register({
+      kind: "test-gate",
+      subject: Type.Object({ model: Type.String() }, { additionalProperties: false }),
+      approve: async (subject) => {
+        await gate.hold;
+        if (gate.fail) throw new ApiError(409, "gate_failed", "The gate could not go on");
+        gate.approved.push(subject);
+        return `Switched to ${subject.model}.`;
+      },
+    });
+  },
+};
 
 beforeEach(async () => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-attention-")));
@@ -35,7 +60,9 @@ beforeEach(async () => {
     workspacesModule,
     agents,
     attentionModule,
+    gateModule,
   ]);
+  gate = { approved: [], fail: false };
 });
 afterEach(async () => {
   await agents.manager().stopAll();
@@ -199,5 +226,78 @@ describe("Home inbox", () => {
       answer: "x",
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe("approvals (ADR 0100)", () => {
+  const file = (agentId: string, workspaceId: string, model = "big") =>
+    approvals.file(
+      { agentId, workspaceId },
+      { kind: "test-gate", title: `Use ${model}`, reason: "Hard task", subject: { model } },
+    );
+
+  it("checks the subject and the kind when filed, and shows the approval on Home", async () => {
+    const { agentId, workspaceId } = await makeAgent("gates");
+    expect(() =>
+      approvals.file(
+        { agentId, workspaceId },
+        { kind: "test-gate", title: "x", reason: "y", subject: { model: 3 } },
+      ),
+    ).toThrow("Invalid test-gate approval");
+    expect(() =>
+      approvals.file(
+        { agentId, workspaceId },
+        { kind: "nope", title: "x", reason: "y", subject: {} },
+      ),
+    ).toThrow(ApiError);
+    const approval = file(agentId, workspaceId);
+    expect(await inbox()).toMatchObject({
+      items: [{ kind: "approval", agentId, approval: { id: approval.id, state: "open" } }],
+    });
+  });
+
+  it("keeps the approval open when carrying it out fails, and refuses a second approve meanwhile", async () => {
+    const { agentId, workspaceId } = await makeAgent("gates");
+    const approval = file(agentId, workspaceId);
+    gate.fail = true;
+    const failed = await server.request("POST", `/api/attention/approvals/${approval.id}/approve`);
+    expect(failed.status).toBe(409);
+    expect(await failed.json()).toMatchObject({ error: { code: "gate_failed" } });
+    expect((await inbox()).items.map((item) => item.kind)).toEqual(["approval"]);
+
+    gate.fail = false;
+    gate.hold = new Promise((resolve) => {
+      gate.release = resolve;
+    });
+    const first = server.request("POST", `/api/attention/approvals/${approval.id}/approve`, {
+      subject: { model: "bigger" },
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    const second = await server.request("POST", `/api/attention/approvals/${approval.id}/approve`);
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ error: { code: "approval_deciding" } });
+    gate.release?.();
+    const decided = await json<{ approval: Approval }>(await first);
+    expect(decided.approval).toMatchObject({
+      state: "approved",
+      subject: { model: "bigger" },
+      outcome: "Switched to bigger.",
+    });
+    expect(gate.approved).toEqual([{ model: "bigger" }]);
+    // The asking agent hears the outcome.
+    await until(async () =>
+      server.events.eventsOf(`agent:${agentId}`).some((event) => {
+        const pi = (
+          event as { type: string; event?: { type: string; message?: { content?: unknown } } }
+        ).event;
+        return (
+          pi?.type === "message_end" &&
+          String(pi.message?.content).includes("Outcome: Switched to bigger.")
+        );
+      }),
+    );
+    await until(async () => (await inbox()).items.every((item) => item.kind !== "approval"));
+    const decline = await server.request("POST", `/api/attention/approvals/${approval.id}/decline`);
+    expect(decline.status).toBe(409);
   });
 });

@@ -38,6 +38,54 @@ export const AnswerQuestionRequest = Type.Object(
 );
 export type AnswerQuestionRequest = Static<typeof AnswerQuestionRequest>;
 
+/**
+ * A decision gate on Home (ADR 0100). The module that owns its `kind` checks the subject and carries out an approval;
+ * the asking agent gets the outcome as a message.
+ */
+export const ApprovalState = Type.Union([
+  Type.Literal("open"),
+  Type.Literal("approved"),
+  Type.Literal("declined"),
+]);
+export type ApprovalState = Static<typeof ApprovalState>;
+
+export const Approval = Type.Object({
+  id: Type.String(),
+  /** Which gate, such as `card-start`. */
+  kind: Type.String(),
+  /** The agent (chat) that asked. */
+  agentId: Type.String(),
+  workspaceId: Type.String(),
+  /** One line that says what would happen. */
+  title: Type.String(),
+  /** Why the agent asks. */
+  reason: Type.String(),
+  /** What to approve, in the kind's own shape. */
+  subject: Type.Unknown(),
+  state: ApprovalState,
+  /** What happened, or the user's note on a decline. */
+  outcome: Type.Optional(Type.String()),
+  createdAt: Type.Integer(),
+  decidedAt: Type.Optional(Type.Integer()),
+});
+export type Approval = Static<typeof Approval>;
+
+export const ApprovalList = Type.Object({ approvals: Type.Array(Approval) });
+export type ApprovalList = Static<typeof ApprovalList>;
+
+/** `subject`: a changed subject, such as another target; the kind's schema checks it. */
+export const ApproveRequest = Type.Object(
+  { subject: Type.Optional(Type.Unknown()) },
+  { additionalProperties: false },
+);
+export type ApproveRequest = Static<typeof ApproveRequest>;
+
+export const DeclineRequest = Type.Object(
+  { note: Type.Optional(Type.String({ maxLength: 4_000 })) },
+  { additionalProperties: false },
+);
+export type DeclineRequest = Static<typeof DeclineRequest>;
+
 export const InboxWorkspace = Type.Object({
   id: Type.String(),
   name: Type.String(),
@@ -66,6 +114,7 @@ const itemBase = {
 /** One thing that needs the user on Home (R15.1). `finished`: the agent's last run ended and it waits for the user. */
 export const InboxItem = Type.Union([
   Type.Object({ kind: Type.Literal("question"), ...itemBase, question: Question }),
+  Type.Object({ kind: Type.Literal("approval"), ...itemBase, approval: Approval }),
   Type.Object({ kind: Type.Literal("dialog"), ...itemBase, dialog: AgentDialog }),
   Type.Object({ kind: Type.Literal("failed"), ...itemBase, error: Type.String() }),
   Type.Object({ kind: Type.Literal("finished"), ...itemBase }),

@@ -34,7 +34,12 @@ export {
 } from "./agents.js";
 export {
   AnswerQuestionRequest,
+  Approval,
+  ApprovalList,
+  ApprovalState,
+  ApproveRequest,
   BridgeRunLog,
+  DeclineRequest,
   FileQuestionRequest,
   Inbox,
   InboxChat,

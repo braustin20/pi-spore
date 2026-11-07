@@ -1,6 +1,13 @@
 import { type AgentsWeb, AgentsWebKey } from "@pi-spore/mod-agents/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
-import type { InboxChat, InboxItem, InboxWorkspace, Question, RunningItem } from "@pi-spore/shared";
+import type {
+  Approval,
+  InboxChat,
+  InboxItem,
+  InboxWorkspace,
+  Question,
+  RunningItem,
+} from "@pi-spore/shared";
 import {
   Button,
   Chip,
@@ -13,8 +20,14 @@ import {
   Textarea,
 } from "@pi-spore/ui";
 import { Bell, CheckCheck, House } from "lucide-react";
-import { type ReactNode, useState, useSyncExternalStore } from "react";
+import { type ComponentType, type ReactNode, useState, useSyncExternalStore } from "react";
 import { createInboxStore, type InboxStore, itemKey, notification } from "./inbox-store.js";
+import { type ApprovalViewProps, AttentionWebKey } from "./web-contract.js";
+
+export * from "./web-contract.js";
+
+/** Views of approval kinds, added by the modules that own them. */
+const approvalViews = new Map<string, ComponentType<ApprovalViewProps>>();
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -139,14 +152,84 @@ function QuestionCard({
   );
 }
 
+/** The view for kinds without their own: what would happen, why, and the two choices. */
+function PlainApprovalView({ approval, busy, approve, decline }: ApprovalViewProps) {
+  const [note, setNote] = useState("");
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="m-0 text-sm font-medium">{approval.title}</p>
+      <p className="m-0 text-sm whitespace-pre-wrap">{approval.reason}</p>
+      <DeclineNote note={note} onChange={setNote} />
+      <div className="flex gap-2">
+        <Button variant="primary" disabled={busy} onClick={() => approve()}>
+          Approve
+        </Button>
+        <Button disabled={busy} onClick={() => decline(note.trim() || undefined)}>
+          Decline
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+/** An optional note for the agent when the user declines. */
+function DeclineNote({ note, onChange }: { note: string; onChange: (note: string) => void }) {
+  return (
+    <Textarea
+      value={note}
+      onChange={(event) => onChange(event.target.value)}
+      placeholder="A note for the agent if you decline (optional)"
+      aria-label="Note for the agent"
+      rows={2}
+    />
+  );
+}
+
+function ApprovalCard({
+  approval,
+  onError,
+}: {
+  approval: Approval;
+  onError: (text: string) => void;
+}) {
+  const api = useApi();
+  const [busy, setBusy] = useState(false);
+  const send = (path: string, body: unknown) => {
+    setBusy(true);
+    // On success the inbox drops the item; on failure the user can try again.
+    api
+      .send("POST", `attention/approvals/${approval.id}/${path}`, body)
+      .catch((caught: unknown) => {
+        onError(message(caught));
+        setBusy(false);
+      });
+  };
+  const View = approvalViews.get(approval.kind) ?? PlainApprovalView;
+  return (
+    <View
+      approval={approval}
+      busy={busy}
+      approve={(subject) => send("approve", subject === undefined ? {} : { subject })}
+      decline={(note) => send("decline", note === undefined ? {} : { note })}
+    />
+  );
+}
+
 const TITLES: Record<InboxItem["kind"], string> = {
   question: "Question",
+  approval: "Approval",
   dialog: "Waiting for an answer",
   failed: "Agent failed",
   finished: "Finished, waits for you",
 };
 
-const TONES = { question: "warn", dialog: "warn", failed: "fail", finished: "ok" } as const;
+const TONES = {
+  question: "warn",
+  approval: "warn",
+  dialog: "warn",
+  failed: "fail",
+  finished: "ok",
+} as const;
 
 function ItemCard({
   item,
@@ -167,6 +250,7 @@ function ItemCard({
           <Chip tone={TONES[item.kind]}>{TITLES[item.kind]}</Chip>
         </Where>
         {item.kind === "question" && <QuestionCard question={item.question} onError={onError} />}
+        {item.kind === "approval" && <ApprovalCard approval={item.approval} onError={onError} />}
         {item.kind === "dialog" && (
           <DialogCard
             dialog={item.dialog}
@@ -254,7 +338,8 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
         {inbox === undefined && <p className="m-0 text-sm text-muted">Loading...</p>}
         {inbox && inbox.items.length === 0 && (
           <EmptyState icon={CheckCheck} title="Nothing needs you">
-            Questions, dialogs, failures, and finished work from every workspace show up here.
+            Questions, approvals, dialogs, failures, and finished work from every workspace show up
+            here.
           </EmptyState>
         )}
         {inbox?.items.map((item) => (
@@ -297,6 +382,12 @@ export const attentionWeb: WebModule = {
   setup(host) {
     const store = createInboxStore(host.api, showNotification);
     const { DialogCard } = host.use(AgentsWebKey);
+    host.provide(AttentionWebKey, {
+      addApprovalView: (kind, view) => {
+        approvalViews.set(kind, view);
+      },
+      DeclineNote,
+    });
     host.addPage({
       path: "/",
       title: "Home",
