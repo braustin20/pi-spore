@@ -49,6 +49,10 @@ not built in v1.
 - R3.5 Agents have a `request_human_input` tool. Agents in a run ask their coordinator instead (R7).
 - R3.6 Concurrency and nesting limits for agents are settings, with safe defaults.
 - R3.7 The user can exclude extensions from pi-spore agents while keeping them in the `pi` CLI.
+- R3.8 A workspace can start a fresh worker chat; earlier worker chats stay readable and can be made active again.
+  Only one worker chat runs at a time (ADR 0030).
+- R3.9 Read-only side chats run next to the worker, started empty or from the worker's current context
+  (ADR 0030).
 
 ## R4. Model routing and local models
 
@@ -216,7 +220,7 @@ not built in v1.
 ## Out of scope for v1
 
 - v2: full-text search over conversations, MCP manager UI (v1 shows the MCP servers read-only), services with
-  ports, snooze and wait-on rules, BTW side chat.
+  ports, snooze and wait-on rules.
 - Not planned: Perforce or other VCS (the provider interface must not assume Git), voice input, mobile layout,
   changelog page, multi-user, hosting, external runtime plugins, other agent CLIs as workbench agents, schedules,
   auto-merge.

@@ -11,7 +11,7 @@ The source plan is large for one developer.
 ## Decision
 
 Moved to v2: full-text search, MCP manager UI (v1 shows servers read-only), services with ports, snooze and
-wait-on rules, BTW chat. Kept in v1: GitHub PR watch with auto-fix loop, coordinator runs with lanes, terminals,
+wait-on rules. (BTW side chats were moved back into v1 by ADR 0030.) Kept in v1: GitHub PR watch with auto-fix loop, coordinator runs with lanes, terminals,
 Unity, kanban, routing, and subscription usage tracking.
 
 ## Consequences
