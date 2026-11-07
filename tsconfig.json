@@ -38,6 +38,9 @@
       "path": "modules/actions"
     },
     {
+      "path": "modules/usage"
+    },
+    {
       "path": "packages/server"
     },
     {

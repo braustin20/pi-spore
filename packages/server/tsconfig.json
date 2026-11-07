@@ -36,6 +36,9 @@
     },
     {
       "path": "../../modules/actions"
+    },
+    {
+      "path": "../../modules/usage"
     }
   ]
 }

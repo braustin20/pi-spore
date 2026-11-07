@@ -146,6 +146,8 @@ export interface ServerHost {
 - A module reaches another only through `host.use()` with an `InterfaceKey` that the other module exports. It never
   imports another module's internals. Biome import rules enforce this.
 - Core modules: `projects`, `vcs-git`, `vcs-folder`, `workspaces`, `agents`, `chat`, `artifacts`, `attention`.
+- `pi-extensions/` packages are not modules. They run inside Pi. A server module may import a pi-extension package's
+  library entry for its file formats, as `usage` does with `@pi-spore/router`.
 
 ## 5. Domain model
 
@@ -362,19 +364,37 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 
 - Plan windows (5-hour, weekly, reset times):
   - Claude: pi-claude-bridge turns Claude Code's `rate_limit_event` into `anthropic-ratelimit-unified-*` headers
-    on Pi's `after_provider_response` event. The built-in `anthropic` provider sends the same headers.
+    on Pi's `after_provider_response` event. The built-in `anthropic` provider sends the same headers. Utilization is
+    0 to 1; resets are epoch seconds.
   - OpenAI Codex: `x-codex-*` headers or `codex.rate_limits` stream events on Pi's `openai-codex` provider
     ([spike Q11](spikes/q11-codex-plan-windows.md)). The user's `openai` login sends none.
-- A small usage tap reads those headers in every Pi process. It ships in the router extension, so plain `pi`
-  sessions count too. It writes the latest snapshot per plan to `~/.pi-spore/usage/<plan>.json` (atomic rename).
-  Inside pi-spore it also posts to the server.
-- Headers arrive only when a request is made, so a snapshot can be old. Each snapshot has `seenAt`. The UI shows
-  its age. The router ignores a snapshot older than its window's reset or older than a set limit.
+- The usage tap ships in the router extension (section 10), so every Pi process that loads it counts, plain `pi`
+  too. It reads headers on `after_provider_response` and Codex events on `provider_stream_event`, and merges them into
+  `~/.pi-spore/usage/<plan>.json` with an atomic rename:
+  `{ plan, status?, source, seenAt, windows: { "5h": { utilization, resetsAt?, seenAt }, "7d": ... } }`. Each window
+  keeps its own `seenAt`, because one response may report only some windows. Malformed numbers are an error, not a
+  guess.
+- Headers arrive only when a request is made, so a snapshot can be old. A window is stale when its reset time has
+  passed or it was seen longer ago than `router.usageMaxAgeMinutes` (default 60). Stale windows are shown as stale
+  and the router ignores them (R18.5).
 - v1 is passive only (ADR 0022). Active polling of the plans' usage endpoints is a v2 option. It would also
   count use from Claude Code and the Codex CLI, which the tap cannot see.
-- Token use per project, workspace, role, and model comes from the `usage` of assistant messages in Pi session
-  files. pi-spore indexes its own sessions. It can also scan `~/.pi/agent/sessions/` for plain `pi` work.
-- The Usage screen shows both. Home shows a warning when a window crosses a threshold.
+- The `usage` module (`modules/usage/`, not core, requires `projects` and `workspaces`) owns no tables. It reads the
+  router's files on each request through `@pi-spore/router`, so file formats have one definition:
+  - `GET /api/usage/plans`: each plan's windows with age and staleness, warnings, the thresholds, and plan files that
+    did not read. A warning is a fresh window that is full, a weekly window above `router.pressure.weekly`, or a
+    5-hour window at or above `router.pressure.fiveHour` (R18.4).
+  - `GET /api/usage/tokens`: token use per project, workspace, and model, summed from the `usage` of every assistant
+    message in `~/.pi-spore/sessions/<workspace id>/*.jsonl`. Sums are cached per file by size and modification
+    time. Models in the `local` tier show as free (R18.2). Lines that are not JSON are counted, not fatal.
+  - `GET /api/usage/routing?limit=<1-500>`: the newest routing decisions (default 50), and how many lines did not
+    parse.
+  - Wrong router settings answer 422 `bad_settings`.
+- The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
+  warnings at the top; the token table; and the routing decisions with their reasons. It loads on open and on
+  Refresh.
+- Not built yet: token use per role (every agent is a worker today), scanning `~/.pi/agent/sessions/` for plain `pi`
+  work, and a warning on Home (Home has no module slots yet).
 
 ## 11. Unity module
 

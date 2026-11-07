@@ -52,6 +52,16 @@ export {
   ProjectEditors,
   UnityWorkspaceView,
 } from "./unity.js";
+export {
+  RoutingDecision,
+  RoutingDecisionsResponse,
+  TokenUseResponse,
+  TokenUseRow,
+  UsagePlan,
+  UsagePlansResponse,
+  UsageWarning,
+  UsageWindow,
+} from "./usage.js";
 export { parse, parseJsonBody, ValidationError } from "./validate.js";
 export {
   ArchiveWorkspaceRequest,

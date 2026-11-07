@@ -12,9 +12,11 @@ windows to Pi extensions as `anthropic-ratelimit-unified-*` headers on `after_pr
 ## Decision
 
 - A usage tap (shipped in the router extension) records the latest plan windows from any Pi process to
-  `~/.pi-spore/usage/` and to the server.
-- A `usage` module shows a Usage screen: plan windows with age, and token use per project, workspace, role, and
-  model from session files.
+  `~/.pi-spore/usage/<plan>.json`. It does not post to the server: the server reads the files, so plain `pi` and
+  pi-spore agents work the same way, with or without the server running.
+- A `usage` module shows a Usage screen: plan windows with age, warnings over the thresholds, token use per project,
+  workspace, and model from pi-spore's session files, and the router's decisions. Per-role totals wait until there
+  is more than one role.
 - The router leans local when the Claude weekly window is above 75% or the 5-hour window is at 100%. It suggests,
   never forces, a switch for roles pinned to a cloud model.
 - Default pipelines route the implement stage instead of using the parent model.

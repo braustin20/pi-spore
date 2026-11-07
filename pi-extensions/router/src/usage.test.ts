@@ -124,13 +124,16 @@ describe("plan files", () => {
     expect(JSON.parse(readFileSync(join(home, "usage", "claude.json"), "utf8")).plan).toBe(
       "claude",
     );
-    expect((await readPlans(home)).map((plan) => plan.plan)).toEqual(["claude"]);
+    expect((await readPlans(home)).plans.map((plan) => plan.plan)).toEqual(["claude"]);
   });
 
   it("names the file when it is broken", async () => {
     mkdirSync(join(home, "usage"));
     writeFileSync(join(home, "usage", "codex.json"), JSON.stringify({ plan: "codex" }));
     await expect(readPlan(home, "codex")).rejects.toThrow(/codex\.json: .*windows/);
+    const { plans, errors } = await readPlans(home);
+    expect(plans).toEqual([]);
+    expect(errors[0]).toMatch(/codex\.json/);
   });
 });
 

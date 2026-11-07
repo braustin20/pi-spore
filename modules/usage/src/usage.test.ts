@@ -1,0 +1,258 @@
+import { execFileSync } from "node:child_process";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { projectsModule } from "@pi-spore/mod-projects/server";
+import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
+import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
+import {
+  CreateWorkspaceResponse,
+  parse,
+  RoutingDecisionsResponse,
+  TokenUseResponse,
+  UsagePlansResponse,
+} from "@pi-spore/shared";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { formatAge, formatTokens, formatUntil } from "./format.js";
+import { createUsageModule, warningsFor } from "./server.js";
+
+const START = 1_800_000_000_000;
+let server: TestServer;
+let scratch: string;
+
+beforeEach(async () => {
+  scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-usage-mod-")));
+  server = await createTestServer(
+    [projectsModule, vcsGitModule, workspacesModule, createUsageModule()],
+    { startAt: START },
+  );
+});
+afterEach(() => {
+  server.close();
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+async function json(response: Response, status = 200): Promise<unknown> {
+  const body: unknown = await response.json();
+  if (response.status !== status)
+    throw new Error(`Expected ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  return body;
+}
+
+/** A Git project with one in-place workspace. */
+async function workspace() {
+  const repo = join(scratch, "game");
+  mkdirSync(repo);
+  writeFileSync(join(repo, "README.md"), "game\n");
+  const git = (...args: string[]) =>
+    execFileSync("git", ["-c", "user.name=T", "-c", "user.email=t@example.invalid", ...args], {
+      cwd: repo,
+    });
+  git("init", "-q", "-b", "main");
+  git("add", ".");
+  git("commit", "-q", "-m", "init");
+  const { project } = (await json(
+    await server.request("POST", "/api/projects", { path: repo, name: "Game" }),
+    201,
+  )) as { project: { id: string } };
+  return parse(
+    CreateWorkspaceResponse,
+    await json(
+      await server.request("POST", "/api/workspaces", {
+        projectId: project.id,
+        name: "Fix jump",
+        isolation: "in-place",
+      }),
+      201,
+    ),
+    "create",
+  ).workspace;
+}
+
+/** A session line for an assistant message with this usage. */
+const assistant = (provider: string, model: string, input: number, output: number, cost = 0) =>
+  JSON.stringify({
+    type: "message",
+    id: `${provider}-${input}`,
+    message: {
+      role: "assistant",
+      provider,
+      model,
+      usage: { input, output, cacheRead: 10, cacheWrite: 0, cost: { total: cost } },
+    },
+  });
+
+const writePlan = (plan: string, body: unknown) => {
+  mkdirSync(join(server.paths.root, "usage"), { recursive: true });
+  writeFileSync(join(server.paths.root, "usage", `${plan}.json`), JSON.stringify(body));
+};
+
+describe("GET /api/usage/plans", () => {
+  it("shows each plan's windows with their age, marks stale ones, and warns over a threshold", async () => {
+    writePlan("claude", {
+      plan: "claude",
+      status: "allowed",
+      source: "anthropic-ratelimit-unified headers",
+      seenAt: START - 60_000,
+      windows: {
+        "5h": { utilization: 0.4, resetsAt: START + 3_600_000, seenAt: START - 60_000 },
+        "7d": { utilization: 0.8, resetsAt: START + 86_400_000, seenAt: START - 60_000 },
+      },
+    });
+    writePlan("codex", {
+      plan: "codex",
+      source: "x-codex headers",
+      seenAt: START - 7_200_000,
+      windows: { "7d": { utilization: 1, seenAt: START - 7_200_000 } },
+    });
+
+    const body = parse(
+      UsagePlansResponse,
+      await json(await server.request("GET", "/api/usage/plans")),
+      "plans",
+    );
+    expect(body.plans.map((plan) => plan.plan)).toEqual(["claude", "codex"]);
+    const [claude, codex] = body.plans;
+    expect(claude?.windows.map((window) => [window.name, window.stale])).toEqual([
+      ["5h", undefined],
+      ["7d", undefined],
+    ]);
+    expect(claude?.ageMs).toBeGreaterThanOrEqual(60_000);
+    expect(codex?.windows[0]?.stale).toMatch(/^seen 120 min ago$/);
+    // Codex is full but stale, so only Claude's weekly window warns.
+    expect(body.warnings).toEqual([
+      {
+        plan: "claude",
+        window: "7d",
+        utilization: 0.8,
+        message: "Claude weekly window is at 80%, over the 75% threshold.",
+      },
+    ]);
+    expect(body.thresholds).toEqual({ weekly: 0.75, fiveHour: 1 });
+  });
+
+  it("lists a broken plan file as an error instead of failing the page", async () => {
+    writePlan("claude", { plan: "claude" });
+    const body = parse(
+      UsagePlansResponse,
+      await json(await server.request("GET", "/api/usage/plans")),
+      "plans",
+    );
+    expect(body.plans).toEqual([]);
+    expect(body.errors[0]).toMatch(/claude\.json/);
+  });
+
+  it("answers 422 when the router settings are wrong", async () => {
+    writeFileSync(
+      join(server.paths.root, "settings.json"),
+      JSON.stringify({ router: { pressure: { weekly: 3 } } }),
+    );
+    const body = (await json(await server.request("GET", "/api/usage/plans"), 422)) as {
+      error: { code: string };
+    };
+    expect(body.error.code).toBe("bad_settings");
+  });
+});
+
+describe("GET /api/usage/tokens", () => {
+  it("sums token use per workspace and model, and shows local models as free", async () => {
+    const ws = await workspace();
+    const dir = join(server.paths.sessions, ws.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "a.jsonl"),
+      [
+        JSON.stringify({ type: "session", cwd: "/x" }),
+        assistant("claude-bridge", "claude-sonnet-5-5", 100, 20),
+        assistant("claude-bridge", "claude-sonnet-5-5", 200, 30),
+        assistant("strata", "qwen3.8-flash-next-unsloth-ud-iq2_xs", 1_000, 300, 0.5),
+        JSON.stringify({ type: "message", message: { role: "user", content: "hi" } }),
+        '{"type":"mess',
+      ].join("\n"),
+    );
+    writeFileSync(join(dir, "b.jsonl"), assistant("openai", "gpt-6.1-terra", 50, 5, 0.25));
+
+    const body = parse(
+      TokenUseResponse,
+      await json(await server.request("GET", "/api/usage/tokens")),
+      "tokens",
+    );
+    expect(body.sessions).toBe(2);
+    expect(body.skippedLines).toBe(1);
+    const byModel = Object.fromEntries(body.rows.map((row) => [row.model, row]));
+    expect(byModel["claude-sonnet-5-5"]).toMatchObject({
+      projectName: "Game",
+      workspaceName: "Fix jump",
+      requests: 2,
+      input: 300,
+      output: 50,
+      cacheRead: 20,
+      local: false,
+    });
+    expect(byModel["qwen3.8-flash-next-unsloth-ud-iq2_xs"]).toMatchObject({ local: true, cost: 0 });
+    expect(byModel["gpt-6.1-terra"]).toMatchObject({ cost: 0.25, local: false });
+  });
+
+  it("names sessions of workspaces it does not know", async () => {
+    mkdirSync(join(server.paths.sessions, "gone"), { recursive: true });
+    writeFileSync(join(server.paths.sessions, "gone", "a.jsonl"), assistant("x", "y", 1, 1));
+    const body = parse(
+      TokenUseResponse,
+      await json(await server.request("GET", "/api/usage/tokens")),
+      "tokens",
+    );
+    expect(body.rows[0]).toMatchObject({
+      workspaceId: "gone",
+      workspaceName: "(removed workspace)",
+      projectName: "(unknown)",
+    });
+  });
+});
+
+describe("GET /api/usage/routing", () => {
+  it("returns the newest decisions first and counts lines that do not parse", async () => {
+    mkdirSync(join(server.paths.root, "usage"), { recursive: true });
+    const record = (at: number, route: string) =>
+      JSON.stringify({ at, kind: "initial", route, model: "m/x", reasons: ["r"] });
+    writeFileSync(
+      join(server.paths.root, "usage", "routing.jsonl"),
+      `${record(1, "cloud")}\n{broken\n${record(2, "local")}\n`,
+    );
+    const body = parse(
+      RoutingDecisionsResponse,
+      await json(await server.request("GET", "/api/usage/routing?limit=5")),
+      "routing",
+    );
+    expect(body.decisions.map((decision) => decision.route)).toEqual(["local", "cloud"]);
+    expect(body.skipped).toBe(1);
+    await json(await server.request("GET", "/api/usage/routing?limit=0"), 400);
+  });
+});
+
+describe("warningsFor", () => {
+  const pressure = { weekly: 0.75, fiveHour: 1 };
+  it("warns on a full window and on a weekly window over its threshold, never on stale ones", () => {
+    expect(
+      warningsFor(
+        "codex",
+        [
+          { name: "5h", utilization: 1 },
+          { name: "7d", utilization: 0.75 },
+          { name: "7d", utilization: 0.99, stale: "old" },
+        ],
+        pressure,
+      ).map((warning) => warning.message),
+    ).toEqual(["Codex 5-hour window is full (100%)."]);
+  });
+});
+
+describe("format", () => {
+  it("writes ages, resets, and token counts in short words", () => {
+    expect(formatAge(30_000)).toBe("just now");
+    expect(formatAge(5 * 60_000)).toBe("5 min ago");
+    expect(formatUntil(10 + 90 * 60_000, 10)).toBe("in 1 h 30 min");
+    expect(formatUntil(5, 10)).toBe("passed");
+    expect(formatTokens(12_345)).toBe("12.3k");
+  });
+});

@@ -190,21 +190,32 @@ export async function readPlan(home: string, plan: string): Promise<PlanSnapshot
   return parse(PlanSnapshot, value, path);
 }
 
-/** Every stored plan snapshot, by file name order. */
-export async function readPlans(home: string): Promise<PlanSnapshot[]> {
+/** Every stored plan snapshot, by plan name. A file that does not read is listed in `errors` with the reason. */
+export async function readPlans(
+  home: string,
+): Promise<{ plans: PlanSnapshot[]; errors: string[] }> {
   let names: string[];
   try {
     names = await readdir(usageDir(home));
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return { plans: [], errors: [] };
     throw error;
   }
-  const plans = names
+  const plans: PlanSnapshot[] = [];
+  const errors: string[] = [];
+  const planNames = names
     .filter((name) => /^[a-z0-9-]+\.json$/.test(name))
     .map((name) => name.slice(0, -".json".length))
     .sort();
-  const snapshots = await Promise.all(plans.map((plan) => readPlan(home, plan)));
-  return snapshots.filter((snapshot): snapshot is PlanSnapshot => snapshot !== undefined);
+  for (const plan of planNames) {
+    try {
+      const snapshot = await readPlan(home, plan);
+      if (snapshot) plans.push(snapshot);
+    } catch (error) {
+      errors.push(error instanceof Error ? error.message : String(error));
+    }
+  }
+  return { plans, errors };
 }
 
 /** Merges a reading into the plan's file: new windows replace old ones, windows it did not report stay. */
