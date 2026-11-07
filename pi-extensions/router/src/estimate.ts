@@ -34,7 +34,8 @@ export function contentText(content: unknown): string {
 }
 
 export interface Estimate {
-  /** Conversation so far, including the system prompt and the brief. */
+  system: number;
+  /** Conversation so far, including the brief. */
   conversation: number;
   /** Existing files the brief names, by size. */
   files: number;
@@ -42,12 +43,14 @@ export interface Estimate {
   namedFiles: string[];
 }
 
-/** Tokens the task brings in at the start: the conversation (system prompt, brief) plus the files the brief names. */
+/** Tokens the task brings in at the start: system prompt, conversation (with the brief), and the files the brief names. */
 export async function estimateTokens(
+  systemPrompt: string,
   messages: readonly { role: string; content?: unknown }[],
   brief: string,
   cwd: string,
 ): Promise<Estimate> {
+  const system = tokensOfText(systemPrompt);
   const conversation = messages.reduce(
     (sum, message) => sum + tokensOfText(contentText(message.content)),
     0,
@@ -62,5 +65,5 @@ export async function estimateTokens(
     namedFiles.push(word);
     files += Math.ceil(info.size / 4);
   }
-  return { conversation, files, total: conversation + files, namedFiles };
+  return { system, conversation, files, total: system + conversation + files, namedFiles };
 }

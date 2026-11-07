@@ -115,6 +115,15 @@ describe("Router: first request of a session", () => {
     expect(classifyCalls).toHaveLength(0);
   });
 
+  it("counts the system prompt in the estimate", async () => {
+    const { router } = harness();
+    const { ctx, classifyCalls } = fakeContext(cwd, { systemPrompt: "s".repeat(280_000) });
+    const route = await router.route(userRequest(BRIEF), ctx);
+    expect(route.state?.route).toBe("cloud");
+    expect(classifyCalls).toHaveLength(0);
+    expect((await readRecords(home, 1)).records[0]?.estimate).toBeGreaterThan(70_000);
+  });
+
   it("goes to cloud and records it when the classifier is missing", async () => {
     const { router } = harness();
     const { ctx } = fakeContext(cwd, { classifier: false });

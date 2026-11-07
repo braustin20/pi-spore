@@ -199,7 +199,7 @@ export class Router {
     let jev: JevAnswers | { error: string } | undefined;
     if (target) {
       budget = Math.floor(target.contextWindow * target.budget);
-      estimate = await estimateTokens(request.messages, brief, ctx.cwd);
+      estimate = await estimateTokens(ctx.getSystemPrompt(), request.messages, brief, ctx.cwd);
       if (estimate.total <= budget) jev = await this.classify(settings, brief, ctx, request.signal);
     }
 

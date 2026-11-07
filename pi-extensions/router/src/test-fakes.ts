@@ -39,6 +39,7 @@ export function fakeContext(
     classifier?: boolean;
     classify?: () => unknown;
     sessionId?: string;
+    systemPrompt?: string;
   } = {},
 ) {
   const notices: { message: string; type?: string }[] = [];
@@ -54,6 +55,7 @@ export function fakeContext(
   // registry's find, findOfType, and classify).
   const ctx = {
     cwd,
+    getSystemPrompt: () => options.systemPrompt ?? "You are a coding agent.",
     sessionManager: {
       getSessionId: () => options.sessionId ?? "session-1",
       getSessionFile: () => `/sessions/${options.sessionId ?? "session-1"}.jsonl`,
