@@ -25,7 +25,7 @@ import Type from "typebox";
 import { ChatBar } from "./chats.js";
 import { Composer, DialogCard } from "./composer.js";
 import { MessageList } from "./messages.js";
-import { activity, emptyPage, reducePage } from "./page-state.js";
+import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
 import { AgentsWebKey } from "./web-contract.js";
 
@@ -268,6 +268,9 @@ function ChatView({
   const active = workspace.state === "active" && agent?.active === true;
   const currentModel = state.model ? modelKey(state.model) : "";
   const modelOptions = models?.models ?? (state.model ? [state.model] : []);
+  // A virtual model such as spore/auto answers through another model; the picker names it (ADR 0009).
+  const routed = routedModel(state);
+  const routedTo = routed && modelKey(routed) !== currentModel ? routed : undefined;
 
   const controls = (
     <>
@@ -279,14 +282,16 @@ function ChatView({
           void call("POST", "model", { provider, modelId: rest.join("/") });
         }}
         disabled={!active}
-        className="w-48 min-w-0 xl:w-72"
+        className="w-48 min-w-0 xl:w-96"
         aria-label="Model for the next message"
         title="Model for the next message"
       >
         {!currentModel && <option value="">Model</option>}
         {modelOptions.map((model) => (
           <option key={modelKey(model)} value={modelKey(model)}>
-            {model.name ?? model.id} ({model.provider})
+            {`${model.name ?? model.id} (${model.provider})${
+              routedTo && modelKey(model) === currentModel ? ` → ${routedTo.id}` : ""
+            }`}
           </option>
         ))}
       </Select>

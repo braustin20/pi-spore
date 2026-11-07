@@ -367,7 +367,9 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
 - Every decision is appended to `~/.pi-spore/usage/routing.jsonl`: time, kind (`initial`, `escalation`, `error`),
   route (`local`, `cloud`, `spill`, `wait`), model, reasons, Jev's good-answer probabilities, the estimate and budget,
   the threshold, the plan windows it saw, and the session id, file, and folder. Inside pi-spore it also has the agent
-  and workspace ids. The chat shows each decision as a notice. The router state on the session holds the route and
+  and workspace ids. The chat shows each decision as a notice, which is live only. The model picker names the model
+  that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical model Pi records on each
+  assistant message, so it survives reloads and reconnects. The router state on the session holds the route and
   reasons too.
 - Local targets are a list in settings: `{ model, contextWindow, budget, concurrency, healthUrl? }`. Default: Strata
   `strata/qwen3.8-flash-next-unsloth-ud-iq2_xs`, 131072 tokens, budget 0.5, concurrency 1, health URL

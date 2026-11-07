@@ -1,6 +1,6 @@
 import type { Agent } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { activity, emptyPage, reducePage } from "./page-state.js";
+import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 
 const agent: Agent = {
   id: "A",
@@ -129,5 +129,42 @@ describe("activity", () => {
       event: { type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: {} },
     });
     expect(activity(running)).toBe("Running read");
+  });
+});
+
+describe("routedModel", () => {
+  const answered = (provider: string, model: string) => ({
+    role: "assistant",
+    content: [],
+    provider,
+    model,
+  });
+  const withMessages = (messages: unknown[]) =>
+    reducePage(emptyPage(), {
+      ...snapshot,
+      chat: { ...snapshot.chat, messages },
+    });
+
+  it("is the model of the latest assistant message", () => {
+    const state = withMessages([
+      { role: "user", content: "hi" },
+      answered("a", "first"),
+      { role: "toolResult", content: [] },
+      answered("b", "second"),
+    ]);
+    expect(routedModel(state)).toEqual({ provider: "b", id: "second" });
+  });
+
+  it("is undefined before the first answer", () => {
+    expect(routedModel(withMessages([{ role: "user", content: "hi" }]))).toBeUndefined();
+  });
+
+  it("uses the streaming message first", () => {
+    let state = withMessages([answered("a", "first")]);
+    state = reducePage(state, {
+      type: "pi",
+      event: { type: "message_start", message: answered("b", "second") },
+    });
+    expect(routedModel(state)).toEqual({ provider: "b", id: "second" });
   });
 });

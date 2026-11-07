@@ -128,3 +128,23 @@ export function activity(state: PageState): string | undefined {
   // No output yet, or thinking: models think before their first visible token.
   return "Thinking";
 }
+
+/**
+ * The physical model the router picked for a virtual model such as `spore/auto`, or undefined before any answer.
+ * Pi records the physical model on each assistant message, so this follows reloads and reconnects (ADR 0009).
+ */
+export function routedModel(state: PageState): { provider: string; id: string } | undefined {
+  const messages = state.chat.streaming
+    ? [...state.chat.messages, state.chat.streaming]
+    : state.chat.messages;
+  for (const message of messages.toReversed()) {
+    if (
+      message.role === "assistant" &&
+      typeof message.provider === "string" &&
+      typeof message.model === "string"
+    ) {
+      return { provider: message.provider, id: message.model };
+    }
+  }
+  return undefined;
+}
