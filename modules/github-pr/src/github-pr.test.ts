@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
+import { attentionModule } from "@pi-spore/mod-attention/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
@@ -58,6 +59,7 @@ async function makeServer(home?: string) {
       vcsFolderModule,
       workspacesModule,
       agents,
+      attentionModule,
       kanbanModule,
       createGithubPrModule({ gh: { command: process.execPath, args: [FAKE_GH, ghState] }, timer }),
     ],
@@ -73,6 +75,13 @@ beforeEach(async () => {
   server = await makeServer();
 });
 afterEach(async () => {
+  // A card's brief may still be on its way to the fake agent; stopping it then would fail the delivery late.
+  await until(
+    () =>
+      server.store.get<{ n: number }>(
+        "SELECT COUNT(*) AS n FROM agents_deliveries WHERE state = 'pending'",
+      )?.n === 0,
+  );
   await agents.manager().stopAll();
   server.close();
   rmSync(scratch, { recursive: true, force: true });
@@ -131,8 +140,13 @@ const run = (name: string, conclusion: string, job = "77") => ({
   detailsUrl: `https://github.com/owner/repo/actions/runs/5/job/${job}`,
 });
 
-/** A Git project with an origin, a card, and a workspace started from the card with a commit on its branch. */
-async function setUp(): Promise<{ workspace: Workspace; cardId: string; origin: string }> {
+/**
+ * A Git project with an origin, a card, and a workspace started from the card with a commit on its branch. Starting
+ * from a card makes the worker chat and sends it the card's brief. Without `card`, the workspace has no chat.
+ */
+async function setUp(
+  card = true,
+): Promise<{ workspace: Workspace; cardId: string; origin: string }> {
   const repo = join(scratch, "game");
   const origin = join(scratch, "origin.git");
   git(scratch, "init", "-q", "--bare", origin);
@@ -146,22 +160,36 @@ async function setUp(): Promise<{ workspace: Workspace; cardId: string; origin: 
     await server.request("POST", "/api/projects", { path: repo }),
     201,
   );
-  const { card } = await json<{ card: { id: string } }>(
-    await server.request("POST", "/api/kanban/cards", {
-      title: "Fix the jump",
-      body: "The player jumps twice.",
-      projectId: project.id,
-    }),
-    201,
-  );
-  const { created } = await json<{ created: { workspace: Workspace } }>(
-    await server.request("POST", `/api/kanban/cards/${card.id}/start`, { isolation: "new" }),
-    201,
-  );
-  const workspace = created.workspace;
+  let cardId = "";
+  let workspace: Workspace;
+  if (card) {
+    const made = await json<{ card: { id: string } }>(
+      await server.request("POST", "/api/kanban/cards", {
+        title: "Fix the jump",
+        body: "The player jumps twice.",
+        projectId: project.id,
+      }),
+      201,
+    );
+    cardId = made.card.id;
+    const { created } = await json<{ created: { workspace: Workspace } }>(
+      await server.request("POST", `/api/kanban/cards/${cardId}/start`, { isolation: "new" }),
+      201,
+    );
+    workspace = created.workspace;
+  } else {
+    ({ workspace } = await json<{ workspace: Workspace }>(
+      await server.request("POST", "/api/workspaces", {
+        projectId: project.id,
+        name: "Fix the jump",
+        isolation: "new",
+      }),
+      201,
+    ));
+  }
   writeFileSync(join(workspace.path, "a.txt"), "two\n");
   git(workspace.path, "commit", "-q", "-am", "fix jump");
-  return { workspace, cardId: card.id, origin };
+  return { workspace, cardId, origin };
 }
 
 const status = async (workspaceId: string) =>
@@ -179,10 +207,12 @@ async function publish(workspace: Workspace) {
   );
 }
 
+/** The workspace's worker chat; starting from a card made it already. */
 async function worker(workspaceId: string): Promise<string> {
+  const response = await server.request("POST", "/api/agents", { workspaceId });
   const { agent } = await json<{ agent: { id: string } }>(
-    await server.request("POST", "/api/agents", { workspaceId }),
-    201,
+    response,
+    response.status === 201 ? 201 : 200,
   );
   return agent.id;
 }
@@ -195,11 +225,12 @@ const said = (agentId: string) =>
         : undefined;
     if (pi?.type !== "message_end" || pi.message?.role !== "user") return [];
     const { content } = pi.message;
-    return [
+    const text =
       typeof content === "string"
         ? content
-        : (content as { text?: string }[]).map((block) => block.text).join(""),
-    ];
+        : (content as { text?: string }[]).map((block) => block.text).join("");
+    // Only the PR watch's messages; the card's brief comes first.
+    return text.startsWith("Pull request #") ? [text] : [];
   });
 
 /** Every gh command must be one pi-spore may run (R9.3). */
@@ -485,7 +516,7 @@ describe("watch", () => {
   });
 
   it("waits for the user when the workspace has no worker chat", async () => {
-    const { workspace } = await setUp();
+    const { workspace } = await setUp(false);
     await publish(workspace);
     setChecks([run("test", "FAILURE")], "h1");
     await tick();

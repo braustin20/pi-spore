@@ -29,6 +29,7 @@
     "typebox": "1.4.5"
   },
   "devDependencies": {
+    "@pi-spore/mod-attention": "0.0.0",
     "@pi-spore/mod-vcs-folder": "0.0.0",
     "@pi-spore/mod-vcs-git": "0.0.0",
     "@pi-spore/server-core": "0.0.0"

@@ -37,6 +37,9 @@
       "path": "../vcs-folder"
     },
     {
+      "path": "../attention"
+    },
+    {
       "path": "../../packages/server-core"
     }
   ]
