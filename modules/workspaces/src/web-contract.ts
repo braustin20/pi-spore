@@ -19,6 +19,20 @@ export interface WorkspacePanel {
   component: ComponentType<{ workspace: Workspace }>;
 }
 
+/**
+ * A tab another web module adds to the right column's tab bar, after Details, such as Terminals. Its component is
+ * mounted only while the tab is open, and again for each workspace.
+ */
+export interface WorkspaceTab {
+  id: string;
+  title: string;
+  /** Lower comes first. */
+  order: number;
+  /** The column widens while this tab is open, for content such as a terminal. */
+  wide?: boolean;
+  component: ComponentType<{ workspace: Workspace }>;
+}
+
 /** One line of live state for a workspace row, such as the agent's status. */
 export interface WorkspaceStatus {
   text: string;
@@ -51,6 +65,8 @@ export interface CreateWorkspaceFormProps {
 export interface WorkspaceView {
   /** Adds a section to the right column. */
   addPanel(panel: WorkspacePanel): void;
+  /** Adds a tab to the right column. */
+  addTab(tab: WorkspaceTab): void;
   /**
    * Sets the middle pane for a selected workspace: the chat. `chatId` comes from `#/workspaces/<id>/chats/<chat>`.
    * Only one module may set it.

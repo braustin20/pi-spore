@@ -17,6 +17,7 @@ import {
   Checkbox,
   Chip,
   CollapsibleSection,
+  cn,
   EmptyState,
   Field,
   Input,
@@ -57,6 +58,7 @@ import {
   type UseWorkspaceStatus,
   type WorkspacePanel,
   type WorkspaceStatus,
+  type WorkspaceTab,
   WorkspaceViewKey,
 } from "./web-contract.js";
 
@@ -74,6 +76,7 @@ const stepNote = (step: StepReport): Note => ({
 
 /** Filled by other web modules during setup; read when the workspace view renders. */
 const panels: WorkspacePanel[] = [];
+const tabs: WorkspaceTab[] = [];
 let Main: ComponentType<{ workspace: Workspace; chatId?: string }> | undefined;
 const NO_STATUS: ReadonlyMap<string, WorkspaceStatus> = new Map();
 const noStatus: UseWorkspaceStatus = () => NO_STATUS;
@@ -515,16 +518,27 @@ function RightColumn({
   onNotes: (notes: Note[]) => void;
   onCollapse: () => void;
 }) {
+  const [tab, setTab] = useState("details");
+  const sortedTabs = [...tabs].sort((a, b) => a.order - b.order);
+  const wide = sortedTabs.find((candidate) => candidate.id === tab)?.wide === true;
   return (
     <aside
       aria-label="Workspace details"
-      className="flex w-80 shrink-0 flex-col border-l border-line bg-panel xl:w-88"
+      className={cn(
+        "flex shrink-0 flex-col border-l border-line bg-panel",
+        wide ? "w-[min(40rem,50vw)]" : "w-80 xl:w-88",
+      )}
     >
       {/* Changes and PR tabs join this bar later. */}
-      <Tabs defaultValue="details" className="min-h-0 flex-1">
+      <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1">
         <div className="flex h-11 shrink-0 items-end border-b border-line pr-2">
           <TabsList className="flex-1 border-b-0">
             <TabsTrigger value="details">Details</TabsTrigger>
+            {sortedTabs.map((extra) => (
+              <TabsTrigger key={extra.id} value={extra.id}>
+                {extra.title}
+              </TabsTrigger>
+            ))}
           </TabsList>
           <Tooltip label="Hide details" side="bottom">
             <Button
@@ -553,6 +567,11 @@ function RightColumn({
               <panel.component key={panel.id} workspace={workspace} />
             ))}
         </TabsContent>
+        {sortedTabs.map((extra) => (
+          <TabsContent key={extra.id} value={extra.id} className="flex flex-col">
+            <extra.component key={workspace.id} workspace={workspace} />
+          </TabsContent>
+        ))}
       </Tabs>
     </aside>
   );
@@ -733,6 +752,11 @@ export const workspacesWeb: WebModule = {
         if (panels.some((existing) => existing.id === panel.id))
           throw new Error(`Workspace panel "${panel.id}" is added twice`);
         panels.push(panel);
+      },
+      addTab: (tab) => {
+        if (tab.id === "details" || tabs.some((existing) => existing.id === tab.id))
+          throw new Error(`Workspace tab "${tab.id}" is added twice`);
+        tabs.push(tab);
       },
       setMain: (component) => {
         if (Main) throw new Error("The workspace main pane is set twice");

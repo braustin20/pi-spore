@@ -634,6 +634,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so
   it can render nothing when it does not apply.
+- `addTab` adds a tab after Details (Terminals). A `wide` tab widens the column while it is open. Its component
+  mounts only while the tab is open.
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
   passes `chatId`; without it the pane shows the active worker chat.
 - `setStatus` sets a React hook that returns one status line per workspace. The agents module reads
