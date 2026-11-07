@@ -4,6 +4,7 @@ import { attentionModule } from "@pi-spore/mod-attention/server";
 import { bridgeModule } from "@pi-spore/mod-bridge/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { terminalsModule } from "@pi-spore/mod-terminals/server";
 import { unityModule } from "@pi-spore/mod-unity/server";
 import { usageModule } from "@pi-spore/mod-usage/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
@@ -24,4 +25,5 @@ export const serverModules: readonly ServerModule[] = [
   bridgeModule,
   usageModule,
   kanbanModule,
+  terminalsModule,
 ];

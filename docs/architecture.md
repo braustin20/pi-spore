@@ -460,6 +460,37 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   but not focused, each new item shows a notification. Items already there when the page loads do not.
 - Not built yet: approvals, usage warnings, and a CLI command for the inbox.
 
+## 11c. Terminals
+
+See [ADR 0050](decisions/0050-terminals.md). Requirements R13.
+
+- The `terminals` module (not core, requires `projects` and `workspaces`) runs each terminal as a `node-pty` PTY:
+  the user's `$SHELL`, the workspace folder as cwd, and the env of actions (`PI_SPORE_WORKSPACE_ID`,
+  `PI_SPORE_WORKSPACE_PATH`, `PI_SPORE_PROJECT_ROOT`) plus `TERM=xterm-256color` and `COLORTERM=truecolor`, without
+  `ORCA_*` and `HERDR_*`. No `$SHELL` answers 500 `shell_not_set`.
+- Terminals live in memory, with no table. Each keeps the last 1 MiB of output (characters, cut at a line start) as
+  scrollback. A shell that exits stays listed as `exited` with its code until the user closes it.
+- At most 8 open at once, across workspaces (`terminals.maxOpen`); more answers 409 `terminal_limit`. Both limits
+  are module options until the settings module lands.
+- Closing sends SIGHUP, then SIGKILL after 5 s, and closes the terminal's sockets. Parking or archiving a workspace
+  closes its terminals first (`beforeLeaveActive`). Server exit sends SIGHUP to every shell.
+- Input and output never reach a log.
+
+| Route | Does |
+|---|---|
+| `GET /api/terminals/workspaces/:id` | The workspace's terminals and the limit. |
+| `POST /api/terminals/workspaces/:id` `{ cols, rows, title? }` | Opens a terminal (active workspaces only). Default title `Terminal <n>`. |
+| `DELETE /api/terminals/:id` | Closes it; answers when the shell has exited. |
+| `WS /api/terminals/:id/socket` | The terminal's socket. 404 for an unknown terminal. |
+
+- Socket messages (TypeBox schemas in `@pi-spore/shared`): the browser sends `{ type: "input", data }` (up to 8192
+  characters; the page splits longer pastes) and `{ type: "resize", cols, rows }`. The server sends `snapshot`
+  first (the scrollback), then `output`, `exit` once with `exitCode` or `signal`, and `error` for a bad message.
+- The web module adds a Terminals tab to the workspace's right column (`WorkspaceView.addTab`, `wide`), with a tab
+  per terminal, new and close buttons, and xterm.js with the fit addon. Colors come from the theme's role tokens and
+  change with the theme menu. When a socket drops, the page asks the server whether the terminal still exists and
+  reconnects, or drops it from the list.
+
 ## 11. Unity module
 
 See [ADR 0011](decisions/0011-unity-support.md).

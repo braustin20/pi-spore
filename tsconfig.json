@@ -53,6 +53,9 @@
       "path": "modules/kanban"
     },
     {
+      "path": "modules/terminals"
+    },
+    {
       "path": "packages/server"
     },
     {

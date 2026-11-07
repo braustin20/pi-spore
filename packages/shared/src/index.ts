@@ -80,6 +80,15 @@ export {
 } from "./projects.js";
 export { slugify } from "./slug.js";
 export {
+  CreateTerminalRequest,
+  TERMINAL_INPUT_MAX,
+  Terminal,
+  TerminalClientMessage,
+  TerminalList,
+  TerminalServerMessage,
+  TerminalStatus,
+} from "./terminals.js";
+export {
   CloseEditorRequest,
   EditorLease,
   EditorSource,
