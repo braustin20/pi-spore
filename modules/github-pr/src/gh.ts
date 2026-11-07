@@ -29,20 +29,24 @@ const PR_FIELDS = [
   "statusCheckRollup",
 ].join(",");
 
+/** A text field gh may leave out, send as null, or send empty. All three mean "none". */
+const MaybeText = Type.Optional(Type.Union([Type.String(), Type.Null()]));
+const text = (value: string | null | undefined) => (value ? value : undefined);
+
 const CheckRun = Type.Object({
   __typename: Type.Literal("CheckRun"),
   name: Type.String(),
   status: Type.String(),
   conclusion: Type.String(),
-  detailsUrl: Type.Optional(Type.String()),
-  workflowName: Type.Optional(Type.String()),
+  detailsUrl: MaybeText,
+  workflowName: MaybeText,
 });
 
 const StatusContext = Type.Object({
   __typename: Type.Literal("StatusContext"),
   context: Type.String(),
   state: Type.String(),
-  targetUrl: Type.Optional(Type.String()),
+  targetUrl: MaybeText,
 });
 
 /** `gh pr view --json` with PR_FIELDS. Other fields gh may add are ignored. */
@@ -133,20 +137,23 @@ function lookup<T>(table: Record<string, T>, value: string, what: string): T {
 function toPullRequest(pr: Static<typeof GhPullRequest>): PullRequest {
   const checks: PrCheck[] = pr.statusCheckRollup.map((check) => {
     if (check.__typename === "CheckRun") {
+      const workflow = text(check.workflowName);
+      const url = text(check.detailsUrl);
       return {
         name: check.name,
-        ...(check.workflowName ? { workflow: check.workflowName } : {}),
+        ...(workflow ? { workflow } : {}),
         state:
           check.status === "COMPLETED"
             ? lookup(RUN_CONCLUSIONS, check.conclusion, "check conclusion")
             : "pending",
-        ...(check.detailsUrl ? { url: check.detailsUrl } : {}),
+        ...(url ? { url } : {}),
       };
     }
+    const url = text(check.targetUrl);
     return {
       name: check.context,
       state: lookup(STATUS_STATES, check.state, "status state"),
-      ...(check.targetUrl ? { url: check.targetUrl } : {}),
+      ...(url ? { url } : {}),
     };
   });
   return {

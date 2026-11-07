@@ -590,6 +590,8 @@ counts, then its hunks in unified form.
 - Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
   bar at the bottom lists them with Send to agent. The tab reloads on Refresh, on a scope change, and on the
   `stale` event.
+- Not built yet: attaching comments to the chat composer so they go with the next message (R8.3). Today they go
+  as their own message.
 
 ## 11e. Pull requests
 

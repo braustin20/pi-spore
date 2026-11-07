@@ -319,6 +319,15 @@ describe("publish", () => {
             state: "PENDING",
             targetUrl: "https://ci",
           },
+          { __typename: "StatusContext", context: "ci/bare", state: "SUCCESS", targetUrl: null },
+          {
+            __typename: "CheckRun",
+            name: "app",
+            workflowName: "",
+            status: "COMPLETED",
+            conclusion: "NEUTRAL",
+            detailsUrl: "",
+          },
         ],
       });
     });
@@ -330,7 +339,11 @@ describe("publish", () => {
         number: 9,
         review: "approved",
         mergeable: "conflicting",
-        checks: [{ name: "ci/legacy", state: "pending", url: "https://ci" }],
+        checks: [
+          { name: "ci/legacy", state: "pending", url: "https://ci" },
+          { name: "ci/bare", state: "pass" },
+          { name: "app", state: "neutral" },
+        ],
       },
       watch: { state: "off" },
     });
