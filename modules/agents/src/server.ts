@@ -4,14 +4,19 @@ import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import {
+  type Agent,
   CreateAgentRequest,
+  CreateChatRequest,
   DialogAnswer,
+  orderChats,
   PromptRequest,
   parseJsonBody,
+  RenameChatRequest,
   SetModelRequest,
   SetThinkingRequest,
+  type Workspace,
 } from "@pi-spore/shared";
-import { type Agents, AgentsKey } from "./contract.js";
+import { type AgentChange, type Agents, AgentsKey } from "./contract.js";
 import { DELIVERIES_MIGRATION, Deliveries } from "./deliveries.js";
 import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
@@ -31,12 +36,36 @@ const MIGRATIONS = [
   )`,
   "ALTER TABLE agents_agents ADD COLUMN waiting_since INTEGER",
   DELIVERIES_MIGRATION,
+  // ADR 0030: many chats per workspace. SQLite cannot drop the UNIQUE constraint, so the table is rebuilt. Each
+  // existing worker becomes its workspace's active worker chat.
+  `CREATE TABLE agents_agents_v2 (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    active INTEGER NOT NULL,
+    title TEXT,
+    forked_from TEXT,
+    session_file TEXT,
+    created_at INTEGER NOT NULL,
+    waiting_since INTEGER
+  );
+  INSERT INTO agents_agents_v2 (id, workspace_id, role, kind, active, session_file, created_at, waiting_since)
+    SELECT id, workspace_id, role, 'worker', 1, session_file, created_at, waiting_since FROM agents_agents;
+  DROP TABLE agents_agents;
+  ALTER TABLE agents_agents_v2 RENAME TO agents_agents;
+  CREATE UNIQUE INDEX agents_one_active_worker ON agents_agents (workspace_id)
+    WHERE kind = 'worker' AND active = 1;`,
 ];
 
 interface Row {
   id: string;
   workspace_id: string;
   role: "worker";
+  kind: "worker" | "side";
+  active: number;
+  title: string | null;
+  forked_from: string | null;
   session_file: string | null;
   created_at: number;
   waiting_since: number | null;
@@ -46,6 +75,10 @@ const toRecord = (row: Row): AgentRecord => ({
   id: row.id,
   workspaceId: row.workspace_id,
   role: row.role,
+  kind: row.kind,
+  active: row.active === 1,
+  title: row.title,
+  forkedFrom: row.forked_from,
   sessionFile: row.session_file,
   createdAt: row.created_at,
   waitingSince: row.waiting_since,
@@ -86,7 +119,7 @@ export function createAgentsModule(
       const agentDir =
         options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
       const exclude = options.excludeExtensions ?? ["npm:pi-lens"];
-      const listeners: (() => void)[] = [];
+      const listeners: ((agentId: string, change: AgentChange) => void)[] = [];
       let deliveries: Deliveries | undefined;
 
       const agents = new AgentManager({
@@ -102,6 +135,8 @@ export function createAgentsModule(
           const extra: Record<string, string> = {
             PI_SPORE_AGENT_ID: agent.id,
             PI_SPORE_WORKSPACE_ID: workspace.id,
+            // spore-bridge gives side chats their own rules (ADR 0033).
+            PI_SPORE_CHAT_KIND: agent.kind,
           };
           // Unity worktrees tell unity-mcp which editor is theirs (ADR 0011).
           const project = await projects.get(workspace.projectId);
@@ -119,8 +154,11 @@ export function createAgentsModule(
         saveWaiting: (agentId, since) => {
           host.store.run("UPDATE agents_agents SET waiting_since = ? WHERE id = ?", since, agentId);
         },
+        saveTitle: (agentId, title) => {
+          host.store.run("UPDATE agents_agents SET title = ? WHERE id = ?", title, agentId);
+        },
         onChange: (agentId, change) => {
-          for (const listener of listeners) listener();
+          for (const listener of listeners) listener(agentId, change);
           if (change === "status" && agents.view(agentId).status === "idle")
             deliveries?.flush(agentId);
         },
@@ -138,6 +176,7 @@ export function createAgentsModule(
         now: host.now,
         newId: host.newId,
         workspaceOf: (agentId) => workspaces.get(agents.view(agentId).workspaceId),
+        canRun: (agentId) => agents.view(agentId).active,
         send: async (agentId, message) => {
           await agents.prompt(agentId, message, "followUp");
         },
@@ -158,6 +197,7 @@ export function createAgentsModule(
           agents.view(agentId);
           queue.add(agentId, message);
         },
+        get: (agentId) => agents.view(agentId),
         attention: () => agents.attention(),
         onChange: (listener) => {
           listeners.push(listener);
@@ -176,18 +216,90 @@ export function createAgentsModule(
 
       host.events.onSubscribe("agent:", (topic) => agents.snapshot(topic.slice("agent:".length)));
 
+      /** Chat changes of one workspace run one at a time, so it never has two active worker chats. */
+      const serial = new Map<string, Promise<unknown>>();
+      const inOrder = <T>(workspaceId: string, task: () => Promise<T>): Promise<T> => {
+        const next = (serial.get(workspaceId) ?? Promise.resolve()).then(task, task);
+        serial.set(
+          workspaceId,
+          next.catch(() => undefined),
+        );
+        return next;
+      };
+
+      const activeWorker = (workspaceId: string): Row | undefined =>
+        host.store.get<Row>(
+          "SELECT * FROM agents_agents WHERE workspace_id = ? AND kind = 'worker' AND active = 1",
+          workspaceId,
+        );
+
+      const insert = (row: Row): Agent => {
+        host.store.run(
+          `INSERT INTO agents_agents (id, workspace_id, role, kind, active, title, forked_from, session_file, created_at)
+           VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?)`,
+          row.id,
+          row.workspace_id,
+          row.role,
+          row.kind,
+          row.active,
+          row.forked_from,
+          row.created_at,
+        );
+        agents.track(toRecord(row));
+        return agents.view(row.id);
+      };
+
+      const newRow = (workspaceId: string, kind: Row["kind"], forkedFrom: string | null): Row => ({
+        id: host.newId(),
+        workspace_id: workspaceId,
+        role: "worker",
+        kind,
+        active: 1,
+        title: null,
+        forked_from: forkedFrom,
+        session_file: null,
+        created_at: host.now(),
+        waiting_since: null,
+      });
+
+      const requireActive = (workspace: Workspace) => {
+        if (workspace.state !== "active") {
+          throw new ApiError(
+            409,
+            "workspace_not_active",
+            `The workspace is ${workspace.state}; resume it first`,
+          );
+        }
+      };
+
+      /**
+       * Turns the workspace's active worker chat into read-only history and stops it (ADR 0030). A run in progress
+       * is not cut off: the user stops or aborts it first.
+       */
+      const retireWorker = async (workspaceId: string): Promise<void> => {
+        const current = activeWorker(workspaceId);
+        if (!current) return;
+        const { status } = agents.view(current.id);
+        if (status === "busy" || status === "starting" || status === "waiting") {
+          throw new ApiError(
+            409,
+            "worker_busy",
+            "The worker chat is working. Abort or stop it first, then switch chats.",
+          );
+        }
+        host.store.run("UPDATE agents_agents SET active = 0 WHERE id = ?", current.id);
+        await agents.setActive(current.id, false);
+      };
+
       host.routes.get("/", (c) => {
         const workspaceId = c.req.query("workspaceId");
         const rows = workspaceId
-          ? host.store.all<Row>(
-              "SELECT * FROM agents_agents WHERE workspace_id = ? ORDER BY created_at",
-              workspaceId,
-            )
-          : host.store.all<Row>("SELECT * FROM agents_agents ORDER BY created_at");
-        return c.json({ agents: rows.map((row) => agents.view(row.id)) });
+          ? host.store.all<Row>("SELECT * FROM agents_agents WHERE workspace_id = ?", workspaceId)
+          : host.store.all<Row>("SELECT * FROM agents_agents");
+        return c.json({ agents: orderChats(rows.map((row) => agents.view(row.id))) });
       });
 
-      /** One worker per workspace: asking again returns the existing one. */
+      /** The workspace's active worker chat; the first call for a workspace creates it. */
       host.routes.post("/", async (c) => {
         const request = parseJsonBody(
           CreateAgentRequest,
@@ -195,31 +307,69 @@ export function createAgentsModule(
           "create agent request",
         );
         const workspace = workspaces.get(request.workspaceId);
-        const role = request.role ?? "worker";
-        const existing = host.store.get<Row>(
-          "SELECT * FROM agents_agents WHERE workspace_id = ? AND role = ?",
-          workspace.id,
-          role,
-        );
-        if (existing) return c.json({ agent: agents.view(existing.id) });
-        const row: Row = {
-          id: host.newId(),
-          workspace_id: workspace.id,
-          role,
-          session_file: null,
-          created_at: host.now(),
-          waiting_since: null,
-        };
-        host.store.run(
-          "INSERT INTO agents_agents (id, workspace_id, role, session_file, created_at) VALUES (?, ?, ?, ?, ?)",
-          row.id,
-          row.workspace_id,
-          row.role,
-          row.session_file,
-          row.created_at,
-        );
-        agents.track(toRecord(row));
-        return c.json({ agent: agents.view(row.id) }, 201);
+        return inOrder(workspace.id, async () => {
+          const existing = activeWorker(workspace.id);
+          if (existing) return c.json({ agent: agents.view(existing.id) });
+          return c.json({ agent: insert(newRow(workspace.id, "worker", null)) }, 201);
+        });
+      });
+
+      /**
+       * Starts a chat (ADR 0030). A worker chat replaces the active one, which stops and stays readable. A side chat
+       * starts empty, or with `fork` from a copy of the active worker chat's context.
+       */
+      host.routes.post("/chats", async (c) => {
+        const request = parseJsonBody(CreateChatRequest, await c.req.text(), "create chat request");
+        const workspace = workspaces.get(request.workspaceId);
+        if (request.fork && request.kind !== "side")
+          throw new ApiError(400, "bad_request", "Only a side chat can start from a fork");
+        requireActive(workspace);
+        return inOrder(workspace.id, async () => {
+          if (request.kind === "worker") {
+            await retireWorker(workspace.id);
+            return c.json({ agent: insert(newRow(workspace.id, "worker", null)) }, 201);
+          }
+          let forkedFrom: string | null = null;
+          if (request.fork) {
+            const worker = activeWorker(workspace.id);
+            if (!worker?.session_file) {
+              throw new ApiError(
+                409,
+                "nothing_to_fork",
+                "The worker chat has no messages yet, so there is no context to copy",
+              );
+            }
+            forkedFrom = worker.id;
+          }
+          return c.json({ agent: insert(newRow(workspace.id, "side", forkedFrom)) }, 201);
+        });
+      });
+
+      /** Makes an older worker chat the active one. The current one stops first. */
+      host.routes.post("/:id/activate", async (c) => {
+        const target = agents.view(c.req.param("id"));
+        if (target.kind !== "worker")
+          throw new ApiError(409, "not_a_worker_chat", "Only a worker chat can be made active");
+        requireActive(workspaces.get(target.workspaceId));
+        return inOrder(target.workspaceId, async () => {
+          if (!agents.view(target.id).active) {
+            await retireWorker(target.workspaceId);
+            host.store.run("UPDATE agents_agents SET active = 1 WHERE id = ?", target.id);
+            await agents.setActive(target.id, true);
+            // Answers that came while it was inactive.
+            queue.flush(target.id);
+          }
+          return c.json({ agent: agents.view(target.id) });
+        });
+      });
+
+      host.routes.post("/:id/title", async (c) => {
+        const request = parseJsonBody(RenameChatRequest, await c.req.text(), "rename request");
+        const id = c.req.param("id");
+        const title = request.title.replace(/\s+/g, " ").trim();
+        if (!title) throw new ApiError(400, "bad_request", "A chat title needs some text");
+        agents.rename(id, title);
+        return c.json({ agent: agents.view(id) });
       });
 
       host.routes.get("/:id", (c) => c.json({ agent: agents.view(c.req.param("id")) }));

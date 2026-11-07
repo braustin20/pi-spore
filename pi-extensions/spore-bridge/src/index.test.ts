@@ -4,7 +4,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import sporeBridge from "./index.js";
-import { RULES, RULES_SECTION } from "./rules.js";
+import { RULES, RULES_SECTION, SIDE_RULES } from "./rules.js";
 
 interface Seen {
   method: string;
@@ -206,5 +206,18 @@ describe("spore-bridge", () => {
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
     expect(options.contextFiles.map((file) => file.path)).toEqual(["/work/project/AGENTS.md"]);
     expect(options.sections[RULES_SECTION]).toBe(RULES);
+  });
+
+  it("gives a side chat the side chat rules", async () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
+    const options = { contextFiles: [], sections: {} as Record<string, string> };
+    await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
+    expect(options.sections[RULES_SECTION]).toBe(SIDE_RULES);
+  });
+
+  it("refuses an unknown chat kind instead of guessing", () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "reviewer");
+    const pi = fakePi();
+    expect(pi.tools.size).toBe(0);
   });
 });

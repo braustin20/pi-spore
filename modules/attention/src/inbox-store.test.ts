@@ -4,12 +4,14 @@ import { describe, expect, it } from "vitest";
 import { createInboxStore, itemKey, notification } from "./inbox-store.js";
 
 const workspace = { id: "w1", name: "Colors", projectName: "game", state: "active" as const };
+const chat = { id: "a1", title: "Pick colors", kind: "worker" as const, active: true };
 
 const question = (id: string, at: number): InboxItem => ({
   kind: "question",
   at,
   agentId: "a1",
   workspace,
+  chat,
   question: {
     id,
     agentId: "a1",
@@ -71,11 +73,18 @@ describe("the inbox store", () => {
 
   it("words notifications by kind", () => {
     expect(notification(question("q1", 1))).toEqual({
-      title: "Question from Colors (game)",
+      title: "Question from Colors (game, Pick colors)",
       body: "Question q1?",
     });
     expect(
-      notification({ kind: "failed", at: 1, agentId: "a1", workspace, error: "Pi exited\nmore" }),
-    ).toEqual({ title: "Agent failed in Colors (game)", body: "Pi exited" });
+      notification({
+        kind: "failed",
+        at: 1,
+        agentId: "a1",
+        workspace,
+        chat,
+        error: "Pi exited\nmore",
+      }),
+    ).toEqual({ title: "Agent failed in Colors (game, Pick colors)", body: "Pi exited" });
   });
 });

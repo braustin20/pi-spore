@@ -12,7 +12,11 @@ export class AgentTokenStore implements AgentTokens {
 
   issue(caller: BridgeCaller): string {
     const token = randomBytes(32).toString("hex");
-    this.byHash.set(hash(token), { agentId: caller.agentId, workspaceId: caller.workspaceId });
+    this.byHash.set(hash(token), {
+      agentId: caller.agentId,
+      workspaceId: caller.workspaceId,
+      ...(caller.readOnly ? { readOnly: true } : {}),
+    });
     return token;
   }
 

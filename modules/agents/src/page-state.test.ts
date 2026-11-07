@@ -2,7 +2,15 @@ import type { Agent } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
 import { activity, emptyPage, reducePage } from "./page-state.js";
 
-const agent: Agent = { id: "A", workspaceId: "W", role: "worker", status: "idle", createdAt: 1 };
+const agent: Agent = {
+  id: "A",
+  workspaceId: "W",
+  role: "worker",
+  kind: "worker",
+  active: true,
+  status: "idle",
+  createdAt: 1,
+};
 const snapshot = {
   type: "snapshot",
   agent,
@@ -25,6 +33,13 @@ describe("reducePage", () => {
     expect(state.model).toEqual({ provider: "p", id: "m" });
     expect(state.chat.messages).toHaveLength(1);
     expect(state.chat.busy).toBe(true);
+  });
+
+  it("takes a changed title or active flag from an agent event", () => {
+    let state = reducePage(emptyPage(), snapshot);
+    state = reducePage(state, { type: "agent", agent: { ...agent, active: false, title: "Old" } });
+    expect(state.agent).toMatchObject({ active: false, title: "Old" });
+    expect(state.chat.messages).toHaveLength(1);
   });
 
   it("sets and clears the error with the status", () => {

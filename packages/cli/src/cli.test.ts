@@ -374,6 +374,64 @@ describe("pi-spore action", () => {
   });
 });
 
+const chatOf = (id: string, extra: Record<string, unknown>) => ({
+  id,
+  workspaceId: "W1",
+  role: "worker",
+  kind: "worker",
+  active: true,
+  status: "idle",
+  createdAt: 1,
+  ...extra,
+});
+
+describe("pi-spore chat", () => {
+  it("lists a workspace's chats in the server's order", async () => {
+    const { deps, out, sent } = fakeDeps(() =>
+      Response.json({
+        agents: [
+          chatOf("A1", { title: "Fix the jump" }),
+          chatOf("A2", { kind: "side", status: "stopped", forkedFrom: "A1" }),
+          chatOf("A0", { active: false, status: "stopped", title: "First try" }),
+        ],
+      }),
+    );
+    expect(await run(["chat", "list", "W1"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/agents?workspaceId=W1");
+    expect(out).toEqual([
+      "A1  worker  idle      Fix the jump",
+      "A2  side    stopped   (no messages yet)  (from A1)",
+      "A0  older   stopped   First try",
+    ]);
+  });
+
+  it("starts a worker chat, a side chat, or a forked side chat", async () => {
+    const { deps, out, sent } = fakeDeps(() =>
+      Response.json({ agent: chatOf("A3", { kind: "side", forkedFrom: "A1" }) }, { status: 201 }),
+    );
+    expect(await run(["chat", "new", "W1"], deps)).toBe(0);
+    expect(await run(["chat", "new", "W1", "--side"], deps)).toBe(0);
+    expect(await run(["chat", "new", "W1", "--side", "--fork"], deps)).toBe(0);
+    expect(sent.map((request) => [request.method, request.url, request.body])).toEqual([
+      ["POST", "http://127.0.0.1:7420/api/agents/chats", { workspaceId: "W1", kind: "worker" }],
+      ["POST", "http://127.0.0.1:7420/api/agents/chats", { workspaceId: "W1", kind: "side" }],
+      [
+        "POST",
+        "http://127.0.0.1:7420/api/agents/chats",
+        { workspaceId: "W1", kind: "side", fork: true },
+      ],
+    ]);
+    expect(out[0]).toBe("Started A3  side    idle      (no messages yet)  (from A1)");
+  });
+
+  it("rejects --fork without --side before calling the server", async () => {
+    const { deps, err, sent } = fakeDeps(healthy);
+    expect(await run(["chat", "new", "W1", "--fork"], deps)).toBe(2);
+    expect(err[0]).toContain("--fork needs --side");
+    expect(sent).toEqual([]);
+  });
+});
+
 describe("pi-spore usage", () => {
   it("prints usage and exits 2 with no command", async () => {
     const { deps, out } = fakeDeps(healthy);

@@ -107,7 +107,10 @@ What exists now:
 - **Workspace list:** Active, then Parked; Archived behind "Show archived". Newest activity first. Each row: name,
   age, project and branch, and a status line from the agent ("Working", "Idle", "Agent failed", "Parked").
   Filtered to one project on `#/workspaces/in/<project>`. The list can be hidden to a thin strip.
-- **Middle:** the chat. Header: name, branch, agent status, context meter, Compact, Stop agent. The composer row
+- **Middle:** the chat. Header: name, branch, agent status, context meter, Compact, Stop agent. Under it, the chat
+  bar: the workspace's chats as links (active worker chat, side chats with an eye icon, older worker chats dimmed
+  with a history icon), a rename pencil, and New chat, Side chat, and Side chat with context. A side chat says it is
+  read-only at the top. An older worker chat says so with a Make active button and has no composer. The composer row
   holds the model and thinking selects. Extension dialogs show as cards; select dialogs as numbered option rows.
   With no workspace selected, the middle shows the "Start a workspace" form.
 - **Right panel:** one "Details" tab (workspace info, rename, park, resume, archive), then the module panels

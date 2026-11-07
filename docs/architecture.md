@@ -39,14 +39,35 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - One process per agent keeps the behavior of the `pi` CLI exactly. Extensions that keep per-process state still
   work. Examples: the Strata pid leases in `strata-model.ts`, and `process.env` changes. One crashing extension
   takes down one agent, not the server.
-- Launch arguments: `--session <path>` (or `--session-dir` for a new one), `--model`, `--thinking`, `--tools` for
-  read-only roles, `--no-extensions` plus one `-e` per extension from the user's setup minus
+- Launch arguments: `--session <path>` (or `--session-dir` for a new one, or `--fork <worker session> --session-dir`
+  for the first start of a side chat with the worker's context), `--model`, `--thinking`, `--tools` and
+  `--exclude-tools` for side chats (below), `--no-extensions` plus one `-e` per extension from the user's setup minus
   `agents.excludeExtensions` (ADR 0025), `-e <repo>/pi-extensions/router` (section 10; skipped when the user's setup
   already loads it), and `-e <repo>/pi-extensions/spore-bridge` (the same way). The cwd is the workspace directory.
   pi-spore's rules come from spore-bridge, not from a prompt file (ADR 0031).
 - Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (this
-  process's agent token, ADR 0032), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, and `PI_SPORE_UNITY_PROJECT`
-  (Unity projects). Later: `PI_SPORE_RUN_ID` (in a run) and the workspace action env.
+  process's agent token, ADR 0032), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker` or
+  `side`), and `PI_SPORE_UNITY_PROJECT` (Unity projects). Later: `PI_SPORE_RUN_ID` (in a run) and the workspace action env.
+- **Chats** (ADR 0030, ADR 0033). An agent is one chat: one row in `agents_agents` with a `kind` (`worker` or
+  `side`), an `active` flag, a `title`, and `forked_from` (the worker chat a side chat copies).
+  - A workspace has one active worker chat (a partial unique index). Only it and side chats can run; an older worker
+    chat is read-only history and refuses to start with 409 `chat_inactive`. The manager also refuses to start a
+    worker chat while another worker chat of the workspace has a live process (409 `worker_running`).
+  - New chat: the active worker chat becomes inactive, its process stops (its session file stays), and a new active
+    worker chat starts empty. Make active works the same way for an older chat. Both refuse with 409 `worker_busy`
+    while the current worker chat is busy, starting, or waiting for a slot. Chat changes of one workspace run one at
+    a time.
+  - A chat that becomes inactive drops its Home items: its failure, its finished mark, and its open questions, which
+    are closed (ADR 0033). Pending deliveries to it wait until it is active again.
+  - Side chats: any number, next to the worker, counted against `agents.maxLive` like any agent. They start empty,
+    or with `--fork` from a copy of the active worker chat's session on their first start (409 `nothing_to_fork`
+    when the worker chat has no session yet). The copy keeps the worker's model. After that first start the page
+    gets a new snapshot with the copied messages.
+  - Side chats are read-only through their tools: `--tools read,grep,find,ls,request_human_input` and
+    `--exclude-tools 'mcp__*'` (ADR 0033). Their bridge token is read-only, so bridge routes that run commands refuse
+    it, and spore-bridge gives them their own rules.
+  - Title: the first user message, cut to 60 characters, set on the first prompt. Chats from before titles take it
+    from their history when first read; side chats never take it from the copied history. The user can rename.
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
   CLI with `pi --session <path>`.
 - Extension dialogs (`extension_ui_request`) become pending prompts on the chat and on Home. The answer goes back as
@@ -61,7 +82,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - `run_action` `{ name }`: runs a named project action the same way.
   - Both start the run, follow it with `GET /api/bridge/runs/:id?wait=25000` until it ends, then read the last
     16 KiB of its log. An aborted tool call cancels the run.
-  - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031).
+  - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
+    chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033).
   - Not built yet: `ask_coordinator` (inside a lane), `report` (the structured stage result), `kanban_add_card`,
     `kanban_update_card`, and the coordinator's `start_lane`, `answer_lane`, `merge_lane`.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
@@ -158,7 +180,7 @@ export interface ServerHost {
 |---|---|---|
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
 | Workspace | One piece of work | id, project, name, slug, isolation, path, branch, state (active, parked, archived), card |
-| Agent | One Pi conversation | id, workspace, role, model selection, session path, process state, parent agent |
+| Agent | One Pi conversation (a chat) | id, workspace, role, kind (worker, side), active, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, coordinator agent, integration branch, spec artifact, state |
 | Lane | A workspace inside a run | id, run, workspace, wave, depends on, brief artifact, state |
 | Pipeline | A declared stage list (file) | id, source (user or project), stages |
@@ -395,7 +417,9 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     5-hour window at or above `router.pressure.fiveHour` (R18.4).
   - `GET /api/usage/tokens`: token use per project, workspace, and model, summed from the `usage` of every assistant
     message in `~/.pi-spore/sessions/<workspace id>/*.jsonl`. Sums are cached per file by size and modification
-    time. Models in the `local` tier show as free (R18.2). Lines that are not JSON are counted, not fatal.
+    time. Models in the `local` tier show as free (R18.2). Lines that are not JSON are counted, not fatal. A forked
+    session (a side chat) skips the entries copied from its parent, which are older than its header, so they count
+    once.
   - `GET /api/usage/routing?limit=<1-500>`: the newest routing decisions (default 50), and how many lines did not
     parse.
   - Wrong router settings answer 422 `bad_settings`.
@@ -410,13 +434,15 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.6, R15.
 
 - The `attention` module (core, requires `projects`, `workspaces`, `agents`) owns questions (`attention_questions`:
-  agent, workspace, question, choices, state `open` or `answered`, answer, times). The bridge module files them
+  agent, workspace, question, choices, state `open`, `answered`, or `closed`, answer, times). A question closes when
+  its worker chat stops being the active one; answering it then is 409 `question_closed` (ADR 0033). The bridge module files them
   through `QuestionsKey`.
 - `POST /api/attention/questions/:id/answer` `{ answer }` stores the answer and queues it for the agent through
   `AgentsKey.deliver`, in one transaction. A second answer is 409 `question_answered`. The agent gets a message that
   names the question, the question text, and the answer.
 - `GET /api/attention/inbox` and topic `attention:inbox` give the inbox. The topic sends the whole inbox on subscribe
   and after every change (at most once per tick). It has:
+  - Every item names its chat (`chat`: id, title, kind, active) and links to `#/workspaces/<id>/chats/<chat>`.
   - `items`, newest first: open questions; open extension dialogs of running agents; failed agents with their error;
     agents whose last run ended and that wait for the user (`finished`), unless they have an open question.
   - `running`: agents that are busy, starting, or waiting for a slot.
@@ -569,10 +595,11 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so
   it can render nothing when it does not apply.
-- `setMain` sets the middle pane. The agents module sets the chat.
+- `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
+  passes `chatId`; without it the pane shows the active worker chat.
 - `setStatus` sets a React hook that returns one status line per workspace. The agents module reads
   `GET /api/agents` on load, focus, and navigation, and every 5 s only while an agent is busy, starting, or
-  waiting.
+  waiting. The status line follows the active worker chat.
 
 ## 14. Data layout
 
@@ -599,6 +626,18 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   (ADR 0032).
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
+- Chats (agents module, ADR 0030):
+
+  | Route | Does |
+  |---|---|
+  | `GET /api/agents?workspaceId=` | The workspace's chats: the active worker chat, side chats, then older worker chats, newest first in each group. |
+  | `POST /api/agents` `{ workspaceId }` | The active worker chat; the first call creates it (201). |
+  | `POST /api/agents/chats` `{ workspaceId, kind, fork? }` | Starts a worker chat (replaces the active one) or a side chat; `fork` copies the worker chat's context. |
+  | `POST /api/agents/:id/activate` | Makes an older worker chat the active one; the current one stops first. |
+  | `POST /api/agents/:id/title` `{ title }` | Renames a chat. |
+
+  The `agent:<id>` topic sends `{ type: "agent", agent }` when a chat's title or active flag changes.
+  CLI: `pi-spore chat list <workspace>`, `pi-spore chat new <workspace> [--side [--fork]]`.
 
 ## 16. Open questions
 

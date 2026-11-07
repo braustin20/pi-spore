@@ -5,6 +5,9 @@
 //   "crash"        exits with code 3 after writing to stderr
 //   "ask:<text>"   files <text> as a question through the bridge, as spore-bridge's request_human_input does, and
 //                  ends the turn; the reply says the question id or the server's refusal
+//   "tools"        replies with the tool allowlist it got (`--tools`), or Pi's default tools
+// `--fork <file>` copies that session into a new one in `--session-dir`, with `parentSession` in the header, and
+// refuses to be combined with `--session`, as Pi does.
 // Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env} for assertions.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -36,7 +39,30 @@ const parseJson = (text, where) => {
 let sessionFile = arg("--session");
 let lastEntryId = null;
 let entryCount = 0;
-if (sessionFile) {
+const forkSource = arg("--fork");
+if (forkSource && sessionFile) {
+  process.stderr.write("Error: --fork cannot be combined with --session\n");
+  process.exit(1);
+}
+if (forkSource) {
+  const dir = arg("--session-dir");
+  mkdirSync(dir, { recursive: true });
+  const copied = readFileSync(forkSource, "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .filter((line) => parseJson(line, forkSource).type !== "session");
+  sessionFile = join(dir, `${Date.now()}_fork.jsonl`);
+  const header = {
+    type: "session",
+    version: 3,
+    id: "f",
+    cwd: process.cwd(),
+    parentSession: forkSource,
+  };
+  writeFileSync(sessionFile, `${[JSON.stringify(header), ...copied].join("\n")}\n`);
+  lastEntryId = copied.length > 0 ? parseJson(copied.at(-1), forkSource).id : null;
+  entryCount = copied.length + 1;
+} else if (sessionFile) {
   const lines = readFileSync(sessionFile, "utf8").split("\n").filter(Boolean);
   const last = parseJson(lines.at(-1) ?? "", sessionFile);
   if (last.parseError) {
@@ -117,6 +143,7 @@ async function run(text) {
   appendMessage(user);
 
   let reply = `echo: ${text}`;
+  if (text === "tools") reply = `tools: ${arg("--tools") ?? "read,bash,edit,write"}`;
   if (text.startsWith("ask:")) reply = await ask(text.slice(4), `toolu_${entryCount}`);
   if (text === "/dialog") {
     const answer = await new Promise((resolve) => {

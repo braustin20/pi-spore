@@ -24,14 +24,16 @@ export interface DeliveriesOptions {
   now: () => number;
   newId: () => string;
   workspaceOf(agentId: string): Workspace;
+  /** Whether the agent's chat can run. An older worker chat keeps its rows until it is made active again. */
+  canRun(agentId: string): boolean;
   /** Sends the message to the agent, starting it first if needed. Resolves when Pi accepts it. */
   send(agentId: string, message: string): Promise<void>;
 }
 
 /**
  * Durable deliveries to agents (architecture 6). A row stays `pending` until Pi accepts the message. Pending rows
- * are tried again on startup, when the agent is idle again, and when its workspace is resumed. A workspace that is
- * not active keeps its rows. Delivery is at least once: a crash between Pi's accept and the `done` write sends the
+ * are tried again on startup, when the agent is idle again, when its workspace is resumed, and when its chat is made
+ * active again. A workspace that is not active, and a chat that cannot run, keep their rows. Delivery is at least once: a crash between Pi's accept and the `done` write sends the
  * message again.
  */
 export class Deliveries {
@@ -90,7 +92,7 @@ export class Deliveries {
         this.fail(row, error);
         return;
       }
-      if (workspace.state !== "active") return;
+      if (workspace.state !== "active" || !this.options.canRun(agentId)) return;
       try {
         await this.options.send(agentId, row.message);
       } catch (error) {

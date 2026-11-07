@@ -179,6 +179,21 @@ describe("Home inbox", () => {
     );
   });
 
+  it("names the chat of each item, and drops what an older worker chat left behind", async () => {
+    const { agentId, workspaceId } = await makeAgent("switch");
+    await json(await prompt(agentId, "one"));
+    await until(async () => (await kinds()).includes("finished switch"));
+    expect((await inbox()).items[0]).toMatchObject({
+      chat: { id: agentId, kind: "worker", active: true, title: "one" },
+    });
+
+    await json(
+      await server.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
+      201,
+    );
+    await until(async () => (await kinds()).length === 0);
+  });
+
   it("answers 404 for an unknown question", async () => {
     const response = await server.request("POST", "/api/attention/questions/nope/answer", {
       answer: "x",

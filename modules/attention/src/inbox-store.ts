@@ -15,7 +15,8 @@ export function itemKey(item: InboxItem): string {
 
 /** The title and body of a desktop notification for an item (R15.2). */
 export function notification(item: InboxItem): { title: string; body: string } {
-  const where = `${item.workspace.name} (${item.workspace.projectName})`;
+  const chat = item.chat.title ? `, ${item.chat.title}` : "";
+  const where = `${item.workspace.name} (${item.workspace.projectName}${chat})`;
   switch (item.kind) {
     case "question":
       return { title: `Question from ${where}`, body: item.question.question };

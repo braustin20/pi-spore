@@ -5,9 +5,11 @@ import { Check, Errors } from "typebox/value";
 export interface BridgeEnv {
   url: string;
   token: string;
+  /** `side`: a read-only side chat, which gets its own rules (ADR 0033). */
+  chatKind: "worker" | "side";
 }
 
-/** Reads `PI_SPORE_URL` and `PI_SPORE_TOKEN`, or names the one that is missing. */
+/** Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, and `PI_SPORE_CHAT_KIND`, or names what is missing or wrong. */
 export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): BridgeEnv {
   const url = env.PI_SPORE_URL;
   const token = env.PI_SPORE_TOKEN;
@@ -15,7 +17,10 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
     throw new Error("spore-bridge runs only inside pi-spore agents: PI_SPORE_URL is not set");
   if (!token)
     throw new Error("spore-bridge runs only inside pi-spore agents: PI_SPORE_TOKEN is not set");
-  return { url: url.replace(/\/+$/, ""), token };
+  const kind = env.PI_SPORE_CHAT_KIND ?? "worker";
+  if (kind !== "worker" && kind !== "side")
+    throw new Error(`spore-bridge: PI_SPORE_CHAT_KIND must be worker or side, not "${kind}"`);
+  return { url: url.replace(/\/+$/, ""), token, chatKind: kind };
 }
 
 export const RunStatus = Type.Union([

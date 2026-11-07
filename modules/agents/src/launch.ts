@@ -16,6 +16,20 @@ export const SPORE_EXTENSIONS: readonly string[] = [
 ];
 
 /**
+ * The tools of a side chat (ADR 0033). `--tools` is an allowlist: Pi never registers a built-in or extension tool
+ * that it does not name, so no extension can turn `edit`, `write`, `bash`, `codemode`, or a subagent tool back on, and
+ * a forked session's recorded loadout cannot either. Pi keeps MCP tools (`mcp__*`) registered past an allowlist that
+ * names none, and MCP servers can write, so `--exclude-tools` removes them. `request_human_input` (spore-bridge) only
+ * files a question; spore-bridge's `check` and `run_action` run project commands and are left out.
+ */
+export const SIDE_CHAT_TOOLS: readonly string[] = [
+  "--tools",
+  "read,grep,find,ls,request_human_input",
+  "--exclude-tools",
+  "mcp__*",
+];
+
+/**
  * The launch arguments that load the user's Pi setup minus excluded packages (ADR 0025): `--no-extensions`,
  * `--no-skills`, and `--no-prompt-templates`, then one explicit flag per remaining resource. Pi's own package
  * manager resolves the list from the user's and the project's settings without loading any extension code. Packages

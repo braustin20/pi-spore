@@ -1,16 +1,19 @@
 import Type, { type Static } from "typebox";
 import { ActionRun } from "./actions.js";
-import { AgentDialog, AgentStatus } from "./agents.js";
+import { AgentDialog, AgentStatus, ChatKind } from "./agents.js";
 import { WorkspaceState } from "./workspaces.js";
 
-/** A question an agent filed for the user with `request_human_input` (R3.5, ADR 0008). */
+/**
+ * A question an agent filed for the user with `request_human_input` (R3.5, ADR 0008). `closed`: its chat stopped
+ * being the active worker chat before an answer came (ADR 0033).
+ */
 export const Question = Type.Object({
   id: Type.String(),
   agentId: Type.String(),
   workspaceId: Type.String(),
   question: Type.String(),
   choices: Type.Optional(Type.Array(Type.String())),
-  state: Type.Union([Type.Literal("open"), Type.Literal("answered")]),
+  state: Type.Union([Type.Literal("open"), Type.Literal("answered"), Type.Literal("closed")]),
   answer: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
   answeredAt: Type.Optional(Type.Integer()),
@@ -43,11 +46,21 @@ export const InboxWorkspace = Type.Object({
 });
 export type InboxWorkspace = Static<typeof InboxWorkspace>;
 
+/** The chat an item belongs to, so Home can name it and link to it. */
+export const InboxChat = Type.Object({
+  id: Type.String(),
+  title: Type.Optional(Type.String()),
+  kind: ChatKind,
+  active: Type.Boolean(),
+});
+export type InboxChat = Static<typeof InboxChat>;
+
 /** Fields every Home item has. `at` is when it began to need the user; Home sorts newest first. */
 const itemBase = {
   at: Type.Integer(),
   agentId: Type.String(),
   workspace: InboxWorkspace,
+  chat: InboxChat,
 };
 
 /** One thing that needs the user on Home (R15.1). `finished`: the agent's last run ended and it waits for the user. */
@@ -62,6 +75,7 @@ export type InboxItem = Static<typeof InboxItem>;
 export const RunningItem = Type.Object({
   agentId: Type.String(),
   workspace: InboxWorkspace,
+  chat: InboxChat,
   status: AgentStatus,
   since: Type.Integer(),
 });

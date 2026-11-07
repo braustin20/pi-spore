@@ -9,6 +9,7 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { unityModule } from "@pi-spore/mod-unity/server";
@@ -16,7 +17,7 @@ import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { ChatState } from "@pi-spore/shared";
+import type { Agent, ChatState } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, createAgentsModule } from "./server.js";
@@ -28,7 +29,11 @@ let scratch: string;
 let record: string;
 let agentsModule: ReturnType<typeof createAgentsModule>;
 
-async function setup(options: AgentsModuleOptions = {}, extraEnv: Record<string, string> = {}) {
+async function setup(
+  options: AgentsModuleOptions = {},
+  extraEnv: Record<string, string> = {},
+  serverOptions: { home?: string; firstId?: number } = {},
+) {
   agentsModule = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
@@ -44,14 +49,10 @@ async function setup(options: AgentsModuleOptions = {}, extraEnv: Record<string,
     startTimeoutMs: 5_000,
     ...options,
   });
-  server = await createTestServer([
-    projectsModule,
-    vcsGitModule,
-    vcsFolderModule,
-    workspacesModule,
-    unityModule,
-    agentsModule,
-  ]);
+  server = await createTestServer(
+    [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, unityModule, agentsModule],
+    serverOptions,
+  );
 }
 
 beforeEach(() => {
@@ -164,6 +165,7 @@ describe("agents", () => {
     expect(launch?.env).toEqual({
       PI_SPORE_AGENT_ID: agentId,
       PI_SPORE_WORKSPACE_ID: workspaceId,
+      PI_SPORE_CHAT_KIND: "worker",
       PI_SPORE_URL: server.url,
       PI_SPORE_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
@@ -429,5 +431,247 @@ describe("agents", () => {
       await server.request("POST", "/api/agents", { workspaceId }),
     );
     expect(again.agent.id).toBe(agentId);
+  });
+});
+
+describe("chats (ADR 0030)", () => {
+  const view = async (agentId: string) =>
+    (await json<{ agent: Agent }>(await server.request("GET", `/api/agents/${agentId}`))).agent;
+  const chats = async (workspaceId: string) =>
+    (
+      await json<{ agents: Agent[] }>(
+        await server.request("GET", `/api/agents?workspaceId=${workspaceId}`),
+      )
+    ).agents;
+  const newChat = (workspaceId: string, kind: "worker" | "side", fork?: boolean) =>
+    server.request("POST", "/api/agents/chats", {
+      workspaceId,
+      kind,
+      ...(fork === undefined ? {} : { fork }),
+    });
+  const code = async (response: Response, status: number) => {
+    const body = (await response.json()) as { error?: { code: string } };
+    expect(response.status).toBe(status);
+    return body.error?.code;
+  };
+  const replied = (agentId: string, count: number) =>
+    until(() => statuses(agentId).filter((s) => s === "idle").length >= count);
+  const sessionFile = (agentId: string) =>
+    server.store.get<{ session_file: string | null }>(
+      "SELECT session_file FROM agents_agents WHERE id = ?",
+      agentId,
+    )?.session_file;
+
+  it("starts a fresh worker chat; the old one stops, stays readable, and cannot run", async () => {
+    await setup();
+    const { agentId: first, workspaceId } = await makeAgent();
+    await json(await prompt(first, "one"));
+    await replied(first, 2);
+
+    const { agent: second } = await json<{ agent: Agent }>(
+      await newChat(workspaceId, "worker"),
+      201,
+    );
+    expect(second).toMatchObject({ kind: "worker", active: true, status: "stopped" });
+    expect(await view(first)).toMatchObject({ active: false, status: "stopped", title: "one" });
+    expect(texts(await chat(first))).toEqual(["user: one", "assistant: echo: one"]);
+    expect(await code(await prompt(first, "two"), 409)).toBe("chat_inactive");
+
+    // The page's "get the worker" call now answers with the new chat.
+    const current = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents", { workspaceId }),
+    );
+    expect(current.agent.id).toBe(second.id);
+
+    await json(await prompt(second.id, "fresh"));
+    await replied(second.id, 2);
+    expect(launches()[1]?.argv).toContain("--session-dir");
+    expect(texts(await chat(second.id))).toEqual(["user: fresh", "assistant: echo: fresh"]);
+    expect((await chats(workspaceId)).map((agent) => agent.id)).toEqual([second.id, first]);
+  });
+
+  it("does not switch chats while the worker is working", async () => {
+    await setup();
+    const { agentId, workspaceId } = await makeAgent();
+    await json(await prompt(agentId, "slow:400"));
+    await until(() => status(agentId) === "busy");
+    expect(await code(await newChat(workspaceId, "worker"), 409)).toBe("worker_busy");
+    expect((await view(agentId)).active).toBe(true);
+  });
+
+  it("makes an older worker chat active again and stops the current one first", async () => {
+    await setup();
+    const { agentId: first, workspaceId } = await makeAgent();
+    await json(await prompt(first, "one"));
+    await replied(first, 2);
+    const { agent: second } = await json<{ agent: Agent }>(
+      await newChat(workspaceId, "worker"),
+      201,
+    );
+    await json(await prompt(second.id, "two"));
+    await replied(second.id, 2);
+
+    const { agent } = await json<{ agent: Agent }>(
+      await server.request("POST", `/api/agents/${first}/activate`),
+    );
+    expect(agent).toMatchObject({ id: first, active: true });
+    expect(await view(second.id)).toMatchObject({ active: false, status: "stopped" });
+    expect(agentsModule.manager().liveCount()).toBe(0);
+
+    await json(await prompt(first, "three"));
+    await replied(first, 4);
+    expect(launches().at(-1)?.argv).toEqual(
+      expect.arrayContaining(["--session", sessionFile(first)]),
+    );
+    expect(texts(await chat(first)).slice(-2)).toEqual(["user: three", "assistant: echo: three"]);
+    expect((await chats(workspaceId)).map((chat) => chat.id)).toEqual([first, second.id]);
+  });
+
+  it("gives a side chat a copy of the worker's context and read-only tools", async () => {
+    await setup();
+    const { agentId: worker, workspaceId } = await makeAgent();
+    await json(await prompt(worker, "one"));
+    await replied(worker, 2);
+
+    const { agent: side } = await json<{ agent: Agent }>(
+      await newChat(workspaceId, "side", true),
+      201,
+    );
+    expect(side).toMatchObject({ kind: "side", active: true, forkedFrom: worker });
+    await json(await prompt(side.id, "tools"));
+    await replied(side.id, 2);
+
+    const launch = launches()[1];
+    const tools = ["--tools", "read,grep,find,ls,request_human_input", "--exclude-tools", "mcp__*"];
+    expect(launch?.argv).toEqual([
+      "--mode",
+      "rpc",
+      "--no-extensions",
+      "--fork",
+      sessionFile(worker),
+      "--session-dir",
+      join(server.paths.sessions, workspaceId),
+      ...tools,
+    ]);
+    expect(launch?.env.PI_SPORE_CHAT_KIND).toBe("side");
+    // Its bridge token is marked read-only, so bridge routes that run commands refuse it.
+    expect(server.agentTokens.find(launch?.env.PI_SPORE_TOKEN)).toEqual({
+      agentId: side.id,
+      workspaceId,
+      readOnly: true,
+    });
+    expect(texts(await chat(side.id))).toEqual([
+      "user: one",
+      "assistant: echo: one",
+      "user: tools",
+      "assistant: tools: read,grep,find,ls,request_human_input",
+    ]);
+    // The worker and the side chat run at the same time, and the side chat has its own session file.
+    expect(agentsModule.manager().liveCount()).toBe(2);
+    expect(sessionFile(side.id)).not.toBe(sessionFile(worker));
+    // Its own first message names it, not the worker's.
+    expect((await view(side.id)).title).toBe("tools");
+
+    await json(await server.request("POST", `/api/agents/${side.id}/stop`));
+    await json(await prompt(side.id, "again"));
+    await replied(side.id, 4);
+    expect(launches()[2]?.argv).toEqual(
+      expect.arrayContaining(["--session", sessionFile(side.id), ...tools]),
+    );
+    expect(launches()[2]?.argv).not.toContain("--fork");
+  });
+
+  it("starts an empty side chat with read-only tools, and refuses a fork with nothing to copy", async () => {
+    await setup();
+    const { workspaceId } = await makeAgent();
+    expect(await code(await newChat(workspaceId, "side", true), 409)).toBe("nothing_to_fork");
+    expect(await code(await newChat(workspaceId, "worker", true), 400)).toBe("bad_request");
+
+    const { agent: side } = await json<{ agent: Agent }>(await newChat(workspaceId, "side"), 201);
+    await json(await prompt(side.id, "tools"));
+    await replied(side.id, 2);
+    expect(launches()[0]?.argv).toEqual(
+      expect.arrayContaining(["--session-dir", "--tools", "--exclude-tools"]),
+    );
+    expect(texts(await chat(side.id)).at(-1)).toBe(
+      "assistant: tools: read,grep,find,ls,request_human_input",
+    );
+    // A side chat is never a worker chat to switch to.
+    expect(await code(await server.request("POST", `/api/agents/${side.id}/activate`), 409)).toBe(
+      "not_a_worker_chat",
+    );
+  });
+
+  it("counts side chats against the live-agent limit", async () => {
+    await setup({ maxLive: 1 });
+    const { agentId: worker, workspaceId } = await makeAgent();
+    await json(await prompt(worker, "one"));
+    await replied(worker, 2);
+    const { agent: side } = await json<{ agent: Agent }>(await newChat(workspaceId, "side"), 201);
+
+    const pending = prompt(side.id, "hi");
+    await until(() => status(side.id) === "waiting");
+    await json(await server.request("POST", `/api/agents/${worker}/stop`));
+    expect(await json(await pending)).toEqual({ disposition: "started" });
+  });
+
+  it("titles a chat with its first message, cut short, and lets the user rename it", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    expect((await view(agentId)).title).toBeUndefined();
+    await json(await prompt(agentId, `\n  Fix   the ${"login ".repeat(20)}\nsecond line`));
+    const title = (await view(agentId)).title ?? "";
+    expect(title.startsWith("Fix the login login")).toBe(true);
+    expect(title.length).toBeLessThanOrEqual(60);
+    expect(title.endsWith("…")).toBe(true);
+
+    const renamed = await json<{ agent: Agent }>(
+      await server.request("POST", `/api/agents/${agentId}/title`, { title: "  Login  page " }),
+    );
+    expect(renamed.agent.title).toBe("Login page");
+    await json(await prompt(agentId, "later"));
+    expect((await view(agentId)).title).toBe("Login page");
+    expect(
+      await code(
+        await server.request("POST", `/api/agents/${agentId}/title`, { title: "  " }),
+        400,
+      ),
+    ).toBe("bad_request");
+  });
+
+  it("keeps a workspace's existing worker as its active worker chat after the upgrade", async () => {
+    const home = join(scratch, "home");
+    await setup({}, {}, { home });
+    const { agentId, workspaceId } = await makeAgent();
+    await json(await prompt(agentId, "before"));
+    await replied(agentId, 2);
+    await agentsModule.manager().stopAll();
+    server.close();
+
+    // Put the store back to the one-worker table of migration 3.
+    const db = new DatabaseSync(server.paths.database);
+    db.exec(`
+      CREATE TABLE old AS SELECT id, workspace_id, role, session_file, created_at, waiting_since FROM agents_agents;
+      DROP TABLE agents_agents;
+      CREATE TABLE agents_agents (
+        id TEXT PRIMARY KEY, workspace_id TEXT NOT NULL, role TEXT NOT NULL, session_file TEXT,
+        created_at INTEGER NOT NULL, waiting_since INTEGER, UNIQUE (workspace_id, role)
+      );
+      INSERT INTO agents_agents SELECT * FROM old;
+      DROP TABLE old;
+      DELETE FROM core_migrations WHERE module = 'agents' AND version = 4;
+    `);
+    db.close();
+
+    await setup({}, {}, { home, firstId: 1_000 });
+    const { agent } = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents", { workspaceId }),
+    );
+    expect(agent).toMatchObject({ id: agentId, kind: "worker", active: true });
+    expect(texts(await chat(agentId))).toEqual(["user: before", "assistant: echo: before"]);
+    // The title comes from the history once the chat is read.
+    expect((await view(agentId)).title).toBe("before");
+    // A second worker chat is now possible.
+    await json(await newChat(workspaceId, "worker"), 201);
   });
 });

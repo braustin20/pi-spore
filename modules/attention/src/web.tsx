@@ -1,6 +1,6 @@
 import { type AgentsWeb, AgentsWebKey } from "@pi-spore/mod-agents/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
-import type { InboxItem, InboxWorkspace, Question, RunningItem } from "@pi-spore/shared";
+import type { InboxChat, InboxItem, InboxWorkspace, Question, RunningItem } from "@pi-spore/shared";
 import {
   Button,
   Chip,
@@ -40,13 +40,26 @@ function showNotification(item: InboxItem): void {
   };
 }
 
-/** A card's first line: the workspace, its project, and when the item came up. */
+/** Where a chat opens: `#/workspaces/<workspace>/chats/<chat>`. */
+const chatHref = (workspace: InboxWorkspace, chat: InboxChat) =>
+  `#/workspaces/${workspace.id}/chats/${chat.id}`;
+
+/** The chat's name as Home shows it: its title, and what kind of chat it is when that is not the worker chat. */
+function chatName(chat: InboxChat): string {
+  const title = chat.title ?? "New chat";
+  if (chat.kind === "side") return `${title} (side chat)`;
+  return chat.active ? title : `${title} (older chat)`;
+}
+
+/** A card's first line: the workspace, its project, the chat, and when the item came up. */
 function Where({
   workspace,
+  chat,
   at,
   children,
 }: {
   workspace: InboxWorkspace;
+  chat: InboxChat;
   at: number;
   children?: ReactNode;
 }) {
@@ -56,6 +69,9 @@ function Where({
         {workspace.name}
       </a>
       <span className="text-muted">{workspace.projectName}</span>
+      <a href={chatHref(workspace, chat)} className="max-w-64 truncate text-muted">
+        {chatName(chat)}
+      </a>
       {workspace.state !== "active" && <Chip>{workspace.state}</Chip>}
       {children}
       <span className="ml-auto text-xs text-muted" title={new Date(at).toLocaleString()}>
@@ -147,7 +163,7 @@ function ItemCard({
   return (
     <Panel aria-label={`${TITLES[item.kind]}: ${item.workspace.name}`}>
       <div className="flex flex-col gap-3">
-        <Where workspace={item.workspace} at={item.at}>
+        <Where workspace={item.workspace} chat={item.chat} at={item.at}>
           <Chip tone={TONES[item.kind]}>{TITLES[item.kind]}</Chip>
         </Where>
         {item.kind === "question" && <QuestionCard question={item.question} onError={onError} />}
@@ -167,7 +183,7 @@ function ItemCard({
         {(item.kind === "failed" || item.kind === "finished") && (
           <div className="flex gap-2">
             <Button size="sm" asChild>
-              <a href={`#/workspaces/${item.workspace.id}`} className="no-underline">
+              <a href={chatHref(item.workspace, item.chat)} className="no-underline">
                 Open chat
               </a>
             </Button>
@@ -252,6 +268,12 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
                 <li key={run.agentId} className="flex items-center gap-2 text-sm">
                   <a href={`#/workspaces/${run.workspace.id}`}>{run.workspace.name}</a>
                   <span className="text-muted">{run.workspace.projectName}</span>
+                  <a
+                    href={chatHref(run.workspace, run.chat)}
+                    className="max-w-64 truncate text-muted"
+                  >
+                    {chatName(run.chat)}
+                  </a>
                   <Chip tone={run.status === "waiting" ? "warn" : "run"}>
                     {RUNNING_TEXT[run.status]}
                   </Chip>

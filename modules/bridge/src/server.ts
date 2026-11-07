@@ -55,6 +55,14 @@ export const bridgeModule: ServerModule = {
 
     host.routes.post("/runs", async (c) => {
       const caller = bridgeCaller(c);
+      if (caller.readOnly) {
+        // The tools already keep side chats from running actions; this guards the route as well (ADR 0033).
+        throw new ApiError(
+          403,
+          "read_only_chat",
+          "A side chat is read-only and cannot run actions",
+        );
+      }
       const request = parseJsonBody(StartBridgeRunRequest, await c.req.text(), "run request");
       const workspace = workspaces.get(caller.workspaceId);
       if (workspace.state !== "active") {

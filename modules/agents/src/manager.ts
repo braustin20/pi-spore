@@ -7,14 +7,16 @@ import {
   type AgentModel,
   type AgentStatus,
   applyPiEvent,
+  type ChatKind,
   type ChatState,
   type ContextUsage,
+  chatTitle,
   type DialogAnswer,
   emptyChat,
   type Workspace,
 } from "@pi-spore/shared";
-import type { AgentAttention } from "./contract.js";
-import { modelArgs, type RoleDefaults } from "./launch.js";
+import type { AgentAttention, AgentChange } from "./contract.js";
+import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
 import { readTranscript } from "./transcript.js";
 
@@ -22,13 +24,17 @@ export interface AgentRecord {
   id: string;
   workspaceId: string;
   role: "worker";
+  kind: ChatKind;
+  /** The workspace's active worker chat, or a side chat: the chat can run (ADR 0030). */
+  active: boolean;
+  title: string | null;
+  /** The worker chat a side chat forks on its first start. */
+  forkedFrom: string | null;
   sessionFile: string | null;
   createdAt: number;
   /** When the last run ended and the agent began to wait for the user, or null. */
   waitingSince: number | null;
 }
-
-export type AgentChange = "status" | "dialog" | "waiting";
 
 export interface ManagerOptions {
   pi: PiCommand;
@@ -50,6 +56,7 @@ export interface ManagerOptions {
   workspace(id: string): Workspace;
   saveSessionFile(agentId: string, file: string): void;
   saveWaiting(agentId: string, since: number | null): void;
+  saveTitle(agentId: string, title: string): void;
   /** Called after a status, dialog, or waiting change, for Home and deliveries. */
   onChange(agentId: string, change: AgentChange): void;
   maxLive: number;
@@ -70,6 +77,8 @@ export type AgentEvent =
     }
   | { type: "pi"; event: unknown }
   | { type: "status"; status: AgentStatus; error?: string }
+  /** The chat's title or active flag changed. */
+  | { type: "agent"; agent: Agent }
   | { type: "model"; model?: AgentModel; thinkingLevel?: string }
   | { type: "stats"; contextUsage?: ContextUsage }
   | { type: "dialog"; dialog: AgentDialog }
@@ -96,6 +105,16 @@ interface Live {
   dialogs: Map<string, { dialog: AgentDialog; openedAt: number; timer?: NodeJS.Timeout }>;
   idleTimer?: NodeJS.Timeout;
 }
+
+/** The text of a message's content: a string, or the text blocks of an array. */
+const textOf = (content: unknown): string => {
+  if (typeof content === "string") return content;
+  if (!Array.isArray(content)) return "";
+  return content
+    .map((block) => (block as { type?: unknown; text?: unknown }).text)
+    .filter((text): text is string => typeof text === "string")
+    .join("\n");
+};
 
 const asModel = (value: unknown): AgentModel | undefined => {
   if (typeof value !== "object" || value === null) return undefined;
@@ -148,14 +167,46 @@ export class AgentManager {
 
   view(id: string): Agent {
     const live = this.get(id);
+    const { record } = live;
     return {
-      id: live.record.id,
-      workspaceId: live.record.workspaceId,
-      role: live.record.role,
+      id: record.id,
+      workspaceId: record.workspaceId,
+      role: record.role,
+      kind: record.kind,
+      active: record.active,
+      ...(record.title === null ? {} : { title: record.title }),
+      ...(record.forkedFrom === null ? {} : { forkedFrom: record.forkedFrom }),
       status: live.status,
       ...(live.error ? { error: live.error } : {}),
-      createdAt: live.record.createdAt,
+      createdAt: record.createdAt,
     };
+  }
+
+  /** The chats of a workspace. */
+  chats(workspaceId: string): Agent[] {
+    return [...this.agents.values()]
+      .filter((live) => live.record.workspaceId === workspaceId)
+      .map((live) => this.view(live.record.id));
+  }
+
+  rename(id: string, title: string): void {
+    this.setTitle(this.get(id), title);
+  }
+
+  /**
+   * Makes a chat able to run or turns it into read-only history (ADR 0030). Turning it off stops its process first,
+   * and clears what Home shows about it: a failure or a reply waiting for the user. The caller writes the store.
+   */
+  async setActive(id: string, active: boolean): Promise<void> {
+    const live = this.get(id);
+    if (live.record.active === active) return;
+    live.record.active = active;
+    if (!active) {
+      await this.stop(id);
+      this.setWaiting(live, null);
+      if (live.status === "failed") this.setStatus(live, "stopped");
+    }
+    this.publishChat(live);
   }
 
   /** What Home needs about every agent. */
@@ -178,17 +229,19 @@ export class AgentManager {
     const live = this.get(id);
     await this.loadHistory(live);
     this.setWaiting(live, null);
-    return [
-      {
-        type: "snapshot",
-        agent: this.view(id),
-        ...(live.model ? { model: live.model } : {}),
-        ...(live.thinkingLevel ? { thinkingLevel: live.thinkingLevel } : {}),
-        ...(live.contextUsage ? { contextUsage: live.contextUsage } : {}),
-        dialogs: [...live.dialogs.values()].map((entry) => entry.dialog),
-        chat: live.chat,
-      },
-    ];
+    return [this.snapshotEvent(live)];
+  }
+
+  private snapshotEvent(live: Live): AgentEvent {
+    return {
+      type: "snapshot",
+      agent: this.view(live.record.id),
+      ...(live.model ? { model: live.model } : {}),
+      ...(live.thinkingLevel ? { thinkingLevel: live.thinkingLevel } : {}),
+      ...(live.contextUsage ? { contextUsage: live.contextUsage } : {}),
+      dialogs: [...live.dialogs.values()].map((entry) => entry.dialog),
+      chat: live.chat,
+    };
   }
 
   /** Sends a user message. While the agent works it goes in as `whileBusy` (default steer). */
@@ -201,6 +254,7 @@ export class AgentManager {
     const process = await this.ensureRunning(live);
     this.clearIdle(live);
     this.setWaiting(live, null);
+    if (live.record.title === null) this.setTitle(live, chatTitle(message));
     const fields = live.chat.busy ? { message, streamingBehavior: whileBusy } : { message };
     const result = await process.request<{ disposition?: string }>("prompt", fields);
     return result?.disposition ?? "started";
@@ -331,6 +385,18 @@ export class AgentManager {
     this.options.onChange(live.record.id, "waiting");
   }
 
+  private setTitle(live: Live, title: string): void {
+    if (!title || live.record.title === title) return;
+    live.record.title = title;
+    this.options.saveTitle(live.record.id, title);
+    this.publishChat(live);
+  }
+
+  private publishChat(live: Live): void {
+    this.publish(live, { type: "agent", agent: this.view(live.record.id) });
+    this.options.onChange(live.record.id, "chat");
+  }
+
   private publishModel(live: Live): void {
     this.publish(live, {
       type: "model",
@@ -356,6 +422,11 @@ export class AgentManager {
         if (!live.model && transcript.model) live.model = transcript.model;
         if (!live.thinkingLevel && transcript.thinkingLevel)
           live.thinkingLevel = transcript.thinkingLevel;
+        // Chats from before titles existed. A side chat's history starts with its worker's messages, so it is left
+        // to its own first message.
+        const first = transcript.messages.find((message) => message.role === "user");
+        if (live.record.title === null && live.record.forkedFrom === null && first)
+          this.setTitle(live, chatTitle(textOf(first.content)));
       } catch (error) {
         if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
       }
@@ -372,12 +443,44 @@ export class AgentManager {
 
   private ensureRunning(live: Live): Promise<PiProcess> {
     if (live.process?.alive) return Promise.resolve(live.process);
+    try {
+      this.assertCanRun(live);
+    } catch (error) {
+      return Promise.reject(error);
+    }
     if (!live.starting) {
       live.starting = this.start(live).finally(() => {
         delete live.starting;
       });
     }
     return live.starting;
+  }
+
+  /** Only an active chat runs, and never two worker processes in one workspace (ADR 0030). */
+  private assertCanRun(live: Live): void {
+    const { record } = live;
+    if (!record.active) {
+      throw new ApiError(
+        409,
+        "chat_inactive",
+        "This is an older worker chat. It is read-only until you make it active again.",
+      );
+    }
+    if (record.kind !== "worker") return;
+    for (const other of this.agents.values()) {
+      if (
+        other !== live &&
+        other.record.workspaceId === record.workspaceId &&
+        other.record.kind === "worker" &&
+        (other.process?.alive || other.starting)
+      ) {
+        throw new ApiError(
+          409,
+          "worker_running",
+          "Another worker chat of this workspace is still running. Stop it first.",
+        );
+      }
+    }
   }
 
   /** Waits for a free live slot, in arrival order. */
@@ -396,6 +499,13 @@ export class AgentManager {
     await this.acquireSlot(live);
     const { record } = live;
     const workspace = this.options.workspace(record.workspaceId);
+    try {
+      // The chat may have been switched off while it waited for a slot.
+      this.assertCanRun(live);
+    } catch (error) {
+      this.releaseSlot();
+      throw error;
+    }
     if (workspace.state !== "active") {
       this.releaseSlot();
       throw new ApiError(
@@ -416,7 +526,11 @@ export class AgentManager {
       throw error;
     }
     const args = [...(await this.options.resourceArgs(workspace.path)), ...sessionArgs];
-    const token = this.options.tokens.issue({ agentId: record.id, workspaceId: workspace.id });
+    const token = this.options.tokens.issue({
+      agentId: record.id,
+      workspaceId: workspace.id,
+      ...(record.kind === "side" ? { readOnly: true } : {}),
+    });
     const env = {
       ...(await this.options.env(record, workspace)),
       PI_SPORE_URL: this.options.url,
@@ -453,9 +567,16 @@ export class AgentManager {
       throw new ApiError(503, "agent_start_failed", message);
     }
 
+    const forked = record.sessionFile === null && record.forkedFrom !== null;
     if (typeof state.sessionFile === "string" && state.sessionFile !== record.sessionFile) {
       record.sessionFile = state.sessionFile;
       this.options.saveSessionFile(record.id, state.sessionFile);
+    }
+    if (forked) {
+      // The first start of a side chat copied the worker's messages; open pages get them in a new snapshot.
+      live.loaded = false;
+      await this.loadHistory(live);
+      this.publish(live, this.snapshotEvent(live));
     }
     const model = asModel(state.model);
     if (model) live.model = model;
@@ -467,9 +588,18 @@ export class AgentManager {
     return process;
   }
 
-  /** `--session` to resume, after checking its folder exists (Pi hangs otherwise, spike Q1), or a new session. */
+  /**
+   * `--session` to resume, after checking its folder exists (Pi hangs otherwise, spike Q1); `--fork` for the first
+   * start of a side chat with its worker's context; or a new session. Side chats always get read-only tools.
+   */
   private async sessionArgs(live: Live, workspace: Workspace): Promise<string[]> {
+    const tools = live.record.kind === "side" ? SIDE_CHAT_TOOLS : [];
+    return [...(await this.sessionFileArgs(live, workspace)), ...tools];
+  }
+
+  private async sessionFileArgs(live: Live, workspace: Workspace): Promise<string[]> {
     const file = live.record.sessionFile;
+    const dir = join(this.options.sessionsDir, workspace.id);
     if (file && (await stat(file).catch(() => undefined))) {
       const { cwd } = await readTranscript(file);
       if (cwd && !(await stat(cwd).catch(() => undefined))) {
@@ -481,8 +611,20 @@ export class AgentManager {
       }
       return ["--session", file];
     }
+    if (live.record.forkedFrom !== null) {
+      // The copy keeps the worker's model, so no role model is forced on it.
+      const source = this.agents.get(live.record.forkedFrom)?.record.sessionFile;
+      if (!source || !(await stat(source).catch(() => undefined))) {
+        throw new ApiError(
+          409,
+          "fork_source_missing",
+          "The worker chat this side chat copies has no session file anymore.",
+        );
+      }
+      return ["--fork", source, "--session-dir", dir];
+    }
     const role = modelArgs(await this.options.roleDefaults(live.record.role));
-    return ["--session-dir", join(this.options.sessionsDir, workspace.id), ...role];
+    return ["--session-dir", dir, ...role];
   }
 
   private onEvent(live: Live, event: Record<string, unknown>): void {

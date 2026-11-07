@@ -52,6 +52,8 @@ export function reducePage(state: PageState, raw: unknown): PageState {
     }
     case "pi":
       return { ...state, chat: applyPiEvent(state.chat, event.event) };
+    case "agent":
+      return { ...state, agent: event.agent as Agent };
     case "status": {
       if (!state.agent) return state;
       const { error: _old, ...agent } = state.agent;

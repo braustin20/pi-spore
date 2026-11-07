@@ -25,21 +25,33 @@ const count = (value: unknown): number =>
 /**
  * Sums `usage` of every assistant message in a Pi session file, on all branches: each one was a real request
  * (Pi docs: session-format.md). Lines that are not JSON are counted, not fatal: a crash can leave a partial line.
+ * A forked session (a side chat, ADR 0030) starts with copies of its parent's entries, written before its header's
+ * time; those requests were counted in the parent's file, so they are skipped here.
  */
 export function sumSession(text: string, workspaceId: string): SessionUse {
   const models = new Map<string, ModelUse>();
   let skippedLines = 0;
+  let forkedAt: number | undefined;
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
-    let entry: { type?: unknown; message?: unknown };
+    let entry: { type?: unknown; message?: unknown; timestamp?: unknown; parentSession?: unknown };
     try {
       entry = JSON.parse(line) as typeof entry;
     } catch {
       skippedLines++;
       continue;
     }
+    if (entry.type === "session" && typeof entry.parentSession === "string") {
+      const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
+      if (!Number.isNaN(at)) forkedAt = at;
+      continue;
+    }
     if (entry.type !== "message" || typeof entry.message !== "object" || entry.message === null)
       continue;
+    if (forkedAt !== undefined && typeof entry.timestamp === "string") {
+      const at = Date.parse(entry.timestamp);
+      if (!Number.isNaN(at) && at < forkedAt) continue;
+    }
     const message = entry.message as {
       role?: unknown;
       provider?: unknown;

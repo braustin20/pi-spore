@@ -194,6 +194,45 @@ describe("GET /api/usage/tokens", () => {
     expect(byModel["gpt-6.1-terra"]).toMatchObject({ cost: 0.25, local: false });
   });
 
+  it("counts a forked session's copied requests once, in its parent", async () => {
+    const ws = await workspace();
+    const dir = join(server.paths.sessions, ws.id);
+    mkdirSync(dir, { recursive: true });
+    const at = (time: string, line: string) =>
+      JSON.stringify({ ...JSON.parse(line), timestamp: time });
+    const copied = at(
+      "2026-11-07T10:00:00.000Z",
+      assistant("claude-bridge", "claude-sonnet-5-5", 100, 20),
+    );
+    writeFileSync(
+      join(dir, "worker.jsonl"),
+      [
+        JSON.stringify({ type: "session", cwd: "/x", timestamp: "2026-11-07T09:00:00.000Z" }),
+        copied,
+      ].join("\n"),
+    );
+    writeFileSync(
+      join(dir, "side.jsonl"),
+      [
+        JSON.stringify({
+          type: "session",
+          cwd: "/x",
+          timestamp: "2026-11-07T11:00:00.000Z",
+          parentSession: join(dir, "worker.jsonl"),
+        }),
+        copied,
+        at("2026-11-07T11:05:00.000Z", assistant("claude-bridge", "claude-sonnet-5-5", 7, 3)),
+      ].join("\n"),
+    );
+    const body = parse(
+      TokenUseResponse,
+      await json(await server.request("GET", "/api/usage/tokens")),
+      "tokens",
+    );
+    expect(body.rows).toHaveLength(1);
+    expect(body.rows[0]).toMatchObject({ requests: 2, input: 107, output: 23 });
+  });
+
   it("names sessions of workspaces it does not know", async () => {
     mkdirSync(join(server.paths.sessions, "gone"), { recursive: true });
     writeFileSync(join(server.paths.sessions, "gone", "a.jsonl"), assistant("x", "y", 1, 1));

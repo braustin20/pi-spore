@@ -1,6 +1,9 @@
 import { defineInterface } from "@pi-spore/module-api";
 import type { Agent, AgentDialog } from "@pi-spore/shared";
 
+/** What changed about an agent. `chat`: its title or active flag. */
+export type AgentChange = "status" | "dialog" | "waiting" | "chat";
+
 /** One agent with what Home shows about it (R15). */
 export interface AgentAttention {
   agent: Agent;
@@ -21,10 +24,15 @@ export interface Agents {
    * at once, so a caller inside `store.transaction` commits it together with its own changes.
    */
   deliver(agentId: string, message: string): void;
+  /** One agent (chat). Throws a 404 ApiError for an unknown id. */
+  get(agentId: string): Agent;
   /** Every agent, for Home. */
   attention(): AgentAttention[];
-  /** Called after an agent's status, dialogs, or waiting mark change. */
-  onChange(listener: () => void): void;
+  /**
+   * Called after an agent's status, dialogs, or waiting mark change, and with `chat` after its title or active flag
+   * changed (an older worker chat is not active, ADR 0030).
+   */
+  onChange(listener: (agentId: string, change: AgentChange) => void): void;
 }
 
 export const AgentsKey = defineInterface<Agents>("agents", "agents");

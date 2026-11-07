@@ -12,6 +12,7 @@ import {
 import { Button, Chip, EmptyState, Notice, Select, Spinner, Tooltip } from "@pi-spore/ui";
 import { MessageSquare } from "lucide-react";
 import {
+  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -21,6 +22,7 @@ import {
   useState,
 } from "react";
 import Type from "typebox";
+import { ChatBar } from "./chats.js";
 import { Composer, DialogCard } from "./composer.js";
 import { MessageList } from "./messages.js";
 import { activity, emptyPage, reducePage } from "./page-state.js";
@@ -105,11 +107,104 @@ function WorkingIndicator({ label }: { label: string | undefined }) {
   );
 }
 
-/** The chat with a workspace's worker agent: the middle pane of the workspace view. */
-function ChatPane({ workspace }: { workspace: Workspace }) {
+/**
+ * The middle pane of the workspace view: the workspace's chats (ADR 0030) and the selected one. Without a chat in
+ * the route it shows the active worker chat, which the first visit creates.
+ */
+function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string }) {
   const api = useApi();
   const workspaceId = workspace.id;
-  const [agentId, setAgentId] = useState<string | undefined>();
+  const [chats, setChats] = useState<Agent[] | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  const load = useCallback(async () => {
+    try {
+      await api.send("POST", "agents", { workspaceId });
+      const body = await api.get(`agents?workspaceId=${encodeURIComponent(workspaceId)}`);
+      setChats(parse(AgentList, body, "chat list").agents);
+    } catch (caught) {
+      setError(message(caught));
+    }
+  }, [api, workspaceId]);
+
+  useEffect(() => {
+    setChats(undefined);
+    void load();
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
+  }, [load]);
+
+  const selected =
+    chats?.find((chat) => chat.id === chatId) ??
+    chats?.find((chat) => chat.kind === "worker" && chat.active);
+
+  const startChat = (kind: "worker" | "side", fork: boolean) => {
+    api
+      .send("POST", "agents/chats", { workspaceId, kind, ...(fork ? { fork } : {}) })
+      .then((body) => {
+        const { agent } = parse(AgentBody, body, "chat");
+        window.location.hash = `#/workspaces/${workspaceId}/chats/${agent.id}`;
+        return load();
+      })
+      .catch((caught: unknown) => setError(message(caught)));
+  };
+
+  if (!selected) {
+    return error ? (
+      <div className="p-4">
+        <Notice tone="fail">{error}</Notice>
+      </div>
+    ) : null;
+  }
+  return (
+    <ChatView
+      key={selected.id}
+      workspace={workspace}
+      agentId={selected.id}
+      bar={
+        <ChatBar
+          workspaceId={workspaceId}
+          chats={chats ?? []}
+          selected={selected}
+          canStart={workspace.state === "active"}
+          onNew={startChat}
+          onRename={async (title) => {
+            try {
+              await api.send("POST", `agents/${selected.id}/title`, { title });
+              await load();
+            } catch (caught) {
+              setError(message(caught));
+              throw caught;
+            }
+          }}
+        />
+      }
+      outerError={error}
+      onDismissOuterError={() => setError(undefined)}
+      onChatChanged={() => void load()}
+    />
+  );
+}
+
+/** One chat: its messages, dialogs, and composer. An older worker chat shows its history without a composer. */
+function ChatView({
+  workspace,
+  agentId,
+  bar,
+  outerError,
+  onDismissOuterError,
+  onChatChanged,
+}: {
+  workspace: Workspace;
+  agentId: string;
+  bar: ReactNode;
+  /** An error from the chat list, such as a refused "New chat". */
+  outerError: string | undefined;
+  onDismissOuterError: () => void;
+  /** The chat's title or active flag changed, so the list is out of date. */
+  onChatChanged: () => void;
+}) {
+  const api = useApi();
   const [state, dispatch] = useReducer(reducePage, undefined, emptyPage);
   const [models, setModels] = useState<
     { models: AgentModel[]; thinkingLevels: string[] } | undefined
@@ -117,18 +212,13 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
   const [error, setError] = useState<string | undefined>();
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
+  const changed = useRef(onChatChanged);
+  changed.current = onChatChanged;
 
   useEffect(() => {
-    api
-      .send("POST", "agents", { workspaceId })
-      .then((body) => setAgentId(parse(AgentBody, body, "agent").agent.id))
-      .catch((caught: unknown) => setError(message(caught)));
-  }, [api, workspaceId]);
-
-  useEffect(() => {
-    if (!agentId) return;
     return api.subscribe(`agent:${agentId}`, (event) => {
       dispatch(event);
+      if ((event as { type?: string }).type === "agent") changed.current();
       // A reply that ends while the user watches this chat does not wait for them on Home.
       const pi = (event as { type?: string; event?: { type?: string; aborted?: boolean } }).event;
       if (
@@ -163,7 +253,7 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
   );
 
   const loadModels = () => {
-    if (models || !agentId) return;
+    if (models) return;
     api
       .get(`agents/${agentId}/models`)
       .then((body) => setModels(parse(ModelList, body, "models")))
@@ -171,13 +261,14 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
   };
 
   const loadCommands = useCallback(async () => {
-    if (!agentId) return [];
     return parse(CommandList, await api.get(`agents/${agentId}/commands`), "commands").commands;
   }, [api, agentId]);
 
   const { agent, chat, dialogs, contextUsage } = state;
   const busy = chat.busy || agent?.status === "busy";
-  const active = workspace.state === "active";
+  // Runs only in an active workspace, and only as the active worker chat or a side chat (ADR 0030).
+  const older = agent?.kind === "worker" && !agent.active;
+  const active = workspace.state === "active" && agent?.active === true;
   const currentModel = state.model ? modelKey(state.model) : "";
   const modelOptions = models?.models ?? (state.model ? [state.model] : []);
 
@@ -190,7 +281,7 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
           const [provider, ...rest] = event.target.value.split("/");
           void call("POST", "model", { provider, modelId: rest.join("/") });
         }}
-        disabled={!agentId || !active}
+        disabled={!active}
         className="w-48 min-w-0 xl:w-72"
         aria-label="Model for the next message"
         title="Model for the next message"
@@ -206,7 +297,7 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
         value={state.thinkingLevel ?? ""}
         onFocus={loadModels}
         onChange={(event) => void call("POST", "thinking", { level: event.target.value })}
-        disabled={!agentId || !active}
+        disabled={!active}
         className="w-24"
         aria-label="Thinking level"
         title="Thinking level"
@@ -245,7 +336,7 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
           variant="ghost"
           size="sm"
           onClick={() => void call("POST", "compact")}
-          disabled={!agentId || busy || !active}
+          disabled={busy || !active}
         >
           Compact
         </Button>
@@ -259,10 +350,34 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
           Stop agent
         </Button>
       </header>
+      {bar}
 
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-5 xl:px-6">
-          {!active && (
+          {older && (
+            <Notice tone="warn">
+              <div className="flex items-center gap-2">
+                <span className="flex-1">
+                  This is an older worker chat. It is read-only. Make it active to continue it; the
+                  current worker chat stops first.
+                </span>
+                <Button
+                  size="sm"
+                  disabled={workspace.state !== "active"}
+                  onClick={() => void call("POST", "activate").then(onChatChanged)}
+                >
+                  Make active
+                </Button>
+              </div>
+            </Notice>
+          )}
+          {agent?.kind === "side" && (
+            <Notice>
+              Side chat. It can read and search files but cannot change them, run commands, or start
+              agents.
+            </Notice>
+          )}
+          {workspace.state !== "active" && (
             <Notice tone="warn">
               {workspace.state === "parked"
                 ? "This workspace is parked. Its chat is read-only until you resume it."
@@ -277,15 +392,21 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
               <pre className="m-0 whitespace-pre-wrap">{agent.error}</pre>
             </Notice>
           )}
-          {error && (
-            <Notice tone="fail">
-              <div className="flex items-start gap-2">
-                <span className="flex-1">{error}</span>
-                <Button size="sm" variant="ghost" onClick={() => setError(undefined)}>
-                  Dismiss
-                </Button>
-              </div>
-            </Notice>
+          {[
+            { text: error, dismiss: () => setError(undefined) },
+            { text: outerError, dismiss: onDismissOuterError },
+          ].map(
+            ({ text, dismiss }) =>
+              text && (
+                <Notice key={text} tone="fail">
+                  <div className="flex items-start gap-2">
+                    <span className="flex-1">{text}</span>
+                    <Button size="sm" variant="ghost" onClick={dismiss}>
+                      Dismiss
+                    </Button>
+                  </div>
+                </Notice>
+              ),
           )}
 
           {active && chat.messages.length === 0 && !chat.streaming && (
@@ -327,21 +448,23 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
         </div>
       </div>
 
-      <div className="shrink-0 px-4 pb-4 xl:px-6">
-        <div className="mx-auto max-w-3xl">
-          <WorkingIndicator label={activity(state)} />
-          <Composer
-            busy={busy}
-            disabled={!agentId || !active}
-            loadCommands={loadCommands}
-            controls={controls}
-            onSend={async (text, whileBusy) => {
-              await call("POST", "prompt", { message: text, ...(busy ? { whileBusy } : {}) });
-            }}
-            onAbort={() => void call("POST", "abort")}
-          />
+      {!older && (
+        <div className="shrink-0 px-4 pb-4 xl:px-6">
+          <div className="mx-auto max-w-3xl">
+            <WorkingIndicator label={activity(state)} />
+            <Composer
+              busy={busy}
+              disabled={!active}
+              loadCommands={loadCommands}
+              controls={controls}
+              onSend={async (text, whileBusy) => {
+                await call("POST", "prompt", { message: text, ...(busy ? { whileBusy } : {}) });
+              }}
+              onAbort={() => void call("POST", "abort")}
+            />
+          </div>
         </div>
-      </div>
+      )}
     </section>
   );
 }
@@ -385,8 +508,11 @@ function useAgentStatus(workspaces: readonly Workspace[]) {
   }, [refresh]);
 
   return useMemo(() => {
+    // The status line follows the active worker chat (ADR 0030).
     const workers = new Map(
-      agents.filter((agent) => agent.role === "worker").map((agent) => [agent.workspaceId, agent]),
+      agents
+        .filter((agent) => agent.kind === "worker" && agent.active)
+        .map((agent) => [agent.workspaceId, agent]),
     );
     return new Map(
       workspaces.map((workspace) => [

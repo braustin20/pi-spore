@@ -3,8 +3,10 @@ import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import {
+  type Agent,
   AnswerQuestionRequest,
   type Inbox,
+  type InboxChat,
   type InboxEvent,
   type InboxItem,
   type InboxWorkspace,
@@ -40,7 +42,7 @@ interface Row {
   question: string;
   /** A JSON array of strings, written only by this module. */
   choices: string | null;
-  state: "open" | "answered";
+  state: "open" | "answered" | "closed";
   answer: string | null;
   created_at: number;
   answered_at: number | null;
@@ -64,6 +66,13 @@ const toQuestion = (row: Row): Question => ({
   ...(row.answer === null ? {} : { answer: row.answer }),
   createdAt: row.created_at,
   ...(row.answered_at === null ? {} : { answeredAt: row.answered_at }),
+});
+
+const chatOf = (agent: Agent): InboxChat => ({
+  id: agent.id,
+  ...(agent.title === undefined ? {} : { title: agent.title }),
+  kind: agent.kind,
+  active: agent.active,
 });
 
 /** The message that brings the answer to the agent. It names the question, so the agent can resume from it alone. */
@@ -112,6 +121,8 @@ export const attentionModule: ServerModule = {
           },
         ]),
       );
+      const all = agents.attention();
+      const chats = new Map(all.map(({ agent }) => [agent.id, chatOf(agent)]));
       const open = host.store
         .all<Row>("SELECT * FROM attention_questions WHERE state = 'open'")
         .map(toQuestion);
@@ -119,20 +130,22 @@ export const attentionModule: ServerModule = {
       const items: InboxItem[] = [];
       for (const question of open) {
         const workspace = places.get(question.workspaceId);
-        if (workspace)
+        const chat = chats.get(question.agentId);
+        if (workspace && chat)
           items.push({
             kind: "question",
             at: question.createdAt,
             agentId: question.agentId,
             workspace,
+            chat,
             question,
           });
       }
       const running: RunningItem[] = [];
-      for (const { agent, since, dialogs, waitingSince } of agents.attention()) {
+      for (const { agent, since, dialogs, waitingSince } of all) {
         const workspace = places.get(agent.workspaceId);
         if (!workspace) continue;
-        const base = { agentId: agent.id, workspace };
+        const base = { agentId: agent.id, workspace, chat: chatOf(agent) };
         for (const { dialog, openedAt } of dialogs)
           items.push({ kind: "dialog", at: openedAt, ...base, dialog });
         if (agent.status === "failed")
@@ -165,7 +178,22 @@ export const attentionModule: ServerModule = {
         );
       });
     };
-    agents.onChange(changed);
+    /**
+     * ADR 0033: a question from a worker chat that is no longer active is closed. It stays in that chat's history;
+     * after the chat is made active again, the user writes to it directly.
+     */
+    const closeQuestions = (agentId: string) => {
+      const { changes } = host.store.run(
+        "UPDATE attention_questions SET state = 'closed' WHERE agent_id = ? AND state = 'open'",
+        agentId,
+      );
+      if (changes > 0)
+        host.log.info("Closed the questions of an inactive chat", { agent: agentId });
+    };
+    agents.onChange((agentId, change) => {
+      if (change === "chat" && !agents.get(agentId).active) closeQuestions(agentId);
+      changed();
+    });
     host.events.onSubscribe(
       INBOX_TOPIC,
       async (): Promise<InboxEvent[]> => [{ type: "inbox", inbox: await inbox() }],
@@ -212,6 +240,13 @@ export const attentionModule: ServerModule = {
       const request = parseJsonBody(AnswerQuestionRequest, await c.req.text(), "answer");
       const question = host.store.transaction(() => {
         const row = load(c.req.param("id"));
+        if (row.state === "closed") {
+          throw new ApiError(
+            409,
+            "question_closed",
+            "That question was closed: its chat is no longer the active worker chat",
+          );
+        }
         if (row.state !== "open")
           throw new ApiError(409, "question_answered", "That question already has an answer");
         const now = host.now();

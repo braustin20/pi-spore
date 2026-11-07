@@ -31,8 +31,11 @@ export type UseWorkspaceStatus = (
 export interface WorkspaceView {
   /** Adds a section to the right column. */
   addPanel(panel: WorkspacePanel): void;
-  /** Sets the middle pane for a selected workspace: the chat. Only one module may set it. */
-  setMain(component: ComponentType<{ workspace: Workspace }>): void;
+  /**
+   * Sets the middle pane for a selected workspace: the chat. `chatId` comes from `#/workspaces/<id>/chats/<chat>`.
+   * Only one module may set it.
+   */
+  setMain(component: ComponentType<{ workspace: Workspace; chatId?: string }>): void;
   /** Sets where the list gets its status lines. Only one module may set it. */
   setStatus(useStatus: UseWorkspaceStatus): void;
 }

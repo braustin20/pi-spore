@@ -17,6 +17,8 @@ const agent = (status: Agent["status"]): Agent => ({
   id: "a1",
   workspaceId: "w1",
   role: "worker",
+  kind: "worker",
+  active: true,
   status,
   createdAt: 0,
 });

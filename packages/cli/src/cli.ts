@@ -2,6 +2,9 @@ import {
   ActionList,
   ActionLog,
   ActionRun,
+  type Agent,
+  AgentList,
+  Agent as AgentSchema,
   ArchiveWorkspaceResponse,
   CreateWorkspaceResponse,
   DEFAULT_URL,
@@ -48,6 +51,11 @@ Commands:
   action list <workspace>                  List a workspace's actions
   action run <workspace> <name>            Run an action and follow its log; exits 1 if it fails
   action cancel <run id>
+  chat list <workspace>                    List a workspace's chats: the active worker chat, side chats,
+                                           then older worker chats
+  chat new <workspace> [--side [--fork]]   Start a fresh worker chat (the current one stops and stays
+                                           readable), or a read-only side chat; --fork copies the
+                                           worker chat's context into it
 
 <project> is a project id or slug. <workspace> is a workspace id.
 
@@ -367,6 +375,44 @@ async function actionCommand(
   throw usageError(`Unknown command: action ${args.join(" ")}`);
 }
 
+const AgentBody = Type.Object({ agent: AgentSchema });
+
+function chatLine(chat: Agent): string {
+  const kind = chat.kind === "side" ? "side" : chat.active ? "worker" : "older";
+  const from = chat.forkedFrom ? `  (from ${chat.forkedFrom})` : "";
+  return `${chat.id}  ${kind.padEnd(6)}  ${chat.status.padEnd(8)}  ${chat.title ?? "(no messages yet)"}${from}`;
+}
+
+async function chatCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub === "list") {
+    const { positional } = parseArgs(rest, []);
+    if (positional.length !== 1) throw usageError("chat list takes one workspace id");
+    const { agents } = await api.call(
+      "GET",
+      `agents?workspaceId=${encodeURIComponent(positional[0] as string)}`,
+      AgentList,
+    );
+    if (json) return deps.out(JSON.stringify(agents));
+    if (agents.length === 0)
+      return deps.out("No chats yet. Start one: pi-spore chat new <workspace>");
+    for (const chat of agents) deps.out(chatLine(chat));
+    return;
+  }
+  if (sub === "new") {
+    const { positional, on } = parseArgs(rest, [], ["side", "fork"]);
+    if (positional.length !== 1) throw usageError("chat new takes one workspace id");
+    if (on.has("fork") && !on.has("side")) throw usageError("--fork needs --side");
+    const { agent } = await api.call("POST", "agents/chats", AgentBody, {
+      workspaceId: positional[0],
+      kind: on.has("side") ? "side" : "worker",
+      ...(on.has("fork") ? { fork: true } : {}),
+    });
+    return deps.out(json ? JSON.stringify(agent) : `Started ${chatLine(agent)}`);
+  }
+  throw usageError(`Unknown command: chat ${args.join(" ")}`);
+}
+
 /** Runs one CLI invocation and returns the process exit code. */
 export async function run(argv: readonly string[], deps: CliDeps): Promise<number> {
   const args = argv.filter((arg) => arg !== "--json");
@@ -384,6 +430,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "ws" || command === "workspace")
       await workspaceCommand(new Api(deps, base), deps, rest, json);
     else if (command === "action") await actionCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "chat") await chatCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;
   } catch (error) {

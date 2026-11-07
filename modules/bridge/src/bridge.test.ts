@@ -96,8 +96,12 @@ async function workspace(server: TestServer, name: string, config = "") {
 }
 
 /** Calls a bridge route as an agent process would, with its own token. */
-function asAgent(server: TestServer, agentId: string, workspaceId: string) {
-  const token = server.agentTokens.issue({ agentId, workspaceId });
+function asAgent(server: TestServer, agentId: string, workspaceId: string, readOnly = false) {
+  const token = server.agentTokens.issue({
+    agentId,
+    workspaceId,
+    ...(readOnly ? { readOnly } : {}),
+  });
   return (method: string, path: string, body?: unknown, receipt?: string) =>
     server.request(method, `/api/bridge/${path}`, body, {
       "x-pi-spore-token": "",
@@ -163,6 +167,7 @@ describe("request_human_input", () => {
       kind: "question",
       agentId,
       workspace: { id: workspaceId, name: "colors", projectName: "colors", state: "active" },
+      chat: { id: agentId, kind: "worker", active: true, title: "ask:Which color?" },
       question: { question: "Which color?", state: "open" },
     });
     const question = (item as { question: Question }).question;
@@ -233,6 +238,95 @@ describe("request_human_input", () => {
     expect(((await response.json()) as { error: { message: string } }).error.message).toContain(
       "/question",
     );
+  });
+});
+
+describe("questions of older worker chats (ADR 0033)", () => {
+  it("close when the user starts a new worker chat, and cannot be answered", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "moved-on");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", { question: "Red?" }),
+      201,
+    );
+    const side = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents/chats", { workspaceId, kind: "side" }),
+      201,
+    );
+    const sideQuestion = await json<{ question: Question }>(
+      await asAgent(
+        server,
+        side.agent.id,
+        workspaceId,
+        true,
+      )("POST", "questions", {
+        question: "Why?",
+      }),
+      201,
+    );
+
+    await json(
+      await server.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
+      201,
+    );
+
+    // The side chat's question stays; the old worker chat's question is closed.
+    expect(
+      (await inbox(server)).items.map((item) => item.kind === "question" && item.question.id),
+    ).toEqual([sideQuestion.question.id]);
+    const closed = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${question.id}`),
+    );
+    expect(closed.question.state).toBe("closed");
+    const answer = await server.request("POST", `/api/attention/questions/${question.id}/answer`, {
+      answer: "Yes",
+    });
+    expect(answer.status).toBe(409);
+    expect(await answer.json()).toMatchObject({ error: { code: "question_closed" } });
+    expect(server.store.get("SELECT * FROM agents_deliveries")).toBeUndefined();
+  });
+
+  it("an answer still pending when its chat became inactive waits until the chat is active again", async () => {
+    const home = join(scratch, "home");
+    const first = await start({ home, env: { FAKE_PI_HANG: "1" } });
+    const { agentId, workspaceId } = await workspace(first, "later");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(first, agentId, workspaceId)("POST", "questions", { question: "Left?" }),
+      201,
+    );
+    await json(
+      await first.request("POST", `/api/attention/questions/${question.id}/answer`, {
+        answer: "Left",
+      }),
+    );
+    await until(() => statuses(first, agentId).includes("failed"));
+    const { agent: fresh } = await json<{ agent: { id: string } }>(
+      await first.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
+      201,
+    );
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    // After the restart the old chat is inactive: its delivery waits and Pi does not start.
+    const second = await start({ home, firstId: 1_000 });
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(statuses(second, agentId)).toEqual([]);
+    // Not even tried: the one attempt is the failed start on the first server.
+    expect(
+      second.store.get<{ state: string; attempts: number }>(
+        "SELECT state, attempts FROM agents_deliveries",
+      ),
+    ).toEqual({ state: "pending", attempts: 1 });
+
+    await json(await second.request("POST", `/api/agents/${agentId}/activate`));
+    await until(
+      async () => (await chat(second, agentId)).at(-1)?.endsWith("Answer: Left") ?? false,
+    );
+    expect(second.store.get<{ state: string }>("SELECT state FROM agents_deliveries")?.state).toBe(
+      "done",
+    );
+    expect(statuses(second, fresh.id)).toEqual([]);
   });
 });
 
@@ -338,6 +432,21 @@ describe("check and run_action", () => {
     });
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: "action_not_found" } });
+  });
+
+  it("refuse a read-only side chat", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "side", config(0));
+    const response = await asAgent(
+      server,
+      agentId,
+      workspaceId,
+      true,
+    )("POST", "runs", {
+      action: "check",
+    });
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "read_only_chat" } });
   });
 
   it("let an agent reach only its own workspace's runs", async () => {

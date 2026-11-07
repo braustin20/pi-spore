@@ -72,7 +72,7 @@ const stepNote = (step: StepReport): Note => ({
 
 /** Filled by other web modules during setup; read when the workspace view renders. */
 const panels: WorkspacePanel[] = [];
-let Main: ComponentType<{ workspace: Workspace }> | undefined;
+let Main: ComponentType<{ workspace: Workspace; chatId?: string }> | undefined;
 const NO_STATUS: ReadonlyMap<string, WorkspaceStatus> = new Map();
 const noStatus: UseWorkspaceStatus = () => NO_STATUS;
 let useStatus = noStatus;
@@ -624,7 +624,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
     );
   } else if (workspace) {
     middle = Main ? (
-      <Main workspace={workspace} />
+      <Main workspace={workspace} {...(params.chatId ? { chatId: params.chatId } : {})} />
     ) : (
       <EmptyState icon={Layers} title={workspace.name}>
         No module shows a workspace here.
@@ -743,6 +743,11 @@ export const workspacesWeb: WebModule = {
     });
     host.addPage({
       path: "/workspaces/:workspaceId",
+      title: "Workspace",
+      component: WorkspacesView,
+    });
+    host.addPage({
+      path: "/workspaces/:workspaceId/chats/:chatId",
       title: "Workspace",
       component: WorkspacesView,
     });

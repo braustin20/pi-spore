@@ -5,6 +5,8 @@ import { ApiError } from "./errors.js";
 export interface BridgeCaller {
   agentId: string;
   workspaceId: string;
+  /** A read-only side chat (ADR 0033): bridge routes that run commands refuse it. */
+  readOnly?: boolean;
 }
 
 /**
