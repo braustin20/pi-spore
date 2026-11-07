@@ -24,6 +24,9 @@ Linux binary, so it compiles with `node-gyp` on install.
   token in `?token=`. Agent tokens never match it. Every message is checked against a TypeBox schema.
 - At most 8 terminals are open at once (setting `terminals.maxOpen`). Closing sends SIGHUP, then SIGKILL after 5 s.
   Parking or archiving a workspace closes its terminals first. Server exit sends SIGHUP to every shell.
+- The terminal font is a choice in the browser (`localStorage`, like the theme) until the settings module lands.
+  The font list is the chosen font, JetBrains Mono, then `Symbols Nerd Font Mono`, so Nerd Font prompt icons show
+  when the user has a Nerd Font. pi-spore ships no Nerd Font: its icons come from many sets under many licenses.
 - `node-pty`'s install script is approved in `allowScripts` in the root `package.json`, pinned to 1.1.0.
 
 ## Consequences

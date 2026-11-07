@@ -488,7 +488,10 @@ See [ADR 0050](decisions/0050-terminals.md). Requirements R13.
   first (the scrollback), then `output`, `exit` once with `exitCode` or `signal`, and `error` for a bad message.
 - The web module adds a Terminals tab to the workspace's right column (`WorkspaceView.addTab`, `wide`), with a tab
   per terminal, new and close buttons, and xterm.js with the fit addon. Colors come from the theme's role tokens and
-  change with the theme menu. When a socket drops, the page asks the server whether the terminal still exists and
+  change with the theme menu. A font button sets the terminal font for this browser (`localStorage`); the font
+  list is that font, JetBrains Mono, then `Symbols Nerd Font Mono` for prompt icons. A name with characters other
+  than letters, digits, spaces, `.`, `_`, and `-` is refused, and a font the browser does not have shows a
+  warning. When a socket drops, the page asks the server whether the terminal still exists and
   reconnects, or drops it from the list.
 
 ## 11. Unity module

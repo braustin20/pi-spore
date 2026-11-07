@@ -115,8 +115,8 @@ What exists now:
   With no workspace selected, the middle shows the "Start a workspace" form.
 - **Right panel:** a "Details" tab (workspace info, rename, park, resume, archive, then the module panels Actions
   and Unity as collapsible sections) and a "Terminals" tab. The Terminals tab widens the column to 40rem (at most
-  half the window) and shows a tab per terminal with a status dot and a close button, a new button, the terminal,
-  and a note that terminals end when the server stops. It can be hidden to a thin strip. Changes and PR tabs join
+  half the window) and shows a tab per terminal with a status dot and a close button, a new button, a font button
+  that opens a "Terminal font" field, the terminal, and a note that terminals end when the server stops. It can be hidden to a thin strip. Changes and PR tabs join
   the bar later.
 - **Top bar:** brand, theme menu, server status dot. The command bar comes later.
 - Widths: from 1100 px all three panes fit; from 1280 px the side columns get wider. Below 1100 px, hide a side
