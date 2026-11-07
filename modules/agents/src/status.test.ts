@@ -1,6 +1,6 @@
 import type { Agent, Workspace } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { needsRefresh, workspaceStatus } from "./status.js";
+import { needsRefresh, reduceAgentList, workspaceStatus } from "./status.js";
 
 const workspace = (state: Workspace["state"]): Workspace => ({
   id: "w1",
@@ -21,6 +21,18 @@ const agent = (status: Agent["status"]): Agent => ({
   active: true,
   status,
   createdAt: 0,
+});
+
+describe("agent list page state", () => {
+  it("applies updates and replaces stale state on reconnect", () => {
+    let state = reduceAgentList([], { type: "snapshot", agents: [agent("idle")] });
+    state = reduceAgentList(state, { type: "agent", agent: agent("busy") });
+    expect(workspaceStatus(workspace("active"), state[0]).text).toBe("Working");
+    state = reduceAgentList(state, { type: "agent", agent: agent("idle") });
+    expect(workspaceStatus(workspace("active"), state[0]).text).toBe("Idle");
+    state = reduceAgentList(state, { type: "snapshot", agents: [] });
+    expect(workspaceStatus(workspace("active"), state[0]).text).toBe("No agent yet");
+  });
 });
 
 describe("workspaceStatus", () => {

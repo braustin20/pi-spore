@@ -1,5 +1,17 @@
-import type { Agent, Workspace } from "@pi-spore/shared";
+import { Agent, parse, type Workspace } from "@pi-spore/shared";
 import type { Tone } from "@pi-spore/ui";
+import Type from "typebox";
+
+const ListEvent = Type.Union([
+  Type.Object({ type: Type.Literal("snapshot"), agents: Type.Array(Agent) }),
+  Type.Object({ type: Type.Literal("agent"), agent: Agent }),
+]);
+
+export function reduceAgentList(agents: Agent[], raw: unknown): Agent[] {
+  const event = parse(ListEvent, raw, "agent list event");
+  if (event.type === "snapshot") return event.agents;
+  return [...agents.filter((agent) => agent.id !== event.agent.id), event.agent];
+}
 
 export interface StatusText {
   text: string;
@@ -23,7 +35,7 @@ export function workspaceStatus(workspace: Workspace, agent: Agent | undefined):
   return BY_STATUS[agent.status];
 }
 
-/** While an agent is on its way somewhere, the list asks again soon; otherwise it waits for a user action. */
+/** Whether any agent is transitioning or working. */
 export function needsRefresh(agents: readonly Agent[]): boolean {
   return agents.some(
     (agent) => agent.status === "busy" || agent.status === "starting" || agent.status === "waiting",

@@ -26,7 +26,7 @@ import { ChatBar } from "./chats.js";
 import { Composer, DialogCard } from "./composer.js";
 import { MessageList } from "./messages.js";
 import { activity, emptyPage, reducePage } from "./page-state.js";
-import { needsRefresh, workspaceStatus } from "./status.js";
+import { reduceAgentList, workspaceStatus } from "./status.js";
 import { AgentsWebKey } from "./web-contract.js";
 
 export * from "./web-contract.js";
@@ -35,9 +35,6 @@ const AgentBody = Type.Object({ agent: Type.Object({ id: Type.String() }) });
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const modelKey = (model: { provider: string; id: string }) => `${model.provider}/${model.id}`;
-
-/** How often the workspace list asks for agent statuses while an agent is busy. */
-const STATUS_REFRESH_MS = 5_000;
 
 const STATUS_TONE = {
   busy: "run",
@@ -475,43 +472,17 @@ function ChatView({
   );
 }
 
-/**
- * Status lines for the workspace list. Asks again on focus and navigation, and every few seconds only while an
- * agent is busy, so an idle list makes no requests.
- */
+/** Status lines follow the shared agent stream, including its snapshot on reconnect. */
 function useAgentStatus(workspaces: readonly Workspace[]) {
   const api = useApi();
   const [agents, setAgents] = useState<Agent[]>([]);
-  const [tick, setTick] = useState(0);
-
-  useEffect(() => {
-    const again = () => setTick((n) => n + 1);
-    window.addEventListener("focus", again);
-    window.addEventListener("hashchange", again);
-    return () => {
-      window.removeEventListener("focus", again);
-      window.removeEventListener("hashchange", again);
-    };
-  }, []);
-
-  // biome-ignore lint/correctness/useExhaustiveDependencies: tick asks again on purpose
-  useEffect(() => {
-    let current = true;
-    api
-      .get("agents")
-      .then((body) => current && setAgents(parse(AgentList, body, "agent list").agents))
-      .catch((caught: unknown) => console.error(`pi-spore: agent statuses: ${message(caught)}`));
-    return () => {
-      current = false;
-    };
-  }, [api, tick]);
-
-  const refresh = needsRefresh(agents);
-  useEffect(() => {
-    if (!refresh) return;
-    const timer = setInterval(() => setTick((n) => n + 1), STATUS_REFRESH_MS);
-    return () => clearInterval(timer);
-  }, [refresh]);
+  useEffect(
+    () =>
+      api.subscribe("agents:list", (event) => {
+        setAgents((current) => reduceAgentList(current, event));
+      }),
+    [api],
+  );
 
   return useMemo(() => {
     // The status line follows the active worker chat (ADR 0030).
