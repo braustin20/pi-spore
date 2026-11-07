@@ -4,9 +4,6 @@ Each question names where it is used. Settle a question by writing or updating a
 
 ## Spikes (answer with a small experiment before or during the skeleton)
 
-- **Q11. Codex plan windows.** Where do Codex 5-hour and weekly numbers come from in Pi? pi-ai 1.5.0 shows no
-  `x-codex-*` headers. Candidates: response headers on the `openai-codex` provider, or Codex session `token_count`
-  events. (ADR 0022)
 - **Q17. `unity close` without the Pipeline package.** Can `unity close <path>` close an editor whose project has
   no Pipeline package, or does it need `--force` (SIGTERM)? Check on a throwaway project, never on a real one with
   unsaved work. Until then a failed close shows its error and the user closes Unity by hand. (ADR 0028)

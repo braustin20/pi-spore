@@ -9,7 +9,9 @@
 Strata (local, 128k context, weaker than Sonnet) is free and good enough for bounded implementation tasks: the
 kind sent to Haiku, Luna, or the implementer subagent. It is not good enough for visual work, vague requirements,
 or design. Pi 1.5.0 supports virtual models (`pi.registerVirtualModel`) and classifier calls
-(`ctx.modelRegistry.classify`), and ships a `jev-router.ts` example. TypeSafe Jev is in the user's model list.
+(`ctx.modelRegistry.classify`), and ships a `jev-router.ts` example. TypeSafe Jev is in the user's model list. In
+the user's setup only the OpenRouter listing has credentials: `openrouter/~typesafe/jev-latest` works,
+`typesafe/jev-latest` does not (checked 2026-11-06; one call cost about $0.00002).
 
 ## Decision
 
@@ -23,6 +25,13 @@ The choice is sticky for the session. A context overflow or repeated gate failur
 `spore/auto` for a role counts as approval for whatever it picks. Every decision is recorded with its reasons. Work
 done on a local model must pass review by a stronger model; the pipeline enforces this with `min_strength_over`.
 Under subscription usage pressure (ADR 0022) the router accepts bounded tasks at lower Jev confidence.
+
+- The classifier is a setting (`router.classifier`), default `openrouter/~typesafe/jev-latest`.
+- Decisions are appended to `~/.pi-spore/usage/routing.jsonl`, which the usage module reads. The router state on
+  the session branch keeps the route and its reasons as well. Plain `pi` and pi-spore write the same file.
+- The router never crashes a session. On its own errors it routes to the cloud model, pins the session there, and
+  records the error.
+- The decision logic is a pure function (`decide`) tested without models; the extension only gathers its inputs.
 
 ## Consequences
 

@@ -14,6 +14,9 @@
       "path": "packages/server-core"
     },
     {
+      "path": "pi-extensions/router"
+    },
+    {
       "path": "modules/projects"
     },
     {

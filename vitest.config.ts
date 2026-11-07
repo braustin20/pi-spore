@@ -9,6 +9,10 @@ export default defineConfig({
     resolve: { conditions: ["@pi-spore/source"] },
   },
   test: {
-    include: ["packages/*/src/**/*.test.{ts,tsx}", "modules/*/**/*.test.{ts,tsx}"],
+    include: [
+      "packages/*/src/**/*.test.{ts,tsx}",
+      "modules/*/**/*.test.{ts,tsx}",
+      "pi-extensions/*/src/**/*.test.ts",
+    ],
   },
 });

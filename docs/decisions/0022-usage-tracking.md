@@ -24,4 +24,6 @@ windows to Pi extensions as `anthropic-ratelimit-unified-*` headers on `after_pr
 - Passive numbers go stale between requests. Stale numbers are shown as stale and are not used for routing.
 - v1 is passive only. Use from Claude Code or the Codex CLI is not seen. Active polling of the plans' usage
   endpoints is a v2 option; those endpoints are not official APIs.
-- Codex window data needs a source ([Q11]).
+- Codex windows come only through Pi's `openai-codex` provider, from `x-codex-*` headers or `codex.rate_limits`
+  stream events ([spike Q11](../spikes/q11-codex-plan-windows.md)). The user's `openai` login sends none, so Codex
+  shows as unknown until the user uses `openai-codex`.

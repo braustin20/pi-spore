@@ -9,7 +9,8 @@
   },
   "workspaces": [
     "packages/*",
-    "modules/*"
+    "modules/*",
+    "pi-extensions/*"
   ],
   "scripts": {
     "check": "biome check . && tsc -b",

@@ -1,0 +1,27 @@
+{
+  "name": "@pi-spore/router",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension: the spore/auto router virtual model and the plan usage tap",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "exports": {
+    ".": {
+      "@pi-spore/source": "./src/lib.ts",
+      "types": "./dist/lib.d.ts",
+      "default": "./dist/lib.js"
+    }
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}
