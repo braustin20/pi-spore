@@ -15,3 +15,6 @@ Each question names where it is used. Settle a question by writing or updating a
 - **Q14. GitHub workflows.** Some projects have Claude GitHub workflows (for example `claude.yml` and
   `claude-code-review.yml`). They may
   review the same PRs pi-spore watches. Decide whether PR watch ignores their comments or feeds them to the worker.
+- **Q18. Cards on Home.** Overdue and due-today cards belong in the Home inbox (R15.1), but the attention module
+  has no way for other modules to add items. Decide the shape of that hook (an interface key that modules register
+  item sources with, or a topic Home also reads) when attention is next changed. (Kanban, R11)

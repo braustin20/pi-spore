@@ -2,6 +2,7 @@ import { actionsModule } from "@pi-spore/mod-actions/server";
 import { agentsModule } from "@pi-spore/mod-agents/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { bridgeModule } from "@pi-spore/mod-bridge/server";
+import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { unityModule } from "@pi-spore/mod-unity/server";
 import { usageModule } from "@pi-spore/mod-usage/server";
@@ -22,4 +23,5 @@ export const serverModules: readonly ServerModule[] = [
   attentionModule,
   bridgeModule,
   usageModule,
+  kanbanModule,
 ];

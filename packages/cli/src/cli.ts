@@ -6,6 +6,11 @@ import {
   AgentList,
   Agent as AgentSchema,
   ArchiveWorkspaceResponse,
+  CARD_COLUMNS,
+  type Card,
+  type CardColumn,
+  CardList,
+  Card as CardSchema,
   CreateWorkspaceResponse,
   DEFAULT_URL,
   HealthResponse,
@@ -56,8 +61,12 @@ Commands:
   chat new <workspace> [--side [--fork]]   Start a fresh worker chat (the current one stops and stays
                                            readable), or a read-only side chat; --fork copies the
                                            worker chat's context into it
+  card list [--project <project>] [--label <label>]
+  card add <title> [--project <project>] [--due YYYY-MM-DD] [--label <label>] [--column <column>]
+  card move <card> <column>                backlog, ready, in-progress, review, or done
+  card rm <card>
 
-<project> is a project id or slug. <workspace> is a workspace id.
+<project> is a project id or slug. <workspace> and <card> are ids.
 
 Environment:
   PI_SPORE_URL    Server address (default ${DEFAULT_URL})
@@ -413,6 +422,70 @@ async function chatCommand(api: Api, deps: CliDeps, args: string[], json: boolea
   throw usageError(`Unknown command: chat ${args.join(" ")}`);
 }
 
+const CardBody = Type.Object({ card: CardSchema });
+
+function cardLine(card: Card, projects: readonly Project[]): string {
+  const project = card.projectId
+    ? (projects.find((candidate) => candidate.id === card.projectId)?.slug ?? card.projectId)
+    : "-";
+  const extras = [
+    card.due ? `due ${card.due}` : "",
+    card.labels.length ? `[${card.labels.join(", ")}]` : "",
+    card.blocked ? "blocked" : "",
+  ].filter((extra) => extra !== "");
+  return `${card.id}  ${card.column.padEnd(11)} ${project.padEnd(16)} ${card.title}${extras.length ? `  ${extras.join("  ")}` : ""}`;
+}
+
+function columnArg(value: string): CardColumn {
+  if (!(CARD_COLUMNS as readonly string[]).includes(value)) {
+    throw usageError(`The column must be one of ${CARD_COLUMNS.join(", ")}`);
+  }
+  return value as CardColumn;
+}
+
+async function cardCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  const [sub, ...rest] = args;
+  const projects = async () => (await api.call("GET", "projects", ProjectList)).projects;
+  if (sub === "list") {
+    const { positional, options } = parseArgs(rest, ["project", "label"]);
+    if (positional.length > 0) throw usageError("card list takes no positional arguments");
+    const query = new URLSearchParams();
+    if (options.project) query.set("projectId", (await api.project(options.project)).id);
+    if (options.label) query.set("label", options.label);
+    const { cards } = await api.call("GET", `kanban/cards?${query}`, CardList);
+    if (json) return deps.out(JSON.stringify(cards));
+    if (cards.length === 0) return deps.out("No cards.");
+    const known = await projects();
+    for (const card of cards) deps.out(cardLine(card, known));
+    return;
+  }
+  if (sub === "add") {
+    const { positional, options } = parseArgs(rest, ["project", "due", "label", "column"]);
+    if (positional.length === 0) throw usageError("card add takes a title");
+    const project = options.project ? await api.project(options.project) : undefined;
+    const { card } = await api.call("POST", "kanban/cards", CardBody, {
+      title: positional.join(" "),
+      ...(project ? { projectId: project.id } : {}),
+      ...(options.due ? { due: options.due } : {}),
+      ...(options.label ? { labels: [options.label] } : {}),
+      ...(options.column ? { column: columnArg(options.column) } : {}),
+    });
+    return deps.out(
+      json ? JSON.stringify(card) : `Added ${cardLine(card, project ? [project] : [])}`,
+    );
+  }
+  if (sub === "move" && rest.length === 2) {
+    const column = columnArg(rest[1] as string);
+    const { card } = await api.call("POST", `kanban/cards/${rest[0]}/move`, CardBody, { column });
+    return deps.out(json ? JSON.stringify(card) : `Moved ${cardLine(card, await projects())}`);
+  }
+  if (sub === "rm" && rest.length === 1) {
+    await api.call("DELETE", `kanban/cards/${rest[0]}`, Type.Object({ removed: Type.String() }));
+    return deps.out(json ? JSON.stringify({ removed: rest[0] }) : `Removed card ${rest[0]}`);
+  }
+  throw usageError(`Unknown command: card ${args.join(" ")}`);
+}
+
 /** Runs one CLI invocation and returns the process exit code. */
 export async function run(argv: readonly string[], deps: CliDeps): Promise<number> {
   const args = argv.filter((arg) => arg !== "--json");
@@ -431,6 +504,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
       await workspaceCommand(new Api(deps, base), deps, rest, json);
     else if (command === "action") await actionCommand(new Api(deps, base), deps, rest, json);
     else if (command === "chat") await chatCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "card") await cardCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;
   } catch (error) {

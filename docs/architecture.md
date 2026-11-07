@@ -188,7 +188,7 @@ export interface ServerHost {
 | Stage | One stage execution | id, pipeline run, name, round, agent, verdict, findings |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state |
 | Approval | A decision gate on Home | id, kind (model upgrade, close editor, ...), subject, state |
-| Card | A kanban card | id, project, column, title, body, labels, due, blocked by, workspace or run |
+| Card | A kanban card | id, project, column, position, title, body, labels, due, blocked by, workspace |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
 | UsageSnapshot | Latest plan window numbers (a file per plan, `usage/<plan>.json`) | plan, window (5h, 7d), utilization, resets at, seen at, source |
@@ -501,17 +501,53 @@ See [ADR 0011](decisions/0011-unity-support.md).
 
 ## 12. Kanban
 
-See [ADR 0012](decisions/0012-kanban.md).
+See [ADR 0012](decisions/0012-kanban.md) and [ADR 0040](decisions/0040-card-moves-on-workspace-state.md). Requirements
+R11.
 
-- Tables: `cards`, `card_links` (blocked by), `card_events` (history).
-- Columns are fixed in v1: Backlog, Ready, In progress, Review, Done.
-- Automatic moves:
-  - start a workspace or run → In progress;
-  - pipeline passed or PR open → Review;
-  - PR merged or workspace archived as done → Done.
-- Manual moves always win until the next state change.
-- A blocked card shows its blockers. A workspace started from a blocked card asks first.
-- Agents: `kanban_add_card` and `kanban_update_card` through spore-bridge. The CLI has `pi-spore card add|list|move`.
+- The `kanban` module (`modules/kanban/`, not core, requires `projects` and `workspaces`) owns three tables:
+  `kanban_cards` (title, Markdown body, project, labels, due day, column, position, the workspace started from it),
+  `kanban_links` ("blocked by": a card or a workspace), and `kanban_events` (each move between columns, with its
+  reason).
+- Columns are fixed in v1: Backlog, Ready, In progress, Review, Done. `position` orders a column from 0; every move
+  renumbers the columns it touches.
+- A blocker is open while its card is not in Done or its workspace is not archived. A card is blocked while any
+  blocker is open. A card cannot block itself.
+- Due dates are calendar days (`YYYY-MM-DD`). The board compares them with the browser's local day: a card in any
+  column but Done is overdue after its day, and "due today" on it.
+- Removing a project leaves its id on cards; the board shows "removed project".
+- Starting a workspace from a card (R11.4): `POST /api/kanban/cards/:id/start` with the create-workspace fields.
+  It creates the workspace through `WorkspacesKey.create`, named after the card, links the card to it, and moves the
+  card to In progress. A card with an open workspace answers 409 `card_has_workspace`. A blocked card answers 409
+  `card_blocked` unless the request carries `confirmBlocked: true`; the board asks the user first.
+- Automatic moves happen only on a state change, so a manual move stays until the next one:
+  - workspace started from the card → In progress;
+  - workspace archived → Done (any archive; the user moves the card back if the work was dropped). The module
+    listens with `WorkspacesKey.afterStateChange`.
+  - Later modules move cards through `CardsKey.workChanged(workspaceId, column, reason)`: pipeline passed or PR
+    open → Review, PR merged → Done.
+- Runs are not built yet, so a card starts only workspaces.
+
+API under `/api/kanban`:
+
+| Route | Does |
+|---|---|
+| `GET /cards?projectId=&label=&workspaceId=` | Cards in board order. |
+| `POST /cards` `{ title, body?, projectId?, labels?, due?, column?, blockedBy? }` | Adds a card at the end of its column (default Backlog). |
+| `GET /cards/:id` | The card and its history of moves. |
+| `PATCH /cards/:id` | Changes the fields given; `null` clears project or due. `blockedBy` replaces the list. |
+| `POST /cards/:id/move` `{ column, index? }` | Moves or reorders. Without `index`, the card goes to the end. |
+| `DELETE /cards/:id` | Deletes the card, its links both ways, and its history. |
+| `POST /cards/:id/start` | Starts a workspace from the card (above). |
+
+- Topic `kanban:board` sends every card on subscribe and after every change.
+- The Board page (`#/board`, `#/board/<card id>`, rail icon) shows the columns with a project and a label filter.
+  Cards move by drag and drop, or with the move buttons on each card (keyboard). Selecting a card opens it on the
+  right: edit, move, delete, blockers, history, and "Start a workspace" with the workspaces module's create form
+  (`WorkspaceViewKey.CreateForm`). The workspace view has a Card panel for the workspace's card.
+- CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
+  [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`.
+- Not built yet: the spore-bridge tools `kanban_add_card` and `kanban_update_card` (R11.5), runs from cards, custom
+  columns, and overdue cards on Home (the attention module has no way for other modules to add items yet).
 
 ## 13. Settings
 
@@ -624,8 +660,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 ## 15. API, events, CLI
 
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
-- One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream) and
-  `attention:inbox` (Home).
+- One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream),
+  `attention:inbox` (Home), and `kanban:board` (the board).
 - Routes under `/api/bridge/` are for spore-bridge and take only agent tokens; all others take only the user's token
   (ADR 0032).
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.

@@ -432,6 +432,86 @@ describe("pi-spore chat", () => {
   });
 });
 
+const card = {
+  id: "C1",
+  title: "Fix UI",
+  body: "",
+  projectId: "P1",
+  labels: ["ui"],
+  due: "2026-11-10",
+  column: "backlog",
+  position: 0,
+  blockedBy: [],
+  blocked: false,
+  createdAt: 3,
+  updatedAt: 3,
+};
+
+describe("pi-spore card", () => {
+  it("lists cards, filtered by project", async () => {
+    const { deps, out, sent } = fakeDeps((key) =>
+      key.startsWith("GET /api/projects")
+        ? Response.json({ projects: [project] })
+        : Response.json({
+            cards: [
+              card,
+              {
+                ...card,
+                id: "C2",
+                title: "Notes",
+                projectId: undefined,
+                labels: [],
+                due: undefined,
+                blocked: true,
+              },
+            ],
+          }),
+    );
+    expect(await run(["card", "list", "--project", "game"], deps)).toBe(0);
+    expect(sent.map((request) => request.url)).toContain(
+      "http://127.0.0.1:7420/api/kanban/cards?projectId=P1",
+    );
+    expect(out).toEqual([
+      "C1  backlog     game             Fix UI  due 2026-11-10  [ui]",
+      "C2  backlog     -                Notes  blocked",
+    ]);
+  });
+
+  it("adds a card with a project and a due date", async () => {
+    const { deps, out, sent } = fakeDeps((key) =>
+      key.startsWith("GET /api/projects")
+        ? Response.json({ projects: [project] })
+        : Response.json({ card }, { status: 201 }),
+    );
+    expect(
+      await run(["card", "add", "Fix", "UI", "--project", "game", "--due", "2026-11-10"], deps),
+    ).toBe(0);
+    const post = sent.find((request) => request.method === "POST");
+    expect(post?.body).toEqual({ title: "Fix UI", projectId: "P1", due: "2026-11-10" });
+    expect(post?.headers["idempotency-key"]).toBe("key-1");
+    expect(out[0]).toContain("Added C1  backlog     game");
+  });
+
+  it("moves a card and checks the column first", async () => {
+    const { deps, out, err, sent } = fakeDeps((key) =>
+      key.startsWith("GET /api/projects")
+        ? Response.json({ projects: [project] })
+        : Response.json({ card: { ...card, column: "review" } }),
+    );
+    expect(await run(["card", "move", "C1", "later"], deps)).toBe(2);
+    expect(err[0]).toContain("The column must be one of backlog, ready, in-progress, review, done");
+    expect(sent).toEqual([]);
+
+    expect(await run(["card", "move", "C1", "review"], deps)).toBe(0);
+    expect(sent[0]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:7420/api/kanban/cards/C1/move",
+      body: { column: "review" },
+    });
+    expect(out[0]).toContain("Moved C1  review");
+  });
+});
+
 describe("pi-spore usage", () => {
   it("prints usage and exits 2 with no command", async () => {
     const { deps, out } = fakeDeps(healthy);

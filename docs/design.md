@@ -102,7 +102,7 @@ later):
 
 What exists now:
 
-- **Rail:** Home, Workspaces, Projects. A module adds an entry with `rail: { order, icon }` on its page; only pages
+- **Rail:** Home, Board, Workspaces, Projects, Usage. A module adds an entry with `rail: { order, icon }` on its page; only pages
   that exist get one.
 - **Workspace list:** Active, then Parked; Archived behind "Show archived". Newest activity first. Each row: name,
   age, project and branch, and a status line from the agent ("Working", "Idle", "Agent failed", "Parked").

@@ -50,6 +50,9 @@
       "path": "modules/usage"
     },
     {
+      "path": "modules/kanban"
+    },
+    {
       "path": "packages/server"
     },
     {

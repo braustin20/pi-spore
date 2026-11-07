@@ -1,6 +1,7 @@
 import { actionsWeb } from "@pi-spore/mod-actions/web";
 import { agentsWeb } from "@pi-spore/mod-agents/web";
 import { attentionWeb } from "@pi-spore/mod-attention/web";
+import { kanbanWeb } from "@pi-spore/mod-kanban/web";
 import { projectsWeb } from "@pi-spore/mod-projects/web";
 import { unityWeb } from "@pi-spore/mod-unity/web";
 import { usageWeb } from "@pi-spore/mod-usage/web";
@@ -16,4 +17,5 @@ export const webModules: readonly WebModule[] = [
   actionsWeb,
   unityWeb,
   usageWeb,
+  kanbanWeb,
 ];

@@ -12,6 +12,7 @@
     "@pi-spore/mod-agents": "0.0.0",
     "@pi-spore/mod-attention": "0.0.0",
     "@pi-spore/mod-bridge": "0.0.0",
+    "@pi-spore/mod-kanban": "0.0.0",
     "@pi-spore/mod-projects": "0.0.0",
     "@pi-spore/mod-unity": "0.0.0",
     "@pi-spore/mod-usage": "0.0.0",

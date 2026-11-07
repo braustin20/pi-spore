@@ -52,6 +52,24 @@ export {
 } from "./chat.js";
 export { HealthResponse } from "./health.js";
 export {
+  BlockerRef,
+  BoardEvent,
+  CARD_COLUMNS,
+  Card,
+  CardBlocker,
+  CardColumn,
+  CardDetail,
+  CardList,
+  CardMove,
+  COLUMN_TITLES,
+  CreateCardRequest,
+  DueDate,
+  MoveCardRequest,
+  StartCardRequest,
+  StartCardResponse,
+  UpdateCardRequest,
+} from "./kanban.js";
+export {
   AddProjectRequest,
   Project,
   ProjectConfigView,

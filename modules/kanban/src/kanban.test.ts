@@ -1,0 +1,413 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { projectsModule } from "@pi-spore/mod-projects/server";
+import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
+import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
+import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import type { ServerModule } from "@pi-spore/module-api";
+import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
+import {
+  type BoardEvent,
+  Card,
+  type CardColumn,
+  CardDetail,
+  CardList,
+  Project,
+  parse,
+  StartCardResponse,
+  Workspace,
+} from "@pi-spore/shared";
+import Type from "typebox";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { type Cards, CardsKey, kanbanModule } from "./server.js";
+
+const CardBody = Type.Object({ card: Card });
+
+let server: TestServer;
+let scratch: string;
+let cards: Cards;
+
+/** Hands the test the module's interface, as another module would get it. */
+const probe: ServerModule = {
+  id: "probe",
+  requires: ["kanban"],
+  core: false,
+  setup(host) {
+    cards = host.use(CardsKey);
+  },
+};
+
+beforeEach(async () => {
+  server = await createTestServer([
+    projectsModule,
+    vcsGitModule,
+    vcsFolderModule,
+    workspacesModule,
+    kanbanModule,
+    probe,
+  ]);
+  scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-kanban-")));
+});
+afterEach(() => {
+  server.close();
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+async function json(response: Response, status = 200): Promise<unknown> {
+  const body: unknown = await response.json();
+  if (response.status !== status) {
+    throw new Error(`Expected ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  }
+  return body;
+}
+
+async function errorCode(response: Response, status: number): Promise<string> {
+  return ((await json(response, status)) as { error: { code: string } }).error.code;
+}
+
+async function addProject(name: string): Promise<Project> {
+  const path = join(scratch, name);
+  mkdirSync(path);
+  const body = await json(await server.request("POST", "/api/projects", { path }), 201);
+  return parse(Type.Object({ project: Project }), body, "project").project;
+}
+
+async function addCard(request: Record<string, unknown>): Promise<Card> {
+  const body = await json(await server.request("POST", "/api/kanban/cards", request), 201);
+  return parse(CardBody, body, "card").card;
+}
+
+async function cardCall(method: string, path: string, body?: unknown): Promise<Card> {
+  return parse(
+    CardBody,
+    await json(await server.request(method, `/api/kanban/cards/${path}`, body)),
+    path,
+  ).card;
+}
+
+const getCard = async (id: string) =>
+  parse(CardDetail, await json(await server.request("GET", `/api/kanban/cards/${id}`)), "detail");
+
+async function list(query = ""): Promise<Card[]> {
+  return parse(
+    CardList,
+    await json(await server.request("GET", `/api/kanban/cards${query}`)),
+    "list",
+  ).cards;
+}
+
+/** Titles per column, in board order. */
+async function board(): Promise<Partial<Record<CardColumn, string[]>>> {
+  const columns: Partial<Record<CardColumn, string[]>> = {};
+  for (const card of await list())
+    columns[card.column] = [...(columns[card.column] ?? []), card.title];
+  return columns;
+}
+
+async function startCard(id: string, request: Record<string, unknown>, status = 201) {
+  return parse(
+    StartCardResponse,
+    await json(await server.request("POST", `/api/kanban/cards/${id}/start`, request), status),
+    "start",
+  );
+}
+
+async function workspaceStep(id: string, step: "park" | "resume" | "archive") {
+  return parse(
+    Type.Object({ workspace: Workspace }),
+    await json(await server.request("POST", `/api/workspaces/${id}/${step}`)),
+    step,
+  ).workspace;
+}
+
+describe("cards", () => {
+  it("creates, lists, filters, and updates cards", async () => {
+    const game = await addProject("game");
+    const first = await addCard({
+      title: "  Fix crafting UI ",
+      body: "# Steps\n- one",
+      projectId: game.id,
+      labels: ["ui", " ui", "bug", " "],
+      due: "2026-11-10",
+    });
+    expect(first).toMatchObject({
+      title: "Fix crafting UI",
+      body: "# Steps\n- one",
+      projectId: game.id,
+      labels: ["ui", "bug"],
+      due: "2026-11-10",
+      column: "backlog",
+      position: 0,
+      blockedBy: [],
+      blocked: false,
+    });
+    await addCard({ title: "Write notes", column: "ready", labels: ["docs"] });
+    await addCard({ title: "Second in backlog" });
+
+    expect(await board()).toEqual({
+      backlog: ["Fix crafting UI", "Second in backlog"],
+      ready: ["Write notes"],
+    });
+    expect((await list(`?projectId=${game.id}`)).map((card) => card.title)).toEqual([
+      "Fix crafting UI",
+    ]);
+    expect((await list("?label=docs")).map((card) => card.title)).toEqual(["Write notes"]);
+
+    const updated = await cardCall("PATCH", first.id, {
+      title: "Fix the crafting UI",
+      projectId: null,
+      due: null,
+      labels: [],
+    });
+    expect(updated.title).toBe("Fix the crafting UI");
+    expect(updated.projectId).toBeUndefined();
+    expect(updated.due).toBeUndefined();
+    expect(updated.labels).toEqual([]);
+    expect(updated.body).toBe("# Steps\n- one");
+  });
+
+  it("rejects bad input with clear errors", async () => {
+    const post = (body: unknown) => server.request("POST", "/api/kanban/cards", body);
+    expect(await errorCode(await post({ title: "" }), 400)).toBe("invalid_request");
+    expect(await errorCode(await post({ title: "x", due: "2026-02-30" }), 400)).toBe("bad_due");
+    expect(await errorCode(await post({ title: "x", column: "later" }), 400)).toBe(
+      "invalid_request",
+    );
+    expect(await errorCode(await post({ title: "x", projectId: "nope" }), 404)).toBe(
+      "project_not_found",
+    );
+    expect(
+      await errorCode(await post({ title: "x", blockedBy: [{ kind: "card", id: "nope" }] }), 404),
+    ).toBe("card_not_found");
+    const broken = await server.request("POST", "/api/kanban/cards", "{", {
+      "content-type": "application/json",
+    });
+    expect(broken.status).toBe(400);
+    expect(await errorCode(await server.request("GET", "/api/kanban/cards/nope"), 404)).toBe(
+      "card_not_found",
+    );
+  });
+
+  it("moves and reorders cards and keeps the history of column moves", async () => {
+    const a = await addCard({ title: "A" });
+    await addCard({ title: "B" });
+    const c = await addCard({ title: "C" });
+
+    await cardCall("POST", `${c.id}/move`, { column: "backlog", index: 1 });
+    expect(await board()).toEqual({ backlog: ["A", "C", "B"] });
+
+    await cardCall("POST", `${a.id}/move`, { column: "ready" });
+    const moved = await cardCall("POST", `${a.id}/move`, { column: "review", index: 9 });
+    expect(moved.position).toBe(0);
+    expect(await board()).toEqual({ backlog: ["C", "B"], review: ["A"] });
+    expect((await list()).map((card) => [card.title, card.position])).toEqual([
+      ["C", 0],
+      ["B", 1],
+      ["A", 0],
+    ]);
+
+    const { history } = await getCard(a.id);
+    expect(history.map((move) => [move.from, move.to, move.reason])).toEqual([
+      [undefined, "backlog", "created"],
+      ["backlog", "ready", "manual"],
+      ["ready", "review", "manual"],
+    ]);
+  });
+
+  it("deletes a card, its links, and the gap it leaves", async () => {
+    const a = await addCard({ title: "A" });
+    const b = await addCard({ title: "B" });
+    const c = await addCard({ title: "C", blockedBy: [{ kind: "card", id: a.id }] });
+    expect(c.blocked).toBe(true);
+
+    await json(await server.request("DELETE", `/api/kanban/cards/${a.id}`));
+    expect(await board()).toEqual({ backlog: ["B", "C"] });
+    expect((await list()).map((card) => card.position)).toEqual([0, 1]);
+    expect((await getCard(c.id)).card).toMatchObject({ blockedBy: [], blocked: false });
+    expect((await getCard(b.id)).card.blocked).toBe(false);
+  });
+});
+
+describe("blockers", () => {
+  it("shows card and workspace blockers and clears them when the work ends", async () => {
+    const game = await addProject("game");
+    const ws = await json(
+      await server.request("POST", "/api/workspaces", {
+        projectId: game.id,
+        name: "Prep",
+        isolation: "in-place",
+      }),
+      201,
+    );
+    const prepId = (ws as { workspace: Workspace }).workspace.id;
+    const first = await addCard({ title: "First" });
+    const later = await addCard({
+      title: "Later",
+      blockedBy: [
+        { kind: "card", id: first.id },
+        { kind: "workspace", id: prepId },
+        { kind: "card", id: first.id },
+      ],
+    });
+    expect(later.blockedBy).toEqual([
+      { kind: "card", id: first.id, title: "First", column: "backlog", open: true },
+      { kind: "workspace", id: prepId, name: "Prep", state: "active", open: true },
+    ]);
+    expect(later.blocked).toBe(true);
+
+    await cardCall("POST", `${first.id}/move`, { column: "done" });
+    expect((await getCard(later.id)).card.blocked).toBe(true);
+    await workspaceStep(prepId, "archive");
+    const cleared = (await getCard(later.id)).card;
+    expect(cleared.blocked).toBe(false);
+    expect(cleared.blockedBy.map((blocker) => blocker.open)).toEqual([false, false]);
+
+    expect(
+      await errorCode(
+        await server.request("PATCH", `/api/kanban/cards/${later.id}`, {
+          blockedBy: [{ kind: "card", id: later.id }],
+        }),
+        422,
+      ),
+    ).toBe("self_blocker");
+    expect((await cardCall("PATCH", later.id, { blockedBy: [] })).blockedBy).toEqual([]);
+  });
+});
+
+describe("starting work from a card", () => {
+  it("starts a workspace named after the card, links it, and moves the card to In progress", async () => {
+    const game = await addProject("game");
+    const card = await addCard({ title: "Fix crafting UI", column: "ready" });
+
+    expect(
+      await errorCode(
+        await server.request("POST", `/api/kanban/cards/${card.id}/start`, {
+          isolation: "in-place",
+        }),
+        400,
+      ),
+    ).toBe("project_required");
+
+    const result = await startCard(card.id, { projectId: game.id, isolation: "in-place" });
+    expect(result.created.workspace).toMatchObject({ name: "Fix crafting UI", state: "active" });
+    expect(result.card).toMatchObject({
+      column: "in-progress",
+      projectId: game.id,
+      workspaceId: result.created.workspace.id,
+    });
+    expect(cards.forWorkspace(result.created.workspace.id).map((found) => found.id)).toEqual([
+      card.id,
+    ]);
+    expect(
+      (await list(`?workspaceId=${result.created.workspace.id}`)).map((found) => found.id),
+    ).toEqual([card.id]);
+    expect((await getCard(card.id)).history.at(-1)).toMatchObject({
+      from: "ready",
+      to: "in-progress",
+      reason: "workspace-started",
+    });
+
+    expect(
+      await errorCode(
+        await server.request("POST", `/api/kanban/cards/${card.id}/start`, {
+          isolation: "in-place",
+        }),
+        409,
+      ),
+    ).toBe("card_has_workspace");
+  });
+
+  it("asks before it starts a blocked card", async () => {
+    const game = await addProject("game");
+    const blocker = await addCard({ title: "Design first" });
+    const card = await addCard({
+      title: "Build it",
+      projectId: game.id,
+      blockedBy: [{ kind: "card", id: blocker.id }],
+    });
+    const refused = await server.request("POST", `/api/kanban/cards/${card.id}/start`, {
+      isolation: "in-place",
+    });
+    expect(refused.status).toBe(409);
+    expect(((await refused.json()) as { error: { code: string; message: string } }).error).toEqual({
+      code: "card_blocked",
+      message: "This card is blocked by: Design first",
+    });
+    const workspaces = await json(await server.request("GET", "/api/workspaces"));
+    expect((workspaces as { workspaces: unknown[] }).workspaces).toEqual([]);
+
+    const result = await startCard(card.id, { isolation: "in-place", confirmBlocked: true });
+    expect(result.card.column).toBe("in-progress");
+
+    const other = await addProject("other");
+    const second = await addCard({ title: "Elsewhere", projectId: game.id });
+    expect(
+      await errorCode(
+        await server.request("POST", `/api/kanban/cards/${second.id}/start`, {
+          projectId: other.id,
+          isolation: "in-place",
+        }),
+        422,
+      ),
+    ).toBe("project_mismatch");
+  });
+});
+
+describe("automatic moves", () => {
+  it("moves the card to Done on archive, and a manual move wins until the next change", async () => {
+    const game = await addProject("game");
+    const card = await addCard({ title: "Ship it", projectId: game.id });
+    const { created } = await startCard(card.id, { isolation: "in-place" });
+    const workspaceId = created.workspace.id;
+
+    // A manual move stays through changes that do not move cards.
+    await cardCall("POST", `${card.id}/move`, { column: "review" });
+    await workspaceStep(workspaceId, "park");
+    await workspaceStep(workspaceId, "resume");
+    expect((await getCard(card.id)).card.column).toBe("review");
+
+    await workspaceStep(workspaceId, "archive");
+    const { card: done, history } = await getCard(card.id);
+    expect(done.column).toBe("done");
+    expect(history.at(-1)).toMatchObject({
+      from: "review",
+      to: "done",
+      reason: "workspace-archived",
+    });
+
+    await cardCall("POST", `${card.id}/move`, { column: "backlog" });
+    expect((await getCard(card.id)).card.column).toBe("backlog");
+  });
+
+  it("lets other modules move the cards of a workspace", async () => {
+    const game = await addProject("game");
+    const card = await addCard({ title: "Review me", projectId: game.id });
+    const { created } = await startCard(card.id, { isolation: "in-place" });
+
+    cards.workChanged(created.workspace.id, "review", "pipeline-passed");
+    cards.workChanged(created.workspace.id, "review", "pr-opened");
+    const { card: moved, history } = await getCard(card.id);
+    expect(moved.column).toBe("review");
+    expect(history.map((move) => move.reason)).toEqual([
+      "created",
+      "workspace-started",
+      "pipeline-passed",
+    ]);
+  });
+});
+
+describe("live board", () => {
+  it("sends the board on subscribe and after every change", async () => {
+    const [snapshot] = (await server.events.snapshot("kanban:board")) as BoardEvent[];
+    expect(snapshot).toEqual({ type: "board", cards: [] });
+
+    const card = await addCard({ title: "Live" });
+    await cardCall("POST", `${card.id}/move`, { column: "ready" });
+    const events = server.events.eventsOf("kanban:board") as BoardEvent[];
+    expect(events.map((event) => event.cards.map((found) => found.column))).toEqual([
+      ["backlog"],
+      ["ready"],
+    ]);
+  });
+});
