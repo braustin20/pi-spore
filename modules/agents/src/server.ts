@@ -11,7 +11,7 @@ import {
   SetModelRequest,
   SetThinkingRequest,
 } from "@pi-spore/shared";
-import { agentEnv, readRoleDefaults, resolveResourceArgs } from "./launch.js";
+import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
 import type { PiCommand } from "./rpc.js";
 
@@ -86,7 +86,8 @@ export function createAgentsModule(
         log: host.log,
         sessionsDir: host.home.sessions,
         resourceArgs:
-          options.resourceArgs ?? ((cwd) => resolveResourceArgs(cwd, agentDir, exclude)),
+          options.resourceArgs ??
+          ((cwd) => resolveResourceArgs(cwd, agentDir, exclude, SPORE_EXTENSIONS)),
         roleDefaults: options.roleDefaults ?? ((role) => readRoleDefaults(agentDir, role)),
         env: async (agent, workspace) => {
           const extra: Record<string, string> = {

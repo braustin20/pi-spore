@@ -1,20 +1,31 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { DefaultPackageManager, SettingsManager } from "@earendil-works/pi-coding-agent";
 
 /** Built-in Pi extensions (Pi docs: settings.md). `--no-extensions` turns them off, so enabled ones are listed again. */
 const BUILTIN_EXTENSIONS = ["mcp", "llama.cpp", "codemode", "tool-search"];
 
 /**
+ * pi-spore's own Pi extensions, loaded into every agent. The path works from `src/` and from `dist/`, which sit at the
+ * same depth.
+ */
+export const SPORE_EXTENSIONS: readonly string[] = [
+  fileURLToPath(new URL("../../../pi-extensions/router", import.meta.url)),
+];
+
+/**
  * The launch arguments that load the user's Pi setup minus excluded packages (ADR 0025): `--no-extensions`,
  * `--no-skills`, and `--no-prompt-templates`, then one explicit flag per remaining resource. Pi's own package
  * manager resolves the list from the user's and the project's settings without loading any extension code. Packages
- * that are configured but not installed are skipped, never installed.
+ * that are configured but not installed are skipped, never installed. `extraExtensions` (pi-spore's own) come after the
+ * user's, unless the user's setup already loads the same path.
  */
 export async function resolveResourceArgs(
   cwd: string,
   agentDir: string,
   excludeSources: readonly string[],
+  extraExtensions: readonly string[] = [],
 ): Promise<string[]> {
   const manager = new DefaultPackageManager({
     cwd,
@@ -26,9 +37,13 @@ export async function resolveResourceArgs(
   const excluded = new Set(excludeSources);
   const keep = (resource: { enabled: boolean; metadata: { source: string } }) =>
     resource.enabled && !excluded.has(resource.metadata.source);
+  const extensions = resolved.extensions.filter(keep).map((resource) => resource.path);
+  const extra = extraExtensions.filter(
+    (path) => !extensions.some((loaded) => loaded === path || loaded.startsWith(`${path}/`)),
+  );
   return [
     "--no-extensions",
-    ...resolved.extensions.filter(keep).flatMap((resource) => ["-e", resource.path]),
+    ...[...extensions, ...extra].flatMap((path) => ["-e", path]),
     "--no-skills",
     ...resolved.skills.filter(keep).flatMap((resource) => ["--skill", resource.path]),
     "--no-prompt-templates",

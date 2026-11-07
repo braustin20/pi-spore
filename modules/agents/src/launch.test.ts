@@ -1,8 +1,14 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { agentEnv, modelArgs, readRoleDefaults, resolveResourceArgs } from "./launch.js";
+import {
+  agentEnv,
+  modelArgs,
+  readRoleDefaults,
+  resolveResourceArgs,
+  SPORE_EXTENSIONS,
+} from "./launch.js";
 
 let root: string;
 let agentDir: string;
@@ -60,6 +66,28 @@ describe("resolveResourceArgs", () => {
     expect(values("-e").some((path) => path.startsWith(lens))).toBe(false);
     expect(values("--skill").some((path) => path.startsWith(join(tools, "skills")))).toBe(true);
     expect(values("--skill").some((path) => path.startsWith(lens))).toBe(false);
+  });
+});
+
+describe("pi-spore's own extensions", () => {
+  it("come after the user's, once, and point at the router package", async () => {
+    const extra = makePackage("extra");
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [] }));
+    const values = (args: string[]) =>
+      args.flatMap((arg, i) => (args[i - 1] === "-e" ? [arg] : []));
+
+    const args = values(await resolveResourceArgs(project, agentDir, [], [extra]));
+    expect(args.at(-1)).toBe(extra);
+    expect(args).toContain(join(agentDir, "extensions", "mine.ts"));
+
+    // The user's setup already loads it: no second copy.
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [extra] }));
+    const deduped = values(await resolveResourceArgs(project, agentDir, [], [extra]));
+    expect(deduped.filter((path) => path.startsWith(extra))).toEqual([join(extra, "ext.ts")]);
+
+    const [router] = SPORE_EXTENSIONS;
+    const manifest = JSON.parse(readFileSync(join(router as string, "package.json"), "utf8"));
+    expect(manifest.pi.extensions).toEqual(["./src/index.ts"]);
   });
 });
 
