@@ -1,0 +1,174 @@
+/*
+ * The one stylesheet of the web app: Tailwind, the self-hosted fonts, the themes, and a few base rules. Components
+ * use only the role tokens below as colors; the default Tailwind palette is removed so a raw color class does not
+ * exist. The app's own stylesheet (packages/web/src/app.css) imports this file and names the sources to scan.
+ */
+@import "tailwindcss";
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+@import "./themes.css";
+
+@theme {
+  --color-*: initial;
+  --font-*: initial;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, monospace;
+}
+
+@theme inline {
+  --color-bg: var(--bg);
+  --color-panel: var(--panel);
+  --color-raised: var(--raised);
+  --color-line: var(--line);
+  --color-fg: var(--text);
+  --color-muted: var(--text-muted);
+  --color-accent: var(--accent);
+  --color-accent-strong: var(--accent-strong);
+  --color-on-accent: var(--on-accent);
+  --color-ok: var(--ok);
+  --color-fail: var(--fail);
+  --color-warn: var(--warn);
+  --color-run: var(--run);
+  --color-diff-add: var(--diff-add);
+  --color-diff-del: var(--diff-del);
+}
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-sans);
+    font-size: 14px;
+    line-height: 1.45;
+    -webkit-font-smoothing: antialiased;
+  }
+  * {
+    border-color: var(--line);
+  }
+  code,
+  kbd,
+  pre {
+    font-family: var(--font-mono);
+    font-size: 0.9em;
+  }
+  a {
+    color: var(--accent-strong);
+    text-underline-offset: 2px;
+  }
+  /* One visible focus style for every focusable element. */
+  :focus-visible {
+    outline: 2px solid var(--accent-strong);
+    outline-offset: 2px;
+  }
+  ::selection {
+    background: color-mix(in srgb, var(--accent) 40%, transparent);
+  }
+  * {
+    scrollbar-color: var(--line) transparent;
+  }
+  /* Reduced motion beats every component's own animation, so these need !important. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      /* biome-ignore lint/complexity/noImportantStyles: must win over component animations */
+      animation-duration: 0.01ms !important;
+      /* biome-ignore lint/complexity/noImportantStyles: must win over component animations */
+      animation-iteration-count: 1 !important;
+      /* biome-ignore lint/complexity/noImportantStyles: must win over component transitions */
+      transition-duration: 0.01ms !important;
+      /* biome-ignore lint/complexity/noImportantStyles: must win over smooth scrolling */
+      scroll-behavior: auto !important;
+    }
+  }
+}
+
+/* Rendered Markdown from agents. Markup comes from react-markdown, so it is styled by element. */
+@layer components {
+  .md {
+    overflow-wrap: anywhere;
+  }
+  .md > :first-child {
+    margin-top: 0;
+  }
+  .md > :last-child {
+    margin-bottom: 0;
+  }
+  .md p,
+  .md ul,
+  .md ol,
+  .md pre,
+  .md blockquote,
+  .md table {
+    margin: 0.5em 0;
+  }
+  .md ul,
+  .md ol {
+    padding-left: 1.4em;
+  }
+  .md ul {
+    list-style: disc;
+  }
+  .md ol {
+    list-style: decimal;
+  }
+  .md li::marker {
+    color: var(--text-muted);
+  }
+  .md h1,
+  .md h2,
+  .md h3,
+  .md h4 {
+    margin: 0.9em 0 0.4em;
+    font-weight: 600;
+    line-height: 1.3;
+  }
+  .md h1 {
+    font-size: 1.25em;
+  }
+  .md h2 {
+    font-size: 1.15em;
+  }
+  .md h3,
+  .md h4 {
+    font-size: 1em;
+  }
+  .md :not(pre) > code {
+    padding: 0.1em 0.35em;
+    border-radius: 6px;
+    background: var(--raised);
+  }
+  .md pre {
+    padding: 0.6em 0.8em;
+    border: 1px solid var(--line);
+    border-radius: 8px;
+    background: var(--bg);
+    overflow-x: auto;
+    font-size: 0.85em;
+  }
+  .md blockquote {
+    padding-left: 0.8em;
+    border-left: 2px solid var(--line);
+    color: var(--text-muted);
+  }
+  .md table {
+    border-collapse: collapse;
+    font-size: 0.9em;
+  }
+  .md th,
+  .md td {
+    padding: 0.25em 0.6em;
+    border: 1px solid var(--line);
+    text-align: left;
+  }
+  .md hr {
+    border: 0;
+    border-top: 1px solid var(--line);
+  }
+}

@@ -1,0 +1,62 @@
+/*
+ * One block per theme. Every block sets every role token in docs/design.md, as hsl(). themes.test.ts checks that
+ * and the contrast of each block. Add a theme here and in themes.ts.
+ */
+
+:root,
+[data-theme="spore-night"] {
+  color-scheme: dark;
+  --bg: hsl(255 16% 9%);
+  --panel: hsl(255 14% 12%);
+  --raised: hsl(254 12% 16%);
+  --line: hsl(254 12% 22%);
+  --text: hsl(250 10% 88%);
+  --text-muted: hsl(250 6% 60%);
+  --accent: hsl(258 90% 62%);
+  --accent-strong: hsl(258 95% 80%);
+  --on-accent: hsl(0 0% 100%);
+  --ok: hsl(145 55% 55%);
+  --fail: hsl(355 75% 66%);
+  --warn: hsl(38 90% 62%);
+  --run: hsl(210 85% 66%);
+  --diff-add: hsl(145 55% 55%);
+  --diff-del: hsl(355 75% 66%);
+}
+
+[data-theme="ayu-dark"] {
+  color-scheme: dark;
+  --bg: hsl(220 29% 6%);
+  --panel: hsl(218 27% 8%);
+  --raised: hsl(222 22% 12%);
+  --line: hsl(221 17% 18%);
+  --text: hsl(47 7% 73%);
+  --text-muted: hsl(219 8% 58%);
+  --accent: hsl(40 75% 61%);
+  --accent-strong: hsl(40 100% 70%);
+  --on-accent: hsl(220 29% 6%);
+  --ok: hsl(80 65% 57%);
+  --fail: hsl(357 81% 69%);
+  --warn: hsl(25 100% 63%);
+  --run: hsl(202 100% 67%);
+  --diff-add: hsl(105 61% 62%);
+  --diff-del: hsl(355 84% 69%);
+}
+
+[data-theme="spore-day"] {
+  color-scheme: light;
+  --bg: hsl(250 25% 97%);
+  --panel: hsl(250 20% 100%);
+  --raised: hsl(252 22% 93%);
+  --line: hsl(252 14% 84%);
+  --text: hsl(256 20% 14%);
+  --text-muted: hsl(252 8% 38%);
+  --accent: hsl(258 70% 54%);
+  --accent-strong: hsl(258 65% 42%);
+  --on-accent: hsl(0 0% 100%);
+  --ok: hsl(145 70% 26%);
+  --fail: hsl(355 70% 42%);
+  --warn: hsl(30 95% 30%);
+  --run: hsl(210 85% 38%);
+  --diff-add: hsl(145 70% 26%);
+  --diff-del: hsl(355 70% 42%);
+}

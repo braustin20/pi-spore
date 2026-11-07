@@ -8,20 +8,24 @@
     "build": "vite build"
   },
   "dependencies": {
+    "@pi-spore/mod-actions": "0.0.0",
+    "@pi-spore/mod-agents": "0.0.0",
+    "@pi-spore/mod-projects": "0.0.0",
+    "@pi-spore/mod-unity": "0.0.0",
+    "@pi-spore/mod-workspaces": "0.0.0",
     "@pi-spore/module-api": "0.0.0",
     "@pi-spore/shared": "0.0.0",
+    "@pi-spore/ui": "0.0.0",
+    "lucide-react": "1.70.0",
     "react": "19.3.1",
-    "react-dom": "19.3.1",
-    "@pi-spore/mod-projects": "0.0.0",
-    "@pi-spore/mod-workspaces": "0.0.0",
-    "@pi-spore/mod-agents": "0.0.0",
-    "@pi-spore/mod-actions": "0.0.0",
-    "@pi-spore/mod-unity": "0.0.0"
+    "react-dom": "19.3.1"
   },
   "devDependencies": {
+    "@tailwindcss/vite": "4.3.5",
     "@types/react": "19.3.0",
     "@types/react-dom": "19.3.0",
     "@vitejs/plugin-react": "6.2.1",
+    "tailwindcss": "4.3.5",
     "vite": "8.3.6"
   }
 }

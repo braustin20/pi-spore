@@ -3,6 +3,15 @@
   "vcs": { "enabled": true, "clientKind": "git", "useIgnoreFile": true },
   "files": { "includes": ["**", "!**/dist", "!**/.tsbuild", "!**/*.md"] },
   "formatter": { "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
-  "linter": { "rules": { "preset": "recommended" } },
+  "css": { "parser": { "tailwindDirectives": true } },
+  "tailwind": { "stylesheet": "./packages/ui/src/styles.css" },
+  "linter": {
+    "rules": {
+      "preset": "recommended",
+      "nursery": {
+        "noTailwindRawColors": { "level": "error", "options": { "allowBlackAndWhite": false } }
+      }
+    }
+  },
   "assist": { "actions": { "source": { "organizeImports": "on" } } }
 }
