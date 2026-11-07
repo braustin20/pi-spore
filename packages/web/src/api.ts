@@ -42,6 +42,11 @@ export function createApiClient(): ApiClient {
     subscribe: (topic, onEvent) => socket.subscribe(topic, onEvent),
     socketUrl,
     get: async (path) => readAnswer(await fetch(`/api/${path}`, { headers: auth })),
+    getBlob: async (path) => {
+      const response = await fetch(`/api/${path}`, { headers: auth });
+      if (!response.ok) await readAnswer(response);
+      return response.blob();
+    },
     send: async (method, path, body) =>
       readAnswer(
         await fetch(`/api/${path}`, {

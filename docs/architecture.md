@@ -741,6 +741,9 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
     file inside the workspace folder or `artifacts/workspaces/<id>/`, whose real name has an image extension, of at
     most `maxImageBytes`, with bytes that match the extension. Anything else is 400, 403, 404, 413, or 415, and the
     page shows the plain link.
+  - The page shows image blocks as thumbnails with a full-size viewer. In Markdown, an image or a link to a local
+    image path goes through `linked-image`; a remote image loads only after a click, without a referrer (ADR 0061);
+    any other link stays plain.
   CLI: `pi-spore chat list <workspace>`, `pi-spore chat new <workspace> [--side [--fork]]`.
 
 ## 16. Open questions

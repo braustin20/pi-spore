@@ -1,15 +1,48 @@
-import type { AgentDialog } from "@pi-spore/shared";
-import { Button, Select, Textarea } from "@pi-spore/ui";
-import { ArrowUp, Square } from "lucide-react";
-import { type KeyboardEvent, type ReactNode, useEffect, useState } from "react";
+import { type AgentDialog, IMAGE_TYPES, type PromptImage } from "@pi-spore/shared";
+import { Button, cn, Notice, Select, Textarea } from "@pi-spore/ui";
+import { ArrowUp, ImagePlus, Square, X } from "lucide-react";
+import {
+  type ClipboardEvent,
+  type DragEvent,
+  type KeyboardEvent,
+  type ReactNode,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 
 export interface SlashCommand {
   name: string;
   description?: string;
 }
 
+/** An image waiting in the composer: its data for the request, and a blob URL for the thumbnail. */
+interface Attachment {
+  id: number;
+  name: string;
+  url: string;
+  image: PromptImage;
+}
+
+const isImageType = (type: string): type is PromptImage["mimeType"] =>
+  (IMAGE_TYPES as readonly string[]).includes(type);
+
+/** A file's bytes as base64, without the `data:` prefix. */
+function readBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result);
+      resolve(url.slice(url.indexOf(",") + 1));
+    };
+    reader.onerror = () => reject(reader.error ?? new Error(`Could not read ${file.name}`));
+    reader.readAsDataURL(file);
+  });
+}
+
 /**
- * The message box. Enter sends, Shift+Enter adds a line. While the agent works, a message goes in as a steer
+ * The message box. Enter sends, Shift+Enter adds a line. Images come in by paste, drag and drop, or the image button
+ * (PNG, JPEG, WebP, GIF); the server checks their size. While the agent works, a message goes in as a steer
  * (after the current turn) or a follow-up (after the run). Typing `/` lists slash commands. `controls` (model and
  * thinking) sit in the row under the text.
  */
@@ -18,6 +51,7 @@ export function Composer({
   disabled,
   loadCommands,
   controls,
+  imageInput,
   onSend,
   onAbort,
 }: {
@@ -25,10 +59,85 @@ export function Composer({
   disabled: boolean;
   loadCommands: () => Promise<SlashCommand[]>;
   controls?: ReactNode;
-  onSend: (message: string, whileBusy: "steer" | "followUp") => Promise<void>;
+  /** Whether the chat's model takes images; undefined when unknown. */
+  imageInput: boolean | undefined;
+  onSend: (
+    message: string,
+    whileBusy: "steer" | "followUp",
+    images: PromptImage[],
+  ) => Promise<void>;
   onAbort: () => void;
 }) {
   const [text, setText] = useState("");
+  const [attachments, setAttachments] = useState<Attachment[]>([]);
+  const [refused, setRefused] = useState<string | undefined>();
+  const [dragging, setDragging] = useState(false);
+  const picker = useRef<HTMLInputElement>(null);
+  const nextId = useRef(0);
+  const shown = useRef(attachments);
+  shown.current = attachments;
+  // Free the thumbnails' blob URLs when the composer goes.
+  useEffect(
+    () => () => {
+      for (const attachment of shown.current) URL.revokeObjectURL(attachment.url);
+    },
+    [],
+  );
+
+  const addFiles = (files: readonly File[]) => {
+    const wrong = files.filter((file) => !isImageType(file.type));
+    setRefused(
+      wrong.length > 0
+        ? `Only PNG, JPEG, WebP, and GIF images can be sent: ${wrong.map((file) => file.name || file.type).join(", ")}`
+        : undefined,
+    );
+    for (const file of files) {
+      const mimeType = file.type;
+      if (!isImageType(mimeType)) continue;
+      readBase64(file)
+        .then((data) => {
+          const attachment: Attachment = {
+            id: nextId.current++,
+            name: file.name || "pasted image",
+            url: URL.createObjectURL(file),
+            image: { mimeType, data },
+          };
+          setAttachments((current) => [...current, attachment]);
+        })
+        .catch((caught: unknown) =>
+          setRefused(caught instanceof Error ? caught.message : String(caught)),
+        );
+    }
+  };
+
+  const remove = (id: number) =>
+    setAttachments((current) =>
+      current.filter((attachment) => {
+        if (attachment.id === id) URL.revokeObjectURL(attachment.url);
+        return attachment.id !== id;
+      }),
+    );
+
+  const onPaste = (event: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...event.clipboardData.files].filter((file) => file.type.startsWith("image/"));
+    if (files.length === 0) return;
+    // A copied web page may bring text with the image; then the text still goes in.
+    if (!event.clipboardData.types.includes("text/plain")) event.preventDefault();
+    addFiles(files);
+  };
+
+  const hasFiles = (event: DragEvent) => event.dataTransfer.types.includes("Files");
+  const onDragOver = (event: DragEvent<HTMLDivElement>) => {
+    if (disabled || !hasFiles(event)) return;
+    event.preventDefault();
+    setDragging(true);
+  };
+  const onDrop = (event: DragEvent<HTMLDivElement>) => {
+    setDragging(false);
+    if (disabled || !hasFiles(event)) return;
+    event.preventDefault();
+    addFiles([...event.dataTransfer.files]);
+  };
   const [whileBusy, setWhileBusy] = useState<"steer" | "followUp">("steer");
   const [sending, setSending] = useState(false);
   const [commands, setCommands] = useState<SlashCommand[] | undefined>();
@@ -50,12 +159,22 @@ export function Composer({
     ? (commands ?? []).filter((command) => `/${command.name}`.startsWith(text)).slice(0, 8)
     : [];
 
+  const empty = text.trim() === "" && attachments.length === 0;
   const send = () => {
-    const message = text.trim();
-    if (!message || sending || disabled) return;
+    if (empty || sending || disabled) return;
     setSending(true);
-    onSend(message, whileBusy)
-      .then(() => setText(""))
+    const sent = attachments;
+    onSend(
+      text.trim(),
+      whileBusy,
+      sent.map((attachment) => attachment.image),
+    )
+      .then(() => {
+        setText("");
+        for (const attachment of sent) URL.revokeObjectURL(attachment.url);
+        setAttachments((current) => current.filter((attachment) => !sent.includes(attachment)));
+        setRefused(undefined);
+      })
       .finally(() => setSending(false));
   };
 
@@ -84,11 +203,58 @@ export function Composer({
           ))}
         </ul>
       )}
-      <div className="rounded-xl border border-line bg-panel focus-within:border-muted">
+      {(refused || (imageInput === false && attachments.length > 0)) && (
+        <div className="mb-1.5 flex flex-col gap-1.5">
+          {refused && <Notice tone="fail">{refused}</Notice>}
+          {imageInput === false && attachments.length > 0 && (
+            <Notice tone="warn">
+              This chat's model does not take images. Pi sends a placeholder in their place. Pick
+              another model to send them.
+            </Notice>
+          )}
+        </div>
+      )}
+      {/* biome-ignore lint/a11y/noStaticElementInteractions: a drop target only; the image button does the same by keyboard */}
+      <div
+        onDragOver={onDragOver}
+        onDragLeave={() => setDragging(false)}
+        onDrop={onDrop}
+        className={cn(
+          "rounded-xl border border-line bg-panel focus-within:border-muted",
+          dragging && "border-accent focus-within:border-accent",
+        )}
+      >
+        {attachments.length > 0 && (
+          <ul
+            className="m-0 flex list-none flex-wrap gap-2 px-3.5 pt-3"
+            aria-label="Images to send"
+          >
+            {attachments.map((attachment) => (
+              <li key={attachment.id} className="relative">
+                <img
+                  src={attachment.url}
+                  alt={attachment.name}
+                  title={attachment.name}
+                  className="block size-16 rounded-lg border border-line object-cover"
+                />
+                <Button
+                  variant="secondary"
+                  size="icon-sm"
+                  aria-label={`Remove image ${attachment.name}`}
+                  onClick={() => remove(attachment.id)}
+                  className="absolute -top-2 -right-2 size-5 rounded-full [&_svg]:size-3"
+                >
+                  <X />
+                </Button>
+              </li>
+            ))}
+          </ul>
+        )}
         <Textarea
           value={text}
           onChange={(event) => setText(event.target.value)}
           onKeyDown={onKeyDown}
+          onPaste={onPaste}
           aria-label="Message the agent"
           placeholder={
             busy
@@ -100,6 +266,27 @@ export function Composer({
           className="block w-full resize-none border-0 bg-transparent px-3.5 pt-3 text-[15px] focus-visible:outline-none"
         />
         <div className="flex flex-wrap items-center gap-2 px-2.5 pb-2.5">
+          <input
+            ref={picker}
+            type="file"
+            accept={IMAGE_TYPES.join(",")}
+            multiple
+            hidden
+            onChange={(event) => {
+              addFiles([...(event.target.files ?? [])]);
+              event.target.value = "";
+            }}
+          />
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Add images"
+            title="Add images (or paste, or drop them here)"
+            disabled={disabled}
+            onClick={() => picker.current?.click()}
+          >
+            <ImagePlus />
+          </Button>
           {controls}
           <div className="flex-1" />
           {busy && (
@@ -118,11 +305,7 @@ export function Composer({
               Stop
             </Button>
           )}
-          <Button
-            variant="primary"
-            onClick={send}
-            disabled={disabled || sending || text.trim() === ""}
-          >
+          <Button variant="primary" onClick={send} disabled={disabled || sending || empty}>
             <ArrowUp />
             {busy ? "Queue" : "Send"}
           </Button>

@@ -415,6 +415,7 @@ function ChatView({
             </EmptyState>
           )}
           <MessageList
+            agentId={agentId}
             messages={chat.messages}
             running={chat.running}
             {...(chat.streaming ? { streaming: chat.streaming } : {})}
@@ -457,8 +458,13 @@ function ChatView({
               disabled={!active}
               loadCommands={loadCommands}
               controls={controls}
-              onSend={async (text, whileBusy) => {
-                await call("POST", "prompt", { message: text, ...(busy ? { whileBusy } : {}) });
+              imageInput={state.model?.input?.includes("image")}
+              onSend={async (text, whileBusy, images) => {
+                await call("POST", "prompt", {
+                  message: text,
+                  ...(images.length > 0 ? { images } : {}),
+                  ...(busy ? { whileBusy } : {}),
+                });
               }}
               onAbort={() => void call("POST", "abort")}
             />

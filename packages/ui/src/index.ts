@@ -5,6 +5,7 @@ export { CollapsibleSection } from "./components/collapsible-section.js";
 export { DiffCount } from "./components/diff-count.js";
 export { EmptyState } from "./components/empty-state.js";
 export { Checkbox, Field, Input, Select, Textarea } from "./components/field.js";
+export { ImageViewer } from "./components/image-viewer.js";
 export { ListRow } from "./components/list-row.js";
 export { Notice } from "./components/notice.js";
 export { Page, PageHeader } from "./components/page.js";

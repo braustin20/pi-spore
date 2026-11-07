@@ -33,7 +33,7 @@ browser cannot load a local path, and a route that reads files from disk is a se
 - Both routes need the user's token like every other route. The page fetches the bytes with the token header and
   shows them as a blob URL, so no token goes into an image URL. Responses carry the checked type,
   `nosniff`, and `content-security-policy: default-src 'none'; sandbox`.
-- Anything else the agent links stays a plain link.
+- Anything else the agent links stays a plain link. Remote images: ADR 0061.
 
 ## Consequences
 

@@ -115,6 +115,11 @@ export interface ServerModule extends ModuleManifest {
 export interface ApiClient {
   /** GET `/api/<path>` and return the parsed JSON body. Throws `ApiRequestError` on a non-2xx answer. */
   get(path: string): Promise<unknown>;
+  /**
+   * GET `/api/<path>` and return the body as a Blob, such as image bytes for a blob URL. The token goes in a header,
+   * never in the URL. Throws `ApiRequestError` on a non-2xx answer.
+   */
+  getBlob(path: string): Promise<Blob>;
   /** Sends a mutating request with a fresh idempotency key. */
   send(method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<unknown>;
   /**

@@ -111,7 +111,14 @@ What exists now:
   bar: the workspace's chats as links (active worker chat, side chats with an eye icon, older worker chats dimmed
   with a history icon), a rename pencil, and New chat, Side chat, and Side chat with context. A side chat says it is
   read-only at the top. An older worker chat says so with a Make active button and has no composer. The composer row
-  holds the model and thinking selects. Extension dialogs show as cards; select dialogs as numbered option rows.
+  holds an image button and the model and thinking selects. Images come in by paste, drop, or the button and show
+  as 64 px thumbnails with a round remove button above the text; a drop lights the box border in the accent. A
+  warning shows above the box when the chat's model takes no images. Extension dialogs show as cards; select dialogs
+  as numbered option rows.
+- **Images in messages:** thumbnails at most 192 px high with a `--line` border, under the user's text and under a
+  tool call (visible while it is folded). A click opens the full-size viewer over a dimmed page; Escape closes it.
+  Images the agent links by path show the same way with the path under them. A remote image is a small box with
+  its host and a Load button (ADR 0061).
   With no workspace selected, the middle shows the "Start a workspace" form.
 - **Right panel:** a "Details" tab (workspace info, rename, park, resume, archive, then the module panels Actions
   and Unity as collapsible sections) and a "Terminals" tab. The Terminals tab widens the column to 40rem (at most
@@ -142,6 +149,7 @@ In `@pi-spore/ui` (`packages/ui/src/components`):
 | `Field`, `Input`, `Textarea`, `Select`, `Checkbox` | form controls, 8 px radius; `Select` is native |
 | `Table`, `TableHead`, `TableCell` | dense tables |
 | `Page`, `PageHeader` | a full page inside the shell |
+| `ImageViewer` | a full-size image over a dimmed page (Radix Dialog); Escape or the close button closes it |
 | `Spinner`, `Tooltip`, `ThemeMenu` | |
 
 The PR header card comes with the PR module.
