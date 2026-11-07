@@ -51,6 +51,27 @@ export {
   StartBridgeRunRequest,
 } from "./attention.js";
 export {
+  ChangedFile,
+  ChangedFileList,
+  ChangeRecord,
+  ChangeScope,
+  ChangeScopeKind,
+  ChangeStatus,
+  ChangesEvent,
+  ChangesSummary,
+  CommentSide,
+  CreateCommentRequest,
+  DiffComment,
+  DiffCommentList,
+  DiffHunk,
+  DiffLine,
+  DiffLineKind,
+  DiffList,
+  DiffNote,
+  FileDiff,
+  SendCommentsResponse,
+} from "./changes.js";
+export {
   applyPiEvent,
   type ChatMessage,
   type ChatState,

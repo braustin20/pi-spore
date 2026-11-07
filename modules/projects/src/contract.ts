@@ -1,5 +1,15 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { Isolation, Project, ProjectConfigView, ProjectTrait } from "@pi-spore/shared";
+import type {
+  ChangedFile,
+  ChangeRecord,
+  ChangeScope,
+  ChangeScopeKind,
+  FileDiff,
+  Isolation,
+  Project,
+  ProjectConfigView,
+  ProjectTrait,
+} from "@pi-spore/shared";
 import type { Static, TSchema } from "typebox";
 
 /** Where a workspace's copy lives, as a provider made it. */
@@ -19,6 +29,47 @@ export interface CreateCopyRequest {
   line: string;
   /** For `new`: the line to start from. */
   base?: string;
+}
+
+/** Bounds on one file's diff. A file over either one gets the note `too_large` instead of its lines. */
+export interface DiffLimits {
+  maxLines: number;
+  maxBytes: number;
+}
+
+/** Reading a workspace's changes (R8.1, R8.2). Scopes and records are in neutral words (ADR 0005). */
+export interface ChangeOps {
+  /** The scopes this provider can show. */
+  scopes: readonly ChangeScopeKind[];
+  /** The line most work starts from, for workspaces without a recorded base (Git: the remote's default branch). */
+  defaultBase(project: Project): Promise<string | undefined>;
+  /** The current record of the working copy, or undefined when it has none yet. */
+  head(location: WorkspaceLocation): Promise<string | undefined>;
+  /** Records on the line since `base`, newest first, at most `limit`. Without a base: the last `limit`. */
+  records(
+    location: WorkspaceLocation,
+    base: string | undefined,
+    limit: number,
+  ): Promise<ChangeRecord[]>;
+  /** Changed files in a scope, at most `limit` (`truncated` says there were more). */
+  files(
+    location: WorkspaceLocation,
+    scope: ChangeScope,
+    limit: number,
+  ): Promise<{ files: ChangedFile[]; truncated: boolean }>;
+  /** One file's diff in a scope; `file` comes from `files` for the same scope. */
+  diff(
+    location: WorkspaceLocation,
+    scope: ChangeScope,
+    file: ChangedFile,
+    limits: DiffLimits,
+  ): Promise<FileDiff>;
+}
+
+/** Sending a line to where others see it (Git: push). Never rewrites what is there (R9.3). */
+export interface PublishOps {
+  /** Publishes the line and remembers where it went. Throws ApiError 409 when it cannot, with the reason. */
+  push(location: WorkspaceLocation, line: string): Promise<{ remote: string }>;
 }
 
 /**
@@ -44,6 +95,8 @@ export interface VcsProvider {
   lines?: {
     list(project: Project): Promise<{ lines: string[]; current?: string }>;
   };
+  changes?: ChangeOps;
+  publish?: PublishOps;
 }
 
 /** A project trait that a module detects and acts on, such as Unity. */

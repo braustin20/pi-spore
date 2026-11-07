@@ -2,6 +2,7 @@ import { realpath } from "node:fs/promises";
 import { relative, sep } from "node:path";
 import { ProjectsKey, type VcsProvider } from "@pi-spore/mod-projects/server";
 import { ApiError, type Exec, type ServerModule } from "@pi-spore/module-api";
+import { createGitChanges, createGitPublish } from "./changes.js";
 
 /** Runs git without a shell and returns stdout; a non-zero exit becomes an ApiError with git's own message. */
 async function git(
@@ -97,6 +98,8 @@ export function createGitProvider(exec: Exec, worktrees: string): VcsProvider {
         };
       },
     },
+    changes: createGitChanges(exec),
+    publish: createGitPublish(exec),
   };
 }
 

@@ -233,28 +233,55 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
 
 ## 7. VCS providers
 
-See [ADR 0005](decisions/0005-vcs-providers.md).
+See [ADR 0005](decisions/0005-vcs-providers.md) and [ADR 0090](decisions/0090-changes-and-pull-requests.md).
 
 ```ts
 export interface VcsProvider {
   kind: string;                                          // "git" | "folder"
+  priority: number;                                      // higher runs first; folder is the fallback at 0
   detect(path: string): Promise<boolean>;
-  isolationModes(project: Project): IsolationMode[];     // e.g. new-copy, existing-line, in-place
-  createWorkspace(project: Project, req: IsolationRequest): Promise<WorkspaceLocation>;
-  removeWorkspace(loc: WorkspaceLocation): Promise<void>;
-  changes(loc: WorkspaceLocation, scope: ChangeScope): Promise<ChangeSet>;
-  diff(loc: WorkspaceLocation, scope: ChangeScope): Promise<Diff>;
+  root(path: string): Promise<string>;
+  isolationModes: readonly Isolation[];                  // new, existing, in-place
+  createCopy(project, request): Promise<WorkspaceLocation>;   // { path, line?, base? }
+  removeCopy(project, location, { force }): Promise<void>;
   // Optional capabilities, detected by presence:
-  lines?: LineOps;           // branches: list, create, merge into (git)
-  record?: RecordOps;        // commit / stage (git)
-  publish?: PublishOps;      // push + PR (git + gh)
+  lines?: { list(project) };                             // branches (git)
+  changes?: ChangeOps;                                   // scopes, files, diffs, records (git)
+  publish?: PublishOps;                                  // push a line, never force (git)
+}
+
+interface ChangeOps {
+  scopes: readonly ChangeScopeKind[];                    // uncommitted, staged, line, record
+  defaultBase(project): Promise<string | undefined>;
+  head(location): Promise<string | undefined>;
+  records(location, base, limit): Promise<ChangeRecord[]>;
+  files(location, scope, limit): Promise<{ files: ChangedFile[]; truncated: boolean }>;
+  diff(location, scope, file, limits): Promise<FileDiff>;
 }
 ```
 
-- Words in the interface are neutral ("line" for branch, "record" for commit), so Perforce could fit later.
+- Words in the interface are neutral ("line" for branch, "record" for commit), so Perforce could fit later. A
+  forge (GitHub) is not a VCS: pull requests live in the `github-pr` module, which uses `publish` to push.
 - Nothing outside a provider branches on `kind`.
 - Providers run `git` and `gh` with `execFile`, never through a shell.
-- New worktrees run the copy list (R2.6) and then the `setup` action.
+- New worktrees run the copy list (R2.6) and then the `setup` action. A new branch records its base: the branch
+  asked for, else the main checkout's branch, else its commit.
+- Git changes (`modules/vcs-git/src/changes.ts`):
+  - Scopes map to two endpoints of `git diff`: `uncommitted` is HEAD against the working tree plus untracked files
+    (`git ls-files --others --exclude-standard`, each diffed with `--no-index` against `/dev/null`); `staged` is
+    `--cached`; `line` is the merge base with the base against HEAD; `record` is the commit against its first
+    parent. With no commit yet, the empty tree stands in for HEAD.
+  - Every diff runs with `--no-color --no-ext-diff --no-textconv -M`, so user diff drivers never run and the output
+    has one format. Lists come from `--name-status -z` and `--numstat -z`; one file's hunks from a diff limited to its
+    paths. A line the parser does not know is an error, not a guess.
+  - A base or record id goes through `git rev-parse --verify --end-of-options <name>^{commit}` first, so a name that
+    looks like an option stays a name. Record ids must be hex.
+  - Binary files and files over the limits (lines, bytes) get a note instead of hunks.
+  - `defaultBase`: the branch `origin/HEAD` points at (local if it exists, else `origin/<name>`), else `main`, else
+    `master`.
+  - `push`: the branch's configured remote, else `origin`, else the only remote. `git push --set-upstream <remote>
+    refs/heads/<line>:refs/heads/<line>`, never `--force`; a rejected push is 409 `push_failed` with git's message.
+    `GIT_TERMINAL_PROMPT=0`, so a missing credential fails instead of waiting.
 
 ## 8. Pipelines
 
