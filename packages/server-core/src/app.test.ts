@@ -1,9 +1,10 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ApiError, type ServerModule } from "@pi-spore/module-api";
+import { ApiError, bridgeCaller, type ServerModule } from "@pi-spore/module-api";
 import { HealthResponse, parse, ValidationError } from "@pi-spore/shared";
 import { afterEach, describe, expect, it } from "vitest";
+import { AgentTokenStore } from "./agent-tokens.js";
 import { CORE_MIGRATIONS, createApp } from "./app.js";
 import { SqliteStore } from "./store.js";
 import { createTestServer, silentLog, TEST_TOKEN, type TestServer } from "./testing.js";
@@ -51,6 +52,7 @@ describe("GET /api/health", () => {
       startedAt: 1_000,
       now: () => 4_500,
       token: TEST_TOKEN,
+      agentTokens: new AgentTokenStore(),
       store,
       log: silentLog,
     });
@@ -167,6 +169,83 @@ describe("idempotency keys", () => {
   });
 });
 
+/** A `bridge` module that echoes its caller and counts calls. */
+function bridgeModule() {
+  let calls = 0;
+  const module: ServerModule = {
+    id: "bridge",
+    requires: [],
+    core: false,
+    setup(host) {
+      host.routes.post("/echo", async (c) => {
+        calls++;
+        return c.json({ calls, caller: bridgeCaller(c), body: await c.req.json() });
+      });
+    },
+  };
+  return { module, calls: () => calls };
+}
+
+describe("agent tokens", () => {
+  it("open bridge routes, name the caller, and stop working when revoked", async () => {
+    const bridge = bridgeModule();
+    server = await createTestServer([bridge.module]);
+    const token = server.agentTokens.issue({ agentId: "a1", workspaceId: "w1" });
+    const asAgent = { "x-pi-spore-token": "", authorization: `Bearer ${token}` };
+
+    const ok = await server.request("POST", "/api/bridge/echo", {}, asAgent);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toMatchObject({ caller: { agentId: "a1", workspaceId: "w1" } });
+
+    server.agentTokens.revoke(token);
+    expect((await server.request("POST", "/api/bridge/echo", {}, asAgent)).status).toBe(401);
+  });
+
+  it("are refused on other routes, and the user's token is refused on bridge routes", async () => {
+    const counter = counterModule();
+    server = await createTestServer([counter.module, bridgeModule().module]);
+    const token = server.agentTokens.issue({ agentId: "a1", workspaceId: "w1" });
+
+    const asAgent = await server.request(
+      "POST",
+      "/api/counter/bump",
+      {},
+      { "x-pi-spore-token": "", authorization: `Bearer ${token}` },
+    );
+    expect(asAgent.status).toBe(401);
+    expect(counter.calls()).toBe(0);
+
+    const asUser = await server.request("POST", "/api/bridge/echo", {});
+    expect(asUser.status).toBe(401);
+    const asUserBearer = await server.request(
+      "POST",
+      "/api/bridge/echo",
+      {},
+      { authorization: `Bearer ${TEST_TOKEN}` },
+    );
+    expect(asUserBearer.status).toBe(401);
+  });
+
+  it("scope receipts to the agent: a replayed tool call gets the first answer, another agent's runs", async () => {
+    const bridge = bridgeModule();
+    server = await createTestServer([bridge.module]);
+    const as = (agentId: string) => ({
+      "x-pi-spore-token": "",
+      authorization: `Bearer ${server?.agentTokens.issue({ agentId, workspaceId: "w" })}`,
+      "idempotency-key": "toolu_1",
+    });
+
+    const first = await server.request("POST", "/api/bridge/echo", { n: 1 }, as("a1"));
+    // A new process of the same agent has a new token; the receipt still holds.
+    const replay = await server.request("POST", "/api/bridge/echo", { n: 1 }, as("a1"));
+    expect(await replay.json()).toEqual(await first.json());
+    expect(bridge.calls()).toBe(1);
+
+    const other = await server.request("POST", "/api/bridge/echo", { n: 1 }, as("a2"));
+    expect(await other.json()).toMatchObject({ calls: 2, caller: { agentId: "a2" } });
+  });
+});
+
 describe("errors", () => {
   it("turns an ApiError into its status and code", async () => {
     server = await createTestServer([counterModule().module]);
@@ -211,6 +290,7 @@ describe("web app", () => {
       startedAt: 0,
       now: () => 0,
       token: TEST_TOKEN,
+      agentTokens: new AgentTokenStore(),
       store,
       log: silentLog,
       webDist: dist,

@@ -1,0 +1,19 @@
+{
+  "name": "@pi-spore/spore-bridge",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Pi extension: the pi-spore workbench tools for agents (request_human_input, check, run_action)",
+  "keywords": [
+    "pi-package"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  }
+}

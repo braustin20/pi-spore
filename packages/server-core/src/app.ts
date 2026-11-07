@@ -1,7 +1,14 @@
 import { createHash } from "node:crypto";
-import { ApiError, type Logger, type Store } from "@pi-spore/module-api";
+import {
+  ApiError,
+  BRIDGE_CALLER,
+  type BridgeCaller,
+  type Logger,
+  type Store,
+} from "@pi-spore/module-api";
 import { type HealthResponse, ValidationError } from "@pi-spore/shared";
 import { Hono } from "hono";
+import type { AgentTokenStore } from "./agent-tokens.js";
 import { isLoopbackHost } from "./guards.js";
 import { tokensMatch } from "./token.js";
 import { serveWeb } from "./web.js";
@@ -13,6 +20,8 @@ export interface AppOptions {
   startedAt: number;
   now: () => number;
   token: string;
+  /** Tokens of agent processes, valid only on bridge routes. */
+  agentTokens: AgentTokenStore;
   store: Store;
   log: Logger;
   /** Built web app to serve at `/`. Absent in tests and when the web app is not built. */
@@ -20,6 +29,9 @@ export interface AppOptions {
 }
 
 const MUTATING = new Set(["POST", "PUT", "PATCH", "DELETE"]);
+
+/** Routes of the bridge module: spore-bridge calls from agents, which carry an agent token (architecture 2). */
+const BRIDGE_PREFIX = "/api/bridge/";
 
 export const CORE_MIGRATIONS = [
   `CREATE TABLE core_idempotency (
@@ -59,6 +71,19 @@ export function createApp(options: AppOptions): Hono {
   // without a CORS preflight, which this server never approves.
   app.use("/api/*", async (c, next) => {
     const bearer = c.req.header("authorization")?.replace(/^Bearer /, "");
+    // Bridge routes take only agent tokens, and other routes only the user's token, so an agent cannot act as the
+    // user.
+    if (c.req.path.startsWith(BRIDGE_PREFIX)) {
+      const caller = options.agentTokens.find(bearer);
+      if (!caller) {
+        return c.json(
+          { error: { code: "unauthorized", message: "Missing or wrong agent token" } },
+          401,
+        );
+      }
+      c.set(BRIDGE_CALLER as never, caller as never);
+      return next();
+    }
     // An empty header counts as absent, so it cannot hide a valid bearer token.
     if (!tokensMatch(options.token, c.req.header("x-pi-spore-token") || bearer)) {
       return c.json(
@@ -70,8 +95,11 @@ export function createApp(options: AppOptions): Hono {
   });
 
   app.use("/api/*", async (c, next) => {
-    const key = c.req.header("idempotency-key");
-    if (!MUTATING.has(c.req.method) || key === undefined) return next();
+    const given = c.req.header("idempotency-key");
+    if (!MUTATING.has(c.req.method) || given === undefined) return next();
+    // An agent's keys are its tool call ids. Scoped to the agent, they are the receipts of R16.3.
+    const caller = c.get(BRIDGE_CALLER as never) as BridgeCaller | undefined;
+    const key = caller ? `bridge/${caller.agentId}/${given}` : given;
     const bodyHash = createHash("sha256")
       .update(await c.req.raw.clone().text())
       .digest("hex");

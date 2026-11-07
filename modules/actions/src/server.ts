@@ -81,6 +81,9 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
         start: async (workspaceId, name, trigger) =>
           (await start(workspaces.get(workspaceId), name, trigger)).run,
         wait: (runId) => runner.wait(runId),
+        get: (runId) => runner.get(runId),
+        readLog: (runId, from, waitMs) => runner.readLog(runId, from, waitMs),
+        cancel: (runId) => runner.cancel(runId),
       };
       host.provide(ActionsKey, actions);
 

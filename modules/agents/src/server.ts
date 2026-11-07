@@ -11,10 +11,13 @@ import {
   SetModelRequest,
   SetThinkingRequest,
 } from "@pi-spore/shared";
+import { type Agents, AgentsKey } from "./contract.js";
+import { DELIVERIES_MIGRATION, Deliveries } from "./deliveries.js";
 import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
 import type { PiCommand } from "./rpc.js";
 
+export * from "./contract.js";
 export type { AgentEvent } from "./manager.js";
 
 const MIGRATIONS = [
@@ -26,6 +29,8 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL,
     UNIQUE (workspace_id, role)
   )`,
+  "ALTER TABLE agents_agents ADD COLUMN waiting_since INTEGER",
+  DELIVERIES_MIGRATION,
 ];
 
 interface Row {
@@ -34,6 +39,7 @@ interface Row {
   role: "worker";
   session_file: string | null;
   created_at: number;
+  waiting_since: number | null;
 }
 
 const toRecord = (row: Row): AgentRecord => ({
@@ -42,6 +48,7 @@ const toRecord = (row: Row): AgentRecord => ({
   role: row.role,
   sessionFile: row.session_file,
   createdAt: row.created_at,
+  waitingSince: row.waiting_since,
 });
 
 export interface AgentsModuleOptions {
@@ -79,6 +86,8 @@ export function createAgentsModule(
       const agentDir =
         options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
       const exclude = options.excludeExtensions ?? ["npm:pi-lens"];
+      const listeners: (() => void)[] = [];
+      let deliveries: Deliveries | undefined;
 
       const agents = new AgentManager({
         pi: options.pi ?? { command: "pi", args: [] },
@@ -100,9 +109,20 @@ export function createAgentsModule(
             extra.PI_SPORE_UNITY_PROJECT = workspace.path;
           return agentEnv(options.baseEnv ?? process.env, extra);
         },
+        url: host.url,
+        tokens: host.agentTokens,
+        now: host.now,
         workspace: (id) => workspaces.get(id),
         saveSessionFile: (agentId, file) => {
           host.store.run("UPDATE agents_agents SET session_file = ? WHERE id = ?", file, agentId);
+        },
+        saveWaiting: (agentId, since) => {
+          host.store.run("UPDATE agents_agents SET waiting_since = ? WHERE id = ?", since, agentId);
+        },
+        onChange: (agentId, change) => {
+          for (const listener of listeners) listener();
+          if (change === "status" && agents.view(agentId).status === "idle")
+            deliveries?.flush(agentId);
         },
         maxLive: options.maxLive ?? 4,
         idleStopMs: options.idleStopMs ?? 10 * 60_000,
@@ -111,6 +131,39 @@ export function createAgentsModule(
       manager = agents;
       for (const row of host.store.all<Row>("SELECT * FROM agents_agents"))
         agents.track(toRecord(row));
+
+      const queue = new Deliveries({
+        store: host.store,
+        log: host.log,
+        now: host.now,
+        newId: host.newId,
+        workspaceOf: (agentId) => workspaces.get(agents.view(agentId).workspaceId),
+        send: async (agentId, message) => {
+          await agents.prompt(agentId, message, "followUp");
+        },
+      });
+      deliveries = queue;
+      // Rows left from before a restart.
+      for (const agentId of queue.pendingAgents()) queue.flush(agentId);
+      workspaces.afterResume((workspace) => {
+        const rows = host.store.all<Row>(
+          "SELECT * FROM agents_agents WHERE workspace_id = ?",
+          workspace.id,
+        );
+        for (const row of rows) queue.flush(row.id);
+      });
+
+      const api: Agents = {
+        deliver: (agentId, message) => {
+          agents.view(agentId);
+          queue.add(agentId, message);
+        },
+        attention: () => agents.attention(),
+        onChange: (listener) => {
+          listeners.push(listener);
+        },
+      };
+      host.provide(AgentsKey, api);
 
       // Parking stops agents (R2.3); archiving removes the worktree, so its agent must stop first.
       workspaces.beforeLeaveActive(async (workspace) => {
@@ -155,6 +208,7 @@ export function createAgentsModule(
           role,
           session_file: null,
           created_at: host.now(),
+          waiting_since: null,
         };
         host.store.run(
           "INSERT INTO agents_agents (id, workspace_id, role, session_file, created_at) VALUES (?, ?, ?, ?, ?)",
@@ -178,6 +232,12 @@ export function createAgentsModule(
           request.whileBusy,
         );
         return c.json({ disposition });
+      });
+
+      /** The user saw the agent's last reply, so Home stops showing it as waiting. */
+      host.routes.post("/:id/seen", (c) => {
+        agents.seen(c.req.param("id"));
+        return c.json({ ok: true });
       });
 
       host.routes.post("/:id/abort", async (c) => {

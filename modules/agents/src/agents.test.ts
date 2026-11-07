@@ -161,8 +161,18 @@ describe("agents", () => {
       "--thinking",
       "high",
     ]);
-    expect(launch?.env).toEqual({ PI_SPORE_AGENT_ID: agentId, PI_SPORE_WORKSPACE_ID: workspaceId });
+    expect(launch?.env).toEqual({
+      PI_SPORE_AGENT_ID: agentId,
+      PI_SPORE_WORKSPACE_ID: workspaceId,
+      PI_SPORE_URL: server.url,
+      PI_SPORE_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
     expect(statuses(agentId)).toEqual(["starting", "idle", "busy", "idle"]);
+    // The process's bridge token works until the process ends.
+    const token = launch?.env.PI_SPORE_TOKEN;
+    expect(server.agentTokens.find(token)).toEqual({ agentId, workspaceId });
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+    expect(server.agentTokens.find(token)).toBeUndefined();
     expect(texts(await chat(agentId))).toEqual(["user: hello", "assistant: echo: hello"]);
     const row = server.store.get<{ session_file: string }>(
       "SELECT session_file FROM agents_agents WHERE id = ?",

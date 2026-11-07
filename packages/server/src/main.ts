@@ -5,6 +5,7 @@ import { fileURLToPath } from "node:url";
 import { serve } from "@hono/node-server";
 import type { Logger } from "@pi-spore/module-api";
 import {
+  AgentTokenStore,
   acquireLock,
   CORE_MIGRATIONS,
   createApp,
@@ -66,6 +67,7 @@ const token = ensureToken(paths.token);
 
 // Disabled modules come from ~/.pi-spore/settings.json once the settings module lands.
 const events = new WebSocketHub(log);
+const agentTokens = new AgentTokenStore();
 const modules = await setupModules(serverModules, [], {
   events,
   log,
@@ -74,6 +76,8 @@ const modules = await setupModules(serverModules, [], {
   exec,
   now: Date.now,
   newId: () => newId(),
+  url: `http://127.0.0.1:${port}`,
+  agentTokens,
 });
 
 const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
@@ -83,6 +87,7 @@ const app = createApp({
   startedAt,
   now: Date.now,
   token,
+  agentTokens,
   store,
   log,
   ...(existsSync(webDist) ? { webDist } : {}),

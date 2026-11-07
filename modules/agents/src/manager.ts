@@ -1,6 +1,6 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
-import { ApiError, type EventHub, type Logger } from "@pi-spore/module-api";
+import { type AgentTokens, ApiError, type EventHub, type Logger } from "@pi-spore/module-api";
 import {
   type Agent,
   type AgentDialog,
@@ -13,6 +13,7 @@ import {
   emptyChat,
   type Workspace,
 } from "@pi-spore/shared";
+import type { AgentAttention } from "./contract.js";
 import { modelArgs, type RoleDefaults } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
 import { readTranscript } from "./transcript.js";
@@ -23,7 +24,11 @@ export interface AgentRecord {
   role: "worker";
   sessionFile: string | null;
   createdAt: number;
+  /** When the last run ended and the agent began to wait for the user, or null. */
+  waitingSince: number | null;
 }
+
+export type AgentChange = "status" | "dialog" | "waiting";
 
 export interface ManagerOptions {
   pi: PiCommand;
@@ -35,10 +40,18 @@ export interface ManagerOptions {
   resourceArgs(cwd: string): Promise<string[]>;
   /** The model and thinking level a new session of a role starts with (ADR 0013). */
   roleDefaults(role: string): Promise<RoleDefaults>;
-  /** Environment for an agent's process. */
+  /** Environment for an agent's process. The manager adds `PI_SPORE_URL` and `PI_SPORE_TOKEN`. */
   env(agent: AgentRecord, workspace: Workspace): Promise<Record<string, string>>;
+  /** The server's base URL, which spore-bridge calls. */
+  url: string;
+  /** Issues each process its own bridge token, revoked when the process exits. */
+  tokens: AgentTokens;
+  now: () => number;
   workspace(id: string): Workspace;
   saveSessionFile(agentId: string, file: string): void;
+  saveWaiting(agentId: string, since: number | null): void;
+  /** Called after a status, dialog, or waiting change, for Home and deliveries. */
+  onChange(agentId: string, change: AgentChange): void;
   maxLive: number;
   idleStopMs: number;
   startTimeoutMs: number;
@@ -66,8 +79,12 @@ export type AgentEvent =
 interface Live {
   record: AgentRecord;
   status: AgentStatus;
+  /** When the agent entered its status. */
+  since: number;
   error?: string;
   process?: PiProcess;
+  /** The bridge token of the running process. */
+  token?: string;
   starting?: Promise<PiProcess>;
   stopping: boolean;
   chat: ChatState;
@@ -76,7 +93,7 @@ interface Live {
   model?: AgentModel;
   thinkingLevel?: string;
   contextUsage?: ContextUsage;
-  dialogs: Map<string, { dialog: AgentDialog; timer?: NodeJS.Timeout }>;
+  dialogs: Map<string, { dialog: AgentDialog; openedAt: number; timer?: NodeJS.Timeout }>;
   idleTimer?: NodeJS.Timeout;
 }
 
@@ -120,6 +137,7 @@ export class AgentManager {
       this.agents.set(record.id, {
         record,
         status: "stopped",
+        since: record.createdAt,
         stopping: false,
         chat: emptyChat(),
         loaded: false,
@@ -140,9 +158,26 @@ export class AgentManager {
     };
   }
 
+  /** What Home needs about every agent. */
+  attention(): AgentAttention[] {
+    return [...this.agents.values()].map((live) => ({
+      agent: this.view(live.record.id),
+      since: live.since,
+      dialogs: [...live.dialogs.values()].map(({ dialog, openedAt }) => ({ dialog, openedAt })),
+      ...(live.record.waitingSince === null ? {} : { waitingSince: live.record.waitingSince }),
+    }));
+  }
+
+  /** The user has seen the agent's last reply: it no longer waits for them on Home. */
+  seen(id: string): void {
+    this.setWaiting(this.get(id), null);
+  }
+
+  /** The first events of a chat subscription. Opening the chat counts as seeing the agent's last reply. */
   async snapshot(id: string): Promise<AgentEvent[]> {
     const live = this.get(id);
     await this.loadHistory(live);
+    this.setWaiting(live, null);
     return [
       {
         type: "snapshot",
@@ -165,6 +200,7 @@ export class AgentManager {
     const live = this.get(id);
     const process = await this.ensureRunning(live);
     this.clearIdle(live);
+    this.setWaiting(live, null);
     const fields = live.chat.busy ? { message, streamingBehavior: whileBusy } : { message };
     const result = await process.request<{ disposition?: string }>("prompt", fields);
     return result?.disposition ?? "started";
@@ -281,9 +317,18 @@ export class AgentManager {
 
   private setStatus(live: Live, status: AgentStatus, error?: string): void {
     live.status = status;
+    live.since = this.options.now();
     if (error === undefined) delete live.error;
     else live.error = error;
     this.publish(live, { type: "status", status, ...(error === undefined ? {} : { error }) });
+    this.options.onChange(live.record.id, "status");
+  }
+
+  private setWaiting(live: Live, since: number | null): void {
+    if (live.record.waitingSince === since) return;
+    live.record.waitingSince = since;
+    this.options.saveWaiting(live.record.id, since);
+    this.options.onChange(live.record.id, "waiting");
   }
 
   private publishModel(live: Live): void {
@@ -371,7 +416,12 @@ export class AgentManager {
       throw error;
     }
     const args = [...(await this.options.resourceArgs(workspace.path)), ...sessionArgs];
-    const env = await this.options.env(record, workspace);
+    const token = this.options.tokens.issue({ agentId: record.id, workspaceId: workspace.id });
+    const env = {
+      ...(await this.options.env(record, workspace)),
+      PI_SPORE_URL: this.options.url,
+      PI_SPORE_TOKEN: token,
+    };
 
     const process = new PiProcess(this.options.pi, {
       cwd: workspace.path,
@@ -383,6 +433,7 @@ export class AgentManager {
       onExit: (code, signal) => this.onExit(live, process, code, signal),
     });
     live.process = process;
+    live.token = token;
     live.stopping = false;
 
     let state: {
@@ -441,6 +492,7 @@ export class AgentManager {
       this.clearIdle(live);
       this.setStatus(live, "busy");
     } else if (event.type === "agent_settled") {
+      if (event.aborted !== true) this.setWaiting(live, this.options.now());
       this.setStatus(live, "idle");
       void this.refreshStats(live);
       this.armIdle(live);
@@ -456,8 +508,13 @@ export class AgentManager {
     const timer = timeoutMs
       ? setTimeout(() => this.closeDialog(live, dialog.id), timeoutMs)
       : undefined;
-    live.dialogs.set(dialog.id, { dialog, ...(timer ? { timer } : {}) });
+    live.dialogs.set(dialog.id, {
+      dialog,
+      openedAt: this.options.now(),
+      ...(timer ? { timer } : {}),
+    });
     this.publish(live, { type: "dialog", dialog });
+    this.options.onChange(live.record.id, "dialog");
   }
 
   private closeDialog(live: Live, dialogId: string): void {
@@ -466,6 +523,7 @@ export class AgentManager {
     if (entry.timer) clearTimeout(entry.timer);
     live.dialogs.delete(dialogId);
     this.publish(live, { type: "dialog_closed", dialogId });
+    this.options.onChange(live.record.id, "dialog");
     this.armIdle(live);
   }
 
@@ -473,6 +531,8 @@ export class AgentManager {
     if (live.process !== process) return;
     this.clearIdle(live);
     delete live.process;
+    if (live.token) this.options.tokens.revoke(live.token);
+    delete live.token;
     live.chat = { ...live.chat, busy: false, running: [] };
     if (live.chat.streaming) {
       const { streaming: _lost, ...rest } = live.chat;

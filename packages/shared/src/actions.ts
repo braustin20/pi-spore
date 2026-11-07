@@ -30,10 +30,11 @@ export const ActionRunStatus = Type.Union([
 ]);
 export type ActionRunStatus = Static<typeof ActionRunStatus>;
 
-/** Who started a run: the user (UI, CLI), or the workspace lifecycle (`setup` after create, `teardown` before
- * archive). */
+/** Who started a run: the user (UI, CLI), the workspace's agent (spore-bridge), or the workspace lifecycle
+ * (`setup` after create, `teardown` before archive). */
 export const ActionTrigger = Type.Union([
   Type.Literal("user"),
+  Type.Literal("agent"),
   Type.Literal("create"),
   Type.Literal("archive"),
 ]);

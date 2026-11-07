@@ -42,26 +42,28 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - Launch arguments: `--session <path>` (or `--session-dir` for a new one), `--model`, `--thinking`, `--tools` for
   read-only roles, `--no-extensions` plus one `-e` per extension from the user's setup minus
   `agents.excludeExtensions` (ADR 0025), `-e <repo>/pi-extensions/router` (section 10; skipped when the user's setup
-  already loads it), `-e <repo>/pi-extensions/spore-bridge` (not built yet), and `--append-system-prompt <role prompt file>`. The cwd
-  is the workspace directory.
-- Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (scoped to this agent), `PI_SPORE_AGENT_ID`,
-  `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_RUN_ID` (in a run), `PI_SPORE_UNITY_PROJECT` (Unity projects), and the
-  workspace action env.
+  already loads it), and `-e <repo>/pi-extensions/spore-bridge` (the same way). The cwd is the workspace directory.
+  pi-spore's rules come from spore-bridge, not from a prompt file (ADR 0031).
+- Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (this
+  process's agent token, ADR 0032), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, and `PI_SPORE_UNITY_PROJECT`
+  (Unity projects). Later: `PI_SPORE_RUN_ID` (in a run) and the workspace action env.
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
   CLI with `pi --session <path>`.
 - Extension dialogs (`extension_ui_request`) become pending prompts on the chat and on Home. The answer goes back as
   `extension_ui_response`. Dialogs with a timeout resolve on their own as Pi defines.
-- **spore-bridge** (`pi-extensions/spore-bridge/`) is a Pi extension that adds the workbench tools and reports
-  agent state to the server over HTTP:
-  - `request_human_input`: outside a run, files a question to the user.
-  - `ask_coordinator`: inside a lane, files a question to the coordinator.
-  - `report`: the structured stage result (verdict, findings, artifacts).
-  - `kanban_add_card`, `kanban_update_card`.
-  - `run_action`: run a project action.
-  - `check`: run the project's `check` action and return its errors (ADR 0025).
-  - Coordinator only: `start_lane`, `answer_lane`, `merge_lane`.
-  - Questions do not block the tool. The tool files the question and ends the turn. The answer arrives later as a
-    new message, so a long wait survives restarts.
+- **spore-bridge** (`pi-extensions/spore-bridge/`, package `@pi-spore/spore-bridge`) is a Pi extension that adds
+  the workbench tools. It calls the `bridge` module's routes (`/api/bridge/`) with `PI_SPORE_URL` and the agent
+  token (ADR 0032). A failed call reaches the model as a tool error that quotes the server.
+  - `request_human_input` `{ question, choices? }`: files a question for the user (Home) and ends the turn with
+    `terminate: true`. The answer arrives later as a new user message, through a delivery (section 6), so a long wait
+    survives restarts. Its guidelines say to use the user's `ask_user` only for a quick choice while the user watches.
+  - `check`: runs the project's `check` action and returns its outcome and log tail (ADR 0025).
+  - `run_action` `{ name }`: runs a named project action the same way.
+  - Both start the run, follow it with `GET /api/bridge/runs/:id?wait=25000` until it ends, then read the last
+    16 KiB of its log. An aborted tool call cancels the run.
+  - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031).
+  - Not built yet: `ask_coordinator` (inside a lane), `report` (the structured stage result), `kanban_add_card`,
+    `kanban_update_card`, and the coordinator's `start_lane`, `answer_lane`, `merge_lane`.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
   Restarting it with `--session` restores the conversation.
 - Spike Q1 ([notes](spikes/q1-rpc-agents.md)) confirmed the full setup loads in RPC mode. Rules from it:
@@ -146,6 +148,7 @@ export interface ServerHost {
 - A module reaches another only through `host.use()` with an `InterfaceKey` that the other module exports. It never
   imports another module's internals. Biome import rules enforce this.
 - Core modules: `projects`, `vcs-git`, `vcs-folder`, `workspaces`, `agents`, `chat`, `artifacts`, `attention`.
+  `bridge` (spore-bridge's routes) is not core, because it needs `actions`.
 - `pi-extensions/` packages are not modules. They run inside Pi. A server module may import a pi-extension package's
   library entry for its file formats, as `usage` does with `@pi-spore/router`.
 
@@ -183,13 +186,19 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
   - After a restart, the runner picks up running jobs from their last checkpoint.
   - A step that was cut off while it waited on an agent turn asks the agent process to continue its session. If
     that is unsafe, it marks the stage `interrupted` and asks the user on Home.
-- **Deliveries.** A question, answer, or lane result to an agent is a row. The runner delivers it when the agent is
-  idle: start the process if needed, then send a prompt. If the agent is busy, the runner sends a follow-up. The row
-  is marked done when Pi accepts it. No polling by agents.
+- **Deliveries.** A question, answer, or lane result to an agent is a row in `agents_deliveries`, written through
+  `AgentsKey.deliver` in the same transaction as the change that causes it (answering a question writes the answer
+  and the delivery together). The agents module sends it as a prompt: it starts the process if needed, and sends a
+  follow-up if the agent is busy. The row is marked `done` when Pi accepts it. No polling by agents.
+  - Pending rows are tried again on server start, when the agent becomes idle, and when its workspace is resumed.
+    A parked or archived workspace keeps its rows. A failed try records the error and stays pending.
+  - Delivery is at least once: a crash between Pi's accept and the `done` write sends the message again.
+  - Deliveries do not use the job runner yet; it does not exist. They move to it when it lands.
 - **Idempotency.** Mutating API requests carry an `Idempotency-Key`. The response is stored and replayed for a repeat
-  of the same key.
-- **Receipts.** Mutating spore-bridge tools send `(agent id, tool call id)` as the receipt key, so a replayed tool
-  call returns the first result.
+  of the same key. Server errors (5xx) are not stored, so a retry runs again.
+- **Receipts.** Mutating spore-bridge calls send the tool call id as their `Idempotency-Key`. The server scopes it to
+  the calling agent (`bridge/<agent id>/<tool call id>`), so a replayed tool call returns the first result
+  (R16.3, ADR 0032).
 - This is weaker than Pi Durable in one place: a model turn cut off by a crash is not replayed token by token. Pi's
   session file keeps everything up to the last completed message, and the job decides how to continue.
 
@@ -396,6 +405,28 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 - Not built yet: token use per role (every agent is a worker today), scanning `~/.pi/agent/sessions/` for plain `pi`
   work, and a warning on Home (Home has no module slots yet).
 
+## 11b. Home and questions (attention module)
+
+See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.6, R15.
+
+- The `attention` module (core, requires `projects`, `workspaces`, `agents`) owns questions (`attention_questions`:
+  agent, workspace, question, choices, state `open` or `answered`, answer, times). The bridge module files them
+  through `QuestionsKey`.
+- `POST /api/attention/questions/:id/answer` `{ answer }` stores the answer and queues it for the agent through
+  `AgentsKey.deliver`, in one transaction. A second answer is 409 `question_answered`. The agent gets a message that
+  names the question, the question text, and the answer.
+- `GET /api/attention/inbox` and topic `attention:inbox` give the inbox. The topic sends the whole inbox on subscribe
+  and after every change (at most once per tick). It has:
+  - `items`, newest first: open questions; open extension dialogs of running agents; failed agents with their error;
+    agents whose last run ended and that wait for the user (`finished`), unless they have an open question.
+  - `running`: agents that are busy, starting, or waiting for a slot.
+- The agents module tracks what Home needs (`AgentsKey.attention()`): when each agent entered its status, when each
+  dialog opened, and `waiting_since` on `agents_agents`. `waiting_since` is set when a run settles without an abort,
+  and cleared when the user sends a message, opens the chat, the chat page sees the run end while it is visible, or
+  the user dismisses it (`POST /api/agents/:id/seen`). Statuses and dialogs live in memory; after a restart every
+  agent is stopped.
+- Not built yet: the Home page, approvals, usage warnings, and a CLI command for the inbox.
+
 ## 11. Unity module
 
 See [ADR 0011](decisions/0011-unity-support.md).
@@ -556,7 +587,10 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 ## 15. API, events, CLI
 
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
-- One WebSocket at `/api/ws` for server events (agent stream, job state, Home updates) and one per terminal.
+- One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream) and
+  `attention:inbox` (Home).
+- Routes under `/api/bridge/` are for spore-bridge and take only agent tokens; all others take only the user's token
+  (ADR 0032).
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
 

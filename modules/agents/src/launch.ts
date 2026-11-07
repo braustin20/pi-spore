@@ -12,6 +12,7 @@ const BUILTIN_EXTENSIONS = ["mcp", "llama.cpp", "codemode", "tool-search"];
  */
 export const SPORE_EXTENSIONS: readonly string[] = [
   fileURLToPath(new URL("../../../pi-extensions/router", import.meta.url)),
+  fileURLToPath(new URL("../../../pi-extensions/spore-bridge", import.meta.url)),
 ];
 
 /**

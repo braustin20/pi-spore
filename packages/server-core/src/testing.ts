@@ -1,7 +1,12 @@
 import { mkdtempSync, rmSync } from "node:fs";
+import { createServer, type Server } from "node:http";
+import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { getRequestListener } from "@hono/node-server";
 import type { EventHub, Exec, Logger, ServerModule } from "@pi-spore/module-api";
+import type { Hono } from "hono";
+import { AgentTokenStore } from "./agent-tokens.js";
 import { CORE_MIGRATIONS, createApp } from "./app.js";
 import { exec as realExec } from "./exec.js";
 import { ensureHome, resolveHome, type ServerPaths } from "./home.js";
@@ -48,6 +53,9 @@ export interface TestServer {
   store: SqliteStore;
   services: HostServices;
   events: MemoryHub;
+  agentTokens: AgentTokenStore;
+  /** The base URL agents get. It answers only when the server was created with `listen`. */
+  url: string;
   /** Sends a request as the CLI would: loopback host, the token, JSON. */
   request(
     method: string,
@@ -58,22 +66,50 @@ export interface TestServer {
   close(): void;
 }
 
+/** Listens on a free loopback port and hands requests to the app once it exists. */
+async function listen(app: () => Hono | undefined): Promise<Server> {
+  const server = createServer((request, response) => {
+    const current = app();
+    if (!current) {
+      response.writeHead(503).end();
+      return;
+    }
+    void getRequestListener(current.fetch)(request, response);
+  });
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  return server;
+}
+
 /**
  * A server with real modules on a temp home and an in-memory store. Clock and ids are deterministic. `exec` is the
- * real one unless a fake is given, so tests can run real git in temp folders.
+ * real one unless a fake is given, so tests can run real git in temp folders. With `listen`, it also answers HTTP on
+ * a loopback port, so child processes such as a fake agent can call the bridge routes. With `home`, it keeps its
+ * store in a file there and leaves the folder on close, so a second server on the same home acts as a restart.
  */
 export async function createTestServer(
   modules: readonly ServerModule[],
-  options: { exec?: Exec; startAt?: number } = {},
+  options: {
+    exec?: Exec;
+    startAt?: number;
+    listen?: boolean;
+    home?: string;
+    /** Where the id counter starts, so a restarted server does not hand out the first server's ids again. */
+    firstId?: number;
+  } = {},
 ): Promise<TestServer> {
-  const root = mkdtempSync(join(tmpdir(), "pi-spore-test-"));
+  const root = options.home ?? mkdtempSync(join(tmpdir(), "pi-spore-test-"));
   const paths = resolveHome({ PI_SPORE_HOME: root });
   ensureHome(paths);
-  const store = new SqliteStore(":memory:");
+  const store = new SqliteStore(options.home ? paths.database : ":memory:");
   store.migrate("core", CORE_MIGRATIONS);
   let clock = options.startAt ?? 1_700_000_000_000;
-  let counter = 0;
+  let counter = options.firstId ?? 0;
   const events = new MemoryHub();
+  let app: Hono | undefined;
+  const http = options.listen ? await listen(() => app) : undefined;
+  const port = http ? (http.address() as AddressInfo).port : 7420;
+  const url = `http://127.0.0.1:${port}`;
+  const agentTokens = new AgentTokenStore();
   const services: HostServices = {
     events,
     log: silentLog,
@@ -82,24 +118,30 @@ export async function createTestServer(
     exec: options.exec ?? realExec,
     now: () => clock++,
     newId: () => `01TEST${String(++counter).padStart(20, "0")}`,
+    url,
+    agentTokens,
   };
   const setUp = await setupModules(modules, [], services);
-  const app = createApp({
+  const created = createApp({
     version: "0.0.0-test",
     modules: setUp,
     startedAt: 0,
     now: services.now,
     token: TEST_TOKEN,
+    agentTokens,
     store,
     log: silentLog,
   });
+  app = created;
   return {
     paths,
     store,
     services,
     events,
+    agentTokens,
+    url,
     request: async (method, path, body, headers = {}) =>
-      await app.request(path, {
+      await created.request(path, {
         method,
         headers: {
           host: "127.0.0.1:7420",
@@ -110,8 +152,10 @@ export async function createTestServer(
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
     close: () => {
+      http?.closeAllConnections();
+      http?.close();
       store.close();
-      rmSync(root, { recursive: true, force: true });
+      if (!options.home) rmSync(root, { recursive: true, force: true });
     },
   };
 }

@@ -9,6 +9,7 @@ import {
   type Store,
 } from "@pi-spore/module-api";
 import { Hono } from "hono";
+import type { AgentTokenStore } from "./agent-tokens.js";
 
 export interface HostServices {
   events: EventHub;
@@ -18,6 +19,9 @@ export interface HostServices {
   exec: Exec;
   now: () => number;
   newId: () => string;
+  /** The server's base URL, for agent processes. */
+  url: string;
+  agentTokens: AgentTokenStore;
 }
 
 export interface SetUpModule {

@@ -1,5 +1,6 @@
 import type { Hono } from "hono";
 import type { ComponentType } from "react";
+import type { AgentTokens } from "./bridge.js";
 import type { ModuleInterfaces, ModuleManifest } from "./manifest.js";
 
 export interface Logger {
@@ -76,6 +77,9 @@ export interface ServerHost extends ModuleInterfaces {
   readonly now: () => number;
   /** A new unique id: 26 characters, sortable by creation time. */
   readonly newId: () => string;
+  /** The server's own base URL, such as `http://127.0.0.1:7420`, for agent processes. */
+  readonly url: string;
+  readonly agentTokens: AgentTokens;
 }
 
 export interface ServerModule extends ModuleManifest {
@@ -100,6 +104,11 @@ export interface RailItem {
   order: number;
   /** An icon component such as one from `lucide-react`. The rail sizes it through `className`. */
   icon: ComponentType<{ className?: string }>;
+  /**
+   * A React hook that returns a count to show on the icon, such as Home's open items. 0 shows nothing. The rail calls
+   * it on every render, always, so it may use other hooks.
+   */
+  useBadge?: () => number;
 }
 
 export interface WebPage {

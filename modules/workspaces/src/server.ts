@@ -19,6 +19,7 @@ import {
   type CopyCreatedListener,
   type LeaveListener,
   type RemoveCopyListener,
+  type ResumeListener,
   type Workspaces,
   WorkspacesKey,
 } from "./contract.js";
@@ -117,6 +118,7 @@ export const workspacesModule: ServerModule = {
     const leaveListeners: LeaveListener[] = [];
     const createdListeners: CopyCreatedListener[] = [];
     const removeListeners: RemoveCopyListener[] = [];
+    const resumeListeners: ResumeListener[] = [];
     const workspaces: Workspaces = {
       get: (id) => toWorkspace(load(id)),
       list: (filter = {}) => listRows(filter).map(toWorkspace),
@@ -128,6 +130,9 @@ export const workspacesModule: ServerModule = {
       },
       beforeRemoveCopy: (listener) => {
         removeListeners.push(listener);
+      },
+      afterResume: (listener) => {
+        resumeListeners.push(listener);
       },
     };
     host.provide(WorkspacesKey, workspaces);
@@ -294,7 +299,9 @@ export const workspacesModule: ServerModule = {
       const row = load(c.req.param("id"));
       if (row.state !== "parked")
         throw new ApiError(409, "bad_state", `Workspace is ${row.state}, not parked`);
-      return c.json({ workspace: setState(row, "active") });
+      const workspace = setState(row, "active");
+      for (const listener of resumeListeners) listener(workspace);
+      return c.json({ workspace });
     });
 
     host.routes.post("/:id/archive", async (c) => {

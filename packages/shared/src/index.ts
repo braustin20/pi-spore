@@ -26,6 +26,18 @@ export {
   ThinkingLevel,
 } from "./agents.js";
 export {
+  AnswerQuestionRequest,
+  BridgeRunLog,
+  FileQuestionRequest,
+  Inbox,
+  InboxEvent,
+  InboxItem,
+  InboxWorkspace,
+  Question,
+  RunningItem,
+  StartBridgeRunRequest,
+} from "./attention.js";
+export {
   applyPiEvent,
   type ChatMessage,
   type ChatState,

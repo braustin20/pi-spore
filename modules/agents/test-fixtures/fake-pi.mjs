@@ -3,6 +3,8 @@
 //   "/dialog"      opens a confirm dialog and replies with the answer
 //   "slow:<ms>"    streams the reply over <ms> milliseconds (for busy, steer, and abort)
 //   "crash"        exits with code 3 after writing to stderr
+//   "ask:<text>"   files <text> as a question through the bridge, as spore-bridge's request_human_input does, and
+//                  ends the turn; the reply says the question id or the server's refusal
 // Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env} for assertions.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -81,6 +83,27 @@ const fail = (id, command, error) =>
   write({ id, type: "response", command, success: false, error });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** What spore-bridge's request_human_input sends: the agent token, and the tool call id as the receipt. */
+async function ask(question, toolCallId) {
+  try {
+    const response = await fetch(`${process.env.PI_SPORE_URL}/api/bridge/questions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.PI_SPORE_TOKEN}`,
+        "content-type": "application/json",
+        "idempotency-key": toolCallId,
+      },
+      body: JSON.stringify({ question }),
+    });
+    const body = await response.json();
+    return response.ok
+      ? `asked: ${body.question.id}`
+      : `ask failed: ${response.status} ${body.error?.code}`;
+  } catch (error) {
+    return `ask failed: ${error.message}`;
+  }
+}
+
 async function run(text) {
   streaming = true;
   let aborted = false;
@@ -94,6 +117,7 @@ async function run(text) {
   appendMessage(user);
 
   let reply = `echo: ${text}`;
+  if (text.startsWith("ask:")) reply = await ask(text.slice(4), `toolu_${entryCount}`);
   if (text === "/dialog") {
     const answer = await new Promise((resolve) => {
       dialogs.set("dlg-1", resolve);

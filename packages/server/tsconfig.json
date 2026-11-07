@@ -38,6 +38,12 @@
       "path": "../../modules/actions"
     },
     {
+      "path": "../../modules/attention"
+    },
+    {
+      "path": "../../modules/bridge"
+    },
+    {
       "path": "../../modules/usage"
     }
   ]

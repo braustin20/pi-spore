@@ -1,0 +1,41 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../../packages/module-api"
+    },
+    {
+      "path": "../../packages/shared"
+    },
+    {
+      "path": "../projects"
+    },
+    {
+      "path": "../workspaces"
+    },
+    {
+      "path": "../actions"
+    },
+    {
+      "path": "../attention"
+    },
+    {
+      "path": "../agents"
+    },
+    {
+      "path": "../vcs-git"
+    },
+    {
+      "path": "../vcs-folder"
+    },
+    {
+      "path": "../../packages/server-core"
+    }
+  ]
+}

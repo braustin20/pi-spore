@@ -19,6 +19,9 @@ export type RemoveCopyListener = (
   options: { force: boolean },
 ) => Promise<StepReport | undefined>;
 
+/** Runs after a parked workspace is active again, so work that waited for it can go on. */
+export type ResumeListener = (workspace: Workspace) => void;
+
 export interface Workspaces {
   /** Throws ApiError 404 if there is no such workspace. */
   get(id: string): Workspace;
@@ -26,6 +29,7 @@ export interface Workspaces {
   beforeLeaveActive(listener: LeaveListener): void;
   afterCopyCreated(listener: CopyCreatedListener): void;
   beforeRemoveCopy(listener: RemoveCopyListener): void;
+  afterResume(listener: ResumeListener): void;
 }
 
 export const WorkspacesKey = defineInterface<Workspaces>("workspaces", "workspaces");

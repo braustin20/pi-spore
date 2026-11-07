@@ -17,6 +17,9 @@
       "path": "pi-extensions/router"
     },
     {
+      "path": "pi-extensions/spore-bridge"
+    },
+    {
       "path": "modules/projects"
     },
     {
@@ -36,6 +39,12 @@
     },
     {
       "path": "modules/actions"
+    },
+    {
+      "path": "modules/attention"
+    },
+    {
+      "path": "modules/bridge"
     },
     {
       "path": "modules/usage"

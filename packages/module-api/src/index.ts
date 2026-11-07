@@ -1,3 +1,4 @@
+export { type AgentTokens, BRIDGE_CALLER, type BridgeCaller, bridgeCaller } from "./bridge.js";
 export { ApiError, ApiRequestError } from "./errors.js";
 export { createInterfaceBroker } from "./interfaces.js";
 export {
