@@ -29,6 +29,9 @@
     },
     {
       "path": "../../modules/actions"
+    },
+    {
+      "path": "../../modules/unity"
     }
   ]
 }

@@ -43,6 +43,15 @@ export {
   SettingSource,
 } from "./projects.js";
 export { slugify } from "./slug.js";
+export {
+  CloseEditorRequest,
+  EditorLease,
+  EditorSource,
+  OpenEditor,
+  OpenUnityResponse,
+  ProjectEditors,
+  UnityWorkspaceView,
+} from "./unity.js";
 export { parse, parseJsonBody, ValidationError } from "./validate.js";
 export {
   ArchiveWorkspaceRequest,

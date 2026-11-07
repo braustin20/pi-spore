@@ -19,6 +19,12 @@
       "path": "../projects"
     },
     {
+      "path": "../workspaces"
+    },
+    {
+      "path": "../vcs-git"
+    },
+    {
       "path": "../../packages/server-core"
     }
   ]

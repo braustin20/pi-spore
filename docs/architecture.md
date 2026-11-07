@@ -319,19 +319,34 @@ See [ADR 0011](decisions/0011-unity-support.md).
 - Detection: `ProjectSettings/ProjectVersion.txt`. Adds traits `unity` and the editor version.
 - Worktree copy defaults: `Library/`, `*.csproj`, `*.sln`, with `cp --reflink=auto`. Warns when
   `Temp/UnityLockfile` exists in the main checkout.
-- Editor control through the `unity` CLI:
-  - `unity open <path>` to open;
+- Editor control through the `unity` CLI (run with `host.exec`, plus `--no-banner --non-interactive`):
+  - `unity open <path>` to open (it returns at once);
   - `unity status --json` to see open editors, their project paths, and pids;
-  - `unity close <project>` to close (exits without saving, so it is only run after an explicit yes);
-  - `unity test --mode <EditMode|PlayMode> --output <artifact>` for gates.
-- Editor lease, one per project:
-  - Opening from the UI takes the lease for the user.
-  - An agent that needs the editor (for unity-mcp work) creates an Approval and opens Unity only after a yes. If
-    another agent holds the lease, it waits. If the user holds it, the Approval asks to share or close it.
-  - A batch-mode gate needs the editor of its worktree closed. It waits for an agent lease to end, or creates a
-    "close Unity?" Approval for a user lease.
-  - The lease is reconciled with `unity status` and lock files on startup and every few seconds while held, so an
-    editor opened or closed outside pi-spore is seen.
+  - `unity close <path>` to close (exits without saving, so it is only run after an explicit yes);
+  - `unity test --mode <EditMode|PlayMode> --output <artifact>` for gates (not built yet).
+- Finding open editors (ADR 0028). For the main checkout and each workspace folder of the project, an editor is
+  open when one of these sees it:
+  - a `unity status --json` row with that `projectPath` (only editors whose project has the Pipeline package);
+  - a process with `-projectpath <folder>`, from `/proc`;
+  - `Temp/UnityLockfile`, but only together with one of the above. A lock file alone is reported as stale and does
+    not block. Where processes cannot be listed, a lock file alone counts as open.
+- Editor lease, one per project (`unity_leases`): the folder, the workspace, the owner (`user` or `agent`), when it
+  was opened, and when its editor was last seen.
+  - Opening from the UI takes the lease for the user. Opening a folder fails with 409 `editor_open` while an editor
+    has another folder of the project open. The UI then offers "Close without saving" with a confirm that says
+    unsaved changes are lost. The close request must carry `confirm: true`.
+  - The lease is reconciled on every read. An editor that was seen and is gone drops the lease. A lease whose
+    editor was never seen counts as a starting editor for 10 minutes, then is dropped.
+  - Archiving a workspace whose folder has an editor open fails with 409 `editor_open`, even with force.
+  - Other modules use the `UnityEditorsKey` interface: `editors(projectId)`, `open(workspaceId, owner)`,
+    `close(projectId, path)`.
+  - Later: an agent that needs the editor (for unity-mcp work) creates an Approval and opens Unity only after a
+    yes. If another agent holds the lease, it waits. If the user holds it, the Approval asks to share or close it.
+  - Later: a batch-mode gate needs the editor of its worktree closed. It waits for an agent lease to end, or
+    creates a "close Unity?" Approval for a user lease.
+- API under `/api/unity`: `GET /workspaces/:id` (Unity or not, the editor version, open editors, stale lock
+  files, the lease), `POST /workspaces/:id/open`, `POST /editors/close` `{ projectId, path, confirm: true }`. The
+  workspace page has a Unity panel for Unity projects.
 - unity-mcp per worktree: the relay accepts `--project-path`. Agents get `PI_SPORE_UNITY_PROJECT=<worktree>`, and
   `~/.unity/relay/unity-mcp.sh` passes it on when set (ADR 0011).
 - Gates for Unity projects come from a project pipeline. The module ships an example with `unity test` EditMode
