@@ -10,6 +10,7 @@ import { AgentTokenStore } from "./agent-tokens.js";
 import { CORE_MIGRATIONS, createApp } from "./app.js";
 import { exec as realExec } from "./exec.js";
 import { ensureHome, resolveHome, type ServerPaths } from "./home.js";
+import { attachUpgrades, SocketRouter } from "./sockets.js";
 import { type HostServices, setupModules } from "./startup.js";
 import { SqliteStore } from "./store.js";
 
@@ -83,7 +84,8 @@ async function listen(app: () => Hono | undefined): Promise<Server> {
 /**
  * A server with real modules on a temp home and an in-memory store. Clock and ids are deterministic. `exec` is the
  * real one unless a fake is given, so tests can run real git in temp folders. With `listen`, it also answers HTTP on
- * a loopback port, so child processes such as a fake agent can call the bridge routes. With `home`, it keeps its
+ * a loopback port, so child processes such as a fake agent can call the bridge routes, and tests can open module
+ * sockets. With `home`, it keeps its
  * store in a file there and leaves the folder on close, so a second server on the same home acts as a restart.
  */
 export async function createTestServer(
@@ -110,6 +112,8 @@ export async function createTestServer(
   const port = http ? (http.address() as AddressInfo).port : 7420;
   const url = `http://127.0.0.1:${port}`;
   const agentTokens = new AgentTokenStore();
+  const sockets = new SocketRouter(silentLog);
+  if (http) attachUpgrades(http, TEST_TOKEN, (pathname) => sockets.route(pathname));
   const services: HostServices = {
     events,
     log: silentLog,
@@ -120,6 +124,7 @@ export async function createTestServer(
     newId: () => `01TEST${String(++counter).padStart(20, "0")}`,
     url,
     agentTokens,
+    sockets,
   };
   const setUp = await setupModules(modules, [], services);
   const created = createApp({
@@ -152,6 +157,7 @@ export async function createTestServer(
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
     close: () => {
+      sockets.close();
       http?.closeAllConnections();
       http?.close();
       store.close();

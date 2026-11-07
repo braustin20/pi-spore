@@ -10,6 +10,7 @@ import {
 } from "@pi-spore/module-api";
 import { Hono } from "hono";
 import type { AgentTokenStore } from "./agent-tokens.js";
+import type { SocketRouter } from "./sockets.js";
 
 export interface HostServices {
   events: EventHub;
@@ -22,6 +23,8 @@ export interface HostServices {
   /** The server's base URL, for agent processes. */
   url: string;
   agentTokens: AgentTokenStore;
+  /** WebSocket routes; each module adds its own through `host.sockets`. */
+  sockets: SocketRouter;
 }
 
 export interface SetUpModule {
@@ -43,7 +46,12 @@ export async function setupModules(
   const result: SetUpModule[] = [];
   for (const module of ordered) {
     const routes = new Hono();
-    await module.setup({ ...broker.forModule(module), ...services, routes });
+    await module.setup({
+      ...broker.forModule(module),
+      ...services,
+      routes,
+      sockets: services.sockets.forModule(module.id),
+    });
     result.push({ id: module.id, routes });
   }
   return result;

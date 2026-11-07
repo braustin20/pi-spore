@@ -65,6 +65,30 @@ export interface EventHub {
   onSubscribe(prefix: string, handler: (topic: string) => unknown[] | Promise<unknown[]>): void;
 }
 
+/** A WebSocket a module accepted. Frames are text. The module validates every message it gets. */
+export interface ModuleSocket {
+  send(text: string): void;
+  close(code?: number, reason?: string): void;
+  onMessage(listener: (text: string) => void): void;
+  onClose(listener: () => void): void;
+}
+
+/**
+ * Checks the params of an upgrade and returns what to do with the accepted socket. Throw an ApiError to refuse the
+ * upgrade with its status, before any socket exists.
+ */
+export type SocketOpener = (
+  params: Readonly<Record<string, string>>,
+) => (socket: ModuleSocket) => void;
+
+export interface SocketRoutes {
+  /**
+   * Accepts WebSocket upgrades at `/api/<module id><path>`, such as `/:id/socket`, where `:name` segments become
+   * params. The server checks the user's token (`?token=`), the loopback Host, and the Origin first.
+   */
+  add(path: string, open: SocketOpener): void;
+}
+
 /** What a server module gets during setup. Settings and jobs are added with the modules that need them. */
 export interface ServerHost extends ModuleInterfaces {
   readonly events: EventHub;
@@ -72,6 +96,8 @@ export interface ServerHost extends ModuleInterfaces {
   readonly store: Store;
   /** Routes of this module, mounted at `/api/<module id>/`. */
   readonly routes: Hono;
+  /** WebSocket routes of this module, under `/api/<module id>/`. */
+  readonly sockets: SocketRoutes;
   readonly home: HomePaths;
   readonly exec: Exec;
   readonly now: () => number;
@@ -96,6 +122,8 @@ export interface ApiClient {
    * which sends a fresh snapshot. Returns a function that unsubscribes.
    */
   subscribe(topic: string, onEvent: (event: unknown) => void): () => void;
+  /** The `ws:` URL of a module socket at `/api/<path>`, with the token. */
+  socketUrl(path: string): string;
 }
 
 /** A page's entry in the shell's left rail. */

@@ -138,7 +138,7 @@ export interface WebModule extends ModuleManifest {
 }
 
 export interface WebHost {
-  api: ApiClient;                         // HTTP and live events
+  api: ApiClient;                         // HTTP, live events, and module socket URLs
   addPage(page: WebPage): void;           // a hash route; `rail` adds an icon to the left rail
   provide / use                           // as on the server
 }
@@ -149,6 +149,7 @@ export interface ServerHost {
   jobs: JobRunner;                        // durable jobs (section 6)
   events: EventBus;                       // typed server events, pushed to the web over ws
   routes: RouteRegistrar;                 // Hono routes under /api/<module id>/
+  sockets: SocketRoutes;                  // WebSocket routes under /api/<module id>/ (section 15)
   provide<T>(key: InterfaceKey<T>, impl: T): void;  // export an operation or interface
   use<T>(key: InterfaceKey<T>): T;                  // only keys of modules in `requires`
   log: Logger;
@@ -662,6 +663,10 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
 - One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream),
   `attention:inbox` (Home), and `kanban:board` (the board).
+- Modules add their own WebSocket routes with `host.sockets.add(path, open)`, under `/api/<module id>/`. `open`
+  gets the path params and throws an ApiError to refuse the upgrade with its status. Every upgrade, `/api/ws`
+  included, needs a loopback Host and Origin and the user's token in `?token=` (browsers cannot set headers on a
+  WebSocket). Agent tokens are never accepted. `ApiClient.socketUrl(path)` builds the URL in the page.
 - Routes under `/api/bridge/` are for spore-bridge and take only agent tokens; all others take only the user's token
   (ADR 0032).
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.

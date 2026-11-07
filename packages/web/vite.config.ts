@@ -31,6 +31,13 @@ export default defineConfig({
         rewrite: (path) =>
           `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(devToken())}`,
       },
+      // Module sockets, such as a terminal's, need the token in their URL too.
+      "^/api/[^?]+/socket(\\?|$)": {
+        target: `ws://127.0.0.1:${process.env.PI_SPORE_PORT ?? "7420"}`,
+        ws: true,
+        rewrite: (path) =>
+          `${path}${path.includes("?") ? "&" : "?"}token=${encodeURIComponent(devToken())}`,
+      },
       "/api": {
         target: `http://127.0.0.1:${process.env.PI_SPORE_PORT ?? "7420"}`,
         headers: { "x-pi-spore-token": devToken() },

@@ -1,9 +1,6 @@
-import type { IncomingMessage, Server } from "node:http";
-import type { Duplex } from "node:stream";
 import { ApiError, type EventHub, type Logger } from "@pi-spore/module-api";
 import { WebSocket, WebSocketServer } from "ws";
-import { isLoopbackHost, isLoopbackOrigin } from "./guards.js";
-import { tokensMatch } from "./token.js";
+import { keepAlive, type UpgradeHandler } from "./sockets.js";
 
 type Handler = (topic: string) => unknown[] | Promise<unknown[]>;
 
@@ -19,14 +16,11 @@ interface Subscription {
   queue: unknown[];
 }
 
-const HEARTBEAT_MS = 30_000;
-
 export class WebSocketHub implements EventHub {
   private readonly handlers: { prefix: string; handler: Handler }[] = [];
   private readonly subscriptions = new Map<WebSocket, Map<string, Subscription>>();
   private readonly wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
-  private readonly alive = new WeakSet<WebSocket>();
-  private heartbeat: NodeJS.Timeout | undefined;
+  private readonly stopHeartbeat = keepAlive(this.wss);
 
   constructor(private readonly log: Logger) {}
 
@@ -46,45 +40,22 @@ export class WebSocketHub implements EventHub {
     this.handlers.push({ prefix, handler });
   }
 
-  /** Accepts WebSocket upgrades at `/api/ws?token=...` on the given server. Browsers cannot set headers on a
-   * WebSocket, so the token travels in the query; the page that has it was served from this origin. */
-  attach(server: Server, token: string): void {
-    server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
-      const url = new URL(request.url ?? "/", "http://localhost");
-      const refuse = (status: string) => {
-        socket.end(`HTTP/1.1 ${status}\r\nConnection: close\r\n\r\n`);
-      };
-      if (url.pathname !== "/api/ws") return refuse("404 Not Found");
-      if (!isLoopbackHost(request.headers.host) || !isLoopbackOrigin(request.headers.origin)) {
-        return refuse("403 Forbidden");
-      }
-      if (!tokensMatch(token, url.searchParams.get("token") ?? undefined))
-        return refuse("401 Unauthorized");
-      this.wss.handleUpgrade(request, socket, head, (ws) => this.accept(ws));
+  /** Takes an upgrade at `/api/ws` that passed the guards in `attachUpgrades`. */
+  readonly upgrade: UpgradeHandler = (request, socket, head) => {
+    this.wss.handleUpgrade(request, socket, head, (ws) => {
+      this.wss.emit("connection", ws, request);
+      this.accept(ws);
     });
-    this.heartbeat = setInterval(() => {
-      for (const ws of this.wss.clients) {
-        if (!this.alive.has(ws)) {
-          ws.terminate();
-          continue;
-        }
-        this.alive.delete(ws);
-        ws.ping();
-      }
-    }, HEARTBEAT_MS);
-    this.heartbeat.unref();
-  }
+  };
 
   close(): void {
-    if (this.heartbeat) clearInterval(this.heartbeat);
+    this.stopHeartbeat();
     for (const ws of this.wss.clients) ws.terminate();
     this.wss.close();
   }
 
   private accept(ws: WebSocket): void {
     this.subscriptions.set(ws, new Map());
-    this.alive.add(ws);
-    ws.on("pong", () => this.alive.add(ws));
     ws.on("close", () => this.subscriptions.delete(ws));
     ws.on("message", (data) => {
       let message: ClientMessage;

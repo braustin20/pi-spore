@@ -5,6 +5,7 @@ import { ApiError } from "@pi-spore/module-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
 import { WebSocketHub } from "./events.js";
+import { attachUpgrades } from "./sockets.js";
 import { silentLog, TEST_TOKEN } from "./testing.js";
 
 let server: Server;
@@ -15,7 +16,9 @@ const sockets: WebSocket[] = [];
 beforeEach(async () => {
   server = createServer((_request, response) => response.end());
   hub = new WebSocketHub(silentLog);
-  hub.attach(server, TEST_TOKEN);
+  attachUpgrades(server, TEST_TOKEN, (pathname) =>
+    pathname === "/api/ws" ? hub.upgrade : undefined,
+  );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   port = (server.address() as AddressInfo).port;

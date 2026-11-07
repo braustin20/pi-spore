@@ -35,11 +35,12 @@ export function createApiClient(): ApiClient {
   const auth: Record<string, string> = token ? { "x-pi-spore-token": token } : {};
   const scheme = window.location.protocol === "https:" ? "wss:" : "ws:";
   // In Vite dev the page has no token; the dev proxy adds it to the socket URL.
-  const socket = new EventSocket(
-    `${scheme}//${window.location.host}/api/ws${token ? `?token=${encodeURIComponent(token)}` : ""}`,
-  );
+  const socketUrl = (path: string) =>
+    `${scheme}//${window.location.host}/api/${path}${token ? `?token=${encodeURIComponent(token)}` : ""}`;
+  const socket = new EventSocket(socketUrl("ws"));
   return {
     subscribe: (topic, onEvent) => socket.subscribe(topic, onEvent),
+    socketUrl,
     get: async (path) => readAnswer(await fetch(`/api/${path}`, { headers: auth })),
     send: async (method, path, body) =>
       readAnswer(

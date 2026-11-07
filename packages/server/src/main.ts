@@ -7,6 +7,7 @@ import type { Logger } from "@pi-spore/module-api";
 import {
   AgentTokenStore,
   acquireLock,
+  attachUpgrades,
   CORE_MIGRATIONS,
   createApp,
   ensureHome,
@@ -14,6 +15,7 @@ import {
   exec,
   newId,
   resolveHome,
+  SocketRouter,
   SqliteStore,
   setupModules,
   WebSocketHub,
@@ -68,6 +70,7 @@ const token = ensureToken(paths.token);
 // Disabled modules come from ~/.pi-spore/settings.json once the settings module lands.
 const events = new WebSocketHub(log);
 const agentTokens = new AgentTokenStore();
+const sockets = new SocketRouter(log);
 const modules = await setupModules(serverModules, [], {
   events,
   log,
@@ -78,6 +81,7 @@ const modules = await setupModules(serverModules, [], {
   newId: () => newId(),
   url: `http://127.0.0.1:${port}`,
   agentTokens,
+  sockets,
 });
 
 const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
@@ -99,11 +103,14 @@ const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) =
 });
 
 if (!(server instanceof Server)) throw new Error("pi-spore expects a plain HTTP/1 server");
-events.attach(server, token);
+attachUpgrades(server, token, (pathname) =>
+  pathname === "/api/ws" ? events.upgrade : sockets.route(pathname),
+);
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
     events.close();
+    sockets.close();
     server.close();
     store.close();
     releaseLock();
