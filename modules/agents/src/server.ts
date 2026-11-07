@@ -18,6 +18,7 @@ import {
 } from "@pi-spore/shared";
 import { type AgentChange, type Agents, AgentsKey } from "./contract.js";
 import { DELIVERIES_MIGRATION, Deliveries } from "./deliveries.js";
+import { checkPromptImages, imageHeaders, readLinkedImage, servableType } from "./images.js";
 import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
 import type { PiCommand } from "./rpc.js";
@@ -97,7 +98,15 @@ export interface AgentsModuleOptions {
   resourceArgs?: ManagerOptions["resourceArgs"];
   roleDefaults?: ManagerOptions["roleDefaults"];
   baseEnv?: Readonly<Record<string, string | undefined>>;
+  /** Largest image a message may carry, and largest linked image file the chat shows, decoded (ADR 0060). */
+  maxImageBytes?: number;
+  maxImagesPerMessage?: number;
+  /** Image bytes kept in memory for pages; older ones are read from session files again. */
+  imageCacheBytes?: number;
 }
+
+const MIB = 1024 * 1024;
+const REF = /^[0-9a-f]{64}$/;
 
 /** Defaults from ADR 0025 and ADR 0026. Settings will override them once the settings module lands. */
 export function createAgentsModule(
@@ -165,7 +174,12 @@ export function createAgentsModule(
         maxLive: options.maxLive ?? 4,
         idleStopMs: options.idleStopMs ?? 10 * 60_000,
         startTimeoutMs: options.startTimeoutMs ?? 30_000,
+        imageCacheBytes: options.imageCacheBytes ?? 64 * MIB,
       });
+      const imageLimits = {
+        maxBytes: options.maxImageBytes ?? 10 * MIB,
+        maxCount: options.maxImagesPerMessage ?? 8,
+      };
       manager = agents;
       for (const row of host.store.all<Row>("SELECT * FROM agents_agents"))
         agents.track(toRecord(row));
@@ -376,12 +390,48 @@ export function createAgentsModule(
 
       host.routes.post("/:id/prompt", async (c) => {
         const request = parseJsonBody(PromptRequest, await c.req.text(), "prompt");
+        const images = checkPromptImages(request.images ?? [], imageLimits);
+        if (request.message.trim() === "" && images.length === 0)
+          throw new ApiError(400, "empty_prompt", "A message needs text or an image");
         const disposition = await agents.prompt(
           c.req.param("id"),
           request.message,
           request.whileBusy,
+          images,
         );
         return c.json({ disposition });
+      });
+
+      /** An image block of the chat, by the ref that replaced its data in events and snapshots (ADR 0060). */
+      host.routes.get("/:id/images/:ref", async (c) => {
+        const ref = c.req.param("ref");
+        if (!REF.test(ref)) throw new ApiError(400, "bad_ref", "An image ref is 64 hex digits");
+        const image = await agents.image(c.req.param("id"), ref);
+        if (!image) throw new ApiError(404, "image_not_found", "This chat has no such image");
+        // A ref names its bytes, so they never change.
+        return c.body(
+          new Uint8Array(image.bytes),
+          200,
+          imageHeaders(servableType(image.mimeType), "private, max-age=31536000, immutable"),
+        );
+      });
+
+      /**
+       * An image file the agent linked in a message: a path absolute or relative to the workspace folder, served only
+       * from inside that folder or the workspace's artifacts folder (ADR 0060).
+       */
+      host.routes.get("/:id/linked-image", async (c) => {
+        const path = c.req.query("path");
+        if (!path) throw new ApiError(400, "bad_path", "Give the image path as ?path=");
+        const workspace = workspaces.get(agents.view(c.req.param("id")).workspaceId);
+        const image = await readLinkedImage(
+          path,
+          workspace.path,
+          [workspace.path, join(host.home.artifacts, "workspaces", workspace.id)],
+          imageLimits.maxBytes,
+        );
+        // The agent may rewrite the file under the same name.
+        return c.body(new Uint8Array(image.bytes), 200, imageHeaders(image.mimeType, "no-store"));
       });
 
       /** The user saw the agent's last reply, so Home stops showing it as waiting. */

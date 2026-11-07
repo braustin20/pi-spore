@@ -81,6 +81,8 @@ export const AgentModel = Type.Object({
   name: Type.Optional(Type.String()),
   contextWindow: Type.Optional(Type.Number()),
   reasoning: Type.Optional(Type.Boolean()),
+  /** What the model takes, such as `["text", "image"]`. Pi sends a placeholder for an image to a text-only model. */
+  input: Type.Optional(Type.Array(Type.String())),
 });
 export type AgentModel = Static<typeof AgentModel>;
 
@@ -134,9 +136,31 @@ export const RenameChatRequest = Type.Object(
 );
 export type RenameChatRequest = Static<typeof RenameChatRequest>;
 
+/** Image types the chat sends to Pi and shows (R5.1). */
+export const IMAGE_TYPES = ["image/png", "image/jpeg", "image/webp", "image/gif"] as const;
+
+/**
+ * An image sent with a message, as base64 without a `data:` prefix. The schema caps the text; the server checks the
+ * decoded size against its limit and the bytes against the type.
+ */
+export const PromptImage = Type.Object(
+  {
+    mimeType: Type.Union(IMAGE_TYPES.map((type) => Type.Literal(type))),
+    data: Type.String({
+      minLength: 1,
+      maxLength: 64 * 1024 * 1024,
+      pattern: "^[A-Za-z0-9+/]*={0,2}$",
+    }),
+  },
+  { additionalProperties: false },
+);
+export type PromptImage = Static<typeof PromptImage>;
+
 export const PromptRequest = Type.Object(
   {
-    message: Type.String({ minLength: 1, maxLength: 200_000 }),
+    /** May be empty when the message has images. */
+    message: Type.String({ maxLength: 200_000 }),
+    images: Type.Optional(Type.Array(PromptImage, { maxItems: 32 })),
     /** While the agent works: `steer` goes in after the current turn, `followUp` after the run. Default: steer. */
     whileBusy: Type.Optional(Type.Union([Type.Literal("steer"), Type.Literal("followUp")])),
   },

@@ -16,6 +16,7 @@ import {
   type Workspace,
 } from "@pi-spore/shared";
 import type { AgentAttention, AgentChange } from "./contract.js";
+import { ChatImages } from "./images.js";
 import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
 import { readTranscript } from "./transcript.js";
@@ -62,6 +63,8 @@ export interface ManagerOptions {
   maxLive: number;
   idleStopMs: number;
   startTimeoutMs: number;
+  /** Decoded image bytes kept in memory for pages (ADR 0060); older images are read from session files again. */
+  imageCacheBytes: number;
 }
 
 /** What the browser gets on subscribe, and the event types after it (topic `agent:<id>`). */
@@ -126,6 +129,9 @@ const asModel = (value: unknown): AgentModel | undefined => {
     ...(typeof raw.name === "string" ? { name: raw.name } : {}),
     ...(typeof raw.contextWindow === "number" ? { contextWindow: raw.contextWindow } : {}),
     ...(typeof raw.reasoning === "boolean" ? { reasoning: raw.reasoning } : {}),
+    ...(Array.isArray(raw.input)
+      ? { input: raw.input.filter((kind): kind is string => typeof kind === "string") }
+      : {}),
   };
 };
 
@@ -147,8 +153,11 @@ const asContextUsage = (value: unknown): ContextUsage | undefined => {
 export class AgentManager {
   private readonly agents = new Map<string, Live>();
   private readonly waiting: (() => void)[] = [];
+  private readonly images: ChatImages;
 
-  constructor(private readonly options: ManagerOptions) {}
+  constructor(private readonly options: ManagerOptions) {
+    this.images = new ChatImages(options.imageCacheBytes);
+  }
 
   /** Registers an agent the store knows about. Idempotent. */
   track(record: AgentRecord): void {
@@ -244,20 +253,40 @@ export class AgentManager {
     };
   }
 
-  /** Sends a user message. While the agent works it goes in as `whileBusy` (default steer). */
+  /**
+   * Sends a user message, with images as Pi `ImageContent` blocks. While the agent works it goes in as `whileBusy`
+   * (default steer).
+   */
   async prompt(
     id: string,
     message: string,
     whileBusy: "steer" | "followUp" = "steer",
+    images: readonly { type: "image"; data: string; mimeType: string }[] = [],
   ): Promise<string> {
     const live = this.get(id);
     const process = await this.ensureRunning(live);
     this.clearIdle(live);
     this.setWaiting(live, null);
     if (live.record.title === null) this.setTitle(live, chatTitle(message));
-    const fields = live.chat.busy ? { message, streamingBehavior: whileBusy } : { message };
+    const fields = {
+      message,
+      ...(images.length > 0 ? { images } : {}),
+      ...(live.chat.busy ? { streamingBehavior: whileBusy } : {}),
+    };
     const result = await process.request<{ disposition?: string }>("prompt", fields);
     return result?.disposition ?? "started";
+  }
+
+  /**
+   * The bytes of an image this chat has shown, by its ref (ADR 0060). From memory, or else from the session file.
+   * Undefined for a ref the chat never showed.
+   */
+  async image(id: string, ref: string): Promise<{ mimeType: string; bytes: Buffer } | undefined> {
+    const live = this.get(id);
+    await this.loadHistory(live);
+    if (!this.images.knows(id, ref)) return undefined;
+    const file = live.record.sessionFile;
+    return this.images.read(ref, async () => (file ? (await readTranscript(file)).messages : []));
   }
 
   async abort(id: string): Promise<void> {
@@ -415,10 +444,13 @@ export class AgentManager {
       try {
         const transcript = await readTranscript(live.record.sessionFile);
         // Live events may have arrived already; keep them after the history.
-        live.chat = transcript.messages.reduce(
-          (chat, message) => applyPiEvent(chat, { type: "message_end", message }),
-          { ...emptyChat(), queue: live.chat.queue, busy: live.chat.busy },
-        );
+        live.chat = this.images
+          .strip(live.record.id, transcript.messages)
+          .reduce((chat, message) => applyPiEvent(chat, { type: "message_end", message }), {
+            ...emptyChat(),
+            queue: live.chat.queue,
+            busy: live.chat.busy,
+          });
         if (!live.model && transcript.model) live.model = transcript.model;
         if (!live.thinkingLevel && transcript.thinkingLevel)
           live.thinkingLevel = transcript.thinkingLevel;
@@ -627,7 +659,9 @@ export class AgentManager {
     return ["--session-dir", dir, ...role];
   }
 
-  private onEvent(live: Live, event: Record<string, unknown>): void {
+  private onEvent(live: Live, raw: Record<string, unknown>): void {
+    // Image data stays on the server; pages fetch it by ref (ADR 0060).
+    const event = this.images.strip(live.record.id, raw);
     live.chat = applyPiEvent(live.chat, event);
     this.publish(live, { type: "pi", event });
     if (event.type === "agent_start") {

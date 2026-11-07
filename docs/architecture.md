@@ -723,8 +723,24 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   | `POST /api/agents/chats` `{ workspaceId, kind, fork? }` | Starts a worker chat (replaces the active one) or a side chat; `fork` copies the worker chat's context. |
   | `POST /api/agents/:id/activate` | Makes an older worker chat the active one; the current one stops first. |
   | `POST /api/agents/:id/title` `{ title }` | Renames a chat. |
+  | `POST /api/agents/:id/prompt` `{ message, images?, whileBusy? }` | Sends a message; `images` are `{ mimeType, data }` in base64 (below). |
+  | `GET /api/agents/:id/images/:ref` | The bytes of an image block the chat has shown (below). |
+  | `GET /api/agents/:id/linked-image?path=` | An image file the agent linked, from the workspace folder or its artifacts folder only (below). |
 
   The `agent:<id>` topic sends `{ type: "agent", agent }` when a chat's title or active flag changes.
+- Images in the chat (ADR 0060, R5.1):
+  - A message may carry PNG, JPEG, WebP, or GIF images: at most 8, each at most 10 MiB decoded, with bytes that
+    match their type (module options `maxImagesPerMessage` and `maxImageBytes` until settings land). They go to Pi
+    as `ImageContent` blocks with the prompt, steer, or follow-up. A message may be only images. Models list what
+    they take (`input`), so the composer warns when the chat's model takes no images; Pi then sends a placeholder.
+  - Image blocks never reach the page as data. In every Pi event the server relays and every message it reads from
+    a session file, `data` becomes `ref` (the SHA-256 of the base64) and `bytes`. Pages fetch the bytes by ref with
+    the token header and show them as blob URLs. Decoded bytes stay in a memory cache (64 MiB, `imageCacheBytes`);
+    a dropped one is read from the session file again. A chat reads only refs it has shown.
+  - `linked-image` resolves the path against the workspace folder, resolves symlinks, and answers only for a regular
+    file inside the workspace folder or `artifacts/workspaces/<id>/`, whose real name has an image extension, of at
+    most `maxImageBytes`, with bytes that match the extension. Anything else is 400, 403, 404, 413, or 415, and the
+    page shows the plain link.
   CLI: `pi-spore chat list <workspace>`, `pi-spore chat new <workspace> [--side [--fork]]`.
 
 ## 16. Open questions

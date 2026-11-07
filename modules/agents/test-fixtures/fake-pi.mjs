@@ -6,11 +6,15 @@
 //   "ask:<text>"   files <text> as a question through the bridge, as spore-bridge's request_human_input does, and
 //                  ends the turn; the reply says the question id or the server's refusal
 //   "tools"        replies with the tool allowlist it got (`--tools`), or Pi's default tools
+//   "screenshot"   calls a `screenshot` tool whose result has an image block (FAKE_PNG in png.mjs)
+// Images given with a prompt go into the user message after its text, as Pi does; the reply counts them. A queued
+// message with images shows as "<text> [<n> images]" in queue_update.
 // `--fork <file>` copies that session into a new one in `--session-dir`, with `parentSession` in the header, and
 // refuses to be combined with `--session`, as Pi does.
 // Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env} for assertions.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { FAKE_PNG } from "./png.mjs";
 
 const argv = process.argv.slice(2);
 const arg = (name) => {
@@ -94,6 +98,7 @@ let model = {
   name: "Fake",
   contextWindow: 100000,
   reasoning: true,
+  input: ["text", "image"],
 };
 let thinkingLevel = arg("--thinking") ?? "medium";
 let streaming = false;
@@ -108,6 +113,57 @@ const respond = (id, command, data) =>
 const fail = (id, command, error) =>
   write({ id, type: "response", command, success: false, error });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** Pi's ImageContent check: refuses what Pi would refuse. */
+const badImages = (images) =>
+  images !== undefined &&
+  (!Array.isArray(images) ||
+    images.some(
+      (image) =>
+        image?.type !== "image" ||
+        typeof image.data !== "string" ||
+        !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data) ||
+        typeof image.mimeType !== "string",
+    ));
+
+async function screenshot() {
+  const timestamp = ++clock;
+  const call = { type: "toolCall", id: "call-shot", name: "screenshot", arguments: {} };
+  const assistant = {
+    role: "assistant",
+    content: [call],
+    provider: model.provider,
+    model: model.id,
+    stopReason: "toolUse",
+    timestamp,
+  };
+  write({ type: "message_start", message: assistant });
+  write({ type: "message_end", message: assistant });
+  appendMessage(assistant);
+  write({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: {} });
+  const content = [
+    { type: "text", text: "Captured" },
+    { type: "image", data: FAKE_PNG, mimeType: "image/png" },
+  ];
+  write({
+    type: "tool_execution_end",
+    toolCallId: call.id,
+    toolName: call.name,
+    result: { content },
+    isError: false,
+  });
+  const result = {
+    role: "toolResult",
+    toolCallId: call.id,
+    toolName: call.name,
+    content,
+    isError: false,
+    timestamp: ++clock,
+  };
+  write({ type: "message_start", message: result });
+  write({ type: "message_end", message: result });
+  appendMessage(result);
+}
 
 /** What spore-bridge's request_human_input sends: the agent token, and the tool call id as the receipt. */
 async function ask(question, toolCallId) {
@@ -130,19 +186,27 @@ async function ask(question, toolCallId) {
   }
 }
 
-async function run(text) {
+async function run(text, images = []) {
   streaming = true;
   let aborted = false;
   abortRun = () => {
     aborted = true;
   };
   write({ type: "agent_start" });
-  const user = { role: "user", content: text, timestamp: ++clock };
+  const user = {
+    role: "user",
+    content: images.length > 0 ? [{ type: "text", text }, ...images] : text,
+    timestamp: ++clock,
+  };
   write({ type: "message_start", message: user });
   write({ type: "message_end", message: user });
   appendMessage(user);
 
-  let reply = `echo: ${text}`;
+  let reply = images.length > 0 ? `echo: ${text} [${images.length} images]` : `echo: ${text}`;
+  if (text === "screenshot") {
+    await screenshot();
+    reply = "Here is the screenshot.";
+  }
   if (text === "tools") reply = `tools: ${arg("--tools") ?? "read,bash,edit,write"}`;
   if (text.startsWith("ask:")) reply = await ask(text.slice(4), `toolu_${entryCount}`);
   if (text === "/dialog") {
@@ -207,18 +271,22 @@ const handle = (command) => {
         process.stderr.write("boom: the fake agent crashed\n");
         process.exit(3);
       }
+      if (badImages(command.images)) return fail(id, type, "images must be ImageContent blocks");
       if (streaming && !command.streamingBehavior)
         return fail(id, type, "Agent is streaming; set streamingBehavior");
       if (streaming) {
+        const queued = command.images
+          ? `${command.message} [${command.images.length} images]`
+          : command.message;
         write({
           type: "queue_update",
-          steering: command.streamingBehavior === "steer" ? [command.message] : [],
-          followUp: command.streamingBehavior === "followUp" ? [command.message] : [],
+          steering: command.streamingBehavior === "steer" ? [queued] : [],
+          followUp: command.streamingBehavior === "followUp" ? [queued] : [],
         });
         return respond(id, type, { disposition: "queued" });
       }
       respond(id, type, { disposition: "started" });
-      return void run(command.message);
+      return void run(command.message, command.images);
     case "abort":
       abortRun?.();
       return setTimeout(() => respond(id, type), 5);
@@ -241,6 +309,7 @@ const handle = (command) => {
             name: "Fake 2",
             contextWindow: 50000,
             reasoning: false,
+            input: ["text"],
           },
         ],
       });

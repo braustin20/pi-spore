@@ -5,7 +5,7 @@
 export class ApiError extends Error {
   override name = "ApiError";
   constructor(
-    readonly status: 400 | 401 | 403 | 404 | 409 | 422 | 500 | 503,
+    readonly status: 400 | 401 | 403 | 404 | 409 | 413 | 415 | 422 | 500 | 503,
     readonly code: string,
     message: string,
   ) {

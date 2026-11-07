@@ -22,8 +22,10 @@ export {
   CreateChatRequest,
   chatTitle,
   DialogAnswer,
+  IMAGE_TYPES,
   ModelList,
   orderChats,
+  PromptImage,
   PromptRequest,
   RenameChatRequest,
   SetModelRequest,
@@ -48,6 +50,8 @@ export {
   type ChatMessage,
   type ChatState,
   emptyChat,
+  type ImageRef,
+  isImageRef,
   type RunningTool,
 } from "./chat.js";
 export { HealthResponse } from "./health.js";

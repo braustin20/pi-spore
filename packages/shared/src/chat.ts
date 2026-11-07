@@ -6,6 +6,26 @@
  * few of them.
  */
 
+/**
+ * An image block as the server sends it to pages (ADR 0060). Pi's base64 `data` is replaced by `ref`, the SHA-256 of
+ * that data, which the page fetches from `GET /api/agents/:id/images/:ref`. Snapshots and live events stay small.
+ */
+export interface ImageRef {
+  type: "image";
+  mimeType: string;
+  ref: string;
+  /** Decoded size in bytes. */
+  bytes: number;
+}
+
+export function isImageRef(block: unknown): block is ImageRef {
+  if (typeof block !== "object" || block === null) return false;
+  const image = block as Record<string, unknown>;
+  return (
+    image.type === "image" && typeof image.ref === "string" && typeof image.mimeType === "string"
+  );
+}
+
 export interface ChatMessage {
   role: string;
   timestamp?: number;
