@@ -5,11 +5,13 @@ import Type from "typebox";
 const ListEvent = Type.Union([
   Type.Object({ type: Type.Literal("snapshot"), agents: Type.Array(Agent) }),
   Type.Object({ type: Type.Literal("agent"), agent: Agent }),
+  Type.Object({ type: Type.Literal("removed"), id: Type.String() }),
 ]);
 
 export function reduceAgentList(agents: Agent[], raw: unknown): Agent[] {
   const event = parse(ListEvent, raw, "agent list event");
   if (event.type === "snapshot") return event.agents;
+  if (event.type === "removed") return agents.filter((agent) => agent.id !== event.id);
   return [...agents.filter((agent) => agent.id !== event.agent.id), event.agent];
 }
 

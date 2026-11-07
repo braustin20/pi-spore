@@ -1,6 +1,6 @@
 import type { Agent } from "@pi-spore/shared";
 import { Button, cn, Input, Tooltip } from "@pi-spore/ui";
-import { Eye, History, MessageSquare, MessageSquarePlus, Pencil } from "lucide-react";
+import { Eye, History, MessageSquare, MessageSquarePlus, Pencil, X } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 const label = (chat: Agent) => chat.title ?? "New chat";
@@ -73,6 +73,7 @@ export function ChatBar({
   canStart,
   onNew,
   onRename,
+  onClose,
 }: {
   workspaceId: string;
   chats: readonly Agent[];
@@ -81,6 +82,8 @@ export function ChatBar({
   canStart: boolean;
   onNew: (kind: "worker" | "side", fork: boolean) => void;
   onRename: (title: string) => Promise<void>;
+  /** Closes a chat for good (ADR 0110). */
+  onClose: (chat: Agent) => void;
 }) {
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4">
@@ -90,17 +93,21 @@ export function ChatBar({
             const kind = group(chat);
             const Icon = ICONS[kind];
             const current = chat.id === selected.id;
+            const working = ["busy", "starting", "waiting"].includes(chat.status);
             return (
-              <li key={chat.id} className="shrink-0">
+              <li
+                key={chat.id}
+                className={cn(
+                  "flex shrink-0 items-center rounded-md text-sm hover:bg-raised/60",
+                  current ? "bg-raised text-fg" : "text-muted",
+                  kind === "older" && !current && "opacity-70",
+                )}
+              >
                 <a
                   href={`#/workspaces/${workspaceId}/chats/${chat.id}`}
                   aria-current={current ? "page" : undefined}
                   title={`${label(chat)}. ${HINTS[kind]}`}
-                  className={cn(
-                    "flex max-w-52 items-center gap-1.5 rounded-md px-2 py-1 text-sm no-underline hover:bg-raised/60",
-                    current ? "bg-raised text-fg" : "text-muted",
-                    kind === "older" && !current && "opacity-70",
-                  )}
+                  className="flex max-w-52 items-center gap-1.5 py-1 pl-2 text-inherit no-underline"
                 >
                   <Icon aria-hidden="true" className="size-3.5 shrink-0" />
                   <span className="truncate">{label(chat)}</span>
@@ -110,6 +117,22 @@ export function ChatBar({
                     </span>
                   )}
                 </a>
+                <Tooltip
+                  label={
+                    working ? "Abort or stop this chat before you close it" : "Close this chat"
+                  }
+                  side="bottom"
+                >
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label={`Close chat ${label(chat)}`}
+                    disabled={working}
+                    onClick={() => onClose(chat)}
+                  >
+                    <X />
+                  </Button>
+                </Tooltip>
               </li>
             );
           })}

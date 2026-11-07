@@ -43,6 +43,8 @@ export interface AgentRecord {
   createdAt: number;
   /** When the last run ended and the agent began to wait for the user, or null. */
   waitingSince: number | null;
+  /** The user closed the chat: it is off the chat bar and Home, and never runs again. Its session file stays. */
+  closed: boolean;
 }
 
 export interface ManagerOptions {
@@ -243,14 +245,34 @@ export class AgentManager {
     this.publishChat(live);
   }
 
-  /** What Home needs about every agent. */
+  isClosed(id: string): boolean {
+    return this.get(id).record.closed;
+  }
+
+  /**
+   * Closes a chat for good (ADR 0110): it stops, and Home forgets it. Other modules may still hold its id, so it
+   * stays known. The caller writes the store and has checked that the chat is not working.
+   */
+  async close(id: string): Promise<void> {
+    const live = this.get(id);
+    live.record.closed = true;
+    live.record.active = false;
+    await this.stop(id);
+    this.setWaiting(live, null);
+    if (live.status === "failed") this.setStatus(live, "stopped");
+    this.publishChat(live);
+  }
+
+  /** What Home needs about every open agent. */
   attention(): AgentAttention[] {
-    return [...this.agents.values()].map((live) => ({
-      agent: this.view(live.record.id),
-      since: live.since,
-      dialogs: [...live.dialogs.values()].map(({ dialog, openedAt }) => ({ dialog, openedAt })),
-      ...(live.record.waitingSince === null ? {} : { waitingSince: live.record.waitingSince }),
-    }));
+    return [...this.agents.values()]
+      .filter((live) => !live.record.closed)
+      .map((live) => ({
+        agent: this.view(live.record.id),
+        since: live.since,
+        dialogs: [...live.dialogs.values()].map(({ dialog, openedAt }) => ({ dialog, openedAt })),
+        ...(live.record.waitingSince === null ? {} : { waitingSince: live.record.waitingSince }),
+      }));
   }
 
   /** The user has seen the agent's last reply: it no longer waits for them on Home. */

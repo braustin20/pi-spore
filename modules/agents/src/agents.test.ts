@@ -681,6 +681,70 @@ describe("chats (ADR 0030)", () => {
     ).toBe("bad_request");
   });
 
+  const close = (agentId: string) => server.request("POST", `/api/agents/${agentId}/close`);
+
+  it("closes a chat for good: it leaves the list, Home, and open pages, and its files stay", async () => {
+    await setup();
+    const { agentId: worker, workspaceId } = await makeAgent();
+    const { agent: side } = await json<{ agent: Agent }>(await newChat(workspaceId, "side"), 201);
+    await json(await prompt(side.id, "look"));
+    await replied(side.id, 2);
+    const file = sessionFile(side.id);
+    expect(file).toBeTruthy();
+    const before = server.events.eventsOf("agents:list").length;
+
+    await json(await close(side.id));
+
+    expect((await chats(workspaceId)).map((chat) => chat.id)).toEqual([worker]);
+    expect(agentsModule.manager().liveCount()).toBe(0);
+    expect(
+      agentsModule
+        .manager()
+        .attention()
+        .map((entry) => entry.agent.id),
+    ).toEqual([worker]);
+    const [snapshot] = await server.events.snapshot("agents:list");
+    expect(reduceAgentList([], snapshot).map((agent) => agent.id)).toEqual([worker]);
+    const events = server.events.eventsOf("agents:list").slice(before);
+    expect(events.at(-1)).toEqual({ type: "removed", id: side.id });
+    expect(reduceAgentList([{ ...side, status: "idle" }], events.at(-1)).length).toBe(0);
+    expect(sessionFile(side.id)).toBe(file);
+    // Closing twice is fine.
+    await json(await close(side.id));
+  });
+
+  it("does not close a chat that is working", async () => {
+    await setup();
+    const { agentId, workspaceId } = await makeAgent();
+    await json(await prompt(agentId, "slow:400"));
+    await until(() => status(agentId) === "busy");
+    expect(await code(await close(agentId), 409)).toBe("chat_busy");
+    expect((await chats(workspaceId)).map((chat) => chat.id)).toEqual([agentId]);
+  });
+
+  it("starts a fresh worker chat after the active one is closed, and cannot reopen the closed one", async () => {
+    await setup();
+    const { agentId: first, workspaceId } = await makeAgent();
+    await json(await prompt(first, "one"));
+    await replied(first, 2);
+
+    await json(await close(first));
+    expect(await chats(workspaceId)).toEqual([]);
+    expect(agentsModule.manager().liveCount()).toBe(0);
+
+    const { agent: second } = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents", { workspaceId }),
+      201,
+    );
+    expect(second).toMatchObject({ kind: "worker", active: true });
+    expect(second.id).not.toBe(first);
+    expect(await code(await prompt(first, "again"), 409)).toBe("chat_inactive");
+    expect(await code(await server.request("POST", `/api/agents/${first}/activate`), 409)).toBe(
+      "chat_closed",
+    );
+    expect((await chats(workspaceId)).map((chat) => chat.id)).toEqual([second.id]);
+  });
+
   it("keeps a workspace's existing worker as its active worker chat after the upgrade", async () => {
     const home = join(scratch, "home");
     await setup({}, {}, { home });
@@ -701,7 +765,7 @@ describe("chats (ADR 0030)", () => {
       );
       INSERT INTO agents_agents SELECT * FROM old;
       DROP TABLE old;
-      DELETE FROM core_migrations WHERE module = 'agents' AND version = 4;
+      DELETE FROM core_migrations WHERE module = 'agents' AND version >= 4;
     `);
     db.close();
 

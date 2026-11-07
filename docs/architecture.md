@@ -57,6 +57,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     worker chat starts empty. Make active works the same way for an older chat. Both refuse with 409 `worker_busy`
     while the current worker chat is busy, starting, or waiting for a slot. Chat changes of one workspace run one at
     a time.
+  - Close (ADR 0110): the "x" on a chat tab sets `closed = 1` and `active = 0`, and stops the process. The row and
+    session file stay, because other modules hold agent ids. A closed chat is left out of the chat list, the
+    `agents:list` snapshot, and Home; a `removed` event drops it from open pages. It cannot be activated again
+    (409 `chat_closed`). A chat that is working refuses with 409 `chat_busy`. Closing the active worker chat leaves
+    the workspace without one, and the next `POST /api/agents` starts a fresh chat.
   - A chat that becomes inactive drops its Home items: its failure, its finished mark, and its open questions, which
     are closed (ADR 0033). Pending deliveries to it wait until it is active again.
   - Side chats: any number, next to the worker, counted against `agents.maxLive` like any agent. They start empty,
@@ -914,6 +919,7 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   | `POST /api/agents/chats` `{ workspaceId, kind, fork? }` | Starts a worker chat (replaces the active one) or a side chat; `fork` copies the worker chat's context. |
   | `POST /api/agents/:id/activate` | Makes an older worker chat the active one; the current one stops first. |
   | `POST /api/agents/:id/title` `{ title }` | Renames a chat. |
+  | `POST /api/agents/:id/close` | Closes a chat for good (ADR 0110). 409 `chat_busy` while it works. |
   | `POST /api/agents/:id/prompt` `{ message, images?, whileBusy? }` | Sends a message; `images` are `{ mimeType, data }` in base64 (below). |
   | `GET /api/agents/:id/images/:ref` | The bytes of an image block the chat has shown (below). |
   | `GET /api/agents/:id/linked-image?path=` | An image file the agent linked, from the workspace folder or its artifacts folder only (below). |

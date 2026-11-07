@@ -147,6 +147,19 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
       .catch((caught: unknown) => setError(message(caught)));
   };
 
+  const closeChat = (chat: Agent) => {
+    const name = chat.title ?? "New chat";
+    if (!window.confirm(`Close "${name}"? It leaves the chat bar for good.`)) return;
+    api
+      .send("POST", `agents/${chat.id}/close`)
+      .then(() => {
+        // The page's next load starts a fresh worker chat if the active one was closed.
+        if (chat.id === selected?.id) window.location.hash = `#/workspaces/${workspaceId}`;
+        return load();
+      })
+      .catch((caught: unknown) => setError(message(caught)));
+  };
+
   if (!selected) {
     return error ? (
       <div className="p-4">
@@ -166,6 +179,7 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
           selected={selected}
           canStart={workspace.state === "active"}
           onNew={startChat}
+          onClose={closeChat}
           onRename={async (title) => {
             try {
               await api.send("POST", `agents/${selected.id}/title`, { title });

@@ -57,6 +57,8 @@ const MIGRATIONS = [
   ALTER TABLE agents_agents_v2 RENAME TO agents_agents;
   CREATE UNIQUE INDEX agents_one_active_worker ON agents_agents (workspace_id)
     WHERE kind = 'worker' AND active = 1;`,
+  // ADR 0110: a closed chat leaves the chat bar. Its row and session file stay, so ids held elsewhere stay valid.
+  "ALTER TABLE agents_agents ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
 ];
 
 interface Row {
@@ -70,6 +72,7 @@ interface Row {
   session_file: string | null;
   created_at: number;
   waiting_since: number | null;
+  closed: number;
 }
 
 const toRecord = (row: Row): AgentRecord => ({
@@ -83,6 +86,7 @@ const toRecord = (row: Row): AgentRecord => ({
   sessionFile: row.session_file,
   createdAt: row.created_at,
   waitingSince: row.waiting_since,
+  closed: row.closed === 1,
 });
 
 export interface AgentsModuleOptions {
@@ -167,7 +171,12 @@ export function createAgentsModule(
           host.store.run("UPDATE agents_agents SET title = ? WHERE id = ?", title, agentId);
         },
         onChange: (agentId, change) => {
-          host.events.publish("agents:list", { type: "agent", agent: agents.view(agentId) });
+          host.events.publish(
+            "agents:list",
+            agents.isClosed(agentId)
+              ? { type: "removed", id: agentId }
+              : { type: "agent", agent: agents.view(agentId) },
+          );
           for (const listener of listeners) listener(agentId, change);
           if (change === "status" && agents.view(agentId).status === "idle")
             deliveries?.flush(agentId);
@@ -221,7 +230,7 @@ export function createAgentsModule(
         {
           type: "snapshot",
           agents: host.store
-            .all<Row>("SELECT * FROM agents_agents")
+            .all<Row>("SELECT * FROM agents_agents WHERE closed = 0")
             .map((row) => agents.view(row.id)),
         },
       ]);
@@ -272,6 +281,7 @@ export function createAgentsModule(
         session_file: null,
         created_at: host.now(),
         waiting_since: null,
+        closed: 0,
       });
 
       /** The workspace's active worker chat; the first call for a workspace creates it. */
@@ -330,8 +340,11 @@ export function createAgentsModule(
       host.routes.get("/", (c) => {
         const workspaceId = c.req.query("workspaceId");
         const rows = workspaceId
-          ? host.store.all<Row>("SELECT * FROM agents_agents WHERE workspace_id = ?", workspaceId)
-          : host.store.all<Row>("SELECT * FROM agents_agents");
+          ? host.store.all<Row>(
+              "SELECT * FROM agents_agents WHERE workspace_id = ? AND closed = 0",
+              workspaceId,
+            )
+          : host.store.all<Row>("SELECT * FROM agents_agents WHERE closed = 0");
         return c.json({ agents: orderChats(rows.map((row) => agents.view(row.id))) });
       });
 
@@ -382,6 +395,8 @@ export function createAgentsModule(
         const target = agents.view(c.req.param("id"));
         if (target.kind !== "worker")
           throw new ApiError(409, "not_a_worker_chat", "Only a worker chat can be made active");
+        if (agents.isClosed(target.id))
+          throw new ApiError(409, "chat_closed", "This chat is closed");
         requireActive(workspaces.get(target.workspaceId));
         return inOrder(target.workspaceId, async () => {
           if (!agents.view(target.id).active) {
@@ -392,6 +407,30 @@ export function createAgentsModule(
             queue.flush(target.id);
           }
           return c.json({ agent: agents.view(target.id) });
+        });
+      });
+
+      /**
+       * Closes a chat for good (ADR 0110). A chat that is working is not cut off: the user aborts or stops it first.
+       * Closing the active worker chat leaves the workspace without one, so the page's next "get the worker" call
+       * starts a fresh chat.
+       */
+      host.routes.post("/:id/close", async (c) => {
+        const id = c.req.param("id");
+        const target = agents.view(id);
+        return inOrder(target.workspaceId, async () => {
+          if (agents.isClosed(id)) return c.json({ ok: true });
+          const { status } = agents.view(id);
+          if (status === "busy" || status === "starting" || status === "waiting") {
+            throw new ApiError(
+              409,
+              "chat_busy",
+              "The chat is working. Abort or stop it first, then close it.",
+            );
+          }
+          host.store.run("UPDATE agents_agents SET active = 0, closed = 1 WHERE id = ?", id);
+          await agents.close(id);
+          return c.json({ ok: true });
         });
       });
 
