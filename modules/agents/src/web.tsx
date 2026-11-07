@@ -24,6 +24,7 @@ import {
 import Type from "typebox";
 import { ChatBar } from "./chats.js";
 import { Composer, DialogCard } from "./composer.js";
+import { Helpers } from "./helpers.js";
 import { MessageList } from "./messages.js";
 import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
@@ -261,7 +262,7 @@ function ChatView({
     return parse(CommandList, await api.get(`agents/${agentId}/commands`), "commands").commands;
   }, [api, agentId]);
 
-  const { agent, chat, dialogs, contextUsage } = state;
+  const { agent, chat, children, dialogs, contextUsage } = state;
   const busy = chat.busy || agent?.status === "busy";
   // Runs only in an active workspace, and only as the active worker chat or a side chat (ADR 0030).
   const older = agent?.kind === "worker" && !agent.active;
@@ -346,8 +347,13 @@ function ChatView({
           variant="ghost"
           size="sm"
           onClick={() => void call("POST", "stop")}
-          disabled={!agent || agent.status === "stopped" || busy}
-          title="Stop the agent process; the chat is kept"
+          disabled={
+            !agent ||
+            agent.status === "stopped" ||
+            busy ||
+            children.some((run) => run.state === "running")
+          }
+          title="Stop the agent process; the chat is kept. Not while a helper runs."
         >
           Stop agent
         </Button>
@@ -387,7 +393,9 @@ function ChatView({
             </Notice>
           )}
           {agent?.status === "waiting" && (
-            <Notice>Waiting for a free agent slot (at most 4 run at once).</Notice>
+            <Notice>
+              Waiting for a free agent slot (at most 4 run at once, helper runs included).
+            </Notice>
           )}
           {agent?.error && (
             <Notice tone="fail">
@@ -436,6 +444,7 @@ function ChatView({
               ))}
             </div>
           )}
+          <Helpers agentId={agentId} runs={children} />
           {state.notices.map((notice) => (
             <Notice key={notice.id} tone={notice.level === "error" ? "fail" : "info"}>
               {notice.message}

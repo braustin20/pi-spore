@@ -7,6 +7,13 @@
 //                  ends the turn; the reply says the question id or the server's refusal
 //   "tools"        replies with the tool allowlist it got (`--tools`), or Pi's default tools
 //   "screenshot"   calls a `screenshot` tool whose result has an image block (FAKE_PNG in png.mjs)
+//   "helper:<id>:<agent>:<state>"  sets the `subagent-async` widget as pi-subagents does in RPC mode, with one run
+//                  <id> that has one step on <agent>. The model is `fake/helper-model`. Several ids add up. A run with
+//                  state "gone" leaves the snapshot. Send it as a prompt, or as one while streaming (it is a command).
+//   "helper-clear" clears the widget, as pi-subagents does about 10 s after the last run ends
+//   "helper-bad"   sets the widget to a payload of an unknown version
+//   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
+//                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Images given with a prompt go into the user message after its text, as Pi does; the reply counts them. A queued
 // message with images shows as "<text> [<n> images]" in queue_update.
 // `--fork <file>` copies that session into a new one in `--session-dir`, with `parentSession` in the header, and
@@ -106,6 +113,79 @@ let abortRun = null;
 // Real time, like Pi: a resumed session must not reuse the first process's message timestamps.
 let clock = Date.now();
 const dialogs = new Map();
+
+const helpers = new Map();
+const INSPECT_PREFIX = "PI_SUBAGENT_INSPECT_JSON:";
+
+const writeWidget = (widgetKey, widgetLines) =>
+  write({
+    type: "extension_ui_request",
+    id: `w${Date.now()}${Math.random()}`,
+    method: "setWidget",
+    widgetKey,
+    ...(widgetLines === undefined ? {} : { widgetLines }),
+  });
+
+/** The snapshot pi-subagents sends: runs with steps as children (spike Q5). */
+function publishHelpers() {
+  const runs = [...helpers].map(([id, helper]) => ({
+    id,
+    kind: "subagent",
+    label: helper.agent,
+    state: helper.state,
+    startedAt: 1000,
+    updatedAt: Date.now(),
+    activity: { lastActivityAt: Date.now() },
+    children: [
+      {
+        id: "step:0",
+        kind: "step",
+        label: helper.agent,
+        state: helper.state,
+        agent: helper.agent,
+        model: "fake/helper-model",
+        thinking: "low",
+      },
+    ],
+  }));
+  const snapshot = {
+    kind: "pi-subagents.async-status-snapshot",
+    version: 1,
+    generatedAt: Date.now(),
+    runs,
+  };
+  writeWidget("subagent-async", [`PI_SUBAGENT_ASYNC_JSON:${JSON.stringify(snapshot)}`]);
+}
+
+function inspect(command) {
+  const [requestId, runId, child] = command
+    .slice("/subagents-inspect-rpc ".length)
+    .split(" --lines")[0]
+    .split(" ");
+  const helper = helpers.get(runId);
+  const reply = helper
+    ? {
+        kind: "pi-subagents.inspect-reply",
+        version: 1,
+        requestId,
+        asyncId: runId,
+        ...(child ? { childId: child } : {}),
+        status: helper.state,
+        label: helper.agent,
+        task: `task of ${runId}`,
+        messages: [{ role: "assistant", kind: "text", text: `${helper.agent} says hello` }],
+        finalOutput: "all done",
+        resolvedModel: { provider: "fake", model: "helper-model" },
+      }
+    : {
+        kind: "pi-subagents.inspect-reply",
+        version: 1,
+        requestId,
+        error: { code: "not_found", message: `No run ${runId}` },
+      };
+  writeWidget("subagent-inspect", [`${INSPECT_PREFIX}${JSON.stringify(reply)}`]);
+  writeWidget("subagent-inspect");
+}
 
 const write = (record) => process.stdout.write(`${JSON.stringify(record)}\n`);
 const respond = (id, command, data) =>
@@ -270,6 +350,23 @@ const handle = (command) => {
       if (command.message === "crash") {
         process.stderr.write("boom: the fake agent crashed\n");
         process.exit(3);
+      }
+      if (command.message.startsWith("/subagents-inspect-rpc ")) {
+        inspect(command.message);
+        return respond(id, type, { disposition: "handled" });
+      }
+      if (command.message.startsWith("helper:")) {
+        const [, runId, agent, state] = command.message.split(":");
+        if (state === "gone") helpers.delete(runId);
+        else helpers.set(runId, { agent, state });
+        publishHelpers();
+        return respond(id, type, { disposition: "handled" });
+      }
+      if (command.message === "helper-clear" || command.message === "helper-bad") {
+        helpers.clear();
+        if (command.message === "helper-clear") writeWidget("subagent-async");
+        else writeWidget("subagent-async", ['PI_SUBAGENT_ASYNC_JSON:{"kind":"x","version":9}']);
+        return respond(id, type, { disposition: "handled" });
       }
       if (badImages(command.images)) return fail(id, type, "images must be ImageContent blocks");
       if (streaming && !command.streamingBehavior)

@@ -498,6 +498,17 @@ export function createAgentsModule(
         return c.json({ ok: true });
       });
 
+      /** What a helper run did, asked of the agent's process (ADR 0034). `?child=` picks one step. */
+      host.routes.get("/:id/children/:runId/transcript", async (c) =>
+        c.json({
+          transcript: await agents.childTranscript(
+            c.req.param("id"),
+            c.req.param("runId"),
+            c.req.query("child"),
+          ),
+        }),
+      );
+
       host.routes.get("/:id/models", async (c) => c.json(await agents.models(c.req.param("id"))));
 
       host.routes.get("/:id/commands", async (c) =>

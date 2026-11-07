@@ -1,5 +1,6 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import type { AgentDialog } from "@pi-spore/shared";
+import { CHILD_RUNS_WIDGET, INSPECT_WIDGET } from "./child-runs.js";
 
 /** How to start Pi: `{ command: "pi", args: [] }` for real, a fake in tests. `--mode rpc` is added after `args`. */
 export interface PiCommand {
@@ -15,6 +16,10 @@ export interface PiProcessOptions {
   onEvent(event: Record<string, unknown>): void;
   onDialog(dialog: AgentDialog, timeoutMs: number | undefined): void;
   onNotice(level: string, message: string): void;
+  /** The `subagent-async` widget changed. `lines` is undefined when pi-subagents cleared it (ADR 0034). */
+  onChildRuns(lines: unknown): void;
+  /** A `subagent-inspect` widget carries a reply. Its retraction (no lines) is not passed on. */
+  onInspectReply(lines: unknown): void;
   onExit(code: number | null, signal: string | null): void;
 }
 
@@ -184,8 +189,17 @@ export class PiProcess {
       );
     } else if (method === "notify" && typeof record.message === "string") {
       this.options.onNotice(String(record.notifyType ?? record.level ?? "info"), record.message);
+    } else if (method === "setWidget" && record.widgetKey === CHILD_RUNS_WIDGET) {
+      this.options.onChildRuns(record.widgetLines);
+    } else if (
+      method === "setWidget" &&
+      record.widgetKey === INSPECT_WIDGET &&
+      record.widgetLines !== undefined
+    ) {
+      this.options.onInspectReply(record.widgetLines);
     }
-    // setStatus, setWidget, setTitle, and set_editor_text are terminal UI hints with no place in the web chat yet.
+    // Other setWidget calls, setStatus, setTitle, and set_editor_text are terminal UI hints with no place in the web
+    // chat yet.
   }
 
   private finish(code: number | null, signal: string | null): void {

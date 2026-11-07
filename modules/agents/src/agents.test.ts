@@ -717,3 +717,169 @@ describe("chats (ADR 0030)", () => {
     await json(await newChat(workspaceId, "worker"), 201);
   });
 });
+
+describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
+  const helper = (agentId: string, id: string, state: string, agent = "scout") =>
+    prompt(agentId, `helper:${id}:${agent}:${state}`);
+  const childEvents = (agentId: string) =>
+    events(agentId).flatMap((event) => (event.type === "children" ? [event.children] : []));
+  const latest = (agentId: string) => childEvents(agentId).at(-1);
+  const snapshotChildren = async (agentId: string) => {
+    const [snapshot] = (await server.events.snapshot(`agent:${agentId}`)) as AgentEvent[];
+    if (snapshot?.type !== "snapshot") throw new Error("No snapshot");
+    return snapshot.children;
+  };
+
+  it("lists a helper under its worker with agent, model, and state, and drops it when it is cleared", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+    expect(latest(agentId)).toEqual([
+      {
+        id: "run-1",
+        label: "scout",
+        state: "running",
+        startedAt: 1000,
+        steps: [
+          {
+            id: "step:0",
+            label: "scout",
+            state: "running",
+            agent: "scout",
+            model: "fake/helper-model",
+            thinking: "low",
+          },
+        ],
+      },
+    ]);
+    // A page that opens now gets it in its snapshot.
+    expect((await snapshotChildren(agentId)).map((run) => run.id)).toEqual(["run-1"]);
+
+    await json(await helper(agentId, "run-1", "complete"));
+    await until(() => latest(agentId)?.[0]?.state === "complete");
+    await json(await prompt(agentId, "helper-clear"));
+    await until(() => latest(agentId)?.length === 0);
+    expect(await snapshotChildren(agentId)).toEqual([]);
+  });
+
+  it("publishes only when what a page shows changes, although the widget repeats", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await helper(agentId, "run-1", "running"));
+    await json(await helper(agentId, "run-1", "running"));
+    await json(await helper(agentId, "run-2", "queued", "worker"));
+    await until(() => latest(agentId)?.length === 2);
+    expect(childEvents(agentId).map((runs) => runs.map((run) => run.id))).toEqual([
+      ["run-1"],
+      ["run-1", "run-2"],
+    ]);
+  });
+
+  it("empties the list when the agent's process exits, since nothing reports the helpers then", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+    await until(() => latest(agentId)?.length === 0);
+    expect(await snapshotChildren(agentId)).toEqual([]);
+  });
+
+  it("shows one notice for a payload it does not understand, and keeps the list", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+
+    await json(await prompt(agentId, "helper-bad"));
+    await json(await prompt(agentId, "helper-bad"));
+    await json(await helper(agentId, "run-1", "complete"));
+    await until(() => latest(agentId)?.[0]?.state === "complete");
+
+    const notices = events(agentId).flatMap((event) =>
+      event.type === "notice" ? [event.message] : [],
+    );
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatch(/^Helper runs are not shown: .*version/);
+  });
+
+  it("counts running helpers against maxLive: a new agent waits until they end", async () => {
+    await setup({ maxLive: 2 });
+    const first = await makeAgent("a");
+    const second = await makeAgent("b");
+    await json(await helper(first.agentId, "run-1", "running"));
+    await until(() => latest(first.agentId)?.length === 1);
+    expect(agentsModule.manager().runningChildren()).toBe(1);
+
+    // One agent and one running helper fill both slots.
+    const pending = prompt(second.agentId, "hello");
+    await until(() => status(second.agentId) === "waiting");
+    // A queued helper holds no process.
+    await json(await helper(first.agentId, "run-2", "queued", "worker"));
+    expect(agentsModule.manager().runningChildren()).toBe(1);
+
+    await json(await helper(first.agentId, "run-1", "complete"));
+    expect(await json(await pending)).toEqual({ disposition: "started" });
+    expect(agentsModule.manager().runningChildren()).toBe(0);
+  });
+
+  it("does not stop an idle agent while a helper runs, and stops it after", async () => {
+    await setup({ idleStopMs: 100 });
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "hello"));
+    await until(() => statuses(agentId).filter((s) => s === "idle").length >= 2);
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+
+    // Several idle periods pass. Only a real wait can show that nothing happens.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(status(agentId)).toBe("idle");
+
+    await json(await helper(agentId, "run-1", "complete"));
+    await until(() => status(agentId) === "stopped");
+  });
+
+  it("reads a helper's transcript from the agent's process", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+
+    const { transcript } = await json<{ transcript: unknown }>(
+      await server.request("GET", `/api/agents/${agentId}/children/run-1/transcript?child=step:0`),
+    );
+    expect(transcript).toEqual({
+      childId: "step:0",
+      status: "running",
+      label: "scout",
+      task: "task of run-1",
+      messages: [{ role: "assistant", kind: "text", text: "scout says hello" }],
+      finalOutput: "all done",
+      model: "fake/helper-model",
+      truncated: false,
+    });
+  });
+
+  it("refuses a transcript of an unknown run, a bad id, or an agent that is not running", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+    const get = async (path: string) => {
+      const response = await server.request("GET", `/api/agents/${agentId}/${path}`);
+      return [response.status, ((await response.json()) as { error: { code: string } }).error.code];
+    };
+
+    expect(await get("children/other/transcript")).toEqual([404, "child_not_found"]);
+    // The id goes into a slash command, so a space must not pass.
+    expect(await get("children/run-1/transcript?child=a%20--lines%209")).toEqual([
+      400,
+      "bad_child_id",
+    ]);
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+    expect(await get("children/run-1/transcript")).toEqual([404, "child_not_found"]);
+  });
+});

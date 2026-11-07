@@ -110,6 +110,70 @@ export const AgentDialog = Type.Object({
 });
 export type AgentDialog = Static<typeof AgentDialog>;
 
+/** Where a pi-subagents helper is. `paused` and `partial` are runs that stopped short and wait for the worker. */
+export const ChildRunState = Type.Union([
+  Type.Literal("queued"),
+  Type.Literal("running"),
+  Type.Literal("complete"),
+  Type.Literal("failed"),
+  Type.Literal("partial"),
+  Type.Literal("paused"),
+  Type.Literal("stopped"),
+  Type.Literal("rejected"),
+]);
+export type ChildRunState = Static<typeof ChildRunState>;
+
+/** One step of a child run: one agent. A single helper has one step; a chain or workflow has several. */
+export const ChildRunStep = Type.Object({
+  id: Type.String(),
+  label: Type.String(),
+  state: ChildRunState,
+  agent: Type.Optional(Type.String()),
+  /** `provider/model` as pi-subagents reports it. */
+  model: Type.Optional(Type.String()),
+  thinking: Type.Optional(Type.String()),
+  currentTool: Type.Optional(Type.String()),
+  startedAt: Type.Optional(Type.Integer()),
+  endedAt: Type.Optional(Type.Integer()),
+});
+export type ChildRunStep = Static<typeof ChildRunStep>;
+
+/**
+ * A background pi-subagents helper of a worker chat (R3.3, ADR 0034): one runner process. Foreground helpers run
+ * inside the worker's process and are not child runs.
+ */
+export const ChildRun = Type.Object({
+  id: Type.String(),
+  label: Type.String(),
+  state: ChildRunState,
+  currentTool: Type.Optional(Type.String()),
+  startedAt: Type.Optional(Type.Integer()),
+  endedAt: Type.Optional(Type.Integer()),
+  steps: Type.Array(ChildRunStep),
+});
+export type ChildRun = Static<typeof ChildRun>;
+
+/** What a child run's agent said and did, from `/subagents-inspect-rpc`. Fields are missing when pi-subagents has none. */
+export const ChildTranscript = Type.Object({
+  childId: Type.Optional(Type.String()),
+  status: Type.Optional(Type.String()),
+  label: Type.Optional(Type.String()),
+  task: Type.Optional(Type.String()),
+  messages: Type.Array(
+    Type.Object({
+      role: Type.String(),
+      kind: Type.String(),
+      text: Type.String(),
+      name: Type.Optional(Type.String()),
+      isError: Type.Optional(Type.Boolean()),
+    }),
+  ),
+  finalOutput: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+  truncated: Type.Boolean(),
+});
+export type ChildTranscript = Static<typeof ChildTranscript>;
+
 export const AgentList = Type.Object({ agents: Type.Array(Agent) });
 export type AgentList = Static<typeof AgentList>;
 

@@ -9,12 +9,20 @@ import {
   applyPiEvent,
   type ChatKind,
   type ChatState,
+  type ChildRun,
+  type ChildTranscript,
   type ContextUsage,
   chatTitle,
   type DialogAnswer,
   emptyChat,
   type Workspace,
 } from "@pi-spore/shared";
+import {
+  type InspectResult,
+  parseChildRuns,
+  parseInspectReply,
+  runningCount,
+} from "./child-runs.js";
 import type { AgentAttention, AgentChange } from "./contract.js";
 import { ChatImages } from "./images.js";
 import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS } from "./launch.js";
@@ -77,8 +85,11 @@ export type AgentEvent =
       contextUsage?: ContextUsage;
       dialogs: AgentDialog[];
       chat: ChatState;
+      children: ChildRun[];
     }
   | { type: "pi"; event: unknown }
+  /** The agent's pi-subagents helpers changed (ADR 0034). */
+  | { type: "children"; children: ChildRun[] }
   | { type: "status"; status: AgentStatus; error?: string }
   /** The chat's title or active flag changed. */
   | { type: "agent"; agent: Agent }
@@ -107,7 +118,18 @@ interface Live {
   contextUsage?: ContextUsage;
   dialogs: Map<string, { dialog: AgentDialog; openedAt: number; timer?: NodeJS.Timeout }>;
   idleTimer?: NodeJS.Timeout;
+  /** Background pi-subagents helpers of the running process, from its `subagent-async` widget (ADR 0034). */
+  children: ChildRun[];
+  /** The last payload error shown, so a broken payload that repeats every second shows one notice. */
+  childrenError?: string;
+  /** Waiting `/subagents-inspect-rpc` requests, by request id. */
+  inspects: Map<string, (result: InspectResult) => void>;
 }
+
+/** How long a transcript request waits for pi-subagents' reply. */
+const INSPECT_TIMEOUT_MS = 10_000;
+/** Ids go into a slash command, so they must hold no spaces or newlines. */
+const CHILD_ID = /^[A-Za-z0-9:_.-]{1,200}$/;
 
 /** The text of a message's content: a string, or the text blocks of an array. */
 const textOf = (content: unknown): string => {
@@ -154,6 +176,7 @@ export class AgentManager {
   private readonly agents = new Map<string, Live>();
   private readonly waiting: (() => void)[] = [];
   private readonly images: ChatImages;
+  private inspectCount = 1;
 
   constructor(private readonly options: ManagerOptions) {
     this.images = new ChatImages(options.imageCacheBytes);
@@ -170,6 +193,8 @@ export class AgentManager {
         chat: emptyChat(),
         loaded: false,
         dialogs: new Map(),
+        children: [],
+        inspects: new Map(),
       });
     }
   }
@@ -250,6 +275,7 @@ export class AgentManager {
       ...(live.contextUsage ? { contextUsage: live.contextUsage } : {}),
       dialogs: [...live.dialogs.values()].map((entry) => entry.dialog),
       chat: live.chat,
+      children: live.children,
     };
   }
 
@@ -377,6 +403,63 @@ export class AgentManager {
 
   liveCount(): number {
     return this.othersLive(undefined);
+  }
+
+  /**
+   * Background helpers that hold a runner process. They count against `maxLive` with the agent processes (ADR 0034).
+   */
+  runningChildren(): number {
+    let count = 0;
+    for (const live of this.agents.values()) count += runningCount(live.children);
+    return count;
+  }
+
+  /**
+   * What a helper's agent did, read from the agent's process with pi-subagents' `/subagents-inspect-rpc`. `childId`
+   * picks one step of a run with several.
+   */
+  async childTranscript(id: string, runId: string, childId?: string): Promise<ChildTranscript> {
+    const ids = childId === undefined ? [runId] : [runId, childId];
+    if (!ids.every((value) => CHILD_ID.test(value))) {
+      throw new ApiError(400, "bad_child_id", "A helper id has letters, digits, and : _ . - only");
+    }
+    const live = this.get(id);
+    // Helpers are listed only while their agent's process runs (they are cleared when it exits).
+    const process = live.process;
+    if (!process?.alive || !live.children.some((run) => run.id === runId)) {
+      throw new ApiError(404, "child_not_found", "This agent has no helper run with that id");
+    }
+    const requestId = `spore${this.inspectCount++}`;
+    let timer: NodeJS.Timeout | undefined;
+    const reply = new Promise<InspectResult>((resolve, reject) => {
+      timer = setTimeout(
+        () => reject(new ApiError(503, "inspect_timeout", "pi-subagents did not answer in time")),
+        INSPECT_TIMEOUT_MS,
+      );
+      live.inspects.set(requestId, resolve);
+    });
+    // Nobody awaits it if the prompt below fails; the timeout must not become an unhandled rejection.
+    reply.catch(() => undefined);
+    try {
+      // The reply may arrive before the prompt is answered; the waiter is already registered.
+      await process.request("prompt", {
+        message: `/subagents-inspect-rpc ${requestId} ${ids.join(" ")} --lines 50`,
+      });
+      const result = await reply;
+      if (result.error) {
+        const gone = result.error.code === "not_found" || result.error.code === "stale";
+        throw new ApiError(
+          gone ? 404 : 503,
+          gone ? "child_not_found" : "inspect_failed",
+          `pi-subagents: ${result.error.message}`,
+        );
+      }
+      if (!result.transcript) throw new ApiError(503, "inspect_failed", "Empty reply");
+      return result.transcript;
+    } finally {
+      clearTimeout(timer);
+      live.inspects.delete(requestId);
+    }
   }
 
   /** Agents with a running or starting process, other than `self`. */
@@ -517,7 +600,7 @@ export class AgentManager {
 
   /** Waits for a free live slot, in arrival order. */
   private async acquireSlot(live: Live): Promise<void> {
-    while (this.othersLive(live) >= this.options.maxLive) {
+    while (this.othersLive(live) + this.runningChildren() >= this.options.maxLive) {
       if (live.status !== "waiting") this.setStatus(live, "waiting");
       await new Promise<void>((resolve) => this.waiting.push(resolve));
     }
@@ -576,6 +659,8 @@ export class AgentManager {
       onEvent: (event) => this.onEvent(live, event),
       onDialog: (dialog, timeoutMs) => this.openDialog(live, dialog, timeoutMs),
       onNotice: (level, message) => this.publish(live, { type: "notice", level, message }),
+      onChildRuns: (lines) => this.setChildren(live, lines),
+      onInspectReply: (lines) => this.onInspectReply(live, lines),
       onExit: (code, signal) => this.onExit(live, process, code, signal),
     });
     live.process = process;
@@ -678,6 +763,47 @@ export class AgentManager {
     }
   }
 
+  /** Takes the agent's latest helper list. Only a change a page shows is published (the widget repeats each second). */
+  private setChildren(live: Live, lines: unknown): void {
+    let children: ChildRun[];
+    try {
+      children = parseChildRuns(lines);
+    } catch (error) {
+      const message = `Helper runs are not shown: ${(error as Error).message}`;
+      if (live.childrenError !== message) {
+        live.childrenError = message;
+        this.options.log.error("pi-subagents status not understood", {
+          agent: live.record.id,
+          error: (error as Error).message,
+        });
+        this.publish(live, { type: "notice", level: "error", message });
+      }
+      return;
+    }
+    delete live.childrenError;
+    if (JSON.stringify(children) === JSON.stringify(live.children)) return;
+    const before = runningCount(live.children);
+    live.children = children;
+    this.publish(live, { type: "children", children });
+    if (runningCount(children) < before) this.releaseSlot();
+    // An agent kept alive by a helper may be idle now.
+    if (live.status === "idle") this.armIdle(live);
+  }
+
+  private onInspectReply(live: Live, lines: unknown): void {
+    let result: InspectResult;
+    try {
+      result = parseInspectReply(lines);
+    } catch (error) {
+      this.options.log.error("pi-subagents inspect reply not understood", {
+        agent: live.record.id,
+        error: (error as Error).message,
+      });
+      return;
+    }
+    live.inspects.get(result.requestId)?.(result);
+  }
+
   private openDialog(live: Live, dialog: AgentDialog, timeoutMs: number | undefined): void {
     this.clearIdle(live);
     // Pi answers a timed-out dialog by itself; drop it from the page at the same time.
@@ -707,6 +833,12 @@ export class AgentManager {
     if (live.process !== process) return;
     this.clearIdle(live);
     delete live.process;
+    // The helpers' status came from this process. Their runners may live on, but nothing reports them now.
+    if (live.children.length > 0) {
+      live.children = [];
+      this.publish(live, { type: "children", children: [] });
+    }
+    live.inspects.clear();
     if (live.token) this.options.tokens.revoke(live.token);
     delete live.token;
     live.chat = { ...live.chat, busy: false, running: [] };
@@ -748,6 +880,8 @@ export class AgentManager {
     this.clearIdle(live);
     const queued = live.chat.queue.steering.length + live.chat.queue.followUp.length;
     if (!live.process?.alive || live.chat.busy || queued > 0 || live.dialogs.size > 0) return;
+    // A running helper delivers its result to this process (ADR 0034).
+    if (runningCount(live.children) > 0) return;
     live.idleTimer = setTimeout(() => void this.stop(live.record.id), this.options.idleStopMs);
     live.idleTimer.unref();
   }
