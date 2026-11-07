@@ -186,7 +186,7 @@ export interface ServerHost {
 | Entity | Meaning | Key fields |
 |---|---|---|
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
-| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, state (active, parked, archived), card |
+| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), card |
 | Agent | One Pi conversation (a chat) | id, workspace, role, kind (worker, side), active, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, coordinator agent, integration branch, spec artifact, state |
 | Lane | A workspace inside a run | id, run, workspace, wave, depends on, brief artifact, state |

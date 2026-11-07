@@ -246,6 +246,7 @@ describe("workspaces with Git", () => {
       isolation: "new",
       path: join(server.paths.worktrees, "game", `fix-crafting-ui-${short}`),
       line: `spore/fix-crafting-ui-${short}`,
+      base: "main",
       state: "active",
     });
     expect(copied).toEqual(["Game.csproj", "Library", "game.sln"]);
@@ -254,6 +255,33 @@ describe("workspaces with Git", () => {
       readFileSync(join(workspace.path, "Library", "ScriptAssemblies", "Game.dll"), "utf8"),
     ).toBe("cache");
     expect(git(workspace.path, "branch", "--show-current").trim()).toBe(workspace.line);
+  });
+
+  it("records the base a new branch starts from", async () => {
+    const repo = makeUnityRepo();
+    git(repo, "branch", "feature/x");
+    const project = await addProject(repo);
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "From x",
+      isolation: "new",
+      base: "feature/x",
+    });
+    expect(workspace.base).toBe("feature/x");
+    expect(
+      (await json(await server.request("GET", `/api/workspaces/${workspace.id}`), 200)) as object,
+    ).toMatchObject({
+      workspace: { base: "feature/x" },
+    });
+
+    git(repo, "checkout", "-q", "--detach");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const { workspace: detached } = await createWorkspace({
+      projectId: project.id,
+      name: "Detached",
+      isolation: "new",
+    });
+    expect(detached.base).toBe(head);
   });
 
   it("checks out an existing branch, and needs the branch name for it", async () => {

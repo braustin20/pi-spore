@@ -46,18 +46,21 @@ export function createGitProvider(exec: Exec, worktrees: string): VcsProvider {
     },
     isolationModes: ["new", "existing", "in-place"],
     async createCopy(project, request) {
-      const args =
-        request.isolation === "new"
-          ? [
-              "worktree",
-              "add",
-              "-b",
-              request.line,
-              request.path,
-              ...(request.base ? [request.base] : []),
-            ]
-          : ["worktree", "add", request.path, request.line];
-      await git(exec, project.path, args, 409);
+      if (request.isolation === "new") {
+        // Without a base, git starts the branch from the main checkout's HEAD, so that is the base to record.
+        const base =
+          request.base ??
+          ((await git(exec, project.path, ["branch", "--show-current"])).trim() ||
+            (await git(exec, project.path, ["rev-parse", "HEAD"])).trim());
+        await git(
+          exec,
+          project.path,
+          ["worktree", "add", "-b", request.line, request.path, base],
+          409,
+        );
+        return { path: request.path, line: request.line, base };
+      }
+      await git(exec, project.path, ["worktree", "add", request.path, request.line], 409);
       return { path: request.path, line: request.line };
     },
     async removeCopy(project, location, { force }) {

@@ -42,6 +42,7 @@ const MIGRATIONS = [
     updated_at INTEGER NOT NULL
   )`,
   "CREATE INDEX workspaces_by_project ON workspaces_workspaces (project_id, state)",
+  "ALTER TABLE workspaces_workspaces ADD COLUMN base TEXT",
 ];
 
 interface Row {
@@ -52,6 +53,7 @@ interface Row {
   isolation: Isolation;
   path: string;
   line: string | null;
+  base: string | null;
   state: WorkspaceState;
   created_at: number;
   updated_at: number;
@@ -65,6 +67,7 @@ const toWorkspace = (row: Row): Workspace => ({
   isolation: row.isolation,
   path: row.path,
   ...(row.line === null ? {} : { line: row.line }),
+  ...(row.base === null ? {} : { base: row.base }),
   state: row.state,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
@@ -142,6 +145,7 @@ export const workspacesModule: ServerModule = {
 
       let path = project.path;
       let line: string | undefined;
+      let base: string | undefined;
       let copied: string[] = [];
       if (request.isolation !== "in-place") {
         path = join(host.home.worktrees, project.slug, `${slug}-${short}`);
@@ -158,6 +162,7 @@ export const workspacesModule: ServerModule = {
           ...(request.base ? { base: request.base } : {}),
         });
         line = location.line;
+        base = location.base;
         try {
           copied = await copyIgnoredFiles(host.exec, project.path, path, config.worktreeCopy.value);
         } catch (error) {
@@ -183,14 +188,15 @@ export const workspacesModule: ServerModule = {
         isolation: request.isolation,
         path,
         line: line ?? null,
+        base: base ?? null,
         state: "active",
         created_at: now,
         updated_at: now,
       };
       host.store.run(
         `INSERT INTO workspaces_workspaces
-          (id, project_id, name, slug, isolation, path, line, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, project_id, name, slug, isolation, path, line, base, state, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         row.id,
         row.project_id,
         row.name,
@@ -198,6 +204,7 @@ export const workspacesModule: ServerModule = {
         row.isolation,
         row.path,
         row.line,
+        row.base,
         row.state,
         row.created_at,
         row.updated_at,

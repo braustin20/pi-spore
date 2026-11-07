@@ -28,6 +28,11 @@ export const Workspace = Type.Object({
   path: Type.String(),
   /** Git: the branch the workspace works on. */
   line: Type.Optional(Type.String()),
+  /**
+   * Git: the branch or commit a new branch started from, for "changes since base" and the PR base. Missing for
+   * workspaces made before it was recorded, and for existing-branch and in-place work.
+   */
+  base: Type.Optional(Type.String()),
   state: WorkspaceState,
   createdAt: Type.Integer(),
   updatedAt: Type.Integer(),

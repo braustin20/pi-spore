@@ -7,6 +7,8 @@ export interface WorkspaceLocation {
   path: string;
   /** Git: the branch. */
   line?: string;
+  /** For a new line: what it started from (Git: the branch, or the commit when nothing was checked out). */
+  base?: string;
 }
 
 export interface CreateCopyRequest {
