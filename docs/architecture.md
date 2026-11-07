@@ -550,6 +550,35 @@ See [ADR 0050](decisions/0050-terminals.md). Requirements R13.
   warning. When a socket drops, the page asks the server whether the terminal still exists and
   reconnects, or drops it from the list.
 
+## 11d. Changes
+
+See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
+
+- The `changes` module (not core, requires `projects`, `workspaces`, `agents`) reads a workspace's changes through
+  its provider's `changes` capability (section 7). Projects without it (folders) answer 422 `not_supported`; a
+  workspace whose folder is gone answers 409 `folder_missing`.
+- The base for `line` is the workspace's recorded base, else the provider's default base; without either, 409
+  `no_base`.
+- Limits (module options): 1000 files in a list, 200 files with hunks in a diff without `path`, and 3000 lines or
+  512 KiB per file. A larger or binary file has a `note` (`too_large`, `binary`) and no hunks.
+- Diff-line comments (R8.3) live in `changes_comments` (workspace, path, side `old` or `new`, line, the line's
+  code, body, created, sent). "Send to agent" writes one delivery to the workspace's active worker chat
+  (`AgentsKey.deliver`) and marks the comments sent in the same transaction. Sent comments leave the open list. No
+  worker chat yet is 409 `no_worker_chat`. The message lists each comment with its file, line, quoted code, and text.
+- Topic `changes:<workspace id>` sends the open comments on subscribe and after each change
+  (`{ type: "comments" }`), and `{ type: "stale" }` when a worker chat of the workspace ends a run, so an open tab
+  reloads.
+
+| Route | Does |
+|---|---|
+| `GET /api/changes/workspaces/:id` | Scopes, base, and the records since the base (100), or the last 50 records without one. |
+| `GET /api/changes/workspaces/:id/files?scope=&record=` | Changed files with status and counts. `scope`: `uncommitted` (default), `staged`, `line`, `record` (needs `record=<id>`). |
+| `GET /api/changes/workspaces/:id/diff?scope=&record=&path=` | Hunks of one changed file, or of every file up to the limit; `truncated` says it cut. A path without changes is 404 `file_not_changed`. |
+| `GET /api/changes/workspaces/:id/comments` | Open comments. |
+| `POST /api/changes/workspaces/:id/comments` `{ path, side, line, code, body }` | Adds a comment. |
+| `DELETE /api/changes/comments/:id` | Deletes an open comment; a sent one is 409 `comment_sent`. |
+| `POST /api/changes/workspaces/:id/comments/send` | Sends every open comment to the worker as one message. |
+
 ## 11. Unity module
 
 See [ADR 0011](decisions/0011-unity-support.md).

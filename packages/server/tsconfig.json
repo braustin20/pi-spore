@@ -51,6 +51,9 @@
     },
     {
       "path": "../../modules/terminals"
+    },
+    {
+      "path": "../../modules/changes"
     }
   ]
 }
