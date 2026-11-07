@@ -17,10 +17,11 @@ import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { Agent, ChatState } from "@pi-spore/shared";
+import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, createAgentsModule } from "./server.js";
+import { reduceAgentList, workspaceStatus } from "./status.js";
 
 const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
 
@@ -140,6 +141,47 @@ const launches = () =>
     );
 
 describe("agents", () => {
+  it("pushes list snapshots and status updates without navigation", async () => {
+    await setup();
+    const [empty] = await server.events.snapshot("agents:list");
+    let list = reduceAgentList([], empty);
+    const { agentId, workspaceId } = await makeAgent();
+    const workspace = { id: workspaceId, state: "active" } as Workspace;
+    expect(workspaceStatus(workspace, undefined).text).toBe("No agent yet");
+    for (const event of server.events.eventsOf("agents:list")) list = reduceAgentList(list, event);
+    expect(
+      workspaceStatus(
+        workspace,
+        list.find((agent) => agent.id === agentId),
+      ).text,
+    ).toBe("Agent stopped");
+    await json(await prompt(agentId, "first"));
+    await until(() => statuses(agentId).length >= 4 && status(agentId) === "idle");
+    const [snapshot] = await server.events.snapshot("agents:list");
+    list = reduceAgentList([], snapshot);
+    expect(
+      workspaceStatus(
+        workspace,
+        list.find((agent) => agent.id === agentId),
+      ).text,
+    ).toBe("Idle");
+    const before = server.events.eventsOf("agents:list").length;
+    await json(await prompt(agentId, "hello"));
+    await until(() => statuses(agentId).filter((s) => s === "busy").length >= 2);
+    const updates = server.events.eventsOf("agents:list").slice(before) as { agent: Agent }[];
+    const busy = updates.find(
+      (event) => event.agent?.id === agentId && event.agent.status === "busy",
+    );
+    expect(busy).toBeDefined();
+    list = reduceAgentList(list, busy);
+    expect(
+      workspaceStatus(
+        workspace,
+        list.find((agent) => agent.id === agentId),
+      ).text,
+    ).toBe("Working");
+  });
+
   it("starts Pi in the workspace on the first prompt, with a clean env and a new session", async () => {
     await setup();
     const { agentId, workspaceId, folder } = await makeAgent();

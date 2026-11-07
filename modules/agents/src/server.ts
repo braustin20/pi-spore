@@ -167,6 +167,7 @@ export function createAgentsModule(
           host.store.run("UPDATE agents_agents SET title = ? WHERE id = ?", title, agentId);
         },
         onChange: (agentId, change) => {
+          host.events.publish("agents:list", { type: "agent", agent: agents.view(agentId) });
           for (const listener of listeners) listener(agentId, change);
           if (change === "status" && agents.view(agentId).status === "idle")
             deliveries?.flush(agentId);
@@ -216,6 +217,14 @@ export function createAgentsModule(
       });
 
       host.events.onSubscribe("agent:", (topic) => agents.snapshot(topic.slice("agent:".length)));
+      host.events.onSubscribe("agents:list", () => [
+        {
+          type: "snapshot",
+          agents: host.store
+            .all<Row>("SELECT * FROM agents_agents")
+            .map((row) => agents.view(row.id)),
+        },
+      ]);
 
       /** Chat changes of one workspace run one at a time, so it never has two active worker chats. */
       const serial = new Map<string, Promise<unknown>>();
@@ -247,7 +256,9 @@ export function createAgentsModule(
           row.created_at,
         );
         agents.track(toRecord(row));
-        return agents.view(row.id);
+        const agent = agents.view(row.id);
+        host.events.publish("agents:list", { type: "agent", agent });
+        return agent;
       };
 
       const newRow = (workspaceId: string, kind: Row["kind"], forkedFrom: string | null): Row => ({

@@ -844,9 +844,9 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   mounts only while the tab is open.
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
   passes `chatId`; without it the pane shows the active worker chat.
-- `setStatus` sets a React hook that returns one status line per workspace. The agents module reads
-  `GET /api/agents` on load, focus, and navigation, and every 5 s only while an agent is busy, starting, or
-  waiting. The status line follows the active worker chat.
+- `setStatus` sets a React hook that returns one status line per workspace. The agents module subscribes to
+  `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
+  supplies a fresh snapshot. The status line follows the active worker chat.
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 
@@ -870,6 +870,7 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
 - One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream),
+  `agents:list` (agent list snapshots and updates),
   `attention:inbox` (Home), and `kanban:board` (the board).
 - Modules add their own WebSocket routes with `host.sockets.add(path, open)`, under `/api/<module id>/`. `open`
   gets the path params and throws an ApiError to refuse the upgrade with its status. Every upgrade, `/api/ws`
