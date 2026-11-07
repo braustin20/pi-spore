@@ -1,5 +1,11 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { StepReport, Workspace, WorkspaceState } from "@pi-spore/shared";
+import type {
+  CreateWorkspaceRequest,
+  CreateWorkspaceResponse,
+  StepReport,
+  Workspace,
+  WorkspaceState,
+} from "@pi-spore/shared";
 
 /** Runs before a workspace stops being active, so work in it can stop first. A throw cancels the change. */
 export type LeaveListener = (workspace: Workspace, next: "parked" | "archived") => Promise<void>;
@@ -22,14 +28,23 @@ export type RemoveCopyListener = (
 /** Runs after a parked workspace is active again, so work that waited for it can go on. */
 export type ResumeListener = (workspace: Workspace) => void;
 
+/**
+ * Runs after a workspace moved to another state (park, resume, archive), with the stored workspace. The change is
+ * done by then: a throw is logged and does not undo it.
+ */
+export type StateChangeListener = (workspace: Workspace, previous: WorkspaceState) => void;
+
 export interface Workspaces {
   /** Throws ApiError 404 if there is no such workspace. */
   get(id: string): Workspace;
   list(filter?: { projectId?: string; state?: WorkspaceState }): Workspace[];
+  /** Creates a workspace as `POST /api/workspaces` does. Throws ApiError on a bad request. */
+  create(request: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse>;
   beforeLeaveActive(listener: LeaveListener): void;
   afterCopyCreated(listener: CopyCreatedListener): void;
   beforeRemoveCopy(listener: RemoveCopyListener): void;
   afterResume(listener: ResumeListener): void;
+  afterStateChange(listener: StateChangeListener): void;
 }
 
 export const WorkspacesKey = defineInterface<Workspaces>("workspaces", "workspaces");

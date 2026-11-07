@@ -585,7 +585,9 @@ run fails), `pi-spore action cancel <run>`. The workspace view has an Actions pa
 
 The workspaces module calls other modules around a copy through its contract: `afterCopyCreated` and
 `beforeRemoveCopy` return step reports, which the create and archive responses list in `steps`. A failed
-`beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced.
+`beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced. `afterStateChange` runs after
+every park, resume, and archive; a listener that throws is logged and does not undo the change. `create` makes a
+workspace as `POST /api/workspaces` does, for modules that start work, such as kanban.
 
 The workspace view has three panes: the workspace list (grouped active, parked, then archived behind a toggle,
 newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
@@ -600,6 +602,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 - `setStatus` sets a React hook that returns one status line per workspace. The agents module reads
   `GET /api/agents` on load, focus, and navigation, and every 5 s only while an agent is busy, starting, or
   waiting. The status line follows the active worker chat.
+- `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
+  the request to its own route. The board uses it to start a workspace from a card.
 
 ## 14. Data layout
 

@@ -1,5 +1,10 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { Workspace } from "@pi-spore/shared";
+import type {
+  CreateWorkspaceRequest,
+  CreateWorkspaceResponse,
+  Project,
+  Workspace,
+} from "@pi-spore/shared";
 import type { Tone } from "@pi-spore/ui";
 import type { ComponentType } from "react";
 
@@ -28,6 +33,21 @@ export type UseWorkspaceStatus = (
   workspaces: readonly Workspace[],
 ) => ReadonlyMap<string, WorkspaceStatus>;
 
+/** The "Start a workspace" form, for other modules that start workspaces, such as a kanban card. */
+export interface CreateWorkspaceFormProps {
+  projects: readonly Project[];
+  /** The project chosen first. */
+  projectId?: string | undefined;
+  /** Only `projectId` can be chosen. */
+  lockProject?: boolean;
+  /** The first value of the name field. */
+  name?: string;
+  title?: string;
+  /** Sends the request. Default: `POST /api/workspaces`. */
+  submit?: (request: CreateWorkspaceRequest) => Promise<CreateWorkspaceResponse>;
+  onCreated: (result: CreateWorkspaceResponse) => void;
+}
+
 export interface WorkspaceView {
   /** Adds a section to the right column. */
   addPanel(panel: WorkspacePanel): void;
@@ -38,6 +58,8 @@ export interface WorkspaceView {
   setMain(component: ComponentType<{ workspace: Workspace; chatId?: string }>): void;
   /** Sets where the list gets its status lines. Only one module may set it. */
   setStatus(useStatus: UseWorkspaceStatus): void;
+  /** The form the workspace view shows to start a workspace. */
+  CreateForm: ComponentType<CreateWorkspaceFormProps>;
 }
 
 export const WorkspaceViewKey = defineInterface<WorkspaceView>("workspaces", "view");

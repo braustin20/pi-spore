@@ -14,6 +14,7 @@ import { projectsModule } from "@pi-spore/mod-projects/server";
 import { unityModule } from "@pi-spore/mod-unity/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
+import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import {
   CreateWorkspaceResponse,
@@ -26,7 +27,7 @@ import {
 } from "@pi-spore/shared";
 import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { workspacesModule } from "./server.js";
+import { type Workspaces, WorkspacesKey, workspacesModule } from "./server.js";
 
 const ALL = [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, unityModule];
 
@@ -475,5 +476,43 @@ describe("workspace lifecycle", () => {
     expect(await errorCode(await server.request("GET", "/api/projects/nope"), 404)).toBe(
       "project_not_found",
     );
+  });
+});
+
+describe("the workspaces interface", () => {
+  it("creates workspaces and tells listeners about every state change, even when one throws", async () => {
+    const seen: string[] = [];
+    let workspaces: Workspaces | undefined;
+    const listener: ServerModule = {
+      id: "listener",
+      requires: ["workspaces"],
+      core: false,
+      setup(host) {
+        workspaces = host.use(WorkspacesKey);
+        workspaces.afterStateChange(() => {
+          throw new Error("broken listener");
+        });
+        workspaces.afterStateChange((workspace, previous) => {
+          seen.push(`${workspace.name}: ${previous} -> ${workspace.state}`);
+        });
+      },
+    };
+    server.close();
+    server = await createTestServer([...ALL, listener]);
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await (workspaces as Workspaces).create({
+      projectId: project.id,
+      name: "Made",
+      isolation: "in-place",
+    });
+
+    for (const step of ["park", "resume", "archive"]) {
+      await json(await server.request("POST", `/api/workspaces/${workspace.id}/${step}`), 200);
+    }
+    expect(seen).toEqual([
+      "Made: active -> parked",
+      "Made: parked -> active",
+      "Made: active -> archived",
+    ]);
   });
 });

@@ -1,6 +1,7 @@
 import { ApiRequestError, useApi, type WebModule } from "@pi-spore/module-api";
 import {
   ArchiveWorkspaceResponse,
+  type CreateWorkspaceRequest,
   CreateWorkspaceResponse,
   type Isolation,
   type Project,
@@ -52,6 +53,7 @@ import {
 } from "react";
 import { ago, groupWorkspaces } from "./list.js";
 import {
+  type CreateWorkspaceFormProps,
   type UseWorkspaceStatus,
   type WorkspacePanel,
   type WorkspaceStatus,
@@ -91,18 +93,27 @@ const ISOLATION_CHIP: Record<Isolation, string> = {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
+/** The notes to show after a create: warnings, copied files, and step results. */
+const createdNotes = (result: CreateWorkspaceResponse): Note[] => [
+  ...result.warnings.map((text) => ({ text })),
+  ...(result.copied.length
+    ? [{ text: `Copied into the worktree: ${result.copied.join(", ")}` }]
+    : []),
+  ...result.steps.map(stepNote),
+];
+
 function CreateForm({
   projects,
   projectId,
+  lockProject = false,
+  name: firstName = "",
+  title = "Start a workspace",
+  submit: send,
   onCreated,
-}: {
-  projects: readonly Project[];
-  projectId: string | undefined;
-  onCreated: (workspace: Workspace, notes: Note[]) => void;
-}) {
+}: CreateWorkspaceFormProps) {
   const api = useApi();
   const [chosen, setChosen] = useState(projectId ?? projects[0]?.id ?? "");
-  const [name, setName] = useState("");
+  const [name, setName] = useState(firstName);
   const [mode, setMode] = useState<Isolation>("new");
   const [lines, setLines] = useState<string[]>([]);
   const [line, setLine] = useState("");
@@ -137,23 +148,21 @@ function CreateForm({
     if (!project) return;
     setBusy(true);
     setError(undefined);
-    api
-      .send("POST", "workspaces", {
-        projectId: project.id,
-        name: name.trim(),
-        isolation: mode,
-        ...(mode === "existing" ? { line } : {}),
-      })
-      .then((body) => {
-        const result = parse(CreateWorkspaceResponse, body, "create workspace");
+    const request: CreateWorkspaceRequest = {
+      projectId: project.id,
+      name: name.trim(),
+      isolation: mode,
+      ...(mode === "existing" ? { line } : {}),
+    };
+    (send
+      ? send(request)
+      : api
+          .send("POST", "workspaces", request)
+          .then((body) => parse(CreateWorkspaceResponse, body, "create workspace"))
+    )
+      .then((result) => {
         setName("");
-        onCreated(result.workspace, [
-          ...result.warnings.map((text) => ({ text })),
-          ...(result.copied.length
-            ? [{ text: `Copied into the worktree: ${result.copied.join(", ")}` }]
-            : []),
-          ...result.steps.map(stepNote),
-        ]);
+        onCreated(result);
       })
       .catch((caught: unknown) => setError(message(caught)))
       .finally(() => setBusy(false));
@@ -161,10 +170,14 @@ function CreateForm({
 
   return (
     <Panel className="w-full max-w-xl">
-      <PanelHeader title="Start a workspace" />
+      <PanelHeader title={title} />
       <form className="flex flex-col gap-3" onSubmit={submit}>
         <Field label="Project">
-          <Select value={chosen} onChange={(event) => setChosen(event.target.value)}>
+          <Select
+            value={chosen}
+            onChange={(event) => setChosen(event.target.value)}
+            disabled={lockProject}
+          >
             {projects.map((candidate) => (
               <option key={candidate.id} value={candidate.id}>
                 {candidate.name}
@@ -652,11 +665,11 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
         <CreateForm
           projects={projects}
           projectId={projectId}
-          onCreated={(created, createdNotes) => {
+          onCreated={(result) => {
             load();
-            window.location.hash = `#/workspaces/${created.id}`;
+            window.location.hash = `#/workspaces/${result.workspace.id}`;
             // After the hash change, so the selection change does not clear them.
-            setTimeout(() => setNotes(createdNotes), 0);
+            setTimeout(() => setNotes(createdNotes(result)), 0);
           }}
         />
       </div>
@@ -729,6 +742,7 @@ export const workspacesWeb: WebModule = {
         if (useStatus !== noStatus) throw new Error("The workspace status source is set twice");
         useStatus = hook;
       },
+      CreateForm,
     });
     host.addPage({
       path: "/workspaces",

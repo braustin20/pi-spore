@@ -20,6 +20,7 @@ import {
   type LeaveListener,
   type RemoveCopyListener,
   type ResumeListener,
+  type StateChangeListener,
   type Workspaces,
   WorkspacesKey,
 } from "./contract.js";
@@ -115,59 +116,7 @@ export const workspacesModule: ServerModule = {
       );
     };
 
-    const leaveListeners: LeaveListener[] = [];
-    const createdListeners: CopyCreatedListener[] = [];
-    const removeListeners: RemoveCopyListener[] = [];
-    const resumeListeners: ResumeListener[] = [];
-    const workspaces: Workspaces = {
-      get: (id) => toWorkspace(load(id)),
-      list: (filter = {}) => listRows(filter).map(toWorkspace),
-      beforeLeaveActive: (listener) => {
-        leaveListeners.push(listener);
-      },
-      afterCopyCreated: (listener) => {
-        createdListeners.push(listener);
-      },
-      beforeRemoveCopy: (listener) => {
-        removeListeners.push(listener);
-      },
-      afterResume: (listener) => {
-        resumeListeners.push(listener);
-      },
-    };
-    host.provide(WorkspacesKey, workspaces);
-
-    const leaveActive = async (row: Row, next: "parked" | "archived") => {
-      for (const listener of leaveListeners) await listener(toWorkspace(row), next);
-    };
-
-    const setState = (row: Row, state: WorkspaceState): Workspace => {
-      const now = host.now();
-      host.store.run(
-        "UPDATE workspaces_workspaces SET state = ?, updated_at = ? WHERE id = ?",
-        state,
-        now,
-        row.id,
-      );
-      return toWorkspace({ ...row, state, updated_at: now });
-    };
-
-    host.routes.get("/", (c) => {
-      const projectId = c.req.query("projectId");
-      const state = c.req.query("state");
-      const rows = listRows({
-        ...(projectId ? { projectId } : {}),
-        ...(state ? { state } : {}),
-      });
-      return c.json({ workspaces: rows.map(toWorkspace) });
-    });
-
-    host.routes.post("/", async (c) => {
-      const request = parseJsonBody(
-        CreateWorkspaceRequest,
-        await c.req.text(),
-        "create workspace request",
-      );
+    const create = async (request: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> => {
       const project = await projects.get(request.projectId);
       const provider = projects.vcsFor(project);
       if (!provider.isolationModes.includes(request.isolation)) {
@@ -268,8 +217,80 @@ export const workspacesModule: ServerModule = {
           if (report) steps.push(report);
         }
       }
-      const body: CreateWorkspaceResponse = { workspace, copied, warnings, steps };
-      return c.json(body, 201);
+      return { workspace, copied, warnings, steps };
+    };
+
+    const leaveListeners: LeaveListener[] = [];
+    const createdListeners: CopyCreatedListener[] = [];
+    const removeListeners: RemoveCopyListener[] = [];
+    const resumeListeners: ResumeListener[] = [];
+    const stateListeners: StateChangeListener[] = [];
+    const workspaces: Workspaces = {
+      get: (id) => toWorkspace(load(id)),
+      list: (filter = {}) => listRows(filter).map(toWorkspace),
+      create,
+      beforeLeaveActive: (listener) => {
+        leaveListeners.push(listener);
+      },
+      afterCopyCreated: (listener) => {
+        createdListeners.push(listener);
+      },
+      beforeRemoveCopy: (listener) => {
+        removeListeners.push(listener);
+      },
+      afterResume: (listener) => {
+        resumeListeners.push(listener);
+      },
+      afterStateChange: (listener) => {
+        stateListeners.push(listener);
+      },
+    };
+    host.provide(WorkspacesKey, workspaces);
+
+    const leaveActive = async (row: Row, next: "parked" | "archived") => {
+      for (const listener of leaveListeners) await listener(toWorkspace(row), next);
+    };
+
+    const setState = (row: Row, state: WorkspaceState): Workspace => {
+      const now = host.now();
+      host.store.run(
+        "UPDATE workspaces_workspaces SET state = ?, updated_at = ? WHERE id = ?",
+        state,
+        now,
+        row.id,
+      );
+      const workspace = toWorkspace({ ...row, state, updated_at: now });
+      for (const listener of stateListeners) {
+        try {
+          listener(workspace, row.state);
+        } catch (error) {
+          host.log.error("A workspace state listener failed", {
+            workspace: row.id,
+            state,
+            error: String(error),
+          });
+        }
+      }
+      return workspace;
+    };
+
+    host.routes.get("/", (c) => {
+      const projectId = c.req.query("projectId");
+      const state = c.req.query("state");
+      const rows = listRows({
+        ...(projectId ? { projectId } : {}),
+        ...(state ? { state } : {}),
+      });
+      return c.json({ workspaces: rows.map(toWorkspace) });
+    });
+
+    host.routes.post("/", async (c) => {
+      const request = parseJsonBody(
+        CreateWorkspaceRequest,
+        await c.req.text(),
+        "create workspace request",
+      );
+      return c.json(await create(request), 201);
     });
 
     host.routes.get("/:id", (c) => c.json({ workspace: toWorkspace(load(c.req.param("id"))) }));
