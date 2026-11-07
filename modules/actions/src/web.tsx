@@ -1,4 +1,4 @@
-import { WorkspacePanelsKey } from "@pi-spore/mod-workspaces/web";
+import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
   ActionList,
@@ -10,6 +10,8 @@ import {
   parse,
   type Workspace,
 } from "@pi-spore/shared";
+import { Button, Chip, CollapsibleSection, Notice, SectionLabel, type Tone } from "@pi-spore/ui";
+import { Play } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import Type from "typebox";
 
@@ -21,6 +23,15 @@ const message = (error: unknown) => (error instanceof Error ? error.message : St
 const commandText = (action: ActionView) =>
   typeof action.run === "string" ? action.run : action.run.join(" ");
 const open = (run: ActionRun) => run.status === "queued" || run.status === "running";
+
+const RUN_TONE: Record<ActionRun["status"], Tone> = {
+  queued: "neutral",
+  running: "run",
+  succeeded: "ok",
+  failed: "fail",
+  cancelled: "neutral",
+  interrupted: "warn",
+};
 
 function statusText(run: ActionRun): string {
   if (run.status === "failed" && run.exitCode !== undefined) return `failed (exit ${run.exitCode})`;
@@ -62,18 +73,19 @@ function RunLog({ runId, onEnded }: { runId: string; onEnded: () => void }) {
   }, [api, runId, onEnded]);
 
   return (
-    <div>
-      <p className="muted">
-        {run && (
-          <>
-            {run.action}: <span className="badge">{statusText(run)}</span> log{" "}
-            <code>{run.logPath}</code>
-          </>
-        )}
-      </p>
-      {run?.error && <p className="error">{run.error}</p>}
-      {error && <p className="error">{error}</p>}
-      <pre className="tool-output">{text || " "}</pre>
+    <div className="flex flex-col gap-2">
+      {run && (
+        <div className="flex flex-wrap items-center gap-1.5 text-xs">
+          <span className="font-medium">{run.action}</span>
+          <Chip tone={RUN_TONE[run.status]}>{statusText(run)}</Chip>
+          <code className="[overflow-wrap:anywhere] text-muted">{run.logPath}</code>
+        </div>
+      )}
+      {run?.error && <Notice tone="fail">{run.error}</Notice>}
+      {error && <Notice tone="fail">{error}</Notice>}
+      <pre className="m-0 max-h-80 overflow-auto rounded-md border border-line bg-bg p-2.5 text-xs [overflow-wrap:anywhere] whitespace-pre-wrap text-muted">
+        {text || " "}
+      </pre>
     </div>
   );
 }
@@ -120,82 +132,91 @@ function ActionsPanel({ workspace }: { workspace: Workspace }) {
 
   const active = workspace.state === "active";
   return (
-    <section>
-      <h2>Actions</h2>
-      {error && <p className="error">{error}</p>}
-      {actions === undefined && !error && <p className="muted">Loading...</p>}
-      {actions?.length === 0 && (
-        <p className="muted">
-          No actions. Add them as <code>[actions.&lt;name&gt;]</code> in{" "}
-          <code>.pi-spore/config.toml</code>.
-        </p>
-      )}
-      {actions && actions.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Action</th>
-              <th>Command</th>
-              <th>From</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
+    <CollapsibleSection title="Actions">
+      <div className="flex flex-col gap-3 text-sm">
+        {error && <Notice tone="fail">{error}</Notice>}
+        {actions === undefined && !error && <p className="m-0 text-muted">Loading...</p>}
+        {actions?.length === 0 && (
+          <p className="m-0 text-muted">
+            No actions. Add them as <code>[actions.&lt;name&gt;]</code> in{" "}
+            <code>.pi-spore/config.toml</code>.
+          </p>
+        )}
+        {actions && actions.length > 0 && (
+          <ul className="m-0 flex list-none flex-col gap-1 p-0">
             {actions.map((action) => (
-              <tr key={action.name}>
-                <td>
-                  {action.name}
-                  {action.exclusive && <span className="badge">exclusive</span>}
-                  {action.description && <div className="muted">{action.description}</div>}
-                </td>
-                <td>
-                  <code>
+              <li
+                key={action.name}
+                className="flex items-start gap-2 rounded-lg border border-line bg-raised px-2.5 py-2"
+              >
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-1.5">
+                    <span className="font-medium">{action.name}</span>
+                    {action.exclusive && <Chip>exclusive</Chip>}
+                    <span className="text-xs text-muted">{action.source}</span>
+                  </div>
+                  {action.description && (
+                    <div className="text-xs text-muted">{action.description}</div>
+                  )}
+                  <code className="block truncate text-xs text-muted" title={commandText(action)}>
                     {action.shell ? "sh -c " : ""}
                     {commandText(action)}
                   </code>
-                </td>
-                <td className="muted">{action.source}</td>
-                <td>
-                  <button type="button" disabled={!active} onClick={() => start(action.name)}>
-                    Run
-                  </button>
-                </td>
-              </tr>
+                </div>
+                <Button
+                  size="sm"
+                  disabled={!active}
+                  onClick={() => start(action.name)}
+                  aria-label={`Run ${action.name}`}
+                >
+                  <Play />
+                  Run
+                </Button>
+              </li>
             ))}
-          </tbody>
-        </table>
-      )}
-      {runs.length > 0 && (
-        <>
-          <h3>Runs</h3>
-          <table>
-            <tbody>
+          </ul>
+        )}
+        {runs.length > 0 && (
+          <div className="flex flex-col gap-1">
+            <SectionLabel>Runs</SectionLabel>
+            <ul className="m-0 flex list-none flex-col p-0">
               {runs.slice(0, 10).map((run) => (
-                <tr key={run.id}>
-                  <td>{run.action}</td>
-                  <td>
-                    <span className={`badge status-${run.status}`}>{statusText(run)}</span>
-                  </td>
-                  <td className="muted">{run.trigger === "user" ? "" : `on ${run.trigger}`}</td>
-                  <td className="muted">{new Date(run.createdAt).toLocaleString()}</td>
-                  <td>
-                    <button type="button" onClick={() => setSelected(run.id)}>
-                      Log
-                    </button>{" "}
-                    {open(run) && (
-                      <button type="button" onClick={() => cancel(run)}>
-                        Cancel
-                      </button>
+                <li
+                  key={run.id}
+                  className={`flex items-center gap-2 rounded-md px-1.5 py-1 ${run.id === selected ? "bg-raised" : ""}`}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {run.action}
+                    {run.trigger !== "user" && (
+                      <span className="text-xs text-muted"> on {run.trigger}</span>
                     )}
-                  </td>
-                </tr>
+                  </span>
+                  <Chip tone={RUN_TONE[run.status]}>{statusText(run)}</Chip>
+                  <span
+                    className="font-mono text-[11px] text-muted"
+                    title={new Date(run.createdAt).toLocaleString()}
+                  >
+                    {new Date(run.createdAt).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                    })}
+                  </span>
+                  <Button size="sm" variant="ghost" onClick={() => setSelected(run.id)}>
+                    Log
+                  </Button>
+                  {open(run) && (
+                    <Button size="sm" variant="danger" onClick={() => cancel(run)}>
+                      Cancel
+                    </Button>
+                  )}
+                </li>
               ))}
-            </tbody>
-          </table>
-        </>
-      )}
-      {selected && <RunLog runId={selected} onEnded={loadRuns} />}
-    </section>
+            </ul>
+          </div>
+        )}
+        {selected && <RunLog runId={selected} onEnded={loadRuns} />}
+      </div>
+    </CollapsibleSection>
   );
 }
 
@@ -204,6 +225,6 @@ export const actionsWeb: WebModule = {
   requires: ["workspaces"],
   core: false,
   setup(host) {
-    host.use(WorkspacePanelsKey).add({ id: "actions", order: 10, component: ActionsPanel });
+    host.use(WorkspaceViewKey).addPanel({ id: "actions", order: 10, component: ActionsPanel });
   },
 };

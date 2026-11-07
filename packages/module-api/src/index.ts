@@ -14,6 +14,7 @@ export type {
   ExecResult,
   HomePaths,
   Logger,
+  RailItem,
   ServerHost,
   ServerModule,
   SqlValue,

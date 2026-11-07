@@ -8,12 +8,55 @@ import {
   ProjectList,
   parse,
   type StepReport,
-  Workspace,
+  type Workspace,
   WorkspaceList,
 } from "@pi-spore/shared";
-import { type SubmitEvent, useCallback, useEffect, useState } from "react";
-import Type from "typebox";
-import { type WorkspacePanel, WorkspacePanelsKey } from "./web-contract.js";
+import {
+  Button,
+  Checkbox,
+  Chip,
+  CollapsibleSection,
+  EmptyState,
+  Field,
+  Input,
+  ListRow,
+  Notice,
+  Panel,
+  PanelHeader,
+  SectionLabel,
+  Select,
+  StatusLine,
+  Tabs,
+  TabsContent,
+  TabsList,
+  TabsTrigger,
+  Tooltip,
+  useStoredFlag,
+} from "@pi-spore/ui";
+import {
+  Layers,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  X,
+} from "lucide-react";
+import {
+  type ComponentType,
+  type ReactNode,
+  type SubmitEvent,
+  useCallback,
+  useEffect,
+  useState,
+} from "react";
+import { ago, groupWorkspaces } from "./list.js";
+import {
+  type UseWorkspaceStatus,
+  type WorkspacePanel,
+  type WorkspaceStatus,
+  WorkspaceViewKey,
+} from "./web-contract.js";
 
 export * from "./web-contract.js";
 
@@ -27,10 +70,12 @@ const stepNote = (step: StepReport): Note => ({
   ...(step.ok ? {} : { error: true }),
 });
 
-const WorkspaceBody = Type.Object({ workspace: Workspace });
-
-/** Filled by other web modules during setup; read when a workspace page renders. */
+/** Filled by other web modules during setup; read when the workspace view renders. */
 const panels: WorkspacePanel[] = [];
+let Main: ComponentType<{ workspace: Workspace }> | undefined;
+const NO_STATUS: ReadonlyMap<string, WorkspaceStatus> = new Map();
+const noStatus: UseWorkspaceStatus = () => NO_STATUS;
+let useStatus = noStatus;
 
 const MODE_LABELS: Record<Isolation, string> = {
   new: "New worktree on a new branch",
@@ -38,27 +83,43 @@ const MODE_LABELS: Record<Isolation, string> = {
   "in-place": "Main checkout (no copy)",
 };
 
+const ISOLATION_CHIP: Record<Isolation, string> = {
+  new: "worktree",
+  existing: "worktree",
+  "in-place": "main checkout",
+};
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 function CreateForm({
-  project,
+  projects,
+  projectId,
   onCreated,
 }: {
-  project: Project;
-  onCreated: (notes: Note[]) => void;
+  projects: readonly Project[];
+  projectId: string | undefined;
+  onCreated: (workspace: Workspace, notes: Note[]) => void;
 }) {
   const api = useApi();
+  const [chosen, setChosen] = useState(projectId ?? projects[0]?.id ?? "");
   const [name, setName] = useState("");
   const [mode, setMode] = useState<Isolation>("new");
   const [lines, setLines] = useState<string[]>([]);
   const [line, setLine] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const project = projects.find((candidate) => candidate.id === chosen);
   const modes: Isolation[] =
-    project.vcs === "git" ? ["new", "existing", "in-place"] : ["new", "in-place"];
+    project?.vcs === "git" ? ["new", "existing", "in-place"] : ["new", "in-place"];
 
   useEffect(() => {
-    if (project.vcs !== "git") return;
+    if (projectId) setChosen(projectId);
+  }, [projectId]);
+
+  useEffect(() => {
+    setLines([]);
+    setLine("");
+    if (project?.vcs !== "git") return;
     api
       .get(`projects/${project.id}/lines`)
       .then((body) => {
@@ -73,6 +134,7 @@ function CreateForm({
 
   const submit = (event: SubmitEvent) => {
     event.preventDefault();
+    if (!project) return;
     setBusy(true);
     setError(undefined);
     api
@@ -85,7 +147,7 @@ function CreateForm({
       .then((body) => {
         const result = parse(CreateWorkspaceResponse, body, "create workspace");
         setName("");
-        onCreated([
+        onCreated(result.workspace, [
           ...result.warnings.map((text) => ({ text })),
           ...(result.copied.length
             ? [{ text: `Copied into the worktree: ${result.copied.join(", ")}` }]
@@ -98,81 +160,229 @@ function CreateForm({
   };
 
   return (
-    <form className="inline" onSubmit={submit}>
-      <label>
-        Name
-        <input
-          value={name}
-          onChange={(event) => setName(event.target.value)}
-          placeholder="Fix crafting UI"
-          size={30}
-        />
-      </label>
-      <label>
-        Where
-        <select value={mode} onChange={(event) => setMode(event.target.value as Isolation)}>
-          {modes.map((candidate) => (
-            <option key={candidate} value={candidate}>
-              {MODE_LABELS[candidate]}
-            </option>
-          ))}
-        </select>
-      </label>
-      {mode === "existing" && (
-        <label>
-          Branch
-          <select value={line} onChange={(event) => setLine(event.target.value)}>
-            {lines.map((candidate) => (
-              <option key={candidate} value={candidate}>
-                {candidate}
+    <Panel className="w-full max-w-xl">
+      <PanelHeader title="Start a workspace" />
+      <form className="flex flex-col gap-3" onSubmit={submit}>
+        <Field label="Project">
+          <Select value={chosen} onChange={(event) => setChosen(event.target.value)}>
+            {projects.map((candidate) => (
+              <option key={candidate.id} value={candidate.id}>
+                {candidate.name}
               </option>
             ))}
-          </select>
-        </label>
-      )}
-      <button type="submit" disabled={busy || name.trim() === "" || (mode === "existing" && !line)}>
-        {busy ? "Creating..." : "Start workspace"}
-      </button>
-      {error && <span className="error">{error}</span>}
-    </form>
+          </Select>
+        </Field>
+        <Field label="Name">
+          <Input
+            value={name}
+            onChange={(event) => setName(event.target.value)}
+            placeholder="Fix crafting UI"
+          />
+        </Field>
+        <Field label="Where">
+          <Select value={mode} onChange={(event) => setMode(event.target.value as Isolation)}>
+            {modes.map((candidate) => (
+              <option key={candidate} value={candidate}>
+                {MODE_LABELS[candidate]}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        {mode === "existing" && (
+          <Field label="Branch">
+            <Select
+              value={line}
+              onChange={(event) => setLine(event.target.value)}
+              className="font-mono"
+            >
+              {lines.map((candidate) => (
+                <option key={candidate} value={candidate}>
+                  {candidate}
+                </option>
+              ))}
+            </Select>
+          </Field>
+        )}
+        {error && <Notice tone="fail">{error}</Notice>}
+        <div>
+          <Button
+            variant="primary"
+            type="submit"
+            disabled={busy || !project || name.trim() === "" || (mode === "existing" && !line)}
+          >
+            {busy ? "Creating..." : "Start workspace"}
+          </Button>
+        </div>
+      </form>
+    </Panel>
   );
 }
 
-function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }) {
+function WorkspaceRow({
+  workspace,
+  project,
+  status,
+  selected,
+  now,
+}: {
+  workspace: Workspace;
+  project: string;
+  status: WorkspaceStatus | undefined;
+  selected: boolean;
+  now: number;
+}) {
+  return (
+    <ListRow href={`#/workspaces/${workspace.id}`} selected={selected}>
+      <div className="flex items-baseline gap-2">
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">{workspace.name}</span>
+        <span className="shrink-0 font-mono text-[11px] text-muted">
+          {ago(workspace.updatedAt, now)}
+        </span>
+      </div>
+      <div className="truncate text-xs text-muted">
+        {project}
+        {workspace.line && <span className="font-mono"> · {workspace.line}</span>}
+      </div>
+      {status && (
+        <StatusLine tone={status.tone} className="mt-0.5 max-w-full">
+          {status.text}
+        </StatusLine>
+      )}
+    </ListRow>
+  );
+}
+
+function WorkspaceListColumn({
+  workspaces,
+  projects,
+  selectedId,
+  projectId,
+  error,
+  onCollapse,
+}: {
+  workspaces: readonly Workspace[] | undefined;
+  projects: readonly Project[];
+  selectedId: string | undefined;
+  projectId: string | undefined;
+  error: string | undefined;
+  onCollapse: () => void;
+}) {
+  const [showArchived, setShowArchived] = useStoredFlag("pi-spore.workspaces.archived", false);
+  const statuses = useStatus(workspaces ?? []);
+  const projectName = (id: string) => projects.find((candidate) => candidate.id === id)?.name ?? id;
+  const groups = groupWorkspaces(workspaces ?? [], { showArchived, projectId });
+  const now = Date.now();
+  return (
+    <aside
+      aria-label="Workspaces"
+      className="flex w-64 shrink-0 flex-col border-r border-line bg-panel xl:w-72"
+    >
+      <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
+        <SectionLabel className="flex-1">Workspaces</SectionLabel>
+        <Tooltip label="New workspace" side="bottom">
+          <Button variant="ghost" size="icon-sm" aria-label="New workspace" asChild>
+            <a href={projectId ? `#/workspaces/in/${projectId}` : "#/workspaces"}>
+              <Plus />
+            </a>
+          </Button>
+        </Tooltip>
+        <Tooltip label="Hide the list" side="bottom">
+          <Button variant="ghost" size="icon-sm" aria-label="Hide the list" onClick={onCollapse}>
+            <PanelLeftClose />
+          </Button>
+        </Tooltip>
+      </div>
+      {projectId && (
+        <div className="flex items-center gap-1.5 px-4 pt-3">
+          <Chip tone="accent" className="inline-flex items-center gap-1">
+            {projectName(projectId)}
+            <a
+              href="#/workspaces"
+              aria-label="Show all projects"
+              className="inline-flex text-accent-strong"
+            >
+              <X className="size-3" />
+            </a>
+          </Chip>
+        </div>
+      )}
+      <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 py-3">
+        {error && <Notice tone="fail">{error}</Notice>}
+        {workspaces === undefined && !error && (
+          <p className="px-2 text-sm text-muted">Loading...</p>
+        )}
+        {workspaces !== undefined && groups.length === 0 && (
+          <p className="px-2 text-sm text-muted">No workspaces.</p>
+        )}
+        {groups.map((group) => (
+          <section key={group.state} aria-label={group.label} className="flex flex-col gap-0.5">
+            <SectionLabel className="px-3 pb-1">
+              {group.label}
+              <span className="font-mono">{group.workspaces.length}</span>
+            </SectionLabel>
+            {group.workspaces.map((workspace) => (
+              <WorkspaceRow
+                key={workspace.id}
+                workspace={workspace}
+                project={projectName(workspace.projectId)}
+                status={statuses.get(workspace.id)}
+                selected={workspace.id === selectedId}
+                now={now}
+              />
+            ))}
+          </section>
+        ))}
+      </div>
+      <div className="shrink-0 border-t border-line px-4 py-2">
+        <Checkbox
+          label="Show archived"
+          checked={showArchived}
+          onChange={(event) => setShowArchived(event.target.checked)}
+        />
+      </div>
+    </aside>
+  );
+}
+
+/** What the workspace is, and rename, park, resume, and archive. */
+function Details({
+  workspace,
+  project,
+  onChanged,
+  onNotes,
+}: {
+  workspace: Workspace;
+  project: Project | undefined;
+  onChanged: () => void;
+  onNotes: (notes: Note[]) => void;
+}) {
   const api = useApi();
-  const projectId = params.projectId;
-  const [projects, setProjects] = useState<Project[]>([]);
-  const [workspaces, setWorkspaces] = useState<Workspace[] | undefined>();
-  const [showArchived, setShowArchived] = useState(false);
-  const [notes, setNotes] = useState<Note[]>([]);
+  const [renaming, setRenaming] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
 
-  const load = useCallback(() => {
-    const query = projectId ? `?projectId=${encodeURIComponent(projectId)}` : "";
-    api
-      .get(`workspaces${query}`)
-      .then((body) => setWorkspaces(parse(WorkspaceList, body, "workspace list").workspaces))
-      .catch((caught: unknown) => setError(message(caught)));
-  }, [api, projectId]);
-
-  useEffect(() => {
-    api
-      .get("projects")
-      .then((body) => setProjects(parse(ProjectList, body, "project list").projects))
-      .catch((caught: unknown) => setError(message(caught)));
-    load();
-  }, [api, load]);
-
-  const act = (promise: Promise<unknown>) =>
-    promise.then(load).catch((caught: unknown) => setError(message(caught)));
-
-  const rename = (workspace: Workspace) => {
-    const name = window.prompt("New name", workspace.name)?.trim();
-    if (name && name !== workspace.name)
-      act(api.send("PATCH", `workspaces/${workspace.id}`, { name }));
+  const act = (promise: Promise<unknown>) => {
+    setBusy(true);
+    setError(undefined);
+    return promise
+      .then(onChanged)
+      .catch((caught: unknown) => setError(message(caught)))
+      .finally(() => setBusy(false));
   };
 
-  const archive = async (workspace: Workspace) => {
+  const rename = (event: SubmitEvent) => {
+    event.preventDefault();
+    const name = renaming?.trim();
+    if (!name || name === workspace.name) {
+      setRenaming(undefined);
+      return;
+    }
+    void act(api.send("PATCH", `workspaces/${workspace.id}`, { name })).then(() =>
+      setRenaming(undefined),
+    );
+  };
+
+  const archive = async () => {
     const what =
       workspace.isolation === "in-place" ? "" : " Its copy will be removed; the branch stays.";
     if (!window.confirm(`Archive "${workspace.name}"?${what}`)) return;
@@ -182,8 +392,10 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
         await api.send("POST", `workspaces/${workspace.id}/archive`, force ? { force } : {}),
         "archive",
       );
+    setBusy(true);
+    setError(undefined);
     try {
-      setNotes((await send(false)).steps.map(stepNote));
+      onNotes((await send(false)).steps.map(stepNote));
     } catch (caught) {
       // A failed step such as teardown answers `<step>_failed`; force skips it and any uncommitted-work check.
       const question =
@@ -192,164 +404,309 @@ function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }
           : caught instanceof ApiRequestError && caught.code.endsWith("_failed")
             ? "Archive anyway? This also deletes any uncommitted work in the copy."
             : undefined;
-      if (!question) {
-        setError(message(caught));
-        return;
+      if (!question) setError(message(caught));
+      else if (window.confirm(`${(caught as Error).message}\n\n${question}`)) {
+        await send(true)
+          .then((result) => onNotes(result.steps.map(stepNote)))
+          .catch((forced: unknown) => setError(message(forced)));
       }
-      if (!window.confirm(`${(caught as Error).message}\n\n${question}`)) return;
-      await send(true)
-        .then((result) => setNotes(result.steps.map(stepNote)))
-        .catch((forced: unknown) => {
-          setError(message(forced));
-        });
+    } finally {
+      setBusy(false);
     }
-    load();
+    onChanged();
   };
 
-  const project = projects.find((candidate) => candidate.id === projectId);
-  const projectName = (id: string) => projects.find((candidate) => candidate.id === id)?.name ?? id;
-  const shown = (workspaces ?? []).filter(
-    (workspace) => showArchived || workspace.state !== "archived",
-  );
-
+  const stateTone =
+    workspace.state === "active" ? "ok" : workspace.state === "parked" ? "warn" : "neutral";
   return (
-    <section>
-      {project ? (
-        <>
-          <p>
-            <a href={`#/projects/${project.id}`}>{project.name}</a>
-          </p>
-          <h1>Workspaces</h1>
-          <CreateForm
-            project={project}
-            onCreated={(created) => {
-              setNotes(created);
-              load();
-            }}
-          />
-        </>
-      ) : (
-        <>
-          <h1>Workspaces</h1>
-          <p className="muted">To start a workspace, open a project from the Projects page.</p>
-        </>
-      )}
-      {notes.map((note) => (
-        <p key={note.text} className={note.error ? "error" : "warning"}>
-          {note.text}
-        </p>
-      ))}
-      {error && <p className="error">{error}</p>}
-      <label className="check">
-        <input
-          type="checkbox"
-          checked={showArchived}
-          onChange={(event) => setShowArchived(event.target.checked)}
-        />
-        Show archived
-      </label>
-      {workspaces === undefined && !error && <p className="muted">Loading...</p>}
-      {workspaces !== undefined && shown.length === 0 && <p className="muted">No workspaces.</p>}
-      {shown.length > 0 && (
-        <table>
-          <thead>
-            <tr>
-              <th>Name</th>
-              {!project && <th>Project</th>}
-              <th>State</th>
-              <th>Branch</th>
-              <th>Folder</th>
-              <th />
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((workspace) => (
-              <tr key={workspace.id}>
-                <td>
-                  <a href={`#/workspace/${workspace.id}`}>{workspace.name}</a>
-                </td>
-                {!project && <td>{projectName(workspace.projectId)}</td>}
-                <td>
-                  <span className="badge">{workspace.state}</span>
-                </td>
-                <td>
-                  <code>{workspace.line ?? workspace.isolation}</code>
-                </td>
-                <td>
-                  <code>{workspace.path}</code>
-                </td>
-                <td>
-                  <a href={`#/chat/${workspace.id}`}>Chat</a>{" "}
-                  {workspace.state !== "archived" && (
-                    <>
-                      <button type="button" onClick={() => rename(workspace)}>
-                        Rename
-                      </button>{" "}
-                      {workspace.state === "active" ? (
-                        <button
-                          type="button"
-                          onClick={() => act(api.send("POST", `workspaces/${workspace.id}/park`))}
-                        >
-                          Park
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => act(api.send("POST", `workspaces/${workspace.id}/resume`))}
-                        >
-                          Resume
-                        </button>
-                      )}{" "}
-                      <button type="button" onClick={() => void archive(workspace)}>
-                        Archive
-                      </button>
-                    </>
-                  )}
-                </td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      )}
-    </section>
+    <CollapsibleSection title="Workspace">
+      <div className="flex flex-col gap-3 text-sm">
+        {renaming === undefined ? (
+          <div className="text-base font-medium [overflow-wrap:anywhere]">{workspace.name}</div>
+        ) : (
+          <form onSubmit={rename} className="flex gap-1.5">
+            <Input
+              aria-label="New name"
+              value={renaming}
+              onChange={(event) => setRenaming(event.target.value)}
+              className="min-w-0 flex-1"
+              autoFocus
+            />
+            <Button type="submit" size="md" disabled={busy || renaming.trim() === ""}>
+              Save
+            </Button>
+          </form>
+        )}
+        <div className="flex flex-wrap gap-1.5">
+          <Chip tone={stateTone}>{workspace.state}</Chip>
+          <Chip>{ISOLATION_CHIP[workspace.isolation]}</Chip>
+          {workspace.line && <Chip mono>{workspace.line}</Chip>}
+        </div>
+        <dl className="m-0 grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+          <dt className="text-muted">Project</dt>
+          <dd className="m-0 truncate">
+            <a href={`#/projects/${workspace.projectId}`}>{project?.name ?? workspace.projectId}</a>
+          </dd>
+          <dt className="text-muted">Folder</dt>
+          <dd className="m-0 font-mono [overflow-wrap:anywhere]">{workspace.path}</dd>
+        </dl>
+        {error && <Notice tone="fail">{error}</Notice>}
+        {workspace.state !== "archived" && (
+          <div className="flex flex-wrap gap-1.5">
+            {renaming === undefined ? (
+              <Button size="sm" disabled={busy} onClick={() => setRenaming(workspace.name)}>
+                Rename
+              </Button>
+            ) : (
+              <Button size="sm" variant="ghost" onClick={() => setRenaming(undefined)}>
+                Cancel rename
+              </Button>
+            )}
+            {workspace.state === "active" ? (
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={() => void act(api.send("POST", `workspaces/${workspace.id}/park`))}
+              >
+                Park
+              </Button>
+            ) : (
+              <Button
+                size="sm"
+                disabled={busy}
+                onClick={() => void act(api.send("POST", `workspaces/${workspace.id}/resume`))}
+              >
+                Resume
+              </Button>
+            )}
+            <Button size="sm" variant="danger" disabled={busy} onClick={() => void archive()}>
+              Archive
+            </Button>
+          </div>
+        )}
+      </div>
+    </CollapsibleSection>
   );
 }
 
-/** One workspace: what it is, a link to its chat, and the panels other modules add. */
-function WorkspacePage({ params }: { params: Readonly<Record<string, string>> }) {
+function RightColumn({
+  workspace,
+  project,
+  onChanged,
+  onNotes,
+  onCollapse,
+}: {
+  workspace: Workspace;
+  project: Project | undefined;
+  onChanged: () => void;
+  onNotes: (notes: Note[]) => void;
+  onCollapse: () => void;
+}) {
+  return (
+    <aside
+      aria-label="Workspace details"
+      className="flex w-80 shrink-0 flex-col border-l border-line bg-panel xl:w-88"
+    >
+      {/* Changes and PR tabs join this bar later. */}
+      <Tabs defaultValue="details" className="min-h-0 flex-1">
+        <div className="flex h-11 shrink-0 items-end border-b border-line pr-2">
+          <TabsList className="flex-1 border-b-0">
+            <TabsTrigger value="details">Details</TabsTrigger>
+          </TabsList>
+          <Tooltip label="Hide details" side="bottom">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Hide details"
+              onClick={onCollapse}
+              className="mb-2"
+            >
+              <PanelRightClose />
+            </Button>
+          </Tooltip>
+        </div>
+        <TabsContent value="details" className="overflow-y-auto">
+          {/* Keyed by id, so a rename or error of one workspace does not carry over to the next. */}
+          <Details
+            key={workspace.id}
+            workspace={workspace}
+            project={project}
+            onChanged={onChanged}
+            onNotes={onNotes}
+          />
+          {[...panels]
+            .sort((a, b) => a.order - b.order)
+            .map((panel) => (
+              <panel.component key={panel.id} workspace={workspace} />
+            ))}
+        </TabsContent>
+      </Tabs>
+    </aside>
+  );
+}
+
+/** A thin strip in place of a hidden column, with the button that shows it again. */
+function CollapsedColumn({
+  label,
+  side,
+  onExpand,
+}: {
+  label: string;
+  side: "left" | "right";
+  onExpand: () => void;
+}) {
+  const Icon = side === "left" ? PanelLeftOpen : PanelRightOpen;
+  return (
+    <div
+      className={`flex w-10 shrink-0 flex-col items-center border-line bg-panel py-2 ${side === "left" ? "border-r" : "border-l"}`}
+    >
+      <Tooltip label={label} side={side === "left" ? "right" : "left"}>
+        <Button variant="ghost" size="icon-sm" aria-label={label} onClick={onExpand}>
+          <Icon />
+        </Button>
+      </Tooltip>
+    </div>
+  );
+}
+
+/**
+ * The three panes: workspace list, the selected workspace's chat (or the create form), and its details with the
+ * module panels. One component for every workspaces route, so the list keeps its state while you move between
+ * workspaces.
+ */
+function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }) {
   const api = useApi();
-  const id = params.workspaceId ?? "";
-  const [workspace, setWorkspace] = useState<Workspace | undefined>();
+  const selectedId = params.workspaceId;
+  const projectId = params.projectId;
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [workspaces, setWorkspaces] = useState<Workspace[] | undefined>();
+  const [notes, setNotes] = useState<Note[]>([]);
   const [error, setError] = useState<string | undefined>();
+  const [listOpen, setListOpen] = useStoredFlag("pi-spore.workspaces.list", true);
+  const [rightOpen, setRightOpen] = useStoredFlag(
+    "pi-spore.workspaces.details",
+    window.innerWidth >= 1100,
+  );
+
+  const load = useCallback(() => {
+    api
+      .get("workspaces")
+      .then((body) => {
+        setWorkspaces(parse(WorkspaceList, body, "workspace list").workspaces);
+        setError(undefined);
+      })
+      .catch((caught: unknown) => setError(message(caught)));
+  }, [api]);
 
   useEffect(() => {
     api
-      .get(`workspaces/${encodeURIComponent(id)}`)
-      .then((body) => setWorkspace(parse(WorkspaceBody, body, "workspace").workspace))
+      .get("projects")
+      .then((body) => setProjects(parse(ProjectList, body, "project list").projects))
       .catch((caught: unknown) => setError(message(caught)));
-  }, [api, id]);
+    load();
+    window.addEventListener("focus", load);
+    return () => window.removeEventListener("focus", load);
+  }, [api, load]);
 
-  if (error) return <p className="error">{error}</p>;
-  if (!workspace) return <p className="muted">Loading...</p>;
+  // Notes belong to the workspace they were made for.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: clears on selection change only
+  useEffect(() => setNotes([]), [selectedId]);
+
+  const workspace = workspaces?.find((candidate) => candidate.id === selectedId);
+  const project = projects.find((candidate) => candidate.id === workspace?.projectId);
+
+  let middle: ReactNode;
+  if (selectedId && workspaces && !workspace) {
+    middle = (
+      <EmptyState icon={Layers} title="No such workspace">
+        It may have been removed. Pick one from the list.
+      </EmptyState>
+    );
+  } else if (workspace) {
+    middle = Main ? (
+      <Main workspace={workspace} />
+    ) : (
+      <EmptyState icon={Layers} title={workspace.name}>
+        No module shows a workspace here.
+      </EmptyState>
+    );
+  } else if (selectedId) {
+    middle = null;
+  } else if (projects.length === 0) {
+    middle = (
+      <EmptyState
+        icon={Layers}
+        title="No projects yet"
+        action={
+          <Button variant="primary" asChild>
+            <a href="#/projects">Add a project</a>
+          </Button>
+        }
+      >
+        A workspace is a copy of a project for one piece of work. Add a project first.
+      </EmptyState>
+    );
+  } else {
+    middle = (
+      <div className="flex h-full items-start justify-center overflow-y-auto px-6 py-10">
+        <CreateForm
+          projects={projects}
+          projectId={projectId}
+          onCreated={(created, createdNotes) => {
+            load();
+            window.location.hash = `#/workspaces/${created.id}`;
+            // After the hash change, so the selection change does not clear them.
+            setTimeout(() => setNotes(createdNotes), 0);
+          }}
+        />
+      </div>
+    );
+  }
+
   return (
-    <section>
-      <p>
-        <a href={`#/workspaces/in/${workspace.projectId}`}>Workspaces</a>
-      </p>
-      <h1>{workspace.name}</h1>
-      <p>
-        <span className="badge">{workspace.state}</span>{" "}
-        <code>{workspace.line ?? workspace.isolation}</code> <code>{workspace.path}</code>
-      </p>
-      <p>
-        <a href={`#/chat/${workspace.id}`}>Open the chat</a>
-      </p>
-      {[...panels]
-        .sort((a, b) => a.order - b.order)
-        .map((panel) => (
-          <panel.component key={panel.id} workspace={workspace} />
+    <div className="flex h-full min-h-0">
+      {listOpen ? (
+        <WorkspaceListColumn
+          workspaces={workspaces}
+          projects={projects}
+          selectedId={selectedId}
+          projectId={projectId}
+          error={error}
+          onCollapse={() => setListOpen(false)}
+        />
+      ) : (
+        <CollapsedColumn label="Show the list" side="left" onExpand={() => setListOpen(true)} />
+      )}
+      <div className="flex min-w-0 flex-1 flex-col">
+        {notes.length > 0 && (
+          <div className="flex shrink-0 flex-col gap-1.5 border-b border-line px-4 py-3">
+            {notes.map((note) => (
+              <Notice key={note.text} tone={note.error ? "fail" : "warn"}>
+                {note.text}
+              </Notice>
+            ))}
+            <div>
+              <Button size="sm" variant="ghost" onClick={() => setNotes([])}>
+                Dismiss
+              </Button>
+            </div>
+          </div>
+        )}
+        <div className="min-h-0 flex-1">{middle}</div>
+      </div>
+      {workspace &&
+        (rightOpen ? (
+          <RightColumn
+            workspace={workspace}
+            project={project}
+            onChanged={load}
+            onNotes={setNotes}
+            onCollapse={() => setRightOpen(false)}
+          />
+        ) : (
+          <CollapsedColumn label="Show details" side="right" onExpand={() => setRightOpen(true)} />
         ))}
-    </section>
+    </div>
   );
 }
 
@@ -358,24 +715,36 @@ export const workspacesWeb: WebModule = {
   requires: ["projects"],
   core: true,
   setup(host) {
-    host.provide(WorkspacePanelsKey, {
-      add: (panel) => {
+    host.provide(WorkspaceViewKey, {
+      addPanel: (panel) => {
         if (panels.some((existing) => existing.id === panel.id))
           throw new Error(`Workspace panel "${panel.id}" is added twice`);
         panels.push(panel);
       },
+      setMain: (component) => {
+        if (Main) throw new Error("The workspace main pane is set twice");
+        Main = component;
+      },
+      setStatus: (hook) => {
+        if (useStatus !== noStatus) throw new Error("The workspace status source is set twice");
+        useStatus = hook;
+      },
     });
-    host.addPage({ path: "/workspace/:workspaceId", title: "Workspace", component: WorkspacePage });
     host.addPage({
       path: "/workspaces",
       title: "Workspaces",
-      navOrder: 20,
-      component: WorkspacesPage,
+      rail: { order: 10, icon: Layers },
+      component: WorkspacesView,
     });
     host.addPage({
       path: "/workspaces/in/:projectId",
       title: "Workspaces",
-      component: WorkspacesPage,
+      component: WorkspacesView,
+    });
+    host.addPage({
+      path: "/workspaces/:workspaceId",
+      title: "Workspace",
+      component: WorkspacesView,
     });
   },
 };

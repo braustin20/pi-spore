@@ -1,0 +1,6 @@
+/* The web app's stylesheet: the shared one, plus every folder whose class names Tailwind must see. */
+@import "@pi-spore/ui/styles.css";
+
+@source "./";
+@source "../../ui/src";
+@source "../../../modules";

@@ -1,15 +1,37 @@
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import { Project, ProjectConfigView, ProjectList, parse } from "@pi-spore/shared";
+import {
+  Button,
+  Chip,
+  EmptyState,
+  Field,
+  Input,
+  Notice,
+  Page,
+  PageHeader,
+  Panel,
+  PanelHeader,
+  Table,
+  TableCell,
+  TableHead,
+} from "@pi-spore/ui";
+import { FolderGit2 } from "lucide-react";
 import { type SubmitEvent, useCallback, useEffect, useState } from "react";
 import Type from "typebox";
 
 const ConfigBody = Type.Object({ config: ProjectConfigView, warnings: Type.Array(Type.String()) });
 const ProjectBody = Type.Object({ project: Project });
 
-function traitText(project: Project): string {
-  return project.traits
-    .map((trait) => (trait.detail ? `${trait.id} ${trait.detail}` : trait.id))
-    .join(", ");
+function TraitChips({ project }: { project: Project }) {
+  return (
+    <span className="flex flex-wrap gap-1">
+      {project.traits.map((trait) => (
+        <Chip key={trait.id} tone="accent" mono>
+          {trait.detail ? `${trait.id} ${trait.detail}` : trait.id}
+        </Chip>
+      ))}
+    </span>
+  );
 }
 
 function ProjectsPage() {
@@ -49,60 +71,69 @@ function ProjectsPage() {
   };
 
   return (
-    <section>
-      <h1>Projects</h1>
-      <form className="inline" onSubmit={add}>
-        <label>
-          Folder (absolute path)
-          <input
-            value={path}
-            onChange={(event) => setPath(event.target.value)}
-            placeholder="/home/you/code/game"
-            size={40}
-          />
-        </label>
-        <label>
-          Name (optional)
-          <input value={name} onChange={(event) => setName(event.target.value)} />
-        </label>
-        <button type="submit" disabled={busy || path.trim() === ""}>
-          Add project
-        </button>
-      </form>
-      {error && <p className="error">{error}</p>}
-      {projects === undefined && !error && <p className="muted">Loading...</p>}
+    <Page>
+      <PageHeader title="Projects" />
+      <Panel>
+        <PanelHeader title="Add a project" />
+        <form className="flex flex-wrap items-end gap-3" onSubmit={add}>
+          <Field label="Folder (absolute path)" className="min-w-80 flex-1">
+            <Input
+              value={path}
+              onChange={(event) => setPath(event.target.value)}
+              placeholder="/home/you/code/game"
+              className="font-mono"
+            />
+          </Field>
+          <Field label="Name (optional)">
+            <Input value={name} onChange={(event) => setName(event.target.value)} />
+          </Field>
+          <Button variant="primary" type="submit" disabled={busy || path.trim() === ""}>
+            Add project
+          </Button>
+        </form>
+      </Panel>
+      {error && <Notice tone="fail">{error}</Notice>}
+      {projects === undefined && !error && <p className="text-muted">Loading...</p>}
       {projects?.length === 0 && (
-        <p className="muted">No projects yet. Add a Git checkout or a folder above.</p>
+        <EmptyState icon={FolderGit2} title="No projects yet">
+          Add a Git checkout or a folder above.
+        </EmptyState>
       )}
       {projects && projects.length > 0 && (
-        <table>
+        <Table>
           <thead>
             <tr>
-              <th>Name</th>
-              <th>Kind</th>
-              <th>Detected</th>
-              <th>Path</th>
+              <TableHead>Name</TableHead>
+              <TableHead>Kind</TableHead>
+              <TableHead>Detected</TableHead>
+              <TableHead>Path</TableHead>
             </tr>
           </thead>
           <tbody>
             {projects.map((project) => (
               <tr key={project.id}>
-                <td>
+                <TableCell>
                   <a href={`#/projects/${project.id}`}>{project.name}</a>
-                </td>
-                <td>
-                  <span className="badge">{project.vcs}</span>
-                </td>
-                <td>{traitText(project) || <span className="muted">-</span>}</td>
-                <td>
-                  <code>{project.path}</code>
-                </td>
+                </TableCell>
+                <TableCell>
+                  <Chip mono>{project.vcs}</Chip>
+                </TableCell>
+                <TableCell>
+                  {project.traits.length === 0 ? (
+                    <span className="text-muted">-</span>
+                  ) : (
+                    <TraitChips project={project} />
+                  )}
+                </TableCell>
+                <TableCell>
+                  <code className="text-muted">{project.path}</code>
+                </TableCell>
               </tr>
             ))}
           </tbody>
-        </table>
+        </Table>
       )}
-    </section>
+    </Page>
   );
 }
 
@@ -140,67 +171,66 @@ function ProjectPage({ params }: { params: Readonly<Record<string, string>> }) {
   };
 
   return (
-    <section>
-      <p>
-        <a href="#/projects">Projects</a>
-      </p>
-      {error && <p className="error">{error}</p>}
+    <Page>
+      <PageHeader title={project?.name ?? "Project"} above={<a href="#/projects">Projects</a>}>
+        {project && (
+          <>
+            <Button variant="primary" asChild>
+              <a href={`#/workspaces/in/${project.id}`}>Workspaces</a>
+            </Button>
+            <Button variant="danger" onClick={remove}>
+              Unregister
+            </Button>
+          </>
+        )}
+      </PageHeader>
+      {error && <Notice tone="fail">{error}</Notice>}
       {project && (
-        <>
-          <h1>{project.name}</h1>
-          <p>
-            <span className="badge">{project.vcs}</span> <code>{project.path}</code>
-            {project.traits.length > 0 && <span className="muted"> · {traitText(project)}</span>}
-          </p>
-          <p>
-            <a href={`#/workspaces/in/${project.id}`}>Workspaces of this project</a>
-          </p>
-        </>
+        <div className="flex flex-wrap items-center gap-2">
+          <Chip mono>{project.vcs}</Chip>
+          <TraitChips project={project} />
+          <code className="text-muted">{project.path}</code>
+        </div>
       )}
       {config && (
-        <>
-          <h2>Settings</h2>
-          {config.warnings.map((warning) => (
-            <p key={warning} className="warning">
-              {warning}
+        <Panel>
+          <PanelHeader title="Settings" />
+          <div className="flex flex-col gap-3">
+            {config.warnings.map((warning) => (
+              <Notice key={warning} tone="warn">
+                {warning}
+              </Notice>
+            ))}
+            <Table>
+              <tbody>
+                <tr>
+                  <TableHead className="w-56">Copy into new worktrees</TableHead>
+                  <TableCell>
+                    <code>{config.config.worktreeCopy.value.join(", ") || "(nothing)"}</code>
+                  </TableCell>
+                  <TableCell className="w-24 text-right">
+                    <Chip>{config.config.worktreeCopy.source}</Chip>
+                  </TableCell>
+                </tr>
+                <tr>
+                  <TableHead>Branch prefix</TableHead>
+                  <TableCell>
+                    <code>{config.config.branchPrefix.value}</code>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <Chip>{config.config.branchPrefix.source}</Chip>
+                  </TableCell>
+                </tr>
+              </tbody>
+            </Table>
+            <p className="m-0 text-sm text-muted">
+              Change these in <code>.pi-spore/config.toml</code> (committed) or{" "}
+              <code>.pi-spore/config.local.toml</code> (yours only).
             </p>
-          ))}
-          <table>
-            <tbody>
-              <tr>
-                <th>Copy into new worktrees</th>
-                <td>
-                  <code>{config.config.worktreeCopy.value.join(", ") || "(nothing)"}</code>
-                </td>
-                <td>
-                  <span className="badge">{config.config.worktreeCopy.source}</span>
-                </td>
-              </tr>
-              <tr>
-                <th>Branch prefix</th>
-                <td>
-                  <code>{config.config.branchPrefix.value}</code>
-                </td>
-                <td>
-                  <span className="badge">{config.config.branchPrefix.source}</span>
-                </td>
-              </tr>
-            </tbody>
-          </table>
-          <p className="muted">
-            Change these in <code>.pi-spore/config.toml</code> (committed) or{" "}
-            <code>.pi-spore/config.local.toml</code> (yours only).
-          </p>
-        </>
+          </div>
+        </Panel>
       )}
-      {project && (
-        <p>
-          <button type="button" onClick={remove}>
-            Unregister project
-          </button>
-        </p>
-      )}
-    </section>
+    </Page>
   );
 }
 
@@ -209,7 +239,12 @@ export const projectsWeb: WebModule = {
   requires: [],
   core: true,
   setup(host) {
-    host.addPage({ path: "/projects", title: "Projects", navOrder: 10, component: ProjectsPage });
+    host.addPage({
+      path: "/projects",
+      title: "Projects",
+      rail: { order: 20, icon: FolderGit2 },
+      component: ProjectsPage,
+    });
     host.addPage({ path: "/projects/:id", title: "Project", component: ProjectPage });
   },
 };

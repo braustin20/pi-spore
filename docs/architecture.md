@@ -79,7 +79,8 @@ packages/
   shared/       domain types, API schemas, and helpers used by server, web, and CLI
   server-core/  Hono app, request guards, store, lock, token, module setup, test server
   server/       the runnable server: startup and the plain-list module registry
-  web/          React app shell and web module registry
+  ui/           shared web components, stylesheet, and themes (Tailwind + Radix, ADR 0029)
+  web/          React app shell (top bar, rail, theme menu) and web module registry
   cli/          pi-spore CLI over the HTTP API
 modules/<id>/   one npm package per module, @pi-spore/mod-<id>
   src/server.ts server entry: exports the ServerModule and any interface keys and types
@@ -111,6 +112,12 @@ export interface WebModule extends ModuleManifest {
   setup(host: WebHost): void;
 }
 
+export interface WebHost {
+  api: ApiClient;                         // HTTP and live events
+  addPage(page: WebPage): void;           // a hash route; `rail` adds an icon to the left rail
+  provide / use                           // as on the server
+}
+
 export interface ServerHost {
   settings: SettingsReader;               // resolved values with their source
   store: Store;                           // SQLite, module-owned tables via migrations
@@ -124,6 +131,9 @@ export interface ServerHost {
 ```
 
 - One plain-list registry in `packages/server/src/modules.ts` and one in `packages/web/src/modules.ts`.
+- The web shell has a top bar (theme menu, server status dot), a left rail, and the page area. A page with
+  `rail: { order, icon }` gets a rail icon, lit on its path and every path below it. Full pages wrap their content
+  in `Page` from `@pi-spore/ui`; the workspace view fills the area itself.
 - `server-core` holds everything except the registry, so module tests can use its test server without a package
   cycle (server → modules → server-core).
 - Startup validation, each failure stops the server with a clear message:
@@ -346,7 +356,7 @@ See [ADR 0011](decisions/0011-unity-support.md).
     creates a "close Unity?" Approval for a user lease.
 - API under `/api/unity`: `GET /workspaces/:id` (Unity or not, the editor version, open editors, stale lock
   files, the lease), `POST /workspaces/:id/open`, `POST /editors/close` `{ projectId, path, confirm: true }`. The
-  workspace page has a Unity panel for Unity projects.
+  workspace view has a Unity panel for Unity projects.
 - unity-mcp per worktree: the relay accepts `--project-path`. Agents get `PI_SPORE_UNITY_PROJECT=<worktree>`, and
   `~/.unity/relay/unity-mcp.sh` passes it on when set (ADR 0011).
 - Gates for Unity projects come from a project pipeline. The module ships an example with `unity test` EditMode
@@ -434,14 +444,24 @@ API under `/api/actions`:
 | `POST /runs/:id/cancel` | SIGTERM to the run's process group, SIGKILL after 5 s. |
 
 CLI: `pi-spore action list <workspace>`, `pi-spore action run <workspace> <name>` (follows the log, exits 1 if the
-run fails), `pi-spore action cancel <run>`. The web workspace page has an Actions panel.
+run fails), `pi-spore action cancel <run>`. The workspace view has an Actions panel.
 
 The workspaces module calls other modules around a copy through its contract: `afterCopyCreated` and
 `beforeRemoveCopy` return step reports, which the create and archive responses list in `steps`. A failed
 `beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced.
 
-The workspace web page (`#/workspace/<id>`) shows panels that other web modules add through the workspaces web
-interface `WorkspacePanelsKey`.
+The workspace view has three panes: the workspace list (grouped active, parked, then archived behind a toggle,
+newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
+panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<project>` (filtered to a project),
+`#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. Other web modules
+fill it through the workspaces web interface `WorkspaceViewKey`:
+
+- `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so
+  it can render nothing when it does not apply.
+- `setMain` sets the middle pane. The agents module sets the chat.
+- `setStatus` sets a React hook that returns one status line per workspace. The agents module reads
+  `GET /api/agents` on load, focus, and navigation, and every 5 s only while an agent is busy, starting, or
+  waiting.
 
 ## 14. Data layout
 

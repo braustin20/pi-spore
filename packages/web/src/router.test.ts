@@ -1,6 +1,6 @@
 import type { WebPage } from "@pi-spore/module-api";
 import { describe, expect, it } from "vitest";
-import { findPage, matchPath } from "./router.js";
+import { findPage, matchPath, railActive } from "./router.js";
 
 describe("matchPath", () => {
   it("matches literal segments and captures params", () => {
@@ -24,5 +24,19 @@ describe("findPage", () => {
     const pages = [page("/projects"), page("/projects/:id")];
     expect(findPage(pages, "/projects/7")?.params).toEqual({ id: "7" });
     expect(findPage(pages, "/nope")).toBeUndefined();
+  });
+});
+
+describe("railActive", () => {
+  it("lights a page and the paths below it", () => {
+    expect(railActive("/workspaces", "/workspaces")).toBe(true);
+    expect(railActive("/workspaces", "/workspaces/01AB")).toBe(true);
+    expect(railActive("/workspaces", "/workspacesX")).toBe(false);
+    expect(railActive("/projects", "/workspaces/in/1")).toBe(false);
+  });
+
+  it("lights Home only on Home", () => {
+    expect(railActive("/", "/")).toBe(true);
+    expect(railActive("/", "/projects")).toBe(false);
   });
 });

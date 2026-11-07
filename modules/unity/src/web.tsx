@@ -1,4 +1,4 @@
-import { WorkspacePanelsKey } from "@pi-spore/mod-workspaces/web";
+import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { ApiRequestError, useApi, type WebModule } from "@pi-spore/module-api";
 import {
   type OpenEditor,
@@ -7,6 +7,8 @@ import {
   UnityWorkspaceView,
   type Workspace,
 } from "@pi-spore/shared";
+import { Button, Chip, CollapsibleSection, Notice } from "@pi-spore/ui";
+import { Box, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -90,58 +92,89 @@ function UnityPanel({ workspace }: { workspace: Workspace }) {
     });
   };
 
-  if (!view) return error ? <p className="error">{error}</p> : null;
+  if (!view)
+    return error ? (
+      <CollapsibleSection title="Unity">
+        <Notice tone="fail">{error}</Notice>
+      </CollapsibleSection>
+    ) : null;
   if (!view.unity) return null;
   const { editors, staleLocks, lease, warnings } = view.editors;
   const here = editors.some((editor) => editor.path === workspace.path);
   const elsewhere = editors.filter((editor) => editor.path !== workspace.path);
   return (
-    <section>
-      <h2>Unity</h2>
-      <p className="muted">Editor {view.editorVersion}. One editor per project at a time.</p>
-      {editors.length === 0 && <p className="muted">No Unity editor has this project open.</p>}
-      {editors.map((editor) => (
-        <p key={editor.path}>
-          Open in {where(editor, workspace)}: <code>{editor.path}</code>{" "}
-          <span className="badge">{editor.state ?? "open"}</span>
-          {editor.pid !== undefined && <span className="muted"> pid {editor.pid}</span>}
-          {lease?.path === editor.path && (
-            <span className="muted"> held by {lease.owner === "user" ? "you" : "an agent"}</span>
-          )}{" "}
-          <button type="button" disabled={busy} onClick={() => close(editor)}>
-            Close without saving
-          </button>
+    <CollapsibleSection title="Unity">
+      <div className="flex flex-col gap-3 text-sm">
+        <p className="m-0 text-xs text-muted">
+          Editor <span className="font-mono">{view.editorVersion}</span>. One editor per project at
+          a time.
         </p>
-      ))}
-      {staleLocks.map((path) => (
-        <p key={path} className="muted">
-          <code>{path}/Temp/UnityLockfile</code> is left over: no editor runs there. It does not
-          block.
-        </p>
-      ))}
-      {warnings.map((warning) => (
-        <p key={warning} className="muted">
-          {warning}
-        </p>
-      ))}
-      {blocked && elsewhere.length > 0 && (
-        <p className="warning">
-          {blocked} Use "Close without saving" above after you save in Unity, then open again.
-        </p>
-      )}
-      <button
-        type="button"
-        disabled={busy || workspace.state === "archived" || here}
-        onClick={() => void open()}
-      >
-        {here ? "Open in Unity (already open)" : "Open in Unity"}
-      </button>{" "}
-      <button type="button" disabled={busy} onClick={() => void run(async () => {})}>
-        Refresh
-      </button>
-      {note && <p className="muted">{note}</p>}
-      {error && <p className="error">{error}</p>}
-    </section>
+        {editors.length === 0 && (
+          <p className="m-0 text-muted">No Unity editor has this project open.</p>
+        )}
+        {editors.map((editor) => (
+          <div
+            key={editor.path}
+            className="flex flex-col gap-1.5 rounded-lg border border-line bg-raised px-2.5 py-2"
+          >
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span>Open in {where(editor, workspace)}</span>
+              <Chip tone="run">{editor.state ?? "open"}</Chip>
+              {editor.pid !== undefined && (
+                <span className="font-mono text-xs text-muted">pid {editor.pid}</span>
+              )}
+              {lease?.path === editor.path && (
+                <span className="text-xs text-muted">
+                  held by {lease.owner === "user" ? "you" : "an agent"}
+                </span>
+              )}
+            </div>
+            <code className="text-xs [overflow-wrap:anywhere] text-muted">{editor.path}</code>
+            <div>
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => close(editor)}>
+                Close without saving
+              </Button>
+            </div>
+          </div>
+        ))}
+        {staleLocks.map((path) => (
+          <p key={path} className="m-0 text-xs text-muted">
+            <code className="[overflow-wrap:anywhere]">{path}/Temp/UnityLockfile</code> is left
+            over: no editor runs there. It does not block.
+          </p>
+        ))}
+        {warnings.map((warning) => (
+          <Notice key={warning}>{warning}</Notice>
+        ))}
+        {blocked && elsewhere.length > 0 && (
+          <Notice tone="warn">
+            {blocked} Use "Close without saving" above after you save in Unity, then open again.
+          </Notice>
+        )}
+        <div className="flex flex-wrap gap-1.5">
+          <Button
+            variant="primary"
+            disabled={busy || workspace.state === "archived" || here}
+            onClick={() => void open()}
+          >
+            <Box />
+            {here ? "Open in Unity (already open)" : "Open in Unity"}
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            aria-label="Refresh"
+            title="Refresh"
+            disabled={busy}
+            onClick={() => void run(async () => {})}
+          >
+            <RefreshCw />
+          </Button>
+        </div>
+        {note && <p className="m-0 text-muted">{note}</p>}
+        {error && <Notice tone="fail">{error}</Notice>}
+      </div>
+    </CollapsibleSection>
   );
 }
 
@@ -150,6 +183,6 @@ export const unityWeb: WebModule = {
   requires: ["workspaces"],
   core: false,
   setup(host) {
-    host.use(WorkspacePanelsKey).add({ id: "unity", order: 20, component: UnityPanel });
+    host.use(WorkspaceViewKey).addPanel({ id: "unity", order: 20, component: UnityPanel });
   },
 };

@@ -1,4 +1,7 @@
 import type { ChatMessage, RunningTool } from "@pi-spore/shared";
+import { Chip, cn, Spinner } from "@pi-spore/ui";
+import { ChevronRight } from "lucide-react";
+import type { ReactNode } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -32,6 +35,40 @@ function clip(text: string, max = 4_000): string {
   return `${text.slice(0, max / 2)}\n... ${text.length - max} characters hidden ...\n${text.slice(-max / 2)}`;
 }
 
+const TOOL_TONE = { running: "run", error: "fail", done: "ok", waiting: "neutral" } as const;
+
+/** A one-line hint of a tool call's arguments for the collapsed row, such as the path or command. */
+function summary(args: unknown): string {
+  if (typeof args === "string") return args.split("\n")[0] ?? "";
+  if (typeof args !== "object" || args === null) return "";
+  const first = Object.values(args).find((value) => typeof value === "string");
+  return typeof first === "string" ? (first.split("\n")[0] ?? "") : "";
+}
+
+function Pre({ children }: { children: ReactNode }) {
+  return (
+    <pre className="m-0 max-h-96 overflow-auto rounded-md bg-bg p-2.5 text-xs [overflow-wrap:anywhere] whitespace-pre-wrap text-muted">
+      {children}
+    </pre>
+  );
+}
+
+/** A folded block such as Thinking or a compaction summary. */
+function Fold({ label, children }: { label: string; children: ReactNode }) {
+  return (
+    <details className="group text-sm">
+      <summary className="flex cursor-pointer list-none items-center gap-1.5 text-muted hover:text-fg [&::-webkit-details-marker]:hidden">
+        <ChevronRight
+          aria-hidden="true"
+          className="size-3.5 transition-transform group-open:rotate-90"
+        />
+        {label}
+      </summary>
+      <div className="mt-1.5 border-l-2 border-line pl-3 text-muted">{children}</div>
+    </details>
+  );
+}
+
 function MarkdownText({ text }: { text: string }) {
   // react-markdown builds React elements and skips raw HTML, so agent output cannot inject markup.
   return (
@@ -62,12 +99,25 @@ function ToolCall({
       ? plainText(running.partial)
       : "";
   return (
-    <details className={`tool tool-${state}`}>
-      <summary>
-        <code>{name}</code> <span className="muted">{state}</span>
+    <details className="group rounded-lg border border-line bg-panel text-sm">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-3 py-1.5 [&::-webkit-details-marker]:hidden">
+        <ChevronRight
+          aria-hidden="true"
+          className="size-3.5 shrink-0 text-muted transition-transform group-open:rotate-90"
+        />
+        <code className={cn("font-medium", state === "error" ? "text-fail" : "text-fg")}>
+          {name}
+        </code>
+        <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted">
+          {summary(args)}
+        </span>
+        {state === "running" && <Spinner />}
+        <Chip tone={TOOL_TONE[state]}>{state}</Chip>
       </summary>
-      <pre>{typeof args === "string" ? args : json(args)}</pre>
-      {output && <pre className="tool-output">{clip(output)}</pre>}
+      <div className="flex flex-col gap-2 border-t border-line p-2">
+        <Pre>{typeof args === "string" ? args : json(args)}</Pre>
+        {output && <Pre>{clip(output)}</Pre>}
+      </div>
     </details>
   );
 }
@@ -84,7 +134,12 @@ function AssistantMessage({
   streaming?: boolean;
 }) {
   return (
-    <div className={`msg msg-assistant${streaming ? " streaming" : ""}`}>
+    <div
+      className={cn(
+        "flex flex-col gap-2 text-[15px] leading-relaxed",
+        streaming && "border-l-2 border-accent pl-3",
+      )}
+    >
       {blocksOf(message).map((block, index) => {
         const key = `${index}-${String(block.type)}`;
         if (block.type === "text" && typeof block.text === "string")
@@ -95,10 +150,9 @@ function AssistantMessage({
           block.thinking.trim()
         ) {
           return (
-            <details key={key} className="thinking">
-              <summary className="muted">Thinking</summary>
+            <Fold key={key} label="Thinking">
               <MarkdownText text={block.thinking} />
-            </details>
+            </Fold>
           );
         }
         if (block.type === "toolCall") {
@@ -117,9 +171,11 @@ function AssistantMessage({
         return null;
       })}
       {message.stopReason === "error" && (
-        <p className="error">{String(message.errorMessage ?? "The model returned an error")}</p>
+        <p className="m-0 text-sm text-fail">
+          {String(message.errorMessage ?? "The model returned an error")}
+        </p>
       )}
-      {message.stopReason === "aborted" && <p className="muted">Stopped.</p>}
+      {message.stopReason === "aborted" && <p className="m-0 text-sm text-muted">Stopped.</p>}
     </div>
   );
 }
@@ -159,13 +215,16 @@ export function MessageList({
   }
 
   return (
-    <div className="messages">
+    <div className="flex flex-col gap-5">
       {messages.map((message, index) => {
         const key = `${message.role}-${message.timestamp ?? index}-${index}`;
         switch (message.role) {
           case "user":
             return (
-              <div key={key} className="msg msg-user">
+              <div
+                key={key}
+                className="max-w-[85%] self-end rounded-xl border border-line bg-raised px-3.5 py-2 text-[15px]"
+              >
                 <MarkdownText text={plainText(message.content)} />
               </div>
             );
@@ -181,24 +240,21 @@ export function MessageList({
           case "toolResult":
             // Shown inside its tool call; only an orphan result is shown on its own.
             return shownCalls.has(String(message.toolCallId)) ? null : (
-              <pre key={key} className="tool-output">
-                {clip(plainText(message.content))}
-              </pre>
+              <Pre key={key}>{clip(plainText(message.content))}</Pre>
             );
           case "compaction":
             return (
-              <details key={key} className="compaction">
-                <summary className="muted">Context compacted</summary>
+              <Fold key={key} label="Context compacted">
                 <MarkdownText text={plainText(message.content)} />
-              </details>
+              </Fold>
             );
           case "bashExecution":
             return (
-              <pre key={key} className="tool-output">
+              <Pre key={key}>
                 $ {String(message.command ?? "")}
                 {"\n"}
                 {clip(String(message.output ?? ""))}
-              </pre>
+              </Pre>
             );
           default:
             return null;

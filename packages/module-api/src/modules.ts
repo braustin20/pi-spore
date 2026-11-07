@@ -94,12 +94,24 @@ export interface ApiClient {
   subscribe(topic: string, onEvent: (event: unknown) => void): () => void;
 }
 
+/** A page's entry in the shell's left rail. */
+export interface RailItem {
+  /** Lower comes first. Home is 0. */
+  order: number;
+  /** An icon component such as one from `lucide-react`. The rail sizes it through `className`. */
+  icon: ComponentType<{ className?: string }>;
+}
+
 export interface WebPage {
   /** Hash route such as `/projects/:id`. */
   path: string;
   title: string;
-  /** Shown in the top navigation, in ascending order. Pages without it are reached by links only. */
-  navOrder?: number;
+  /**
+   * Shown as an icon in the left rail. The icon is lit on this path and every path below it. Pages without it are
+   * reached by links only.
+   */
+  rail?: RailItem;
+  /** Fills the area right of the rail. Full pages wrap their content in `Page` from `@pi-spore/ui`. */
   component: ComponentType<{ params: Readonly<Record<string, string>> }>;
 }
 

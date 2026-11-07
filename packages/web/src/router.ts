@@ -26,6 +26,14 @@ export function findPage(
   return undefined;
 }
 
+/**
+ * Whether a rail entry for the page at `pagePath` is lit on `path`: on the page itself and every path below it.
+ * Home (`/`) has no path below it, since no path starts with `//`.
+ */
+export function railActive(pagePath: string, path: string): boolean {
+  return path === pagePath || path.startsWith(`${pagePath}/`);
+}
+
 function readHashPath(): string {
   return window.location.hash.replace(/^#/, "") || "/";
 }

@@ -1,7 +1,8 @@
 # Visual design direction
 
 - Date: 2026-11-06
-- Status: direction for the styling slice. The current CSS is a temporary placeholder.
+- Status: built in the styling slice (ADR 0029). Sections marked "later" describe screens that come with their
+  modules.
 - pi-spore uses its own name, palette, and theme names. It uses no other product's logos, images, fonts, colors, or
   branding.
 
@@ -18,15 +19,20 @@ Colors are swappable. The look of the components (shapes, spacing, type, layout)
 - Components use only role tokens: `--bg`, `--panel`, `--raised`, `--line`, `--text`, `--text-muted`,
   `--accent`, `--accent-strong`, `--on-accent`, `--ok`, `--fail`, `--warn`, `--run`, `--diff-add`, `--diff-del`.
   No component uses a raw color.
-- A theme is one set of values for those tokens, as a `[data-theme="<id>"]` block of CSS variables.
+- A theme is one set of values for those tokens, as a `[data-theme="<id>"]` block of CSS variables in
+  `packages/ui/src/themes.css`, written as `hsl(h s% l%)`.
+- In Tailwind classes the tokens are colors with the same names, except `--text` is `fg` and `--text-muted` is
+  `muted`: `bg-panel`, `text-fg`, `text-muted`, `border-line`, `bg-accent text-on-accent`. The default Tailwind
+  palette is removed, so a raw color class does not exist.
 - A theme menu (top bar and Settings) lists the themes with a color preview and applies the choice at once,
   without a reload.
 - v1 keeps the choice in the browser (`localStorage`). When the settings module lands, it moves to
   `~/.pi-spore/settings.json`, so the CLI and every browser share it.
-- Built-in themes: **Spore Night** (the default, below), **Ayu Dark** (matches the user's Pi theme), and one light
-  theme. Adding a theme means adding one token block and one menu entry.
-- Every theme must meet WCAG AA contrast for text on `--bg`, `--panel`, and `--accent`. A test checks this for
-  each built-in theme.
+- Built-in themes: **Spore Night** (the default, below), **Ayu Dark** (matches the user's Pi theme), and **Spore
+  Day** (light). Adding a theme means adding one token block in `themes.css` and one entry in `themes.ts`.
+- Every theme must meet WCAG AA (4.5:1) for text on `--bg`, `--panel`, and `--accent`. The test
+  (`packages/ui/src/themes.test.ts`) checks every text and status token on `--bg`, `--panel`, and `--raised`, and
+  `--on-accent` on `--accent`, for each built-in theme. It also checks that each block sets every token.
 
 ## Default theme: Spore Night
 
@@ -40,7 +46,7 @@ pi-spore's own values, as HSL.
 | `--line` | 254 12% 22% | Borders, dividers |
 | `--text` | 250 10% 88% | Body text |
 | `--text-muted` | 250 6% 60% | Secondary text, icons |
-| `--accent` | 258 90% 66% | Primary buttons, selection bar |
+| `--accent` | 258 90% 62% | Primary buttons, selection bar |
 | `--accent-strong` | 258 95% 80% | Links, active nav, live-state text |
 | `--on-accent` | 0 0% 100% | Text on `--accent` |
 | `--ok` | 145 55% 55% | Passed gates, merged |
@@ -52,10 +58,12 @@ pi-spore's own values, as HSL.
 
 Status colors are kept apart from the accent, so "selected" never reads as "ok" or "failed".
 
+The first plan had `--accent` at 66% lightness. White on it is 4.31:1, below AA, so it is 62% (5.1:1).
+
 ## Type
 
-- UI: Inter (or the system UI font), 13 to 14 px in dense lists, 15 px in chat.
-- Code, ids, branch names, counts: JetBrains Mono (or `ui-monospace`).
+- UI: Inter, 13 to 14 px in dense lists, 15 px in chat. Code, ids, branch names, counts: JetBrains Mono. Both are
+  self-hosted from `@fontsource-variable/*`, with the system fonts as fallback.
 - Section labels: small uppercase with letter spacing, in `--text-muted`, sometimes after a small accent square.
 
 ## Shape
@@ -66,7 +74,8 @@ Status colors are kept apart from the accent, so "selected" never reads as "ok" 
 
 ## Layout
 
-The main screen has three panes and a rail:
+The workspace view has three panes and a rail. The plan (Board, Usage, review states, and the right panel tabs come
+later):
 
 ```text
 ┌────┬──────────────────┬──────────────────────────────┬─────────────────────┐
@@ -91,8 +100,49 @@ The main screen has three panes and a rail:
 - **Top bar:** a centered command bar ("Search or run a command", `Ctrl K`), the theme menu, and the server status
   dot.
 
-## Components to build in the styling slice
+What exists now:
 
-Chip, status line, list row with selection bar, section label, primary/secondary/ghost buttons, tab bar, panel,
-diff-count pair, PR header card, empty state, the theme menu, and the three-pane shell. Pages built before that
-slice use the placeholder CSS classes and get restyled in one pass.
+- **Rail:** Home, Workspaces, Projects. A module adds an entry with `rail: { order, icon }` on its page; only pages
+  that exist get one.
+- **Workspace list:** Active, then Parked; Archived behind "Show archived". Newest activity first. Each row: name,
+  age, project and branch, and a status line from the agent ("Working", "Idle", "Agent failed", "Parked").
+  Filtered to one project on `#/workspaces/in/<project>`. The list can be hidden to a thin strip.
+- **Middle:** the chat. Header: name, branch, agent status, context meter, Compact, Stop agent. The composer row
+  holds the model and thinking selects. Extension dialogs show as cards; select dialogs as numbered option rows.
+  With no workspace selected, the middle shows the "Start a workspace" form.
+- **Right panel:** one "Details" tab (workspace info, rename, park, resume, archive), then the module panels
+  (Actions, Unity) as collapsible sections. It can be hidden to a thin strip. Changes and PR tabs join the bar
+  later.
+- **Top bar:** brand, theme menu, server status dot. The command bar comes later.
+- Widths: from 1100 px all three panes fit; from 1280 px the side columns get wider. Below 1100 px, hide a side
+  column with its button.
+
+## Components
+
+In `@pi-spore/ui` (`packages/ui/src/components`):
+
+| Component | Use |
+|---|---|
+| `Button` | `primary` (16 px radius, one per view), `secondary`, `ghost`, `danger`; sizes `sm`, `md`, `icon` |
+| `Chip` | 6 px radius label; tones `neutral`, `accent`, `ok`, `fail`, `warn`, `run`; `mono` for ids and branches |
+| `StatusLine` | a colored dot and one line of live state |
+| `ListRow` | a link row; selected: `--raised` and a 2 px accent bar on the left |
+| `SectionLabel` | small uppercase label, optionally after an accent square |
+| `Tabs`, `TabsList`, `TabsTrigger`, `TabsContent` | the tab bar (Radix Tabs) |
+| `Panel`, `PanelHeader` | 12 px radius bordered box with a section label title |
+| `CollapsibleSection` | a titled section that folds (Radix Collapsible) |
+| `DiffCount` | `+12 -3` in the diff colors (for the changes tab) |
+| `EmptyState` | icon, title, help line, optional action |
+| `Notice` | info, warning, or error box; errors are announced |
+| `Field`, `Input`, `Textarea`, `Select`, `Checkbox` | form controls, 8 px radius; `Select` is native |
+| `Table`, `TableHead`, `TableCell` | dense tables |
+| `Page`, `PageHeader` | a full page inside the shell |
+| `Spinner`, `Tooltip`, `ThemeMenu` | |
+
+The PR header card comes with the PR module.
+
+## Accessibility
+
+- Every focusable element shows a 2 px `--accent-strong` outline on keyboard focus.
+- Icon-only buttons and rail links have an `aria-label` and a tooltip.
+- `prefers-reduced-motion` stops animations and transitions.

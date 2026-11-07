@@ -19,6 +19,9 @@
       "path": "../shared"
     },
     {
+      "path": "../ui"
+    },
+    {
       "path": "../../modules/projects"
     },
     {
