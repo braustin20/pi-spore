@@ -579,6 +579,9 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 | `DELETE /api/changes/comments/:id` | Deletes an open comment; a sent one is 409 `comment_sent`. |
 | `POST /api/changes/workspaces/:id/comments/send` | Sends every open comment to the worker as one message. |
 
+CLI: `pi-spore ws diff <workspace> [--staged | --commits | --commit <id>]` prints each file's status, path, and
+counts, then its hunks in unified form.
+
 ## 11e. Pull requests
 
 See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
@@ -621,6 +624,10 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
 | `POST /api/github-pr/workspaces/:id/publish` `{ title, body, base, draft?, confirm: true }` | Pushes and opens the PR (201). An open PR is 409 `pr_exists`. |
 | `POST /api/github-pr/workspaces/:id/push` `{ confirm: true }` | Pushes new commits to the PR's branch. |
 | `POST /api/github-pr/workspaces/:id/watch` `{ on }` | Turns the watch on (a new run of tries) or off. |
+
+CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t] [--body b] [--base branch]
+[--draft]` (the form defaults fill what is not given), `pi-spore pr push <workspace>`, and `pi-spore pr watch
+<workspace> on|off`.
 
 - Not built yet: "waiting for you" on Home (the attention module has no way for other modules to add items, Q18),
   and PR tools for agents (they come through spore-bridge).

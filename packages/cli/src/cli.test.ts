@@ -609,3 +609,142 @@ describe("pi-spore usage", () => {
     expect(err[1]).toContain("Unknown option --nope");
   });
 });
+
+describe("pi-spore ws diff", () => {
+  const diffs = {
+    diffs: [
+      {
+        file: { path: "a.txt", status: "modified", additions: 1, deletions: 1, binary: false },
+        hunks: [
+          {
+            oldStart: 1,
+            newStart: 1,
+            section: "fn main",
+            lines: [
+              { kind: "context", oldLine: 1, newLine: 1, text: "one" },
+              { kind: "del", oldLine: 2, text: "two" },
+              { kind: "add", newLine: 2, text: "TWO", noNewline: true },
+            ],
+          },
+        ],
+      },
+      {
+        file: { path: "pic.png", status: "added", additions: 0, deletions: 0, binary: true },
+        hunks: [],
+        note: "binary",
+      },
+    ],
+    truncated: true,
+  };
+
+  it("prints each file as a unified diff, with notes for binary files", async () => {
+    const { deps, out, err, sent } = fakeDeps(() => Response.json(diffs));
+    expect(await run(["ws", "diff", "W1", "--commits"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/changes/workspaces/W1/diff?scope=line");
+    expect(out).toEqual([
+      "M a.txt  +1 -1",
+      "@@ -1,2 +1,2 @@ fn main",
+      " one",
+      "-two",
+      "+TWO",
+      "\\ No newline at end of file",
+      "",
+      "A pic.png  +0 -0",
+      "  (binary file)",
+      "",
+    ]);
+    expect(err).toEqual(["More files changed than shown."]);
+  });
+
+  it("picks staged changes or one commit, but not both", async () => {
+    const { deps, sent } = fakeDeps(() => Response.json({ diffs: [], truncated: false }));
+    expect(await run(["ws", "diff", "W1", "--staged"], deps)).toBe(0);
+    expect(await run(["ws", "diff", "W1", "--commit", "abc123"], deps)).toBe(0);
+    expect(sent.map((request) => new URL(request.url).search)).toEqual([
+      "?scope=staged",
+      "?scope=record&record=abc123",
+    ]);
+    expect(await run(["ws", "diff", "W1", "--staged", "--commits"], deps)).toBe(2);
+  });
+});
+
+describe("pi-spore pr", () => {
+  const status = {
+    workspaceId: "W1",
+    publishable: true,
+    defaults: { title: "Fix UI", body: "From the card", base: "main" },
+    watch: { state: "off", tries: 0, maxTries: 3 },
+    tries: [],
+    local: { headId: "h1", uncommitted: 0 },
+  };
+  const opened = {
+    ...status,
+    pr: {
+      number: 7,
+      url: "https://github.com/o/r/pull/7",
+      title: "Fix UI",
+      state: "open",
+      draft: false,
+      line: "spore/fix-ui",
+      base: "main",
+      headId: "h1",
+      review: "review_required",
+      mergeable: "conflicting",
+      checks: [
+        { name: "test", workflow: "CI", state: "fail", url: "https://ci/1" },
+        { name: "lint", state: "pending" },
+      ],
+    },
+    watch: {
+      state: "waiting",
+      tries: 3,
+      maxTries: 3,
+      message: "Stopped after 3 automatic tries in a row. Waiting for you.",
+    },
+    local: { headId: "h2", uncommitted: 2 },
+  };
+
+  it("opens a PR with the defaults and an explicit confirm", async () => {
+    const { deps, out, sent } = fakeDeps((key) =>
+      key.startsWith("GET") ? Response.json(status) : Response.json(opened, { status: 201 }),
+    );
+    expect(await run(["pr", "open", "W1", "--title", "Better UI", "--draft"], deps)).toBe(0);
+    const post = sent.find((request) => request.method === "POST");
+    expect(post?.url).toBe("http://127.0.0.1:7420/api/github-pr/workspaces/W1/publish");
+    expect(post?.body).toEqual({
+      title: "Better UI",
+      body: "From the card",
+      base: "main",
+      draft: true,
+      confirm: true,
+    });
+    expect(out[0]).toBe("#7 open  spore/fix-ui -> main  https://github.com/o/r/pull/7");
+  });
+
+  it("shows the PR, its checks, conflicts, and a watch that waits", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json(opened));
+    expect(await run(["pr", "status", "W1"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/github-pr/workspaces/W1?refresh=1");
+    expect(out).toEqual([
+      "#7 open  spore/fix-ui -> main  https://github.com/o/r/pull/7",
+      "  Fix UI",
+      "Review: review required   Mergeable: conflicts with main",
+      "Local commits differ from the PR. Push them: pi-spore pr push <workspace>",
+      "2 uncommitted files are not in the PR.",
+      "Checks:",
+      "  fail      CI / test  https://ci/1",
+      "  pending   lint",
+      "Watch: waiting for you  tries 3/3",
+      "  Stopped after 3 automatic tries in a row. Waiting for you.",
+    ]);
+  });
+
+  it("says when there is no PR yet, and turns the watch on", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json(status));
+    expect(await run(["pr", "status", "W1"], deps)).toBe(0);
+    expect(out).toEqual(["No PR yet. Open one: pi-spore pr open W1"]);
+    expect(await run(["pr", "watch", "W1", "on"], deps)).toBe(0);
+    expect(sent[1]?.body).toEqual({ on: true });
+    expect(await run(["pr", "watch", "W1", "maybe"], deps)).toBe(2);
+  });
+});

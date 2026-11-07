@@ -16,10 +16,13 @@ import {
   Card as CardSchema,
   CreateWorkspaceResponse,
   DEFAULT_URL,
+  DiffList,
+  type FileDiff,
   HealthResponse,
   type Isolation,
   Project,
   ProjectList,
+  PrStatus,
   parse,
   StartCardResponse,
   type StepReport,
@@ -57,6 +60,9 @@ Commands:
   ws park <id> | ws resume <id>
   ws archive <id> [--force]                Remove the copy; --force also deletes uncommitted work
                                            and goes on after a failed teardown
+  ws diff <id> [--staged | --commits | --commit <id>]
+                                           Show the workspace's changes: uncommitted (default), staged,
+                                           all commits since its base, or one commit
   action list <workspace>                  List a workspace's actions
   action run <workspace> <name>            Run an action and follow its log; exits 1 if it fails
   action cancel <run id>
@@ -77,6 +83,11 @@ Commands:
   approvals list [--all]                   Open approvals agents asked for; --all includes decided ones
   approvals approve <approval>
   approvals decline <approval> [--note <text>]
+  pr status <workspace>                    Show the workspace's PR, its checks, and the watch
+  pr open <workspace> [--title <t>] [--body <b>] [--base <branch>] [--draft]
+                                           Push the branch and open a PR on GitHub (outward-facing)
+  pr push <workspace>                      Push new commits to the PR's branch (never forced)
+  pr watch <workspace> on|off              Send failed checks to the worker, or stop
 
 <project> is a project id or slug. <workspace>, <card>, and <approval> are ids.
 
@@ -329,7 +340,55 @@ async function workspaceCommand(
     else print(result.workspace, "Archived");
     return reportSteps(deps, result.steps, json);
   }
+  if (sub === "diff") {
+    const { positional, options, on } = parseArgs(rest, ["commit"], ["staged", "commits"]);
+    if (positional.length !== 1) throw usageError("ws diff takes one workspace id");
+    const picked = [on.has("staged"), on.has("commits"), options.commit !== undefined].filter(
+      Boolean,
+    );
+    if (picked.length > 1) throw usageError("Use one of --staged, --commits, and --commit");
+    const query = new URLSearchParams();
+    if (on.has("staged")) query.set("scope", "staged");
+    if (on.has("commits")) query.set("scope", "line");
+    if (options.commit) {
+      query.set("scope", "record");
+      query.set("record", options.commit);
+    }
+    const result = await api.call(
+      "GET",
+      `changes/workspaces/${positional[0]}/diff?${query}`,
+      DiffList,
+    );
+    if (json) return deps.out(JSON.stringify(result));
+    if (result.diffs.length === 0) return deps.out("No changes.");
+    for (const diff of result.diffs) printDiff(deps, diff);
+    if (result.truncated) deps.err("More files changed than shown.");
+    return;
+  }
   throw usageError(`Unknown command: ws ${args.join(" ")}`);
+}
+
+const STATUS_LETTERS = { added: "A", modified: "M", deleted: "D", renamed: "R" } as const;
+
+/** One file's diff in the usual unified form, with a header line of status, path, and counts. */
+function printDiff(deps: CliDeps, diff: FileDiff): void {
+  const { file } = diff;
+  const path = file.oldPath ? `${file.oldPath} -> ${file.path}` : file.path;
+  deps.out(`${STATUS_LETTERS[file.status]} ${path}  +${file.additions} -${file.deletions}`);
+  if (diff.note === "binary") deps.out("  (binary file)");
+  if (diff.note === "too_large") deps.out("  (too large to show)");
+  for (const hunk of diff.hunks) {
+    const oldCount = hunk.lines.filter((line) => line.kind !== "add").length;
+    const newCount = hunk.lines.filter((line) => line.kind !== "del").length;
+    deps.out(
+      `@@ -${hunk.oldStart},${oldCount} +${hunk.newStart},${newCount} @@${hunk.section ? ` ${hunk.section}` : ""}`,
+    );
+    for (const line of hunk.lines) {
+      deps.out(`${line.kind === "add" ? "+" : line.kind === "del" ? "-" : " "}${line.text}`);
+      if (line.noNewline) deps.out("\\ No newline at end of file");
+    }
+  }
+  deps.out("");
 }
 
 /** Prints what setup or teardown did. A failed step exits 1, though the workspace change happened. */
@@ -586,6 +645,80 @@ async function approvalsCommand(
   throw usageError(`Unknown command: approvals ${args.join(" ")}`);
 }
 
+function printPr(deps: CliDeps, status: PrStatus): void {
+  const { pr, watch } = status;
+  if (!pr) {
+    deps.out(
+      status.publishable
+        ? `No PR yet. Open one: pi-spore pr open ${status.workspaceId}`
+        : `No PR. ${status.reason ?? ""}`.trim(),
+    );
+    return;
+  }
+  deps.out(`#${pr.number} ${pr.draft ? "draft" : pr.state}  ${pr.line} -> ${pr.base}  ${pr.url}`);
+  deps.out(`  ${pr.title}`);
+  const mergeable = pr.mergeable === "conflicting" ? `conflicts with ${pr.base}` : pr.mergeable;
+  deps.out(`Review: ${pr.review.replace("_", " ")}   Mergeable: ${mergeable}`);
+  if (status.local.headId && status.local.headId !== pr.headId) {
+    deps.out("Local commits differ from the PR. Push them: pi-spore pr push <workspace>");
+  }
+  if (status.local.uncommitted > 0) {
+    deps.out(`${status.local.uncommitted} uncommitted files are not in the PR.`);
+  }
+  if (pr.checks.length === 0) deps.out("Checks: none");
+  else {
+    deps.out("Checks:");
+    for (const check of pr.checks) {
+      const name = check.workflow ? `${check.workflow} / ${check.name}` : check.name;
+      deps.out(`  ${check.state.padEnd(9)} ${name}${check.url ? `  ${check.url}` : ""}`);
+    }
+  }
+  const tries =
+    watch.state === "off" || watch.state === "done"
+      ? ""
+      : `  tries ${watch.tries}/${watch.maxTries}`;
+  deps.out(`Watch: ${watch.state === "waiting" ? "waiting for you" : watch.state}${tries}`);
+  if (watch.message) deps.out(`  ${watch.message}`);
+}
+
+async function prCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  const [sub, ...rest] = args;
+  const show = (status: PrStatus) =>
+    json ? deps.out(JSON.stringify(status)) : printPr(deps, status);
+  if (sub === "status" && rest.length === 1) {
+    return show(await api.call("GET", `github-pr/workspaces/${rest[0]}?refresh=1`, PrStatus));
+  }
+  if (sub === "open") {
+    const { positional, options, on } = parseArgs(rest, ["title", "body", "base"], ["draft"]);
+    if (positional.length !== 1) throw usageError("pr open takes one workspace id");
+    const id = positional[0] as string;
+    const { defaults } = await api.call("GET", `github-pr/workspaces/${id}`, PrStatus);
+    const base = options.base ?? defaults.base;
+    if (!base) throw new CliError("The workspace has no base branch. Give one with --base.", 1);
+    const status = await api.call("POST", `github-pr/workspaces/${id}/publish`, PrStatus, {
+      title: options.title ?? defaults.title,
+      body: options.body ?? defaults.body,
+      base,
+      ...(on.has("draft") ? { draft: true } : {}),
+      confirm: true,
+    });
+    return show(status);
+  }
+  if (sub === "push" && rest.length === 1) {
+    return show(
+      await api.call("POST", `github-pr/workspaces/${rest[0]}/push`, PrStatus, { confirm: true }),
+    );
+  }
+  if (sub === "watch" && rest.length === 2 && (rest[1] === "on" || rest[1] === "off")) {
+    return show(
+      await api.call("POST", `github-pr/workspaces/${rest[0]}/watch`, PrStatus, {
+        on: rest[1] === "on",
+      }),
+    );
+  }
+  throw usageError(`Unknown command: pr ${args.join(" ")}`);
+}
+
 /** Runs one CLI invocation and returns the process exit code. */
 export async function run(argv: readonly string[], deps: CliDeps): Promise<number> {
   const args = argv.filter((arg) => arg !== "--json");
@@ -606,6 +739,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "chat") await chatCommand(new Api(deps, base), deps, rest, json);
     else if (command === "card") await cardCommand(new Api(deps, base), deps, rest, json);
     else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "pr") await prCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;
   } catch (error) {
