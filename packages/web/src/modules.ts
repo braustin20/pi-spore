@@ -2,6 +2,7 @@ import { actionsWeb } from "@pi-spore/mod-actions/web";
 import { agentsWeb } from "@pi-spore/mod-agents/web";
 import { attentionWeb } from "@pi-spore/mod-attention/web";
 import { changesWeb } from "@pi-spore/mod-changes/web";
+import { githubPrWeb } from "@pi-spore/mod-github-pr/web";
 import { kanbanWeb } from "@pi-spore/mod-kanban/web";
 import { projectsWeb } from "@pi-spore/mod-projects/web";
 import { terminalsWeb } from "@pi-spore/mod-terminals/web";
@@ -22,4 +23,5 @@ export const webModules: readonly WebModule[] = [
   kanbanWeb,
   terminalsWeb,
   changesWeb,
+  githubPrWeb,
 ];

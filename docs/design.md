@@ -121,12 +121,13 @@ What exists now:
   its host and a Load button (ADR 0061).
   With no workspace selected, the middle shows the "Start a workspace" form.
 - **Right panel:** a "Details" tab (workspace info, rename, park, resume, archive, then the module panels Actions
-  and Unity as collapsible sections), a "Changes" tab, and a "Terminals" tab. The Changes tab is wide: a scope
+  and Unity as collapsible sections), a "Changes" tab, a "PR" tab, and a "Terminals" tab. The Changes tab is wide: a scope
   select, the file list with status chips and `DiffCount`, and the diff with line numbers, `--diff-add` and
   `--diff-del` tinted rows, and code colored with role tokens. A comment button sits on each line's left edge. The Terminals tab widens the column to 40rem (at most
   half the window) and shows a tab per terminal with a status dot and a close button, a new button, a font button
-  that opens a "Terminal font" field, the terminal, and a note that terminals end when the server stops. It can be hidden to a thin strip. The PR tab joins the bar
-  later.
+  that opens a "Terminal font" field, the terminal, and a note that terminals end when the server stops. It can be hidden to a thin strip. The PR tab has a header card
+  (number, title, state chip, branch → base, review and conflict chips), the checks as rows with a state chip and a
+  link, and the watch with its state chip and tries.
 - **Top bar:** brand, theme menu, server status dot. The command bar comes later.
 - Widths: from 1100 px all three panes fit; from 1280 px the side columns get wider. Below 1100 px, hide a side
   column with its button.
@@ -154,7 +155,7 @@ In `@pi-spore/ui` (`packages/ui/src/components`):
 | `ImageViewer` | a full-size image over a dimmed page (Radix Dialog); Escape or the close button closes it |
 | `Spinner`, `Tooltip`, `ThemeMenu` | |
 
-The PR header card comes with the PR module.
+The PR header card lives in the `github-pr` module.
 
 ## Accessibility
 

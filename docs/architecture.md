@@ -638,6 +638,13 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
 [--draft]` (the form defaults fill what is not given), `pi-spore pr push <workspace>`, and `pi-spore pr watch
 <workspace> on|off`.
 
+- The web module adds a PR tab (after Changes) and a "Pull request" panel in Details. The tab asks GitHub on open
+  (`refresh=1`) and follows the topic. Without a PR it shows the publish form (title, description, into branch,
+  draft) and a warning about uncommitted files; "Push and open PR…" shows a confirm that names the branch and says
+  the push is visible to others. With a PR it shows a header card (number, title, state, branch → base, review,
+  conflicts), a Push… confirm when the workspace has commits the PR lacks, the checks with state chips and links,
+  and the watch: state, tries, last and next look, the message, Resume and send again, Stop watching, and the tries
+  so far. The Details panel shows the number, state, failing checks, conflicts, and "Waiting for you".
 - Not built yet: "waiting for you" on Home (the attention module has no way for other modules to add items, Q18),
   and PR tools for agents (they come through spore-bridge).
 

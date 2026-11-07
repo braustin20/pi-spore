@@ -50,6 +50,9 @@
     },
     {
       "path": "../../modules/changes"
+    },
+    {
+      "path": "../../modules/github-pr"
     }
   ]
 }
