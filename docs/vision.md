@@ -181,10 +181,13 @@ not built in v1.
 
 ## R14. Artifacts
 
-- R14.1 A per-workspace folder outside every working copy, for plans, specs, briefs, diffs, reports, verdicts,
-  routing records, and test proofs.
-- R14.2 Markdown is rendered. HTML is previewed in a sandboxed frame.
+- R14.1 Artifacts live outside every working copy and never go into Git, in two scopes: per workspace (plans,
+  specs, briefs, diffs, reports, verdicts, routing records, test proofs) and per project (decisions, spikes, notes
+  shared by its workspaces). A workspace artifact can be promoted to its project (ADR 0070).
+- R14.2 Markdown is rendered. Images are shown. HTML is previewed in a sandboxed frame. The same viewer shows
+  Markdown and image files inside the repository.
 - R14.3 Artifacts are kept after archive.
+- R14.4 Agents write, read, and list artifacts through tools, limited to their own workspace and its project.
 
 ## R15. Attention
 
