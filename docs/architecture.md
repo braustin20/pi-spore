@@ -582,6 +582,15 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 CLI: `pi-spore ws diff <workspace> [--staged | --commits | --commit <id>]` prints each file's status, path, and
 counts, then its hunks in unified form.
 
+- The web module adds a Changes tab (`WorkspaceView.addTab`, `wide`, before Terminals): a scope select
+  (Uncommitted, Staged, "Branch since <base>", One commit with a commit select), the changed files with a status
+  chip (A, M, D, R), a comment count, and `+`/`-` counts, then the selected file's diff. Unified or split view (a
+  browser choice). Code colors come from lowlight (highlight.js grammars, `common` set), mapped to role tokens, so
+  they follow the theme; each side of a hunk is colored as one block. Binary and large files show a note.
+- Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
+  bar at the bottom lists them with Send to agent. The tab reloads on Refresh, on a scope change, and on the
+  `stale` event.
+
 ## 11e. Pull requests
 
 See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.

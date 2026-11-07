@@ -529,7 +529,6 @@ function RightColumn({
         wide ? "w-[min(40rem,50vw)]" : "w-80 xl:w-88",
       )}
     >
-      {/* Changes and PR tabs join this bar later. */}
       <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1">
         <div className="flex h-11 shrink-0 items-end border-b border-line pr-2">
           <TabsList className="flex-1 border-b-0">
