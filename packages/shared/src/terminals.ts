@@ -42,6 +42,12 @@ export type CreateTerminalRequest = Static<typeof CreateTerminalRequest>;
 /** Largest input frame, in characters. The browser splits longer pastes. */
 export const TERMINAL_INPUT_MAX = 8192;
 
+/**
+ * The browser acks output in steps of this many characters, after xterm has drawn them. The server's flow control
+ * counts what each visible browser has not acked yet (ADR 0050).
+ */
+export const TERMINAL_ACK_CHARS = 5000;
+
 /** What the browser sends on a terminal's socket. */
 export const TerminalClientMessage = Type.Union([
   Type.Object(
@@ -50,6 +56,16 @@ export const TerminalClientMessage = Type.Union([
   ),
   Type.Object(
     { type: Type.Literal("resize"), cols: Cols, rows: Rows },
+    { additionalProperties: false },
+  ),
+  /** Characters xterm has drawn since the last ack. */
+  Type.Object(
+    { type: Type.Literal("ack"), chars: Type.Integer({ minimum: 1, maximum: 10_000_000 }) },
+    { additionalProperties: false },
+  ),
+  /** The page is shown or hidden. A hidden page gets no output, and a fresh snapshot when it is shown again. */
+  Type.Object(
+    { type: Type.Literal("visibility"), visible: Type.Boolean() },
     { additionalProperties: false },
   ),
 ]);

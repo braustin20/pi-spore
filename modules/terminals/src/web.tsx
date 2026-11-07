@@ -3,6 +3,7 @@ import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
   parse,
+  TERMINAL_ACK_CHARS,
   TERMINAL_INPUT_MAX,
   type Terminal,
   TerminalList,
@@ -180,6 +181,21 @@ function Screen({
     });
     term.onResize(sendSize);
 
+    // Flow control (ADR 0050): ack what xterm has drawn, so the server pauses the shell while the screen is behind.
+    let drawn = 0;
+    const write = (data: string) =>
+      term.write(data, () => {
+        drawn += data.length;
+        if (drawn >= TERMINAL_ACK_CHARS) {
+          send({ type: "ack", chars: drawn });
+          drawn = 0;
+        }
+      });
+    // A hidden page draws slowly; it tells the server, which then neither sends to it nor waits for it.
+    const sendVisibility = () =>
+      send({ type: "visibility", visible: document.visibilityState === "visible" });
+    document.addEventListener("visibilitychange", sendVisibility);
+
     const connect = () => {
       if (stopped) return;
       const current = new WebSocket(api.socketUrl(`terminals/${terminal.id}/socket`));
@@ -188,6 +204,7 @@ function Screen({
         backoff = 500;
         setConnected(true);
         sendSize();
+        if (document.visibilityState !== "visible") sendVisibility();
       });
       current.addEventListener("message", (event) => {
         let frame: TerminalServerMessage;
@@ -199,8 +216,10 @@ function Screen({
         }
         if (frame.type === "snapshot") {
           term.reset();
-          term.write(frame.data);
-        } else if (frame.type === "output") term.write(frame.data);
+          // The server counts the snapshot from zero. Acks of older writes may still come; it ignores the excess.
+          drawn = 0;
+          write(frame.data);
+        } else if (frame.type === "output") write(frame.data);
         else if (frame.type === "exit") {
           term.write(`\r\n\x1b[2m[The shell ${exitText(frame)}]\x1b[0m\r\n`);
           callbacks.current.onExit();
@@ -248,6 +267,7 @@ function Screen({
     return () => {
       stopped = true;
       clearTimeout(retry);
+      document.removeEventListener("visibilitychange", sendVisibility);
       observer.disconnect();
       socket?.close();
       term.dispose();

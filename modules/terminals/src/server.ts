@@ -2,7 +2,13 @@ import { existsSync } from "node:fs";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
-import { CreateTerminalRequest, parseJsonBody, type Workspace } from "@pi-spore/shared";
+import {
+  CreateTerminalRequest,
+  parseJsonBody,
+  TERMINAL_ACK_CHARS,
+  type Workspace,
+} from "@pi-spore/shared";
+import { spawn } from "node-pty";
 import { type ShellCommand, TerminalManager } from "./manager.js";
 
 export type { ShellCommand } from "./manager.js";
@@ -16,6 +22,10 @@ export interface TerminalsModuleOptions {
   maxOpen?: number;
   /** Recent output a reconnect gets, in characters (setting `terminals.scrollbackChars`). */
   scrollbackChars?: number;
+  /** Unacked output, in characters, at which the PTY pauses and below which it resumes. */
+  flowControl?: { highChars: number; lowChars: number };
+  /** Starts PTYs. Default: node-pty's `spawn`. Tests wrap it to watch pause and resume. */
+  spawn?: typeof spawn;
 }
 
 /** The server's env without the host terminal's Orca and herdr identity, as agents get it (spike Q1). */
@@ -30,7 +40,7 @@ function terminalEnv(
   return { ...env, TERM: "xterm-256color", COLORTERM: "truecolor", ...extra };
 }
 
-/** Defaults: 8 terminals, about 1 MB of scrollback each. Settings will override them once the settings module lands. */
+/** Defaults: 8 terminals, about 1 MB of scrollback each, pause above 100,000 unacked characters. Settings will override them once the settings module lands. */
 export function createTerminalsModule(options: TerminalsModuleOptions = {}): ServerModule {
   return {
     id: "terminals",
@@ -41,6 +51,13 @@ export function createTerminalsModule(options: TerminalsModuleOptions = {}): Ser
       const workspaces = host.use(WorkspacesKey);
       const baseEnv = options.baseEnv ?? process.env;
       const maxOpen = options.maxOpen ?? 8;
+      const flow = options.flowControl ?? { highChars: 100_000, lowChars: 10_000 };
+      // The browser acks in steps of TERMINAL_ACK_CHARS, so a lower resume mark could keep the PTY paused for good.
+      if (flow.lowChars <= TERMINAL_ACK_CHARS || flow.highChars <= flow.lowChars) {
+        throw new Error(
+          `terminals flow control needs ${TERMINAL_ACK_CHARS} < lowChars < highChars; got ${flow.lowChars} and ${flow.highChars}`,
+        );
+      }
       const terminals = new TerminalManager({
         shell: () => {
           if (options.shell) return options.shell;
@@ -56,6 +73,8 @@ export function createTerminalsModule(options: TerminalsModuleOptions = {}): Ser
         },
         maxOpen,
         scrollbackChars: options.scrollbackChars ?? 1024 * 1024,
+        flow,
+        spawn: options.spawn ?? spawn,
         now: host.now,
         newId: host.newId,
       });

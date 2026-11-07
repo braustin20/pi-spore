@@ -484,8 +484,15 @@ See [ADR 0050](decisions/0050-terminals.md). Requirements R13.
 | `WS /api/terminals/:id/socket` | The terminal's socket. 404 for an unknown terminal. |
 
 - Socket messages (TypeBox schemas in `@pi-spore/shared`): the browser sends `{ type: "input", data }` (up to 8192
-  characters; the page splits longer pastes) and `{ type: "resize", cols, rows }`. The server sends `snapshot`
-  first (the scrollback), then `output`, `exit` once with `exitCode` or `signal`, and `error` for a bad message.
+  characters; the page splits longer pastes), `{ type: "resize", cols, rows }`, `{ type: "ack", chars }`, and
+  `{ type: "visibility", visible }`. The server sends `snapshot` first (the scrollback), then `output`, `exit` once
+  with `exitCode` or `signal`, and `error` for a bad message.
+- Flow control: the page acks output in steps of 5,000 characters, after xterm has drawn it. The server counts each
+  socket's unacked characters, the snapshot included. It pauses the PTY when a socket is more than 100,000 behind,
+  and resumes it when every socket is below 10,000 (`flowControl` module option). A paused PTY makes the program
+  wait, as in a real terminal. A hidden page sends `visibility: false`: it then gets no output and counts as 0
+  behind, so it never holds the shell back. When it is shown again, it gets a fresh snapshot. A page that stops
+  acking without closing holds the shell until the socket heartbeat drops it.
 - The web module adds a Terminals tab to the workspace's right column (`WorkspaceView.addTab`, `wide`), with a tab
   per terminal, new and close buttons, and xterm.js with the fit addon. Colors come from the theme's role tokens and
   change with the theme menu. A font button sets the terminal font for this browser (`localStorage`); the font

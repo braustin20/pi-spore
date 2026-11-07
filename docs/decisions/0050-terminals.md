@@ -22,6 +22,9 @@ Linux binary, so it compiles with `node-gyp` on install.
 - Each terminal has its own WebSocket at `/api/terminals/:id/socket`. Modules add such routes through
   `host.sockets`. Every upgrade passes the same checks as `/api/ws`: loopback Host, loopback Origin, and the user's
   token in `?token=`. Agent tokens never match it. Every message is checked against a TypeBox schema.
+- Flow control acks what xterm has drawn, as VS Code does: the PTY pauses while a visible page is more than
+  100,000 characters behind and resumes below 10,000. A hidden page gets no output and never holds the shell back;
+  it gets a fresh snapshot when shown. Nothing is dropped for a visible page.
 - At most 8 terminals are open at once (setting `terminals.maxOpen`). Closing sends SIGHUP, then SIGKILL after 5 s.
   Parking or archiving a workspace closes its terminals first. Server exit sends SIGHUP to every shell.
 - The terminal font is a choice in the browser (`localStorage`, like the theme) until the settings module lands.

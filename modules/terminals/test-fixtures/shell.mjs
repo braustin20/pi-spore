@@ -3,6 +3,7 @@
 // Then it reads lines from the PTY:
 //   say <text>    prints "said:<text>"
 //   big <n>       prints <n> lines "line <i>"
+//   flood <n>     prints <n> lines of 100 characters, then "flood done"
 //   exit <code>   exits with <code>
 //   stubborn      ignores SIGHUP from now on
 // On a resize it prints "resized <cols>x<rows>".
@@ -24,6 +25,10 @@ for await (const line of createInterface({ input: process.stdin })) {
   if (command === "say") process.stdout.write(`said:${arg}\r\n`);
   else if (command === "big") {
     for (let i = 0; i < Number(arg); i++) process.stdout.write(`line ${i}\r\n`);
+  } else if (command === "flood") {
+    // Writes to a TTY are synchronous on Linux, so a full, paused PTY blocks this loop as it blocks a real program.
+    for (let i = 0; i < Number(arg); i++) process.stdout.write(`${"x".repeat(98)}\r\n`);
+    process.stdout.write("flood done\r\n");
   } else if (command === "exit") process.exit(Number(arg));
   else if (command === "stubborn") {
     process.on("SIGHUP", () => {});

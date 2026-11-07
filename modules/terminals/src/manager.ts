@@ -6,7 +6,7 @@ import {
   type TerminalServerMessage,
   type Workspace,
 } from "@pi-spore/shared";
-import { type IPty, spawn } from "node-pty";
+import type { IPty, spawn } from "node-pty";
 
 /** The program a terminal runs. */
 export interface ShellCommand {
@@ -20,15 +20,34 @@ export interface ManagerOptions {
   maxOpen: number;
   /** How much recent output a reconnect gets, in characters. */
   scrollbackChars: number;
+  /**
+   * Flow control: the PTY pauses when a visible browser has more than `highChars` of output it has not acked, and
+   * resumes when every visible browser is below `lowChars`.
+   */
+  flow: { highChars: number; lowChars: number };
+  spawn: typeof spawn;
   now: () => number;
   newId: () => string;
+}
+
+/** A browser's socket to a terminal. */
+interface Viewer {
+  socket: ModuleSocket;
+  /** A hidden page gets no output. */
+  visible: boolean;
+  /** Characters sent that the browser has not acked as drawn. Always 0 while hidden, so a hidden page never holds
+   * the PTY back. */
+  unacked: number;
+  /** Output came while the page was hidden, so it needs a fresh snapshot when it is shown. */
+  missed: boolean;
 }
 
 interface Live {
   view: Terminal;
   pty: IPty;
   scrollback: string;
-  sockets: Set<ModuleSocket>;
+  viewers: Map<ModuleSocket, Viewer>;
+  paused: boolean;
   exited: Promise<void>;
 }
 
@@ -102,7 +121,7 @@ export class TerminalManager {
       );
     }
     const shell = this.options.shell();
-    const pty = spawn(shell.command, [...shell.args], {
+    const pty = this.options.spawn(shell.command, [...shell.args], {
       name: "xterm-256color",
       cols: request.cols,
       rows: request.rows,
@@ -125,7 +144,8 @@ export class TerminalManager {
       view,
       pty,
       scrollback: "",
-      sockets: new Set(),
+      viewers: new Map(),
+      paused: false,
       exited: new Promise((resolve) => {
         markExited = resolve;
       }),
@@ -135,14 +155,22 @@ export class TerminalManager {
       // Trimmed in steps, not on every chunk, so a busy shell does not copy the whole buffer each time.
       entry.scrollback += data;
       if (entry.scrollback.length > max + max / 4) entry.scrollback = tail(entry.scrollback, max);
-      for (const socket of entry.sockets) send(socket, { type: "output", data });
+      for (const viewer of entry.viewers.values()) {
+        if (!viewer.visible) {
+          viewer.missed = true;
+          continue;
+        }
+        send(viewer.socket, { type: "output", data });
+        viewer.unacked += data.length;
+      }
+      this.flow(entry);
     });
     pty.onExit(({ exitCode, signal }) => {
       livePtys.delete(pty);
       view.status = "exited";
       view.exitCode = exitCode;
       if (signal) view.signal = signal;
-      for (const socket of entry.sockets) send(socket, this.exitMessage(view));
+      for (const viewer of entry.viewers.values()) send(viewer.socket, this.exitMessage(view));
       markExited();
     });
     this.live.set(view.id, entry);
@@ -153,14 +181,15 @@ export class TerminalManager {
   connect(id: string): (socket: ModuleSocket) => void {
     const entry = this.find(id);
     return (socket) => {
-      send(socket, {
-        type: "snapshot",
-        data: tail(entry.scrollback, this.options.scrollbackChars),
+      const viewer: Viewer = { socket, visible: true, unacked: 0, missed: false };
+      entry.viewers.set(socket, viewer);
+      this.sendSnapshot(entry, viewer);
+      this.flow(entry);
+      socket.onClose(() => {
+        entry.viewers.delete(socket);
+        this.flow(entry);
       });
-      if (entry.view.status === "exited") send(socket, this.exitMessage(entry.view));
-      entry.sockets.add(socket);
-      socket.onClose(() => entry.sockets.delete(socket));
-      socket.onMessage((text) => this.receive(entry, socket, text));
+      socket.onMessage((text) => this.receive(entry, viewer, text));
     };
   }
 
@@ -174,7 +203,7 @@ export class TerminalManager {
       await entry.exited;
       clearTimeout(timer);
     }
-    for (const socket of entry.sockets) socket.close(1000, "Terminal closed");
+    for (const viewer of entry.viewers.values()) viewer.socket.close(1000, "Terminal closed");
     return { ...entry.view };
   }
 
@@ -182,7 +211,8 @@ export class TerminalManager {
     await Promise.all(this.list(workspaceId).map((terminal) => this.close(terminal.id)));
   }
 
-  private receive(entry: Live, socket: ModuleSocket, text: string): void {
+  private receive(entry: Live, viewer: Viewer, text: string): void {
+    const { socket } = viewer;
     let message: TerminalClientMessage;
     try {
       message = parse(TerminalClientMessage, JSON.parse(text), "terminal message");
@@ -190,6 +220,19 @@ export class TerminalManager {
       const reason =
         error instanceof SyntaxError ? "Terminal messages must be JSON" : String(error);
       send(socket, { type: "error", message: reason.replace(/^ValidationError: /, "") });
+      return;
+    }
+    if (message.type === "ack") {
+      viewer.unacked = Math.max(0, viewer.unacked - message.chars);
+      this.flow(entry);
+      return;
+    }
+    if (message.type === "visibility") {
+      if (message.visible === viewer.visible) return;
+      viewer.visible = message.visible;
+      if (!message.visible) viewer.unacked = 0;
+      else if (viewer.missed) this.sendSnapshot(entry, viewer);
+      this.flow(entry);
       return;
     }
     if (entry.view.status === "exited") {
@@ -201,6 +244,32 @@ export class TerminalManager {
       entry.pty.resize(message.cols, message.rows);
       entry.view.cols = message.cols;
       entry.view.rows = message.rows;
+    }
+  }
+
+  /** The recent output, which replaces what the browser shows, and the exit if the shell has ended. */
+  private sendSnapshot(entry: Live, viewer: Viewer): void {
+    const data = tail(entry.scrollback, this.options.scrollbackChars);
+    send(viewer.socket, { type: "snapshot", data });
+    viewer.unacked = data.length;
+    viewer.missed = false;
+    if (entry.view.status === "exited") send(viewer.socket, this.exitMessage(entry.view));
+  }
+
+  /**
+   * Pauses the PTY while a visible browser is far behind, so a fast program waits for the screen as it would in a
+   * real terminal (Q51, ADR 0050). Hidden pages never hold it back.
+   */
+  private flow(entry: Live): void {
+    if (entry.view.status === "exited") return;
+    const viewers = [...entry.viewers.values()];
+    const { highChars, lowChars } = this.options.flow;
+    if (!entry.paused && viewers.some((viewer) => viewer.unacked > highChars)) {
+      entry.paused = true;
+      entry.pty.pause();
+    } else if (entry.paused && viewers.every((viewer) => viewer.unacked < lowChars)) {
+      entry.paused = false;
+      entry.pty.resume();
     }
   }
 

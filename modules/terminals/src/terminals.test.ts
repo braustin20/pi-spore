@@ -14,6 +14,7 @@ import {
   TerminalServerMessage,
   type Workspace,
 } from "@pi-spore/shared";
+import { spawn } from "node-pty";
 import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { WebSocket } from "ws";
@@ -161,6 +162,67 @@ function refusedStatus(url: string, headers: Record<string, string> = {}): Promi
     socket.on("open", () => reject(new Error("The upgrade was accepted")));
     socket.on("error", () => {});
   });
+}
+
+/** node-pty's spawn, wrapped to record when the module pauses and resumes a PTY. */
+function watchFlow() {
+  const events: ("pause" | "resume")[] = [];
+  const waiters: (() => void)[] = [];
+  const record = (event: "pause" | "resume") => {
+    events.push(event);
+    for (const waiter of waiters.splice(0)) waiter();
+  };
+  const watched: typeof spawn = (file, args, options) => {
+    const pty = spawn(file, args, options);
+    const pause = pty.pause.bind(pty);
+    const resume = pty.resume.bind(pty);
+    pty.pause = () => {
+      record("pause");
+      pause();
+    };
+    pty.resume = () => {
+      record("resume");
+      resume();
+    };
+    return pty;
+  };
+  /** Resolves when the module has paused or resumed the PTY `count` times in all. */
+  const reached = async (count: number) => {
+    while (events.length < count) await new Promise<void>((resolve) => waiters.push(resolve));
+  };
+  return { spawn: watched, events, reached };
+}
+
+const FLOW = { highChars: 20_000, lowChars: 10_000 };
+
+/** A PTY that only the test writes to, so output and flow control happen exactly when the test says. */
+function fakePty() {
+  const events: ("pause" | "resume")[] = [];
+  const dataListeners: ((data: string) => void)[] = [];
+  const exitListeners: ((exit: { exitCode: number; signal: number }) => void)[] = [];
+  const pty = {
+    pid: 1,
+    onData: (listener: (data: string) => void) => {
+      dataListeners.push(listener);
+      return { dispose: () => {} };
+    },
+    onExit: (listener: (exit: { exitCode: number; signal: number }) => void) => {
+      exitListeners.push(listener);
+      return { dispose: () => {} };
+    },
+    write: () => {},
+    resize: () => {},
+    pause: () => events.push("pause"),
+    resume: () => events.push("resume"),
+    kill: () => {
+      for (const listener of exitListeners) listener({ exitCode: 0, signal: 1 });
+    },
+  };
+  const fake: typeof spawn = () => pty as unknown as ReturnType<typeof spawn>;
+  const print = (data: string) => {
+    for (const listener of dataListeners) listener(data);
+  };
+  return { spawn: fake, events, print };
 }
 
 describe("terminals", () => {
@@ -380,9 +442,11 @@ describe("terminals", () => {
     view.socket.send("not json");
     view.socket.send(JSON.stringify({ type: "resize", cols: -1, rows: 5 }));
     view.socket.send(JSON.stringify({ type: "shout" }));
+    view.socket.send(JSON.stringify({ type: "ack", chars: 0 }));
+    view.socket.send(JSON.stringify({ type: "visibility", visible: "no" }));
     await view.until(
-      () => view.frames.filter((frame) => frame.type === "error").length === 3,
-      "three errors",
+      () => view.frames.filter((frame) => frame.type === "error").length === 5,
+      "five errors",
     );
     const errors = view.frames.flatMap((frame) => (frame.type === "error" ? [frame.message] : []));
     expect(errors[0]).toBe("Terminal messages must be JSON");
@@ -406,5 +470,116 @@ describe("terminals", () => {
       code: "shell_not_set",
       message: "SHELL is not set in the server's environment; terminals run $SHELL",
     });
+  });
+
+  it("pauses the shell while a visible browser is far behind, and resumes as it acks (Q51)", async () => {
+    const flow = watchFlow();
+    await start({ flowControl: FLOW, spawn: flow.spawn });
+    const terminal = await open((await workspace()).id);
+    const view = await connect(terminal.id);
+    await view.until(() => view.text().includes("READY"), "the shell to start");
+
+    // 300,000 characters, and the browser acks none of them.
+    view.type("flood 3000\r");
+    await flow.reached(1);
+    expect(flow.events).toEqual(["pause"]);
+    expect(view.text()).not.toContain("flood done");
+
+    // Now it acks everything it has, and everything that comes.
+    view.socket.send(JSON.stringify({ type: "ack", chars: view.text().length }));
+    view.socket.on("message", (data) => {
+      const frame = JSON.parse(String(data)) as { type: string; data?: string };
+      if (frame.data) view.socket.send(JSON.stringify({ type: "ack", chars: frame.data.length }));
+    });
+    await view.until(() => view.text().includes("flood done"), "the rest of the flood");
+    expect(flow.events[1]).toBe("resume");
+  });
+
+  it("never holds the shell back for a hidden page, and gives it a snapshot when shown", async () => {
+    const flow = watchFlow();
+    await start({ flowControl: FLOW, spawn: flow.spawn });
+    const terminal = await open((await workspace()).id);
+    const view = await connect(terminal.id);
+    await view.until(() => view.text().includes("READY"), "the shell to start");
+    view.socket.send(JSON.stringify({ type: "visibility", visible: false }));
+    const before = view.frames.length;
+
+    view.type("flood 3000\r");
+    view.type("exit 7\r");
+    await view.until(() => view.frames.some((frame) => frame.type === "exit"), "the exit");
+    expect(flow.events).toEqual([]);
+    expect(view.frames.slice(before).map((frame) => frame.type)).toEqual(["exit"]);
+
+    view.socket.send(JSON.stringify({ type: "visibility", visible: true }));
+    await view.until(() => view.frames.length === before + 3, "a snapshot and the exit");
+    const [snapshot, exit] = view.frames.slice(before + 1);
+    expect(snapshot?.type).toBe("snapshot");
+    expect(snapshot?.type === "snapshot" && snapshot.data).toContain("flood done");
+    expect(exit).toEqual({ type: "exit", exitCode: 7 });
+  });
+
+  it("resumes the shell when the browser that held it back hides or leaves", async () => {
+    const flow = watchFlow();
+    await start({ flowControl: FLOW, spawn: flow.spawn });
+    const terminal = await open((await workspace()).id);
+    const view = await connect(terminal.id);
+    await view.until(() => view.text().includes("READY"), "the shell to start");
+    view.type("flood 3000\r");
+    await flow.reached(1);
+
+    view.socket.send(JSON.stringify({ type: "visibility", visible: false }));
+    await flow.reached(2);
+    // Shown again, it gets the scrollback to draw, which is more than the mark, so the shell waits again.
+    view.socket.send(JSON.stringify({ type: "visibility", visible: true }));
+    await flow.reached(3);
+    view.socket.close();
+    await flow.reached(4);
+    expect(flow.events).toEqual(["pause", "resume", "pause", "resume"]);
+  });
+
+  it("closes a paused shell", async () => {
+    const flow = watchFlow();
+    await start({ flowControl: FLOW, spawn: flow.spawn });
+    const terminal = await open((await workspace()).id);
+    const view = await connect(terminal.id);
+    await view.until(() => view.text().includes("READY"), "the shell to start");
+    view.type("flood 3000\r");
+    await flow.reached(1);
+
+    const closed = parse(
+      TerminalBody,
+      await json(await api().request("DELETE", `/api/terminals/${terminal.id}`)),
+      "closed",
+    ).terminal;
+    expect(closed.status).toBe("exited");
+  });
+
+  it("refuses flow control marks the browser's acks could never reach", async () => {
+    await expect(
+      createTestServer([
+        projectsModule,
+        vcsFolderModule,
+        workspacesModule,
+        createTerminalsModule({ flowControl: { highChars: 20_000, lowChars: 5000 } }),
+      ]),
+    ).rejects.toThrow("terminals flow control needs 5000 < lowChars < highChars");
+  });
+
+  it("counts the snapshot a new browser must draw", async () => {
+    const pty = fakePty();
+    await start({ flowControl: FLOW, spawn: pty.spawn });
+    const terminal = await open((await workspace()).id);
+    // Output with nobody watching never pauses the shell.
+    pty.print("y".repeat(30_000));
+    expect(pty.events).toEqual([]);
+
+    const view = await connect(terminal.id);
+    await view.until(() => view.frames.length === 1, "the snapshot");
+    expect(pty.events).toEqual(["pause"]);
+    view.socket.send(JSON.stringify({ type: "ack", chars: 25_000 }));
+    // The server answers messages in order, so this error comes after it has handled the ack.
+    view.socket.send("sync");
+    await view.until(() => view.frames.some((frame) => frame.type === "error"), "the sync");
+    expect(pty.events).toEqual(["pause", "resume"]);
   });
 });

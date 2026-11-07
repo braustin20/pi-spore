@@ -81,6 +81,7 @@ export {
 export { slugify } from "./slug.js";
 export {
   CreateTerminalRequest,
+  TERMINAL_ACK_CHARS,
   TERMINAL_INPUT_MAX,
   Terminal,
   TerminalClientMessage,
