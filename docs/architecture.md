@@ -425,7 +425,13 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   and cleared when the user sends a message, opens the chat, the chat page sees the run end while it is visible, or
   the user dismisses it (`POST /api/agents/:id/seen`). Statuses and dialogs live in memory; after a restart every
   agent is stopped.
-- Not built yet: the Home page, approvals, usage warnings, and a CLI command for the inbox.
+- The Home page (`#/`, attention web module) shows the items as cards: a question with its choices and a text
+  answer; the same dialog card as the chat (from the agents web interface `AgentsWebKey`); a failure with its error;
+  a finished agent with Open chat and Dismiss. Running work is a short list below. The Home rail icon shows the item
+  count through `RailItem.useBadge`.
+- Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
+  but not focused, each new item shows a notification. Items already there when the page loads do not.
+- Not built yet: approvals, usage warnings, and a CLI command for the inbox.
 
 ## 11. Unity module
 

@@ -5,19 +5,16 @@ import {
   type WebPage,
 } from "@pi-spore/module-api";
 import { initTheme } from "@pi-spore/ui";
-import { House } from "lucide-react";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./App.js";
 import { createApiClient } from "./api.js";
-import { HomePage } from "./HomePage.js";
 import { webModules } from "./modules.js";
 import "./app.css";
 
 const api = createApiClient();
-const pages: WebPage[] = [
-  { path: "/", title: "Home", rail: { order: 0, icon: House }, component: HomePage },
-];
+// Home (`/`) comes from the attention module.
+const pages: WebPage[] = [];
 
 // Same registry rules as the server: an invalid module list stops the app at load.
 const broker = createInterfaceBroker();

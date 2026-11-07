@@ -25,6 +25,9 @@ import { Composer, DialogCard } from "./composer.js";
 import { MessageList } from "./messages.js";
 import { activity, emptyPage, reducePage } from "./page-state.js";
 import { needsRefresh, workspaceStatus } from "./status.js";
+import { AgentsWebKey } from "./web-contract.js";
+
+export * from "./web-contract.js";
 
 const AgentBody = Type.Object({ agent: Type.Object({ id: Type.String() }) });
 
@@ -124,7 +127,20 @@ function ChatPane({ workspace }: { workspace: Workspace }) {
 
   useEffect(() => {
     if (!agentId) return;
-    return api.subscribe(`agent:${agentId}`, dispatch);
+    return api.subscribe(`agent:${agentId}`, (event) => {
+      dispatch(event);
+      // A reply that ends while the user watches this chat does not wait for them on Home.
+      const pi = (event as { type?: string; event?: { type?: string; aborted?: boolean } }).event;
+      if (
+        pi?.type === "agent_settled" &&
+        pi.aborted !== true &&
+        document.visibilityState === "visible"
+      ) {
+        api
+          .send("POST", `agents/${agentId}/seen`)
+          .catch((caught: unknown) => console.error(`pi-spore: mark seen: ${message(caught)}`));
+      }
+    });
   }, [api, agentId]);
 
   // Follow new output only while the reader is already at the bottom.
@@ -386,6 +402,7 @@ export const agentsWeb: WebModule = {
   requires: ["workspaces"],
   core: true,
   setup(host) {
+    host.provide(AgentsWebKey, { DialogCard });
     const view = host.use(WorkspaceViewKey);
     view.setMain(ChatPane);
     view.setStatus(useAgentStatus);

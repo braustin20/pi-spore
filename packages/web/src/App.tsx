@@ -40,6 +40,40 @@ function ServerStatus() {
   );
 }
 
+const noBadge = () => 0;
+
+function RailLink({ page, path }: { page: WebPage; path: string }) {
+  const Icon = page.rail?.icon;
+  // The page list never changes after load, so each link always calls the same hook.
+  const count = (page.rail?.useBadge ?? noBadge)();
+  const active = railActive(page.path, path);
+  const label = count > 0 ? `${page.title} (${count})` : page.title;
+  return (
+    <Tooltip label={label}>
+      <a
+        href={`#${page.path}`}
+        aria-label={label}
+        aria-current={active ? "page" : undefined}
+        className={cn(
+          "relative flex size-10 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg",
+          active &&
+            "bg-raised text-accent-strong before:absolute before:inset-y-2 before:-left-2 before:w-0.5 before:rounded-full before:bg-accent hover:text-accent-strong",
+        )}
+      >
+        {Icon && <Icon className="size-5" />}
+        {count > 0 && (
+          <span
+            aria-hidden="true"
+            className="absolute -top-0.5 -right-0.5 min-w-4 rounded-full bg-accent px-1 text-center font-mono text-[10px] leading-4 font-semibold text-on-accent"
+          >
+            {count > 99 ? "99+" : count}
+          </span>
+        )}
+      </a>
+    </Tooltip>
+  );
+}
+
 function Rail({ pages, path }: { pages: readonly WebPage[]; path: string }) {
   const items = pages
     .filter((page) => page.rail)
@@ -49,26 +83,9 @@ function Rail({ pages, path }: { pages: readonly WebPage[]; path: string }) {
       aria-label="Main"
       className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2"
     >
-      {items.map((page) => {
-        const Icon = page.rail?.icon;
-        const active = railActive(page.path, path);
-        return (
-          <Tooltip key={page.path} label={page.title}>
-            <a
-              href={`#${page.path}`}
-              aria-label={page.title}
-              aria-current={active ? "page" : undefined}
-              className={cn(
-                "relative flex size-10 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg",
-                active &&
-                  "bg-raised text-accent-strong before:absolute before:inset-y-2 before:-left-2 before:w-0.5 before:rounded-full before:bg-accent hover:text-accent-strong",
-              )}
-            >
-              {Icon && <Icon className="size-5" />}
-            </a>
-          </Tooltip>
-        );
-      })}
+      {items.map((page) => (
+        <RailLink key={page.path} page={page} path={path} />
+      ))}
     </nav>
   );
 }
