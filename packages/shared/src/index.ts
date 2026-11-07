@@ -115,6 +115,21 @@ export {
   ProjectTrait,
   SettingSource,
 } from "./projects.js";
+export {
+  PrCheck,
+  PrCheckState,
+  PrEvent,
+  PrMergeable,
+  PrReview,
+  PrState,
+  PrStatus,
+  PrTry,
+  PrWatchState,
+  PublishRequest,
+  PullRequest,
+  PushRequest,
+  WatchRequest,
+} from "./pull-requests.js";
 export { slugify } from "./slug.js";
 export {
   CreateTerminalRequest,

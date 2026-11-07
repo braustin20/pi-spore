@@ -579,6 +579,52 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 | `DELETE /api/changes/comments/:id` | Deletes an open comment; a sent one is 409 `comment_sent`. |
 | `POST /api/changes/workspaces/:id/comments/send` | Sends every open comment to the worker as one message. |
 
+## 11e. Pull requests
+
+See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
+
+- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `kanban`) talks to GitHub only
+  through `gh`, run with `execFile`, `GH_PROMPT_DISABLED=1`, and `--json` where gh has it. Output is checked with
+  TypeBox; a value it does not know (a new check conclusion) is a 422 `gh_failed`, not a guess.
+- The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
+  --body= [--draft]` (the `=` form keeps a title starting with `-` a value), `gh run view --job <id>
+  --log-failed`, and `gh api --method=GET --paginate --slurp` for the PR's comments, reviews, and line comments.
+  It never merges, closes, enables auto-merge, or force-pushes (R9.3). The tests fail on any other gh command.
+- Publish (`confirm: true` required): pushes the branch through the provider's `publish` (section 7), opens the
+  PR, stores it, turns the watch on, and moves the workspace's card to Review (`CardsKey.workChanged`). The form
+  starts with the workspace name as title, the card's body as body, and the workspace's base. A base like
+  `origin/main` loses its remote name.
+- A PR opened outside pi-spore for the workspace's branch is found on `GET ...?refresh=1` and shown, with the watch
+  off.
+- Tables: `github_pr_prs` (one per workspace: number, the last view as JSON, watch state, tries, the head whose
+  failures were sent, the last clean head, message, poll times), `github_pr_sent` (bot comments already sent), and
+  `github_pr_tries` (each automatic message, for the tab).
+- Watch (R9.2), a timer per watched PR; timers start again on server start and when a workspace resumes, and stop
+  while it is parked or archived:
+  - Each poll reads the PR. 30 s after a change (head, checks, mergeability), doubling to 5 min while nothing
+    changes.
+  - When no check on the head is pending, it reads the bot comments. If a check failed on a head not handled yet,
+    or a bot left comments not sent yet, it sends one message to the active worker chat (`AgentsKey.deliver`):
+    each failed check with its link and the last 80 lines (8 KiB) of its failed log (ANSI codes removed, at most 5
+    logs), then the bot comments with file and line, then "commit and push again; do not force-push; do not merge".
+    The delivery, the sent marks, and the try count commit in one transaction.
+  - A bot is an account GitHub types `Bot` (Q14: their comments go to the worker; people's do not).
+  - At most 3 tries in a row (module option). A head with every check passed and nothing to send ends the run. After
+    3 tries, or with no worker chat, the watch is `waiting` with a message, and sends nothing until the user resumes
+    (`watch on`), which starts a new run and sends the current failures again.
+  - A merged PR moves the card to Done; a merged or closed PR ends the watch (`done`).
+- Topic `github-pr:<workspace id>` sends the status on subscribe and after each poll.
+
+| Route | Does |
+|---|---|
+| `GET /api/github-pr/workspaces/:id[?refresh=1]` | The status: publishable, form defaults, the PR, watch state and tries, the local head and uncommitted count. `refresh=1` asks GitHub first. |
+| `POST /api/github-pr/workspaces/:id/publish` `{ title, body, base, draft?, confirm: true }` | Pushes and opens the PR (201). An open PR is 409 `pr_exists`. |
+| `POST /api/github-pr/workspaces/:id/push` `{ confirm: true }` | Pushes new commits to the PR's branch. |
+| `POST /api/github-pr/workspaces/:id/watch` `{ on }` | Turns the watch on (a new run of tries) or off. |
+
+- Not built yet: "waiting for you" on Home (the attention module has no way for other modules to add items, Q18),
+  and PR tools for agents (they come through spore-bridge).
+
 ## 11. Unity module
 
 See [ADR 0011](decisions/0011-unity-support.md).

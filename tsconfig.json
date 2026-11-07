@@ -59,6 +59,9 @@
       "path": "modules/changes"
     },
     {
+      "path": "modules/github-pr"
+    },
+    {
       "path": "packages/server"
     },
     {
