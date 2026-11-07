@@ -206,19 +206,6 @@ export function createAgentsModule(
         for (const row of rows) queue.flush(row.id);
       });
 
-      const api: Agents = {
-        deliver: (agentId, message) => {
-          agents.view(agentId);
-          queue.add(agentId, message);
-        },
-        get: (agentId) => agents.view(agentId),
-        attention: () => agents.attention(),
-        onChange: (listener) => {
-          listeners.push(listener);
-        },
-      };
-      host.provide(AgentsKey, api);
-
       // Parking stops agents (R2.3); archiving removes the worktree, so its agent must stop first.
       workspaces.beforeLeaveActive(async (workspace) => {
         const rows = host.store.all<Row>(
@@ -276,6 +263,30 @@ export function createAgentsModule(
         waiting_since: null,
       });
 
+      /** The workspace's active worker chat; the first call for a workspace creates it. */
+      const ensureWorker = (workspaceId: string): Promise<{ agent: Agent; created: boolean }> => {
+        const workspace = workspaces.get(workspaceId);
+        return inOrder(workspace.id, async () => {
+          const existing = activeWorker(workspace.id);
+          if (existing) return { agent: agents.view(existing.id), created: false };
+          return { agent: insert(newRow(workspace.id, "worker", null)), created: true };
+        });
+      };
+
+      const api: Agents = {
+        deliver: (agentId, message) => {
+          agents.view(agentId);
+          queue.add(agentId, message);
+        },
+        activeWorker: async (workspaceId) => (await ensureWorker(workspaceId)).agent,
+        get: (agentId) => agents.view(agentId),
+        attention: () => agents.attention(),
+        onChange: (listener) => {
+          listeners.push(listener);
+        },
+      };
+      host.provide(AgentsKey, api);
+
       const requireActive = (workspace: Workspace) => {
         if (workspace.state !== "active") {
           throw new ApiError(
@@ -320,12 +331,8 @@ export function createAgentsModule(
           await c.req.text(),
           "create agent request",
         );
-        const workspace = workspaces.get(request.workspaceId);
-        return inOrder(workspace.id, async () => {
-          const existing = activeWorker(workspace.id);
-          if (existing) return c.json({ agent: agents.view(existing.id) });
-          return c.json({ agent: insert(newRow(workspace.id, "worker", null)) }, 201);
-        });
+        const { agent, created } = await ensureWorker(request.workspaceId);
+        return c.json({ agent }, created ? 201 : 200);
       });
 
       /**

@@ -195,6 +195,95 @@ describe("spore-bridge", () => {
     );
   });
 
+  const card = (extra: Record<string, unknown> = {}) => ({
+    id: "c1",
+    title: "Phase 1",
+    body: "",
+    labels: ["plan:x"],
+    column: "backlog",
+    blockedBy: [],
+    blocked: false,
+    ...extra,
+  });
+
+  it("adds a card with the tool call id as receipt", async () => {
+    reply("POST /api/bridge/cards", { status: 201, body: { card: card() } });
+    const result = await fakePi()
+      .tool("kanban_add_card")
+      .execute("toolu_k1", { title: "Phase 1", labels: ["plan:x"] });
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/cards",
+        auth: "Bearer agent-token",
+        receipt: "toolu_k1",
+        body: { title: "Phase 1", labels: ["plan:x"] },
+      },
+    ]);
+    expect(result.content[0]?.text).toBe("Added card c1  [backlog]  Phase 1  labels: plan:x");
+  });
+
+  it("lists cards with their blockers and the project's workspaces", async () => {
+    reply("GET /api/bridge/cards", {
+      body: {
+        cards: [
+          card({
+            id: "c2",
+            title: "Phase 2",
+            blocked: true,
+            blockedBy: [{ kind: "card", id: "c1", title: "Phase 1", open: true }],
+          }),
+        ],
+        workspaces: [{ id: "w1", name: "planner", current: true }],
+      },
+    });
+    const result = await fakePi()
+      .tool("kanban_list_cards")
+      .execute("toolu_k2", { label: "plan:x" });
+    expect(seen[0]?.path).toBe("/api/bridge/cards?label=plan%3Ax");
+    expect(result.content[0]?.text).toBe(
+      [
+        "Cards (1):",
+        "c2  [backlog]  Phase 2  labels: plan:x  blocked by: Phase 1 (c1)",
+        "",
+        "Active workspaces of this project:",
+        "w1  planner  (this workspace)",
+      ].join("\n"),
+    );
+  });
+
+  it("asks to start a card in an existing workspace and ends the turn", async () => {
+    reply("POST /api/bridge/cards/c1/start", {
+      status: 201,
+      body: { approval: { id: "a1", title: 'Start card "Phase 1"' } },
+    });
+    const result = await fakePi()
+      .tool("kanban_start_card")
+      .execute("toolu_k3", { cardId: "c1", workspaceId: "w2", reason: "Related work" });
+    expect(seen[0]).toMatchObject({
+      receipt: "toolu_k3",
+      body: { target: { kind: "existing", workspaceId: "w2" }, reason: "Related work" },
+    });
+    expect(result.terminate).toBe(true);
+    expect(result.content[0]?.text).toContain("approval a1");
+  });
+
+  it("asks for a new worktree by default, and refuses a mixed target without calling the server", async () => {
+    reply("POST /api/bridge/cards/c1/start", {
+      status: 201,
+      body: { approval: { id: "a2", title: "x" } },
+    });
+    const pi = fakePi();
+    await pi.tool("kanban_start_card").execute("toolu_k4", { cardId: "c1", reason: "Next" });
+    expect(seen[0]?.body).toEqual({ target: { kind: "new", isolation: "new" }, reason: "Next" });
+    await expect(
+      pi
+        .tool("kanban_start_card")
+        .execute("toolu_k5", { cardId: "c1", workspaceId: "w2", isolation: "new", reason: "x" }),
+    ).rejects.toThrow("not both");
+    expect(seen).toHaveLength(1);
+  });
+
   it("replaces the global AGENTS.md with the pi-spore rules and keeps project files", async () => {
     const options = {
       contextFiles: [

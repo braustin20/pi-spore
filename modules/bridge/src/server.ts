@@ -1,10 +1,18 @@
 import { ActionsKey } from "@pi-spore/mod-actions/server";
 import { QuestionsKey } from "@pi-spore/mod-attention/server";
+import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type BridgeCaller, bridgeCaller, type ServerModule } from "@pi-spore/module-api";
 import {
   type ActionRun,
+  BridgeAddCardRequest,
+  type BridgeCardList,
   type BridgeRunLog,
+  BridgeStartCardRequest,
+  BridgeUpdateCardRequest,
+  CARD_COLUMNS,
+  type Card,
+  type CardColumn,
   FileQuestionRequest,
   parseJsonBody,
   StartBridgeRunRequest,
@@ -32,12 +40,13 @@ export function tail(text: string): { text: string; truncated: boolean } {
  */
 export const bridgeModule: ServerModule = {
   id: "bridge",
-  requires: ["workspaces", "attention", "actions"],
+  requires: ["workspaces", "attention", "actions", "kanban"],
   core: false,
   setup(host) {
     const workspaces = host.use(WorkspacesKey);
     const questions = host.use(QuestionsKey);
     const actions = host.use(ActionsKey);
+    const cards = host.use(CardsKey);
 
     /** A run of the caller's workspace. Other workspaces' runs look like they do not exist. */
     const ownRun = (caller: BridgeCaller, id: string): ActionRun => {
@@ -47,6 +56,88 @@ export const bridgeModule: ServerModule = {
       return run;
     };
 
+    /** A side chat changes nothing (ADR 0033); the tools leave it out, and the routes refuse it as well. */
+    const refuseReadOnly = (caller: BridgeCaller, what: string) => {
+      if (caller.readOnly)
+        throw new ApiError(403, "read_only_chat", `A side chat is read-only and cannot ${what}`);
+    };
+
+    const projectOf = (caller: BridgeCaller) => workspaces.get(caller.workspaceId).projectId;
+
+    /** A card of the caller's project. Other cards look like they do not exist (ADR 0100). */
+    const ownCard = (caller: BridgeCaller, id: string): Card => {
+      const card = cards.get(id);
+      if (card.projectId !== projectOf(caller))
+        throw new ApiError(404, "card_not_found", `No card ${id}`);
+      return card;
+    };
+
+    const blockers = (caller: BridgeCaller, ids: readonly string[] | undefined) =>
+      ids?.map((id) => ({ kind: "card" as const, id: ownCard(caller, id).id }));
+
+    const author = (caller: BridgeCaller) => ({
+      agentId: caller.agentId,
+      workspaceId: caller.workspaceId,
+    });
+
+    host.routes.get("/cards", (c) => {
+      const caller = bridgeCaller(c);
+      const projectId = projectOf(caller);
+      const label = c.req.query("label");
+      const column = c.req.query("column");
+      if (column !== undefined && !(CARD_COLUMNS as readonly string[]).includes(column))
+        throw new ApiError(400, "bad_query", `"column" must be one of ${CARD_COLUMNS.join(", ")}`);
+      const body: BridgeCardList = {
+        cards: cards.list({
+          projectId,
+          ...(label ? { label } : {}),
+          ...(column ? { column: column as CardColumn } : {}),
+        }),
+        workspaces: workspaces.list({ projectId, state: "active" }).map((workspace) => ({
+          id: workspace.id,
+          name: workspace.name,
+          current: workspace.id === caller.workspaceId,
+        })),
+      };
+      return c.json(body);
+    });
+
+    host.routes.post("/cards", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "change cards");
+      const request = parseJsonBody(BridgeAddCardRequest, await c.req.text(), "card");
+      const { blockedBy: ids, ...fields } = request;
+      const blockedBy = blockers(caller, ids);
+      const card = await cards.create(
+        { ...fields, projectId: projectOf(caller), ...(blockedBy ? { blockedBy } : {}) },
+        author(caller),
+      );
+      return c.json({ card }, 201);
+    });
+
+    host.routes.post("/cards/:id", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "change cards");
+      const request = parseJsonBody(BridgeUpdateCardRequest, await c.req.text(), "card change");
+      const card = ownCard(caller, c.req.param("id"));
+      const { blockedBy: ids, ...fields } = request;
+      const blockedBy = blockers(caller, ids);
+      const changed = await cards.update(
+        card.id,
+        { ...fields, ...(blockedBy ? { blockedBy } : {}) },
+        author(caller),
+      );
+      return c.json({ card: changed });
+    });
+
+    host.routes.post("/cards/:id/start", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "start work");
+      const request = parseJsonBody(BridgeStartCardRequest, await c.req.text(), "start request");
+      const approval = cards.requestStart(caller, c.req.param("id"), request);
+      return c.json({ approval }, 201);
+    });
+
     host.routes.post("/questions", async (c) => {
       const caller = bridgeCaller(c);
       const request = parseJsonBody(FileQuestionRequest, await c.req.text(), "question");
@@ -55,14 +146,7 @@ export const bridgeModule: ServerModule = {
 
     host.routes.post("/runs", async (c) => {
       const caller = bridgeCaller(c);
-      if (caller.readOnly) {
-        // The tools already keep side chats from running actions; this guards the route as well (ADR 0033).
-        throw new ApiError(
-          403,
-          "read_only_chat",
-          "A side chat is read-only and cannot run actions",
-        );
-      }
+      refuseReadOnly(caller, "run actions");
       const request = parseJsonBody(StartBridgeRunRequest, await c.req.text(), "run request");
       const workspace = workspaces.get(caller.workspaceId);
       if (workspace.state !== "active") {

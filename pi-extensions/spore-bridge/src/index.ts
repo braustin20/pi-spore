@@ -4,6 +4,7 @@
  */
 import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
 import Type from "typebox";
+import { registerCardTools } from "./cards.js";
 import {
   BridgeClient,
   type BridgeEnv,
@@ -136,6 +137,9 @@ export default function sporeBridge(pi: ExtensionAPI) {
       };
     },
   });
+
+  // ADR 0033: side chats get only request_human_input (the launch allowlist), so these stay off there too.
+  registerCardTools(pi, client);
 
   pi.registerTool({
     name: "check",

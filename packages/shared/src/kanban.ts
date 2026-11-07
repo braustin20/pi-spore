@@ -1,5 +1,5 @@
 import Type, { type Static } from "typebox";
-import { CreateWorkspaceResponse, Isolation, WorkspaceState } from "./workspaces.js";
+import { CreateWorkspaceResponse, Isolation, Workspace, WorkspaceState } from "./workspaces.js";
 
 /** The fixed board columns (R11.2, ADR 0012). */
 export const CardColumn = Type.Union([
@@ -63,6 +63,10 @@ export const CardBlocker = Type.Union([
 ]);
 export type CardBlocker = Static<typeof CardBlocker>;
 
+/** The agent (chat) that made or changed a card through spore-bridge (ADR 0100). */
+export const CardAuthor = Type.Object({ agentId: Type.String(), workspaceId: Type.String() });
+export type CardAuthor = Static<typeof CardAuthor>;
+
 export const Card = Type.Object({
   id: Type.String(),
   title: Type.String(),
@@ -79,6 +83,10 @@ export const Card = Type.Object({
   blockedBy: Type.Array(CardBlocker),
   /** True while any blocker is open. */
   blocked: Type.Boolean(),
+  /** Absent when the user made it. */
+  createdBy: Type.Optional(CardAuthor),
+  /** The agent that changed it last. A change by the user clears it. */
+  changedBy: Type.Optional(CardAuthor),
   createdAt: Type.Integer(),
   updatedAt: Type.Integer(),
 });
@@ -146,23 +154,114 @@ export const MoveCardRequest = Type.Object(
 );
 export type MoveCardRequest = Static<typeof MoveCardRequest>;
 
-/** Starts a workspace named after the card (R11.4). The other fields are those of `CreateWorkspaceRequest`. */
-export const StartCardRequest = Type.Object(
+/** Where work from a card starts (ADR 0100): a new workspace, or an active workspace of the card's project. */
+export const CardStartTarget = Type.Union([
+  Type.Object(
+    {
+      kind: Type.Literal("new"),
+      isolation: Isolation,
+      line: Type.Optional(Type.String({ minLength: 1 })),
+      base: Type.Optional(Type.String({ minLength: 1 })),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("existing"), workspaceId: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+]);
+export type CardStartTarget = Static<typeof CardStartTarget>;
+
+/**
+ * Starts work from a card (R11.4): a new workspace named after the card, with the fields of `CreateWorkspaceRequest`,
+ * or an existing workspace by `workspaceId`. Either way the card's brief goes to the workspace's worker chat.
+ */
+export const StartCardRequest = Type.Union([
+  Type.Object(
+    {
+      /** Needed when the card has no project; must match it when it has one. */
+      projectId: Type.Optional(Type.String({ minLength: 1 })),
+      isolation: Isolation,
+      line: Type.Optional(Type.String({ minLength: 1 })),
+      base: Type.Optional(Type.String({ minLength: 1 })),
+      /** The user said yes to starting a blocked card. Without it a blocked card answers 409 `card_blocked`. */
+      confirmBlocked: Type.Optional(Type.Boolean()),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      /** An active workspace of the card's project. */
+      workspaceId: Type.String({ minLength: 1 }),
+      confirmBlocked: Type.Optional(Type.Boolean()),
+    },
+    { additionalProperties: false },
+  ),
+]);
+export type StartCardRequest = Static<typeof StartCardRequest>;
+
+export const StartCardResponse = Type.Object({
+  card: Card,
+  workspace: Workspace,
+  /** Only for a new workspace. */
+  created: Type.Optional(CreateWorkspaceResponse),
+  /** The worker chat that got the card's brief. */
+  chatId: Type.String(),
+});
+export type StartCardResponse = Static<typeof StartCardResponse>;
+
+/** The subject of a `card-start` approval (ADR 0100). */
+export const CardStartSubject = Type.Object(
+  { cardId: Type.String({ minLength: 1 }), target: CardStartTarget },
+  { additionalProperties: false },
+);
+export type CardStartSubject = Static<typeof CardStartSubject>;
+
+/** spore-bridge's card tools. Cards and blockers are always of the calling agent's project. */
+const CardIds = Type.Array(Type.String({ minLength: 1 }), { maxItems: 50 });
+
+export const BridgeAddCardRequest = Type.Object(
   {
-    /** Needed when the card has no project; must match it when it has one. */
-    projectId: Type.Optional(Type.String({ minLength: 1 })),
-    isolation: Isolation,
-    line: Type.Optional(Type.String({ minLength: 1 })),
-    base: Type.Optional(Type.String({ minLength: 1 })),
-    /** The user said yes to starting a blocked card. Without it a blocked card answers 409 `card_blocked`. */
-    confirmBlocked: Type.Optional(Type.Boolean()),
+    title: Title,
+    body: Type.Optional(Body),
+    labels: Type.Optional(Labels),
+    due: Type.Optional(DueDate),
+    column: Type.Optional(CardColumn),
+    /** Card ids. */
+    blockedBy: Type.Optional(CardIds),
   },
   { additionalProperties: false },
 );
-export type StartCardRequest = Static<typeof StartCardRequest>;
+export type BridgeAddCardRequest = Static<typeof BridgeAddCardRequest>;
 
-export const StartCardResponse = Type.Object({ card: Card, created: CreateWorkspaceResponse });
-export type StartCardResponse = Static<typeof StartCardResponse>;
+export const BridgeUpdateCardRequest = Type.Object(
+  {
+    title: Type.Optional(Title),
+    body: Type.Optional(Body),
+    labels: Type.Optional(Labels),
+    due: Type.Optional(Type.Union([DueDate, Type.Null()])),
+    column: Type.Optional(CardColumn),
+    /** Card ids; replaces the list. */
+    blockedBy: Type.Optional(CardIds),
+  },
+  { additionalProperties: false },
+);
+export type BridgeUpdateCardRequest = Static<typeof BridgeUpdateCardRequest>;
+
+export const BridgeStartCardRequest = Type.Object(
+  { target: CardStartTarget, reason: Type.String({ minLength: 1, maxLength: 4_000 }) },
+  { additionalProperties: false },
+);
+export type BridgeStartCardRequest = Static<typeof BridgeStartCardRequest>;
+
+/** What `kanban_list_cards` gets: the project's cards, and its active workspaces as start targets. */
+export const BridgeCardList = Type.Object({
+  cards: Type.Array(Card),
+  workspaces: Type.Array(
+    Type.Object({ id: Type.String(), name: Type.String(), current: Type.Boolean() }),
+  ),
+});
+export type BridgeCardList = Static<typeof BridgeCardList>;
 
 /** The only event of topic `kanban:board`: every card, on subscribe and after every change. */
 export const BoardEvent = Type.Object({ type: Type.Literal("board"), cards: Type.Array(Card) });

@@ -3,7 +3,7 @@
   "version": "0.0.0",
   "private": true,
   "type": "module",
-  "description": "Pi extension: the pi-spore workbench tools for agents (request_human_input, check, run_action)",
+  "description": "Pi extension: the pi-spore workbench tools for agents (request_human_input, check, run_action, kanban cards)",
   "keywords": [
     "pi-package"
   ],

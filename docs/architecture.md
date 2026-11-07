@@ -82,10 +82,16 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - `run_action` `{ name }`: runs a named project action the same way.
   - Both start the run, follow it with `GET /api/bridge/runs/:id?wait=25000` until it ends, then read the last
     16 KiB of its log. An aborted tool call cancels the run.
+  - Card tools (ADR 0100), limited to cards of the agent's project: `kanban_list_cards` `{ label?, column? }` (also
+    lists the project's active workspaces), `kanban_add_card` and `kanban_update_card` (title, body, column, labels,
+    due day, `blockedBy` card ids), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
+    base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
+    decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
+    `new` unless another is given.
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
     chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033).
-  - Not built yet: `ask_coordinator` (inside a lane), `report` (the structured stage result), `kanban_add_card`,
-    `kanban_update_card`, and the coordinator's `start_lane`, `answer_lane`, `merge_lane`.
+  - Not built yet: `ask_coordinator` (inside a lane), `report` (the structured stage result), and the coordinator's
+    `start_lane`, `answer_lane`, `merge_lane`.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
   Restarting it with `--session` restores the conversation.
 - Spike Q1 ([notes](spikes/q1-rpc-agents.md)) confirmed the full setup loads in RPC mode. Rules from it:
@@ -189,7 +195,7 @@ export interface ServerHost {
 | Stage | One stage execution | id, pipeline run, name, round, agent, verdict, findings |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
-| Card | A kanban card | id, project, column, position, title, body, labels, due, blocked by, workspace |
+| Card | A kanban card | id, project, column, position, title, body, labels, due, blocked by, workspace, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
 | UsageSnapshot | Latest plan window numbers (a file per plan, `usage/<plan>.json`) | plan, window (5h, 7d), utilization, resets at, seen at, source |
@@ -562,8 +568,9 @@ See [ADR 0011](decisions/0011-unity-support.md).
 See [ADR 0012](decisions/0012-kanban.md) and [ADR 0040](decisions/0040-card-moves-on-workspace-state.md). Requirements
 R11.
 
-- The `kanban` module (`modules/kanban/`, not core, requires `projects` and `workspaces`) owns three tables:
-  `kanban_cards` (title, Markdown body, project, labels, due day, column, position, the workspace started from it),
+- The `kanban` module (`modules/kanban/`, not core, requires `projects`, `workspaces`, `agents`, and `attention`)
+  owns three tables: `kanban_cards` (title, Markdown body, project, labels, due day, column, position, the workspace
+  started from it, and the agent that created it and the one that changed it last),
   `kanban_links` ("blocked by": a card or a workspace), and `kanban_events` (each move between columns, with its
   reason).
 - Columns are fixed in v1: Backlog, Ready, In progress, Review, Done. `position` orders a column from 0; every move
@@ -573,10 +580,20 @@ R11.
 - Due dates are calendar days (`YYYY-MM-DD`). The board compares them with the browser's local day: a card in any
   column but Done is overdue after its day, and "due today" on it.
 - Removing a project leaves its id on cards; the board shows "removed project".
-- Starting a workspace from a card (R11.4): `POST /api/kanban/cards/:id/start` with the create-workspace fields.
-  It creates the workspace through `WorkspacesKey.create`, named after the card, links the card to it, and moves the
-  card to In progress. A card with an open workspace answers 409 `card_has_workspace`. A blocked card answers 409
-  `card_blocked` unless the request carries `confirmBlocked: true`; the board asks the user first.
+- Starting work from a card (R11.4, ADR 0100): `POST /api/kanban/cards/:id/start` with either the create-workspace
+  fields (a new workspace through `WorkspacesKey.create`, named after the card) or `{ workspaceId }` (an active
+  workspace of the card's project; a parked one is 409 `workspace_not_active`, another project's 422
+  `project_mismatch`). The card links to the workspace and moves to In progress, and in the same transaction its
+  brief (title, labels, due day, blockers, notes) goes to the workspace's active worker chat through
+  `AgentsKey.deliver`. `AgentsKey.activeWorker` creates that chat if the workspace has none. A busy worker gets the
+  brief as a follow-up after its current run. A card with an open workspace answers 409 `card_has_workspace`. A
+  blocked card answers 409 `card_blocked` unless the request carries `confirmBlocked: true`; the board asks the user
+  first.
+- Agents (ADR 0100) reach cards through `CardsKey` from the bridge module: cards of their own project only, with
+  `createdBy` and `changedBy` set to the agent and its workspace. A change or move by the user clears `changedBy`.
+  A move by an agent is recorded with reason `agent`. `CardsKey.requestStart` checks the card and target, then files
+  a `card-start` approval (subject `{ cardId, target }`); approving it starts the work as above, with the target the
+  user chose, and tells the asking agent where it started.
 - Automatic moves happen only on a state change, so a manual move stays until the next one:
   - workspace started from the card → In progress;
   - workspace archived → Done (any archive; the user moves the card back if the work was dropped). The module
@@ -595,17 +612,22 @@ API under `/api/kanban`:
 | `PATCH /cards/:id` | Changes the fields given; `null` clears project or due. `blockedBy` replaces the list. |
 | `POST /cards/:id/move` `{ column, index? }` | Moves or reorders. Without `index`, the card goes to the end. |
 | `DELETE /cards/:id` | Deletes the card, its links both ways, and its history. |
-| `POST /cards/:id/start` | Starts a workspace from the card (above). |
+| `POST /cards/:id/start` | Starts work from the card in a new or an existing workspace (above). |
 
 - Topic `kanban:board` sends every card on subscribe and after every change.
 - The Board page (`#/board`, `#/board/<card id>`, rail icon) shows the columns with a project and a label filter.
   Cards move by drag and drop, or with the move buttons on each card (keyboard). Selecting a card opens it on the
   right: edit, move, delete, blockers, history, and "Start a workspace" with the workspaces module's create form
   (`WorkspaceViewKey.CreateForm`). The workspace view has a Card panel for the workspace's card.
+- The Work section offers "Start in a new workspace" (the create form) and "Start in an existing workspace" (the
+  project's active workspaces). Cards made or changed by an agent show an agent chip, and the card panel names the
+  agent's workspace with a link to its chat. Home shows a `card-start` approval with the card, whether it is
+  blocked, the reason, and a target picker.
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
-  [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`.
-- Not built yet: the spore-bridge tools `kanban_add_card` and `kanban_update_card` (R11.5), runs from cards, custom
-  columns, and overdue cards on Home (the attention module has no way for other modules to add items yet).
+  [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
+  --new [--mode m] [--line b] [--base b] | --workspace <id> [--blocked-ok]`.
+- Not built yet: runs from cards, custom columns, and overdue cards on Home (the attention module has no way for
+  other modules to add items yet).
 
 ## 13. Settings
 
@@ -727,7 +749,11 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   included, needs a loopback Host and Origin and the user's token in `?token=` (browsers cannot set headers on a
   WebSocket). Agent tokens are never accepted. `ApiClient.socketUrl(path)` builds the URL in the page.
 - Routes under `/api/bridge/` are for spore-bridge and take only agent tokens; all others take only the user's token
-  (ADR 0032).
+  (ADR 0032). Card routes (ADR 0100): `GET /api/bridge/cards?label=&column=`, `POST /api/bridge/cards`,
+  `POST /api/bridge/cards/:id` (change), and `POST /api/bridge/cards/:id/start` (files an approval). The mutating
+  ones refuse a read-only side chat with 403 `read_only_chat`.
+- CLI for approvals: `pi-spore approvals list [--all]`, `pi-spore approvals approve <id>`, `pi-spore approvals
+  decline <id> [--note text]`.
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
 - Chats (agents module, ADR 0030):

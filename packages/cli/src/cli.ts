@@ -5,6 +5,9 @@ import {
   type Agent,
   AgentList,
   Agent as AgentSchema,
+  type Approval,
+  ApprovalList,
+  Approval as ApprovalSchema,
   ArchiveWorkspaceResponse,
   CARD_COLUMNS,
   type Card,
@@ -18,6 +21,7 @@ import {
   Project,
   ProjectList,
   parse,
+  StartCardResponse,
   type StepReport,
   type Workspace,
   WorkspaceList,
@@ -65,8 +69,16 @@ Commands:
   card add <title> [--project <project>] [--due YYYY-MM-DD] [--label <label>] [--column <column>]
   card move <card> <column>                backlog, ready, in-progress, review, or done
   card rm <card>
+  card start <card> --new [--mode new|existing|in-place] [--line <branch>] [--base <branch>]
+  card start <card> --workspace <workspace>
+                                           Start work from a card in a new workspace or an active one of
+                                           its project; the brief goes to its worker chat. Add
+                                           --blocked-ok to start a blocked card
+  approvals list [--all]                   Open approvals agents asked for; --all includes decided ones
+  approvals approve <approval>
+  approvals decline <approval> [--note <text>]
 
-<project> is a project id or slug. <workspace> and <card> are ids.
+<project> is a project id or slug. <workspace>, <card>, and <approval> are ids.
 
 Environment:
   PI_SPORE_URL    Server address (default ${DEFAULT_URL})
@@ -483,7 +495,95 @@ async function cardCommand(api: Api, deps: CliDeps, args: string[], json: boolea
     await api.call("DELETE", `kanban/cards/${rest[0]}`, Type.Object({ removed: Type.String() }));
     return deps.out(json ? JSON.stringify({ removed: rest[0] }) : `Removed card ${rest[0]}`);
   }
+  if (sub === "start") {
+    const { positional, options, on } = parseArgs(
+      rest,
+      ["workspace", "mode", "line", "base"],
+      ["new", "blocked-ok"],
+    );
+    if (positional.length !== 1) throw usageError("card start takes one card id");
+    if (on.has("new") === (options.workspace !== undefined))
+      throw usageError("card start needs either --new or --workspace <id>");
+    if (options.workspace && (options.mode || options.line || options.base))
+      throw usageError("--mode, --line, and --base go with --new only");
+    const mode = (options.mode ?? "new") as Isolation;
+    if (!MODES.includes(mode)) throw usageError(`--mode must be one of ${MODES.join(", ")}`);
+    const request = options.workspace
+      ? { workspaceId: options.workspace }
+      : {
+          isolation: mode,
+          ...(options.line ? { line: options.line } : {}),
+          ...(options.base ? { base: options.base } : {}),
+        };
+    const result = await api.call(
+      "POST",
+      `kanban/cards/${positional[0]}/start`,
+      StartCardResponse,
+      {
+        ...request,
+        ...(on.has("blocked-ok") ? { confirmBlocked: true } : {}),
+      },
+    );
+    if (json) return deps.out(JSON.stringify(result));
+    for (const warning of result.created?.warnings ?? []) deps.err(`warning: ${warning}`);
+    deps.out(`Started ${cardLine(result.card, await projects())}`);
+    deps.out(`In ${workspaceLine(result.workspace)}`);
+    deps.out(`Brief sent to chat ${result.chatId}`);
+    return reportSteps(deps, result.created?.steps ?? [], json);
+  }
   throw usageError(`Unknown command: card ${args.join(" ")}`);
+}
+
+const ApprovalBody = Type.Object({ approval: ApprovalSchema });
+
+function approvalLine(approval: Approval): string {
+  const state = approval.state === "open" ? "" : `  ${approval.state}`;
+  return `${approval.id}  ${approval.title}${state}\n    reason: ${approval.reason}`;
+}
+
+async function approvalsCommand(
+  api: Api,
+  deps: CliDeps,
+  args: string[],
+  json: boolean,
+): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub === "list") {
+    const { positional, on } = parseArgs(rest, [], ["all"]);
+    if (positional.length > 0) throw usageError("approvals list takes no positional arguments");
+    const { approvals } = await api.call(
+      "GET",
+      `attention/approvals${on.has("all") ? "" : "?state=open"}`,
+      ApprovalList,
+    );
+    if (json) return deps.out(JSON.stringify(approvals));
+    if (approvals.length === 0) return deps.out("No approvals waiting.");
+    for (const approval of approvals) deps.out(approvalLine(approval));
+    return;
+  }
+  if (sub === "approve" && rest.length === 1) {
+    const { approval } = await api.call(
+      "POST",
+      `attention/approvals/${rest[0]}/approve`,
+      ApprovalBody,
+      {},
+    );
+    return deps.out(
+      json ? JSON.stringify(approval) : `Approved ${approval.id}: ${approval.outcome ?? ""}`,
+    );
+  }
+  if (sub === "decline") {
+    const { positional, options } = parseArgs(rest, ["note"]);
+    if (positional.length !== 1) throw usageError("approvals decline takes one approval id");
+    const { approval } = await api.call(
+      "POST",
+      `attention/approvals/${positional[0]}/decline`,
+      ApprovalBody,
+      options.note ? { note: options.note } : {},
+    );
+    return deps.out(json ? JSON.stringify(approval) : `Declined ${approval.id}`);
+  }
+  throw usageError(`Unknown command: approvals ${args.join(" ")}`);
 }
 
 /** Runs one CLI invocation and returns the process exit code. */
@@ -505,6 +605,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "action") await actionCommand(new Api(deps, base), deps, rest, json);
     else if (command === "chat") await chatCommand(new Api(deps, base), deps, rest, json);
     else if (command === "card") await cardCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;
   } catch (error) {

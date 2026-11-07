@@ -512,6 +512,88 @@ describe("pi-spore card", () => {
   });
 });
 
+describe("pi-spore card start", () => {
+  const started = { card: { ...card, column: "in-progress" }, workspace, chatId: "A1" };
+
+  it("starts a card in an existing workspace", async () => {
+    const { deps, out, sent } = fakeDeps((key) =>
+      key.startsWith("GET /api/projects")
+        ? Response.json({ projects: [project] })
+        : Response.json(started, { status: 201 }),
+    );
+    expect(await run(["card", "start", "C1", "--workspace", "W1"], deps)).toBe(0);
+    expect(sent[0]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:7420/api/kanban/cards/C1/start",
+      body: { workspaceId: "W1" },
+    });
+    expect(out).toEqual([
+      "Started C1  in-progress game             Fix UI  due 2026-11-10  [ui]",
+      "In W1  active   Fix UI  spore/fix-ui-abc123  /home/me/.pi-spore/worktrees/game/fix-ui-abc123",
+      "Brief sent to chat A1",
+    ]);
+  });
+
+  it("starts a card in a new workspace, and refuses a missing or mixed target first", async () => {
+    const { deps, err, sent } = fakeDeps((key) =>
+      key.startsWith("GET /api/projects")
+        ? Response.json({ projects: [project] })
+        : Response.json(
+            { ...started, created: { workspace, copied: [], warnings: [], steps: [] } },
+            { status: 201 },
+          ),
+    );
+    expect(await run(["card", "start", "C1"], deps)).toBe(2);
+    expect(await run(["card", "start", "C1", "--new", "--workspace", "W1"], deps)).toBe(2);
+    expect(await run(["card", "start", "C1", "--workspace", "W1", "--mode", "new"], deps)).toBe(2);
+    expect(err[0]).toContain("either --new or --workspace");
+    expect(sent).toEqual([]);
+
+    expect(
+      await run(["card", "start", "C1", "--new", "--mode", "in-place", "--blocked-ok"], deps),
+    ).toBe(0);
+    expect(sent[0]?.body).toEqual({ isolation: "in-place", confirmBlocked: true });
+  });
+});
+
+describe("pi-spore approvals", () => {
+  const approval = {
+    id: "AP1",
+    kind: "card-start",
+    agentId: "A1",
+    workspaceId: "W1",
+    title: 'Start card "Fix UI" in a new workspace (new worktree or copy)',
+    reason: "Phase 1 is next",
+    subject: { cardId: "C1", target: { kind: "new", isolation: "new" } },
+    state: "open",
+    createdAt: 5,
+  };
+
+  it("lists open approvals", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json({ approvals: [approval] }));
+    expect(await run(["approvals", "list"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/attention/approvals?state=open");
+    expect(out).toEqual([
+      'AP1  Start card "Fix UI" in a new workspace (new worktree or copy)\n    reason: Phase 1 is next',
+    ]);
+  });
+
+  it("approves and declines with a note", async () => {
+    const { deps, out, sent } = fakeDeps((key) =>
+      key.endsWith("/approve")
+        ? Response.json({ approval: { ...approval, state: "approved", outcome: "Started." } })
+        : Response.json({ approval: { ...approval, state: "declined", outcome: "Later" } }),
+    );
+    expect(await run(["approvals", "approve", "AP1"], deps)).toBe(0);
+    expect(await run(["approvals", "decline", "AP1", "--note", "Later"], deps)).toBe(0);
+    expect(sent.map((request) => [request.url, request.body])).toEqual([
+      ["http://127.0.0.1:7420/api/attention/approvals/AP1/approve", {}],
+      ["http://127.0.0.1:7420/api/attention/approvals/AP1/decline", { note: "Later" }],
+    ]);
+    expect(out).toEqual(["Approved AP1: Started.", "Declined AP1"]);
+  });
+});
+
 describe("pi-spore usage", () => {
   it("prints usage and exits 2 with no command", async () => {
     const { deps, out } = fakeDeps(healthy);

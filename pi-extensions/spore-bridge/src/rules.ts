@@ -15,7 +15,10 @@ AGENTS.md is left out on purpose; these rules take its place. Project AGENTS.md 
   message, possibly after a restart.
 - Do the work in this workspace's folder. Do not create other worktrees or start agents in other terminals.
 - Before you say the work is done, run check and fix what it reports.
-- Never merge into the base branch and never turn on auto-merge. A human merges.`;
+- Never merge into the base branch and never turn on auto-merge. A human merges.
+- The kanban board holds the user's planned work. Make or change cards only when the user asks. For a plan with
+  phases, make one card per phase, link them in order with blockedBy, and give them one shared label such as
+  plan:<short name>. Start work from a card only when the user asks; kanban_start_card waits for their approval.`;
 
 /**
  * The rules of a read-only side chat (ADR 0033). The read-only tools are what enforce it; these rules tell the model

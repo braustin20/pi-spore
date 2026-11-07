@@ -5,12 +5,13 @@ import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
 import { attentionModule, INBOX_TOPIC } from "@pi-spore/mod-attention/server";
+import { cardBrief, kanbanModule } from "@pi-spore/mod-kanban/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { ChatState, Inbox, InboxEvent, Question } from "@pi-spore/shared";
+import type { Approval, Card, ChatState, Inbox, InboxEvent, Question } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bridgeModule } from "./server.js";
 
@@ -52,6 +53,7 @@ async function start(
       agents,
       actionsModule,
       attentionModule,
+      kanbanModule,
       bridgeModule,
     ],
     {
@@ -93,6 +95,26 @@ async function workspace(server: TestServer, name: string, config = "") {
     201,
   );
   return { workspaceId: workspace.id, agentId: agent.id, folder };
+}
+
+/** One more in-place workspace of the same project, with its worker chat. */
+async function sibling(server: TestServer, of: string, name: string) {
+  const { workspace: parent } = await json<{ workspace: { projectId: string } }>(
+    await server.request("GET", `/api/workspaces/${of}`),
+  );
+  const { workspace } = await json<{ workspace: { id: string } }>(
+    await server.request("POST", "/api/workspaces", {
+      projectId: parent.projectId,
+      name,
+      isolation: "in-place",
+    }),
+    201,
+  );
+  const { agent } = await json<{ agent: { id: string } }>(
+    await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+    201,
+  );
+  return { workspaceId: workspace.id, agentId: agent.id };
 }
 
 /** Calls a bridge route as an agent process would, with its own token. */
@@ -462,6 +484,8 @@ describe("check and run_action", () => {
     expect((await other("GET", `runs/${run.id}`)).status).toBe(404);
     expect((await other("GET", `runs/${run.id}/log`)).status).toBe(404);
     expect((await other("POST", `runs/${run.id}/cancel`, {})).status).toBe(404);
+    // The run must end before the store closes.
+    await asAgent(server, mine.agentId, mine.workspaceId)("GET", `runs/${run.id}?wait=5000`);
     // An agent token opens no user routes.
     expect(
       (
@@ -471,5 +495,308 @@ describe("check and run_action", () => {
         })
       ).status,
     ).toBe(401);
+  });
+});
+
+describe("cards from agents (ADR 0100)", () => {
+  it("adds, lists, and changes cards of the agent's own project, and records the agent", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "plans");
+    const call = asAgent(server, agentId, workspaceId);
+
+    const { card: one } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 1", labels: ["plan:x"] }, "toolu_a1"),
+      201,
+    );
+    // A replayed tool call gets the first card, not a second one.
+    const replay = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 1", labels: ["plan:x"] }, "toolu_a1"),
+      201,
+    );
+    expect(replay.card.id).toBe(one.id);
+    const { card: two } = await json<{ card: Card }>(
+      await call(
+        "POST",
+        "cards",
+        { title: "Phase 2", labels: ["plan:x"], blockedBy: [one.id] },
+        "toolu_a2",
+      ),
+      201,
+    );
+    const author = { agentId, workspaceId };
+    expect(two).toMatchObject({
+      blocked: true,
+      createdBy: author,
+      changedBy: author,
+      blockedBy: [{ kind: "card", id: one.id }],
+    });
+    expect(two.projectId).toBe(one.projectId);
+
+    const changed = await json<{ card: Card }>(
+      await call("POST", `cards/${one.id}`, { column: "ready", body: "Do it" }, "toolu_a3"),
+    );
+    expect(changed.card).toMatchObject({ column: "ready", body: "Do it", changedBy: author });
+    const { history } = await json<{ history: { reason: string }[] }>(
+      await server.request("GET", `/api/kanban/cards/${one.id}`),
+    );
+    expect(history.map((move) => move.reason)).toEqual(["created", "agent"]);
+
+    const listed = await json<{ cards: Card[]; workspaces: unknown[] }>(
+      await call("GET", "cards?label=plan:x"),
+    );
+    expect(listed.cards.map((card) => card.title)).toEqual(["Phase 2", "Phase 1"]);
+    expect(listed.workspaces).toEqual([{ id: workspaceId, name: "plans", current: true }]);
+
+    // A change by the user clears the agent's mark.
+    const byUser = await json<{ card: Card }>(
+      await server.request("PATCH", `/api/kanban/cards/${one.id}`, { title: "Phase one" }),
+    );
+    expect(byUser.card.changedBy).toBeUndefined();
+    expect(byUser.card.createdBy).toEqual(author);
+  });
+
+  it("keeps an agent away from other projects' cards and from cards with no project", async () => {
+    const server = await start();
+    const mine = await workspace(server, "mine");
+    const theirs = await workspace(server, "theirs");
+    const { card: foreign } = await json<{ card: Card }>(
+      await asAgent(server, theirs.agentId, theirs.workspaceId)("POST", "cards", {
+        title: "Theirs",
+      }),
+      201,
+    );
+    const { card: loose } = await json<{ card: Card }>(
+      await server.request("POST", "/api/kanban/cards", { title: "No project" }),
+      201,
+    );
+    const call = asAgent(server, mine.agentId, mine.workspaceId);
+    for (const id of [foreign.id, loose.id]) {
+      const changed = await call("POST", `cards/${id}`, { title: "Mine now" });
+      expect(changed.status).toBe(404);
+      expect(await changed.json()).toMatchObject({ error: { code: "card_not_found" } });
+      expect(
+        (
+          await call("POST", `cards/${id}/start`, {
+            target: { kind: "new", isolation: "new" },
+            reason: "x",
+          })
+        ).status,
+      ).toBe(404);
+    }
+    const blocked = await call("POST", "cards", { title: "Mine", blockedBy: [foreign.id] });
+    expect(blocked.status).toBe(404);
+    expect((await json<{ cards: Card[] }>(await call("GET", "cards"))).cards).toEqual([]);
+  });
+
+  it("refuses card changes from a read-only side chat", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "side-cards");
+    const call = asAgent(server, agentId, workspaceId, true);
+    const added = await call("POST", "cards", { title: "Nope" });
+    expect(added.status).toBe(403);
+    expect(await added.json()).toMatchObject({ error: { code: "read_only_chat" } });
+    expect((await call("GET", "cards")).status).toBe(200);
+  });
+});
+
+describe("starting a card by an agent (ADR 0100)", () => {
+  /** A project with the asking agent's workspace, a related workspace, and a card. */
+  async function setUp() {
+    const server = await start();
+    const asker = await workspace(server, "planner");
+    const related = await sibling(server, asker.workspaceId, "crafting");
+    const call = asAgent(server, asker.agentId, asker.workspaceId);
+    const { card: first } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 1", body: "Build the base." }),
+      201,
+    );
+    return { server, asker, related, call, first };
+  }
+
+  const fileStart = async (
+    call: ReturnType<typeof asAgent>,
+    cardId: string,
+    target: unknown,
+    receipt?: string,
+  ) =>
+    json<{ approval: Approval }>(
+      await call("POST", `cards/${cardId}/start`, { target, reason: "Phase 1 is next" }, receipt),
+      201,
+    );
+
+  it("files an approval on Home and starts nothing until the user approves", async () => {
+    const { server, asker, related, call, first } = await setUp();
+    const { approval } = await fileStart(
+      call,
+      first.id,
+      { kind: "existing", workspaceId: related.workspaceId },
+      "toolu_s1",
+    );
+    expect(approval).toMatchObject({
+      kind: "card-start",
+      agentId: asker.agentId,
+      workspaceId: asker.workspaceId,
+      title: 'Start card "Phase 1" in the workspace "crafting"',
+      reason: "Phase 1 is next",
+      state: "open",
+      subject: { cardId: first.id, target: { kind: "existing", workspaceId: related.workspaceId } },
+    });
+    // A replayed tool call gets the same approval.
+    const replay = await fileStart(
+      call,
+      first.id,
+      { kind: "existing", workspaceId: related.workspaceId },
+      "toolu_s1",
+    );
+    expect(replay.approval.id).toBe(approval.id);
+
+    const items = (await inbox(server)).items;
+    expect(items.map((item) => item.kind)).toEqual(["approval"]);
+    expect(items[0]).toMatchObject({ agentId: asker.agentId, approval: { id: approval.id } });
+    const { card } = await json<{ card: Card }>(
+      await server.request("GET", `/api/kanban/cards/${first.id}`),
+    );
+    expect(card.column).toBe("backlog");
+    expect(card.workspaceId).toBeUndefined();
+
+    // The agent cannot decide its own approval: the attention routes take only the user's token, and no bridge
+    // route decides one.
+    const token = server.agentTokens.issue({
+      agentId: asker.agentId,
+      workspaceId: asker.workspaceId,
+    });
+    const asAgentToken = { "x-pi-spore-token": "", authorization: `Bearer ${token}` };
+    expect(
+      (
+        await server.request(
+          "POST",
+          `/api/attention/approvals/${approval.id}/approve`,
+          {},
+          asAgentToken,
+        )
+      ).status,
+    ).toBe(401);
+    expect((await call("POST", `approvals/${approval.id}/approve`, {})).status).toBe(404);
+  });
+
+  it("starts the work on approve, with a changed target, and tells the asking agent", async () => {
+    const { server, asker, related, call, first } = await setUp();
+    const { approval } = await fileStart(call, first.id, { kind: "new", isolation: "in-place" });
+
+    // The user picks the related workspace instead of a new one.
+    const decided = await json<{ approval: Approval }>(
+      await server.request("POST", `/api/attention/approvals/${approval.id}/approve`, {
+        subject: {
+          cardId: first.id,
+          target: { kind: "existing", workspaceId: related.workspaceId },
+        },
+      }),
+    );
+    expect(decided.approval).toMatchObject({
+      state: "approved",
+      subject: { target: { kind: "existing", workspaceId: related.workspaceId } },
+    });
+    const { card } = await json<{ card: Card }>(
+      await server.request("GET", `/api/kanban/cards/${first.id}`),
+    );
+    expect(card).toMatchObject({ column: "in-progress", workspaceId: related.workspaceId });
+
+    const brief = cardBrief(
+      card,
+      "The user approved starting it here, as an agent asked. The agent's reason: Phase 1 is next",
+    );
+    await until(() => said(server, related.agentId).includes(`user: ${brief}`));
+    const outcome = [
+      `The user approved your request (approval ${approval.id}).`,
+      "",
+      `Request: ${approval.title}`,
+      "",
+      `Outcome: Card "Phase 1" (${first.id}) started in the existing workspace "crafting" (${related.workspaceId}). Its brief went to that workspace's worker chat (${related.agentId}).`,
+    ].join("\n");
+    await until(() => said(server, asker.agentId).includes(`user: ${outcome}`));
+    expect((await inbox(server)).items.some((item) => item.kind === "approval")).toBe(false);
+
+    const again = await server.request("POST", `/api/attention/approvals/${approval.id}/approve`);
+    expect(again.status).toBe(409);
+    expect(await again.json()).toMatchObject({ error: { code: "approval_decided" } });
+  });
+
+  it("refuses a changed card on approve and keeps the approval open", async () => {
+    const { server, call, first } = await setUp();
+    const { card: other } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 2" }),
+      201,
+    );
+    const { approval } = await fileStart(call, first.id, { kind: "new", isolation: "in-place" });
+    const response = await server.request(
+      "POST",
+      `/api/attention/approvals/${approval.id}/approve`,
+      { subject: { cardId: other.id, target: { kind: "new", isolation: "in-place" } } },
+    );
+    expect(response.status).toBe(422);
+    const bad = await server.request("POST", `/api/attention/approvals/${approval.id}/approve`, {
+      subject: { cardId: first.id, target: { kind: "elsewhere" } },
+    });
+    expect(bad.status).toBe(400);
+    const { approval: still } = await json<{ approval: Approval }>(
+      await server.request("GET", `/api/attention/approvals/${approval.id}`),
+    );
+    expect(still.state).toBe("open");
+  });
+
+  it("tells the asking agent when the user declines, with the note", async () => {
+    const { server, asker, call, first } = await setUp();
+    const { approval } = await fileStart(call, first.id, { kind: "new", isolation: "in-place" });
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval.id}/decline`, {
+        note: "Not today",
+      }),
+    );
+    const message = [
+      `The user declined your request (approval ${approval.id}).`,
+      "",
+      `Request: ${approval.title}`,
+      "",
+      "The user's note: Not today",
+    ].join("\n");
+    await until(() => said(server, asker.agentId).includes(`user: ${message}`));
+    const { card } = await json<{ card: Card }>(
+      await server.request("GET", `/api/kanban/cards/${first.id}`),
+    );
+    expect(card.column).toBe("backlog");
+    const { approvals } = await json<{ approvals: Approval[] }>(
+      await server.request("GET", "/api/attention/approvals?state=declined"),
+    );
+    expect(approvals.map((found) => [found.id, found.outcome])).toEqual([
+      [approval.id, "Not today"],
+    ]);
+  });
+
+  it("says a card is blocked, and refuses parked or foreign targets when filed", async () => {
+    const { server, asker, related, call, first } = await setUp();
+    const { card: second } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 2", blockedBy: [first.id] }),
+      201,
+    );
+    const { approval } = await fileStart(call, second.id, { kind: "new", isolation: "new" });
+    expect(approval.title).toBe(
+      'Start card "Phase 2" in a new workspace (new worktree or copy) (blocked by: Phase 1)',
+    );
+
+    await json(await server.request("POST", `/api/workspaces/${related.workspaceId}/park`));
+    const parked = await call("POST", `cards/${first.id}/start`, {
+      target: { kind: "existing", workspaceId: related.workspaceId },
+      reason: "x",
+    });
+    expect(parked.status).toBe(409);
+    expect(await parked.json()).toMatchObject({ error: { code: "workspace_not_active" } });
+
+    const elsewhere = await workspace(server, "elsewhere");
+    const foreign = await call("POST", `cards/${first.id}/start`, {
+      target: { kind: "existing", workspaceId: elsewhere.workspaceId },
+      reason: "x",
+    });
+    expect(foreign.status).toBe(404);
+    expect(asker.workspaceId).not.toBe(elsewhere.workspaceId);
   });
 });

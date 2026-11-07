@@ -1,6 +1,9 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
+import { attentionModule } from "@pi-spore/mod-attention/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
@@ -20,11 +23,13 @@ import {
 } from "@pi-spore/shared";
 import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Cards, CardsKey, kanbanModule } from "./server.js";
+import { type Cards, CardsKey, cardBrief, kanbanModule } from "./server.js";
 
 const CardBody = Type.Object({ card: Card });
+const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 
 let server: TestServer;
+let agents: ReturnType<typeof createAgentsModule>;
 let scratch: string;
 let cards: Cards;
 
@@ -39,17 +44,28 @@ const probe: ServerModule = {
 };
 
 beforeEach(async () => {
+  agents = createAgentsModule({
+    pi: { command: process.execPath, args: [FAKE_PI] },
+    resourceArgs: async () => ["--no-extensions"],
+    roleDefaults: async () => ({}),
+    baseEnv: { PATH: process.env.PATH },
+    idleStopMs: 60_000,
+    startTimeoutMs: 1_000,
+  });
   server = await createTestServer([
     projectsModule,
     vcsGitModule,
     vcsFolderModule,
     workspacesModule,
+    agents,
+    attentionModule,
     kanbanModule,
     probe,
   ]);
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-kanban-")));
 });
-afterEach(() => {
+afterEach(async () => {
+  await agents.manager().stopAll();
   server.close();
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -105,13 +121,45 @@ async function board(): Promise<Partial<Record<CardColumn, string[]>>> {
   return columns;
 }
 
-async function startCard(id: string, request: Record<string, unknown>, status = 201) {
-  return parse(
+/** Starts work from a card and waits until its worker chat got the brief, so no delivery outlives the test. */
+async function startCard(id: string, request: Record<string, unknown>) {
+  const result = parse(
     StartCardResponse,
-    await json(await server.request("POST", `/api/kanban/cards/${id}/start`, request), status),
+    await json(await server.request("POST", `/api/kanban/cards/${id}/start`, request), 201),
     "start",
   );
+  await until(() =>
+    userMessages(result.chatId).some((text) => text.includes(`(card ${result.card.id})`)),
+  );
+  return result;
 }
+
+async function addWorkspace(projectId: string, name: string): Promise<Workspace> {
+  const body = await json(
+    await server.request("POST", "/api/workspaces", { projectId, name, isolation: "in-place" }),
+    201,
+  );
+  return parse(Type.Object({ workspace: Workspace }), body, "workspace").workspace;
+}
+
+async function until(check: () => boolean | Promise<boolean>, ms = 5_000): Promise<void> {
+  const end = Date.now() + ms;
+  while (!(await check())) {
+    if (Date.now() > end) throw new Error("Timed out waiting");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
+/** The user messages an agent got, as seen live. */
+const userMessages = (agentId: string) =>
+  (server.events.eventsOf(`agent:${agentId}`) as AgentEvent[]).flatMap((event) => {
+    const pi =
+      event.type === "pi"
+        ? (event.event as { type: string; message?: { role: string; content: unknown } })
+        : undefined;
+    if (pi?.type !== "message_end" || pi.message?.role !== "user") return [];
+    return [String(pi.message.content)];
+  });
 
 async function workspaceStep(id: string, step: "park" | "resume" | "archive") {
   return parse(
@@ -290,18 +338,20 @@ describe("starting work from a card", () => {
     ).toBe("project_required");
 
     const result = await startCard(card.id, { projectId: game.id, isolation: "in-place" });
-    expect(result.created.workspace).toMatchObject({ name: "Fix crafting UI", state: "active" });
+    expect(result.created?.workspace).toEqual(result.workspace);
+    expect(result.workspace).toMatchObject({ name: "Fix crafting UI", state: "active" });
     expect(result.card).toMatchObject({
       column: "in-progress",
       projectId: game.id,
-      workspaceId: result.created.workspace.id,
+      workspaceId: result.workspace.id,
     });
-    expect(cards.forWorkspace(result.created.workspace.id).map((found) => found.id)).toEqual([
+    expect(cards.forWorkspace(result.workspace.id).map((found) => found.id)).toEqual([card.id]);
+    expect((await list(`?workspaceId=${result.workspace.id}`)).map((found) => found.id)).toEqual([
       card.id,
     ]);
-    expect(
-      (await list(`?workspaceId=${result.created.workspace.id}`)).map((found) => found.id),
-    ).toEqual([card.id]);
+    // ADR 0100: the new workspace's worker chat gets the brief, so the work starts.
+    const brief = cardBrief(result.card, "The user started it here.");
+    await until(() => userMessages(result.chatId).includes(brief));
     expect((await getCard(card.id)).history.at(-1)).toMatchObject({
       from: "ready",
       to: "in-progress",
@@ -354,12 +404,120 @@ describe("starting work from a card", () => {
   });
 });
 
+describe("starting work in an existing workspace", () => {
+  it("links the card, moves it, and sends the brief to the active worker chat", async () => {
+    const game = await addProject("game");
+    const workspace = await addWorkspace(game.id, "Crafting");
+    const { agent } = parse(
+      Type.Object({ agent: Type.Object({ id: Type.String() }) }),
+      await json(await server.request("POST", "/api/agents", { workspaceId: workspace.id }), 201),
+      "agent",
+    );
+    const blocker = await addCard({ title: "Design first", projectId: game.id, column: "done" });
+    const card = await addCard({
+      title: "Polish the crafting UI",
+      body: "Make the buttons bigger.",
+      projectId: game.id,
+      labels: ["plan:craft"],
+      blockedBy: [{ kind: "card", id: blocker.id }],
+    });
+
+    const result = await startCard(card.id, { workspaceId: workspace.id });
+    expect(result.created).toBeUndefined();
+    expect(result.chatId).toBe(agent.id);
+    expect(result.card).toMatchObject({ column: "in-progress", workspaceId: workspace.id });
+    const brief = cardBrief(result.card, "The user started it here.");
+    expect(brief).toBe(
+      [
+        "Work on this card from the pi-spore board. The user started it here.",
+        "",
+        `Card: Polish the crafting UI (card ${card.id})`,
+        "Labels: plan:craft",
+        "Blocked by:",
+        `- card "Design first" (${blocker.id}), Done`,
+        "",
+        "Make the buttons bigger.",
+      ].join("\n"),
+    );
+    await until(() => userMessages(agent.id).includes(brief));
+    expect((await getCard(card.id)).history.at(-1)).toMatchObject({
+      to: "in-progress",
+      reason: "workspace-started",
+    });
+  });
+
+  it("queues the brief as a follow-up when the worker is busy", async () => {
+    const game = await addProject("game");
+    const workspace = await addWorkspace(game.id, "Busy");
+    const { agent } = parse(
+      Type.Object({ agent: Type.Object({ id: Type.String() }) }),
+      await json(await server.request("POST", "/api/agents", { workspaceId: workspace.id }), 201),
+      "agent",
+    );
+    await json(
+      await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "slow:300" }),
+    );
+    await until(() => agents.manager().view(agent.id).status === "busy");
+    const card = await addCard({ title: "Next thing", projectId: game.id });
+    const result = parse(
+      StartCardResponse,
+      await json(
+        await server.request("POST", `/api/kanban/cards/${card.id}/start`, {
+          workspaceId: workspace.id,
+        }),
+        201,
+      ),
+      "start",
+    );
+    const brief = cardBrief(result.card, "The user started it here.");
+    // The busy run is not cut off: the brief waits in Pi's follow-up queue, not as a steer.
+    const queued = () =>
+      (server.events.eventsOf(`agent:${agent.id}`) as AgentEvent[]).flatMap((event) => {
+        const pi =
+          event.type === "pi"
+            ? (event.event as { type: string; steering?: string[]; followUp?: string[] })
+            : undefined;
+        return pi?.type === "queue_update" ? [pi] : [];
+      });
+    await until(() => queued().some((update) => update.followUp?.includes(brief)));
+    expect(queued().every((update) => (update.steering ?? []).length === 0)).toBe(true);
+  });
+
+  it("creates the worker chat when the workspace has none", async () => {
+    const game = await addProject("game");
+    const workspace = await addWorkspace(game.id, "Empty");
+    const card = await addCard({ title: "Start here", projectId: game.id });
+    const result = await startCard(card.id, { workspaceId: workspace.id });
+    expect(agents.manager().view(result.chatId)).toMatchObject({
+      workspaceId: workspace.id,
+      kind: "worker",
+      active: true,
+    });
+  });
+
+  it("refuses a parked workspace and another project's workspace", async () => {
+    const game = await addProject("game");
+    const other = await addProject("other");
+    const parked = await addWorkspace(game.id, "Parked");
+    await workspaceStep(parked.id, "park");
+    const elsewhere = await addWorkspace(other.id, "Elsewhere");
+    const card = await addCard({ title: "Somewhere", projectId: game.id });
+    const start = (workspaceId: string) =>
+      server.request("POST", `/api/kanban/cards/${card.id}/start`, { workspaceId });
+    expect(await errorCode(await start(parked.id), 409)).toBe("workspace_not_active");
+    expect(await errorCode(await start(elsewhere.id), 422)).toBe("project_mismatch");
+    expect(await errorCode(await start("nope"), 404)).toBe("workspace_not_found");
+    expect((await getCard(card.id)).card).toMatchObject({ column: "backlog" });
+    expect((await getCard(card.id)).card.workspaceId).toBeUndefined();
+  });
+});
+
 describe("automatic moves", () => {
   it("moves the card to Done on archive, and a manual move wins until the next change", async () => {
     const game = await addProject("game");
     const card = await addCard({ title: "Ship it", projectId: game.id });
-    const { created } = await startCard(card.id, { isolation: "in-place" });
-    const workspaceId = created.workspace.id;
+    const { workspace } = await startCard(card.id, { isolation: "in-place" });
+    const workspaceId = workspace.id;
 
     // A manual move stays through changes that do not move cards.
     await cardCall("POST", `${card.id}/move`, { column: "review" });
@@ -383,10 +541,10 @@ describe("automatic moves", () => {
   it("lets other modules move the cards of a workspace", async () => {
     const game = await addProject("game");
     const card = await addCard({ title: "Review me", projectId: game.id });
-    const { created } = await startCard(card.id, { isolation: "in-place" });
+    const { workspace } = await startCard(card.id, { isolation: "in-place" });
 
-    cards.workChanged(created.workspace.id, "review", "pipeline-passed");
-    cards.workChanged(created.workspace.id, "review", "pr-opened");
+    cards.workChanged(workspace.id, "review", "pipeline-passed");
+    cards.workChanged(workspace.id, "review", "pr-opened");
     const { card: moved, history } = await getCard(card.id);
     expect(moved.column).toBe("review");
     expect(history.map((move) => move.reason)).toEqual([

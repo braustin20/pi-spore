@@ -1,3 +1,8 @@
+import {
+  type ApprovalViewProps,
+  type AttentionWeb,
+  AttentionWebKey,
+} from "@pi-spore/mod-attention/web";
 import { type CreateWorkspaceFormProps, WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { type ApiClient, useApi, type WebModule } from "@pi-spore/module-api";
 import {
@@ -5,8 +10,11 @@ import {
   BoardEvent,
   CARD_COLUMNS,
   Card,
+  type CardAuthor,
   type CardColumn,
   CardDetail,
+  CardStartSubject,
+  type CardStartTarget,
   COLUMN_TITLES,
   type CreateWorkspaceResponse,
   type Project,
@@ -34,6 +42,7 @@ import {
   ArrowLeft,
   ArrowRight,
   ArrowUp,
+  Bot,
   Lock,
   Plus,
   SquareKanban,
@@ -74,9 +83,10 @@ interface BoardStore {
   get(): Card[] | undefined;
 }
 
-/** Set in setup: one store for the page, and the workspaces module's create form. */
+/** Set in setup: one store for the page, the workspaces module's create form, and Home's decline note. */
 let store: BoardStore | undefined;
 let CreateForm: ComponentType<CreateWorkspaceFormProps> | undefined;
+let DeclineNote: AttentionWeb["DeclineNote"] | undefined;
 
 function useBoard(): Card[] | undefined {
   if (!store) throw new Error("The kanban web module is not set up");
@@ -209,6 +219,15 @@ function CardTile({
           <a href={`#/workspaces/${card.workspaceId}`} className="inline-flex">
             <Chip tone="run">workspace</Chip>
           </a>
+        )}
+        {(card.createdBy ?? card.changedBy) && (
+          <Chip
+            className="inline-flex items-center gap-1"
+            title={card.createdBy ? "Added by an agent" : "Last changed by an agent"}
+          >
+            <Bot aria-hidden="true" className="size-3" />
+            agent
+          </Chip>
         )}
       </div>
       {open.length > 0 && (
@@ -412,27 +431,52 @@ function BlockerPicker({
 const REASONS: Readonly<Record<string, string>> = {
   created: "created",
   manual: "moved",
+  agent: "moved by an agent",
   "workspace-started": "workspace started",
   "workspace-archived": "workspace archived",
 };
 
-/** Starts a workspace from the card with the usual create form (R11.4). */
+/** Asks before a blocked card starts. True when it may start. */
+function confirmBlocked(card: Card): boolean {
+  if (!card.blocked) return true;
+  const names = card.blockedBy.filter((blocker) => blocker.open).map(blockerName);
+  return window.confirm(`This card is blocked by: ${names.join(", ")}.\n\nStart it anyway?`);
+}
+
+/** Active workspaces work from this card may start in: those of its project, or any without one. */
+const startTargets = (card: Card, workspaces: readonly Workspace[]) =>
+  workspaces.filter(
+    (workspace) =>
+      workspace.state === "active" &&
+      (card.projectId === undefined || workspace.projectId === card.projectId),
+  );
+
+/**
+ * Starts work from the card (R11.4, ADR 0100): in a new workspace with the usual create form, or in an active
+ * workspace of its project. Either way the card's brief goes to that workspace's worker chat.
+ */
 function StartWork({
   card,
   projects,
+  workspaces,
   CreateForm,
   onDone,
 }: {
   card: Card;
   projects: readonly Project[];
+  workspaces: readonly Workspace[];
   CreateForm: ComponentType<CreateWorkspaceFormProps>;
   onDone: () => void;
 }) {
   const api = useApi();
-  const [open, setOpen] = useState(false);
+  const [mode, setMode] = useState<"new" | "existing" | undefined>();
   const [confirmed, setConfirmed] = useState(false);
   const [notes, setNotes] = useState<string[]>([]);
   const [started, setStarted] = useState<string | undefined>();
+  const targets = startTargets(card, workspaces);
+  const [workspaceId, setWorkspaceId] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | undefined>();
 
   if (started) {
     return (
@@ -448,24 +492,76 @@ function StartWork({
       </div>
     );
   }
-  if (!open) {
+  if (!mode) {
+    const choose = (next: "new" | "existing") => {
+      if (!confirmBlocked(card)) return;
+      setConfirmed(card.blocked);
+      setMode(next);
+    };
     return (
-      <Button
-        size="sm"
-        onClick={() => {
-          if (card.blocked) {
-            const names = card.blockedBy.filter((blocker) => blocker.open).map(blockerName);
-            if (
-              !window.confirm(`This card is blocked by: ${names.join(", ")}.\n\nStart it anyway?`)
-            )
-              return;
-            setConfirmed(true);
-          }
-          setOpen(true);
-        }}
-      >
-        Start a workspace
+      <div className="flex flex-col gap-2">
+        <p className="m-0 text-xs text-muted">
+          The card's brief goes to the workspace's worker chat, which starts on it.
+        </p>
+        <div className="flex flex-wrap gap-1.5">
+          <Button size="sm" onClick={() => choose("new")}>
+            Start in a new workspace
+          </Button>
+          <Button size="sm" disabled={targets.length === 0} onClick={() => choose("existing")}>
+            Start in an existing workspace
+          </Button>
+        </div>
+      </div>
+    );
+  }
+  const cancel = (
+    <div>
+      <Button size="sm" variant="ghost" onClick={() => setMode(undefined)}>
+        Cancel
       </Button>
+    </div>
+  );
+  if (mode === "existing") {
+    const start = (event: SubmitEvent) => {
+      event.preventDefault();
+      setBusy(true);
+      setError(undefined);
+      api
+        .send("POST", `kanban/cards/${card.id}/start`, {
+          workspaceId,
+          ...(confirmed ? { confirmBlocked: true } : {}),
+        })
+        .then((body) => {
+          onDone();
+          window.location.hash = `#/workspaces/${parse(StartCardResponse, body, "start card").workspace.id}`;
+        })
+        .catch((caught: unknown) => {
+          setError(message(caught));
+          setBusy(false);
+        });
+    };
+    return (
+      <form onSubmit={start} className="flex flex-col gap-2">
+        <Field label="Workspace">
+          <Select value={workspaceId} onChange={(event) => setWorkspaceId(event.target.value)}>
+            <option value="">Choose a workspace...</option>
+            {targets.map((workspace) => (
+              <option key={workspace.id} value={workspace.id}>
+                {workspace.name}
+              </option>
+            ))}
+          </Select>
+        </Field>
+        {error && <Notice tone="fail">{error}</Notice>}
+        <div className="flex gap-1.5">
+          <Button size="sm" variant="primary" type="submit" disabled={busy || workspaceId === ""}>
+            Start here
+          </Button>
+          <Button size="sm" variant="ghost" type="button" onClick={() => setMode(undefined)}>
+            Cancel
+          </Button>
+        </div>
+      </form>
     );
   }
   const submit: CreateWorkspaceFormProps["submit"] = async (request) => {
@@ -476,7 +572,9 @@ function StartWork({
       ...(request.base ? { base: request.base } : {}),
       ...(confirmed ? { confirmBlocked: true } : {}),
     });
-    return parse(StartCardResponse, body, "start card").created;
+    const { created } = parse(StartCardResponse, body, "start card");
+    if (!created) throw new Error("The server started the card without a new workspace");
+    return created;
   };
   const created = (result: CreateWorkspaceResponse) => {
     const found = [
@@ -503,12 +601,30 @@ function StartWork({
         submit={submit}
         onCreated={created}
       />
-      <div>
-        <Button size="sm" variant="ghost" onClick={() => setOpen(false)}>
-          Cancel
-        </Button>
-      </div>
+      {cancel}
     </div>
+  );
+}
+
+/** Who made or last changed a card, when an agent did, with a link to its chat. */
+function AuthorLine({
+  label,
+  author,
+  workspaces,
+}: {
+  label: string;
+  author: CardAuthor;
+  workspaces: readonly Workspace[];
+}) {
+  const workspace = workspaces.find((candidate) => candidate.id === author.workspaceId);
+  return (
+    <p className="m-0 flex items-center gap-1 text-xs text-muted">
+      <Bot aria-hidden="true" className="size-3" />
+      {label} an agent in{" "}
+      <a href={`#/workspaces/${author.workspaceId}/chats/${author.agentId}`}>
+        {workspace?.name ?? "a removed workspace"}
+      </a>
+    </p>
   );
 }
 
@@ -623,6 +739,12 @@ function CardEditor({
         </Tooltip>
       </div>
       <form onSubmit={save} className="flex flex-col gap-3 border-b border-line px-4 py-3">
+        {card?.createdBy && (
+          <AuthorLine label="Added by" author={card.createdBy} workspaces={workspaces} />
+        )}
+        {card?.changedBy && (
+          <AuthorLine label="Last changed by" author={card.changedBy} workspaces={workspaces} />
+        )}
         <Field label="Title">
           <Input
             value={draft.title}
@@ -733,6 +855,7 @@ function CardEditor({
             <StartWork
               card={card}
               projects={projects}
+              workspaces={workspaces}
               CreateForm={CreateForm}
               onDone={onLookupsChanged}
             />
@@ -913,12 +1036,129 @@ function CardPanel({ workspace }: { workspace: Workspace }) {
   );
 }
 
+/** What a start target means, in words. */
+function targetText(target: CardStartTarget, workspaces: readonly Workspace[]): string {
+  if (target.kind === "existing") {
+    const name = workspaces.find((workspace) => workspace.id === target.workspaceId)?.name;
+    return `the workspace "${name ?? target.workspaceId}"`;
+  }
+  const how =
+    target.isolation === "new"
+      ? "a new worktree or copy"
+      : target.isolation === "in-place"
+        ? "the main checkout"
+        : `the branch ${target.line ?? "(none given)"}`;
+  return `a new workspace on ${how}`;
+}
+
+/**
+ * A `card-start` approval on Home (ADR 0100): the card as it is now (blocked or not), the target the agent asked for,
+ * its reason, and a choice of another target before approving.
+ */
+function CardStartView({ approval, busy, approve, decline }: ApprovalViewProps) {
+  const all = useBoard();
+  const { workspaces } = useLookups();
+  const [note, setNote] = useState("");
+  const subject = parse(CardStartSubject, approval.subject, "card-start approval");
+  const card = all?.find((candidate) => candidate.id === subject.cardId);
+  const asked = JSON.stringify(subject.target);
+  const choices: { key: string; label: string; target: CardStartTarget }[] = [
+    {
+      key: asked,
+      label: `As asked: ${targetText(subject.target, workspaces)}`,
+      target: subject.target,
+    },
+    ...[
+      { kind: "new", isolation: "new" } as const,
+      { kind: "new", isolation: "in-place" } as const,
+      ...(card ? startTargets(card, workspaces) : []).map(
+        (workspace) => ({ kind: "existing", workspaceId: workspace.id }) as const,
+      ),
+    ]
+      .filter((target) => JSON.stringify(target) !== asked)
+      .map((target) => ({
+        key: JSON.stringify(target),
+        label: targetText(target, workspaces),
+        target,
+      })),
+  ];
+  const [choice, setChoice] = useState(asked);
+  const chosen = choices.find((candidate) => candidate.key === choice) ?? choices[0];
+  const Note = DeclineNote as AttentionWeb["DeclineNote"];
+  return (
+    <div className="flex flex-col gap-2.5 text-sm">
+      {card ? (
+        <div className="flex flex-col gap-1">
+          <a href={`#/board/${card.id}`} className="font-medium [overflow-wrap:anywhere]">
+            {card.title}
+          </a>
+          <div className="flex flex-wrap gap-1">
+            <Chip tone="accent">{COLUMN_TITLES[card.column]}</Chip>
+            {card.labels.map((label) => (
+              <Chip key={label}>{label}</Chip>
+            ))}
+          </div>
+          {card.blocked && (
+            <div className="flex items-start gap-1 text-xs text-warn">
+              <Lock aria-hidden="true" className="mt-0.5 size-3 shrink-0" />
+              <span>
+                Blocked by{" "}
+                {card.blockedBy
+                  .filter((blocker) => blocker.open)
+                  .map(blockerName)
+                  .join(", ")}
+                . Approve starts it anyway.
+              </span>
+            </div>
+          )}
+        </div>
+      ) : (
+        <Notice tone="warn">The card is gone. Decline this request.</Notice>
+      )}
+      <p className="m-0">
+        <span className="text-muted">Reason: </span>
+        <span className="whitespace-pre-wrap">{approval.reason}</span>
+      </p>
+      <Field label="Start in">
+        <Select value={choice} onChange={(event) => setChoice(event.target.value)}>
+          {choices.map((candidate) => (
+            <option key={candidate.key} value={candidate.key}>
+              {candidate.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      <Note note={note} onChange={setNote} />
+      <div className="flex gap-2">
+        <Button
+          variant="primary"
+          disabled={busy || !card || !chosen}
+          onClick={() =>
+            chosen &&
+            approve(
+              chosen.key === asked ? undefined : { cardId: subject.cardId, target: chosen.target },
+            )
+          }
+        >
+          Approve and start
+        </Button>
+        <Button disabled={busy} onClick={() => decline(note.trim() || undefined)}>
+          Decline
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export const kanbanWeb: WebModule = {
   id: "kanban",
-  requires: ["workspaces"],
+  requires: ["workspaces", "attention"],
   core: false,
   setup(host) {
     store = createBoardStore(host.api);
+    const attention = host.use(AttentionWebKey);
+    DeclineNote = attention.DeclineNote;
+    attention.addApprovalView("card-start", CardStartView);
     const view = host.use(WorkspaceViewKey);
     CreateForm = view.CreateForm;
     view.addPanel({ id: "kanban-card", order: 5, component: CardPanel });

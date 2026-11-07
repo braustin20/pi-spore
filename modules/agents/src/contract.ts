@@ -24,6 +24,11 @@ export interface Agents {
    * at once, so a caller inside `store.transaction` commits it together with its own changes.
    */
   deliver(agentId: string, message: string): void;
+  /**
+   * The workspace's active worker chat, created first if the workspace has none yet, as `POST /api/agents` does.
+   * Throws a 404 ApiError for an unknown workspace.
+   */
+  activeWorker(workspaceId: string): Promise<Agent>;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
   /** Every agent, for Home. */

@@ -25,6 +25,12 @@
       "path": "../workspaces"
     },
     {
+      "path": "../agents"
+    },
+    {
+      "path": "../attention"
+    },
+    {
       "path": "../vcs-git"
     },
     {
