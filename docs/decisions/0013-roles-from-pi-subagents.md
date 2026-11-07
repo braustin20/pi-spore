@@ -19,4 +19,4 @@ overrides on top. Workers may still call pi-subagents for helpers; the UI shows 
 
 - One place to change a role's model for both `pi` and pi-spore.
 - pi-spore depends on the pi-subagents settings format. A format change must be handled in one adapter.
-- How to observe pi-subagents child runs is open ([Q5]).
+- ADR 0034 settles how child runs are observed.
