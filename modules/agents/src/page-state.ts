@@ -4,6 +4,7 @@ import {
   type AgentModel,
   applyPiEvent,
   type ChatState,
+  type ChildRun,
   type ContextUsage,
   emptyChat,
 } from "@pi-spore/shared";
@@ -23,11 +24,18 @@ export interface PageState {
   contextUsage?: ContextUsage;
   dialogs: AgentDialog[];
   chat: ChatState;
+  /** Background pi-subagents helpers of the worker (ADR 0034). */
+  children: ChildRun[];
   /** The latest extension notices, newest last. */
   notices: Notice[];
 }
 
-export const emptyPage = (): PageState => ({ dialogs: [], chat: emptyChat(), notices: [] });
+export const emptyPage = (): PageState => ({
+  dialogs: [],
+  chat: emptyChat(),
+  children: [],
+  notices: [],
+});
 
 const MAX_NOTICES = 5;
 
@@ -43,6 +51,7 @@ export function reducePage(state: PageState, raw: unknown): PageState {
         agent: event.agent as Agent,
         dialogs: (event.dialogs as AgentDialog[] | undefined) ?? [],
         chat: (event.chat as ChatState | undefined) ?? emptyChat(),
+        children: (event.children as ChildRun[] | undefined) ?? [],
         notices: state.notices,
       };
       if (event.model) next.model = event.model as AgentModel;
@@ -52,6 +61,8 @@ export function reducePage(state: PageState, raw: unknown): PageState {
     }
     case "pi":
       return { ...state, chat: applyPiEvent(state.chat, event.event) };
+    case "children":
+      return { ...state, children: event.children as ChildRun[] };
     case "agent":
       return { ...state, agent: event.agent as Agent };
     case "status": {

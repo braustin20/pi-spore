@@ -100,7 +100,26 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     Archived transcripts are read from the session file directly, without starting Pi.
   - Every agent start has a timeout. On timeout, pi-spore stops the process and shows its stderr.
   - Agents run without pi-lens and get a `check` tool instead (ADR 0025).
-- Limits: at most 4 live agent processes; an idle agent process stops after 10 minutes (ADR 0026).
+- Limits: at most 4 live agent processes; an idle agent process stops after 10 minutes (ADR 0026). Running
+  background helpers count as live processes in the 4 (ADR 0034).
+- **Helpers** (child runs, R3.3, ADR 0034, [spike Q5](spikes/q5-subagent-child-runs.md)). A worker's pi-subagents
+  helpers show under it in the chat.
+  - Source: the `subagent-async` widget that pi-subagents sets in RPC mode, a `PI_SUBAGENT_ASYNC_JSON:` line with a
+    version 1 snapshot of the agent's own session. `modules/agents/src/child-runs.ts` validates it (the one place
+    that knows its format). A payload it does not understand is logged, shown as one chat notice, and the list stays
+    as it was. Run files and `pi.events` are not used.
+  - A child run is a top-level run of the snapshot with its steps: label, state, current tool, and per step the
+    agent, model, and thinking level. Only a change of these is published, as `{ type: "children", children }` on
+    the `agent:<id>` topic; the snapshot event carries the list too. The list empties when the process exits.
+    Foreground helpers run inside the worker's process and stay the worker's running `subagent` tool call.
+  - Each run in state `running` counts against `agents.maxLive` with the agent processes. It makes a new agent wait
+    for a slot but never stops a run that exists. A queued run counts nothing. An agent with a running helper does
+    not stop for idleness, and the Stop button of the chat is disabled.
+  - `GET /api/agents/:id/children/:runId/transcript?child=<step id>` sends `/subagents-inspect-rpc` to the agent's
+    process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
+    `child_not_found` for a run not in the list or an agent that is not running, 400 `bad_child_id` for an id with
+    characters other than letters, digits, and `: _ . -`, 503 when pi-subagents does not answer in 10 s or fails.
+  - Side chats have no subagent tools (ADR 0033), so they have no helpers.
 
 ## 3. Repo layout
 
@@ -895,6 +914,7 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   | `POST /api/agents/:id/prompt` `{ message, images?, whileBusy? }` | Sends a message; `images` are `{ mimeType, data }` in base64 (below). |
   | `GET /api/agents/:id/images/:ref` | The bytes of an image block the chat has shown (below). |
   | `GET /api/agents/:id/linked-image?path=` | An image file the agent linked, from the workspace folder or its artifacts folder only (below). |
+  | `GET /api/agents/:id/children/:runId/transcript?child=` | A helper run's task, messages, and output, read from the agent's process (section 2, Helpers). |
 
   The `agent:<id>` topic sends `{ type: "agent", agent }` when a chat's title or active flag changes.
 - Images in the chat (ADR 0060, R5.1):

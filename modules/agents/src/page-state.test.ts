@@ -35,6 +35,16 @@ describe("reducePage", () => {
     expect(state.chat.busy).toBe(true);
   });
 
+  it("takes helper runs from a snapshot and from children events", () => {
+    const run = { id: "r1", label: "scout", state: "running", steps: [] };
+    let state = reducePage(emptyPage(), { ...snapshot, children: [run] });
+    expect(state.children).toEqual([run]);
+    state = reducePage(state, { type: "children", children: [] });
+    expect(state.children).toEqual([]);
+    // A snapshot from an older server has none.
+    expect(reducePage(state, snapshot).children).toEqual([]);
+  });
+
   it("takes a changed title or active flag from an agent event", () => {
     let state = reducePage(emptyPage(), snapshot);
     state = reducePage(state, { type: "agent", agent: { ...agent, active: false, title: "Old" } });
