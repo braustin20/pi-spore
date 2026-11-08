@@ -355,7 +355,9 @@ export function DialogCard({
         <span aria-hidden="true" className="size-1.5 rounded-full bg-warn" />
         {dialog.title ?? "The agent asks"}
       </div>
-      {dialog.message && <p className="m-0 text-sm whitespace-pre-wrap">{dialog.message}</p>}
+      {dialog.message && (
+        <p className="m-0 text-sm [overflow-wrap:anywhere] whitespace-pre-wrap">{dialog.message}</p>
+      )}
       {dialog.method === "confirm" && (
         <div className="flex gap-2">
           <Button variant="primary" onClick={() => onAnswer({ confirmed: true })}>
@@ -374,7 +376,7 @@ export function DialogCard({
               className="flex cursor-pointer items-baseline gap-2.5 rounded-lg border border-line bg-raised px-3 py-2 text-left text-sm text-fg hover:border-accent"
             >
               <span className="font-mono text-xs text-muted">{index + 1}</span>
-              <span className="min-w-0 flex-1">{option}</span>
+              <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{option}</span>
             </button>
           ))}
           <div>
