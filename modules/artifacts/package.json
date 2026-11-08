@@ -8,18 +8,30 @@
       "@pi-spore/source": "./src/server.ts",
       "types": "./dist/server.d.ts",
       "default": "./dist/server.js"
+    },
+    "./web": {
+      "@pi-spore/source": "./src/web.tsx",
+      "types": "./dist/web.d.ts",
+      "default": "./dist/web.js"
     }
   },
   "dependencies": {
+    "@pi-spore/mod-agents": "0.0.0",
     "@pi-spore/mod-projects": "0.0.0",
     "@pi-spore/mod-workspaces": "0.0.0",
     "@pi-spore/module-api": "0.0.0",
     "@pi-spore/shared": "0.0.0",
-    "hono": "4.13.16"
+    "@pi-spore/ui": "0.0.0",
+    "hono": "4.13.16",
+    "lucide-react": "1.70.0",
+    "react": "19.3.1",
+    "react-markdown": "10.1.0",
+    "remark-gfm": "4.0.1"
   },
   "devDependencies": {
     "@pi-spore/mod-vcs-folder": "0.0.0",
     "@pi-spore/mod-vcs-git": "0.0.0",
-    "@pi-spore/server-core": "0.0.0"
+    "@pi-spore/server-core": "0.0.0",
+    "react-dom": "19.3.1"
   }
 }
