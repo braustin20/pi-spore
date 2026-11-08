@@ -26,7 +26,7 @@ import {
   parseInspectReply,
   runningCount,
 } from "./child-runs.js";
-import type { AgentAttention, AgentChange } from "./contract.js";
+import type { AgentAttention, AgentChange, LaunchContext } from "./contract.js";
 import { ChatImages } from "./images.js";
 import {
   modelArgs,
@@ -70,6 +70,8 @@ export interface ManagerOptions {
   roleDefaults(role: string): Promise<RoleDefaults>;
   /** Environment for an agent's process. The manager adds `PI_SPORE_URL` and `PI_SPORE_TOKEN`. */
   env(agent: AgentRecord, workspace: Workspace): Promise<Record<string, string>>;
+  /** What the modules' launch hooks add to one launch, merged (`addLaunchContext`). */
+  launchContext(agent: Agent, workspace: Workspace): LaunchContext;
   /** The server's base URL, which spore-bridge calls. */
   url: string;
   /** Issues each process its own bridge token, revoked when the process exits. */
@@ -152,8 +154,12 @@ interface Live {
 const isReadOnly = ({ kind, role }: AgentRecord): boolean =>
   kind === "side" || (kind === "stage" && role !== "worker");
 
-/** The tool arguments of an agent: a stage worker and a workspace chat get Pi's normal tools. */
-const toolArgs = (record: AgentRecord): readonly string[] => {
+/**
+ * The tool arguments of an agent: a stage worker and a workspace chat get Pi's normal tools. A launch hook's tools
+ * replace them.
+ */
+const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly string[] => {
+  if (tools) return ["--tools", tools.join(","), "--exclude-tools", "mcp__*"];
   if (record.kind === "side") return SIDE_CHAT_TOOLS;
   if (record.kind === "stage" && record.role !== "worker") return STAGE_REVIEWER_TOOLS;
   return [];
@@ -792,8 +798,10 @@ export class AgentManager {
     await this.loadHistory(live);
 
     let sessionArgs: string[];
+    let context: LaunchContext;
     try {
-      sessionArgs = await this.sessionArgs(live, workspace);
+      context = this.options.launchContext(this.view(record.id), workspace);
+      sessionArgs = await this.sessionArgs(live, workspace, context.tools);
     } catch (error) {
       this.releaseSlot();
       this.setStatus(live, "failed", (error as Error).message);
@@ -807,6 +815,7 @@ export class AgentManager {
     });
     const env = {
       ...(await this.options.env(record, workspace)),
+      ...context.env,
       PI_SPORE_URL: this.options.url,
       PI_SPORE_TOKEN: token,
     };
@@ -870,8 +879,12 @@ export class AgentManager {
    * start of a side chat with its worker's context; or a new session. Side chats and reviewer stages always get
    * read-only tools.
    */
-  private async sessionArgs(live: Live, workspace: Workspace): Promise<string[]> {
-    return [...(await this.sessionFileArgs(live, workspace)), ...toolArgs(live.record)];
+  private async sessionArgs(
+    live: Live,
+    workspace: Workspace,
+    tools?: readonly string[],
+  ): Promise<string[]> {
+    return [...(await this.sessionFileArgs(live, workspace)), ...toolArgs(live.record, tools)];
   }
 
   private async sessionFileArgs(live: Live, workspace: Workspace): Promise<string[]> {

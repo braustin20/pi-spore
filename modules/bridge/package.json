@@ -16,6 +16,7 @@
     "@pi-spore/mod-attention": "0.0.0",
     "@pi-spore/mod-kanban": "0.0.0",
     "@pi-spore/mod-pipelines": "0.0.0",
+    "@pi-spore/mod-runs": "0.0.0",
     "@pi-spore/mod-workspaces": "0.0.0",
     "@pi-spore/module-api": "0.0.0",
     "@pi-spore/shared": "0.0.0",

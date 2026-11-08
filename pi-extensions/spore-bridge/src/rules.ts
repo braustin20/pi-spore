@@ -92,6 +92,30 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
 - End your turn by calling \`report\` with the turn id, a verdict (\`approve\` or \`revise\`), and findings marked
   \`blocking\`, \`important\`, or \`minor\`.`;
 
+/** The rules of the coordinator of a run (R7, ADR 0150). They replace `RULES`. */
+export const COORDINATOR_RULES = `You are the coordinator of a run in pi-spore, a local agent workbench. A run builds one feature as lanes: each
+lane is one piece of the work, built by a pipeline in its own workspace. The user's global AGENTS.md is left out on
+purpose; these rules take its place. Project AGENTS.md files still apply.
+
+- You coordinate. You never edit files or run commands.
+- Settle the spec with the user. Ask with request_human_input. Write the spec as an artifact.
+- Split the work into lanes. If later lanes share types, make a small contract lane in wave 1 first. Then start
+  the independent lanes in the next wave.
+- Write each lane's brief as an artifact: one outcome, the files it may edit, the invariants, and a pass or fail
+  check. Then call start_lane for the lane.
+- A lane agent may ask you a question. Answer it from the spec with answer_lane. If the spec does not say, ask the
+  user with request_human_input first, then answer.
+- When a lane passes, read its diff artifact. Then call merge_lane, or revise_lane with a new brief.
+- A merge conflict or a failed gate comes back as a message. Use revise_lane to fix it.
+- The user is often away. Ask and stop; every answer and result comes back as a new message, possibly after a
+  restart. Do not poll.
+- When all lanes are merged, tell the user to open the one PR from this workspace's PR tab. pi-spore never merges
+  to the base line, and neither do you.`;
+
+/** Added to the stage rules of an agent in a lane of a run (R7.5). */
+export const LANE_RULES = `You are in a lane of a run. Ask your coordinator with \`ask_coordinator\`, never the user. No lane talks to
+another lane.`;
+
 /** The rules of a stage agent by its role. */
 const stageRules = (role: StageRole): string =>
   role === "worker" ? STAGE_WORKER_RULES : STAGE_REVIEWER_RULES;
@@ -101,13 +125,17 @@ export interface PromptOptions {
   sections: Record<string, string>;
 }
 
-function rulesFor({ chatKind, stageRole }: Pick<BridgeEnv, "chatKind" | "stageRole">): string {
+type ChatRoles = Pick<BridgeEnv, "chatKind" | "stageRole" | "runRole">;
+
+function rulesFor({ chatKind, stageRole, runRole }: ChatRoles): string {
   if (chatKind === "side") return SIDE_RULES;
+  if (runRole === "coordinator") return COORDINATOR_RULES;
+  let rules = RULES;
   if (chatKind === "stage") {
     if (!stageRole) throw new Error("spore-bridge: a stage agent has no stage role");
-    return stageRules(stageRole);
+    rules = stageRules(stageRole);
   }
-  return RULES;
+  return runRole === "lane" ? `${rules}\n\n${LANE_RULES}` : rules;
 }
 
 /**
@@ -117,7 +145,7 @@ function rulesFor({ chatKind, stageRole }: Pick<BridgeEnv, "chatKind" | "stageRo
 export function applyRules(
   options: PromptOptions,
   agentDir: string,
-  chat: Pick<BridgeEnv, "chatKind" | "stageRole"> = { chatKind: "worker" },
+  chat: ChatRoles = { chatKind: "worker" },
 ): void {
   const global = resolve(agentDir);
   options.contextFiles = options.contextFiles.filter(

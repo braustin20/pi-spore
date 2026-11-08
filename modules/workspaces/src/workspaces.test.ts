@@ -285,6 +285,20 @@ describe("workspaces with Git", () => {
     expect(detached.base).toBe(head);
   });
 
+  it("records the base given with an existing branch", async () => {
+    const repo = makeUnityRepo();
+    git(repo, "branch", "run/x");
+    const project = await addProject(repo);
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Run",
+      isolation: "existing",
+      line: "run/x",
+      base: "main",
+    });
+    expect(workspace).toMatchObject({ line: "run/x", base: "main" });
+  });
+
   it("checks out an existing branch, and needs the branch name for it", async () => {
     const repo = makeUnityRepo();
     git(repo, "branch", "feature/x");

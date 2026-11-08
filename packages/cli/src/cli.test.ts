@@ -981,3 +981,89 @@ describe("pi-spore pipeline", () => {
     expect(err).toEqual(["The run has no waiting job to retry"]);
   });
 });
+
+describe("pi-spore run", () => {
+  const lane = (more: Record<string, unknown>) => ({
+    id: "L1",
+    runId: "U1",
+    name: "api",
+    wave: 1,
+    dependsOn: [],
+    brief: "briefs/api.md",
+    pipeline: "default",
+    state: "running",
+    createdAt: 3,
+    ...more,
+  });
+  const coordinatedRun = {
+    id: "U1",
+    projectId: "P1",
+    workspaceId: "W9",
+    line: "run/big-feature-abc123",
+    base: "main",
+    gates: ["check", "test"],
+    coordinatorAgentId: "A0",
+    createdAt: 2,
+    lanes: [
+      lane({ id: "L2", name: "ui", wave: 2, state: "waiting" }),
+      lane({ workspaceId: "W2", state: "failed", message: "gate check failed\nmore" }),
+    ],
+    questions: [],
+  };
+  const answer = (key: string) =>
+    key === "GET /api/projects"
+      ? Response.json({ projects: [project] })
+      : Response.json({ run: coordinatedRun, runs: [coordinatedRun] }, { status: 201 });
+
+  it("starts a run with a base and gates, by project slug", async () => {
+    const { deps, out, sent } = fakeDeps(answer);
+    expect(
+      await run(
+        [
+          "run",
+          "start",
+          "game",
+          "Big feature",
+          "--base",
+          "dev",
+          "--gate",
+          "check",
+          "--gate",
+          "lint",
+        ],
+        deps,
+      ),
+    ).toBe(0);
+    expect(sent.at(-1)).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:7420/api/runs",
+      body: { projectId: "P1", name: "Big feature", base: "dev", gates: ["check", "lint"] },
+    });
+    expect(out.join("\n")).toContain("Workspace W9");
+  });
+
+  it("lists runs of one project", async () => {
+    const { deps, out, sent } = fakeDeps(answer);
+    expect(await run(["run", "list", "--project", "game"], deps)).toBe(0);
+    expect(sent.at(-1)?.url).toBe("http://127.0.0.1:7420/api/runs?projectId=P1");
+    expect(out).toEqual(["U1  run/big-feature-abc123  2 lanes"]);
+  });
+
+  it("shows the lanes with wave, state, and workspace", async () => {
+    const { deps, out, sent } = fakeDeps(answer);
+    expect(await run(["run", "show", "U1"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/runs/U1");
+    const text = out.join("\n");
+    expect(text).toContain("wave 1  failed    api  workspace W2  gate check failed");
+    expect(text).toContain("wave 2  waiting   ui");
+  });
+
+  it("prints help and fails on bad usage", async () => {
+    const { deps, err, sent } = fakeDeps(answer);
+    expect(await run(["run", "start", "game"], deps)).toBe(2);
+    expect(await run(["run", "show"], deps)).toBe(2);
+    expect(await run(["run", "start", "game", "x", "--gate"], deps)).toBe(2);
+    expect(err.at(-1)).toContain("Usage: pi-spore");
+    expect(sent).toEqual([]);
+  });
+});

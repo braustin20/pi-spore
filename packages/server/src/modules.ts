@@ -8,6 +8,7 @@ import { githubPrModule } from "@pi-spore/mod-github-pr/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { runsModule } from "@pi-spore/mod-runs/server";
 import { terminalsModule } from "@pi-spore/mod-terminals/server";
 import { unityModule } from "@pi-spore/mod-unity/server";
 import { usageModule } from "@pi-spore/mod-usage/server";
@@ -34,4 +35,5 @@ export const serverModules: readonly ServerModule[] = [
   changesModule,
   githubPrModule,
   pipelinesModule,
+  runsModule,
 ];

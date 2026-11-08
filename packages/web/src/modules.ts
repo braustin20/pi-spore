@@ -7,6 +7,7 @@ import { githubPrWeb } from "@pi-spore/mod-github-pr/web";
 import { kanbanWeb } from "@pi-spore/mod-kanban/web";
 import { pipelinesWeb } from "@pi-spore/mod-pipelines/web";
 import { projectsWeb } from "@pi-spore/mod-projects/web";
+import { runsWeb } from "@pi-spore/mod-runs/web";
 import { terminalsWeb } from "@pi-spore/mod-terminals/web";
 import { unityWeb } from "@pi-spore/mod-unity/web";
 import { usageWeb } from "@pi-spore/mod-usage/web";
@@ -28,4 +29,5 @@ export const webModules: readonly WebModule[] = [
   artifactsWeb,
   githubPrWeb,
   pipelinesWeb,
+  runsWeb,
 ];

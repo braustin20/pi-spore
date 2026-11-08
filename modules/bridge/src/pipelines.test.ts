@@ -17,24 +17,25 @@ import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
-import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
+import { type Pipelines, PipelinesKey, pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
-import type { JobView } from "@pi-spore/module-api";
+import type { JobView, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type {
   ActionRun,
   Approval,
   BridgeArtifactFile,
-  ChatState,
   PipelineList,
   PipelineRun,
   PipelineTurn,
 } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bridgeModule } from "./server.js";
+import { asAgent, chat, json, until } from "./testing.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 const GATE_ACTION = fileURLToPath(new URL("../test-fixtures/gate-action.mjs", import.meta.url));
@@ -63,7 +64,12 @@ function scriptEnv(script: Record<string, unknown[]>) {
 
 /** A server with every module a pipeline run needs, the fake Pi, and a real HTTP port for it to call. */
 async function start(
-  options: { home?: string; firstId?: number; env?: Record<string, string> } = {},
+  options: {
+    home?: string;
+    firstId?: number;
+    env?: Record<string, string>;
+    extraModules?: readonly ServerModule[];
+  } = {},
 ) {
   const agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
@@ -85,7 +91,9 @@ async function start(
       kanbanModule,
       artifactsModule,
       pipelinesModule,
+      runsModule,
       bridgeModule,
+      ...(options.extraModules ?? []),
     ],
     {
       listen: true,
@@ -95,13 +103,6 @@ async function start(
   );
   servers.push({ server, agents });
   return server;
-}
-
-async function json<T = Record<string, unknown>>(response: Response, status = 200): Promise<T> {
-  const body = (await response.json()) as T;
-  if (response.status !== status)
-    throw new Error(`Expected ${status}, got ${response.status}: ${JSON.stringify(body)}`);
-  return body;
 }
 
 /** A folder project with one in-place workspace and its worker chat, the chat that asks for pipeline runs. */
@@ -152,34 +153,6 @@ function workerChange(folder: string) {
   });
   writeFileSync(join(folder, "a.txt"), "one\nedited line\n");
   writeFileSync(join(folder, "new.txt"), "untracked line\n");
-}
-
-/** Calls a bridge route as an agent process would, with its own token. */
-function asAgent(server: TestServer, agentId: string, workspaceId: string) {
-  const token = server.agentTokens.issue({ agentId, workspaceId });
-  return (method: string, path: string, body?: unknown) =>
-    server.request(method, `/api/bridge/${path}`, body, {
-      "x-pi-spore-token": "",
-      authorization: `Bearer ${token}`,
-    });
-}
-
-async function until(check: () => boolean | Promise<boolean>, ms = 5_000): Promise<void> {
-  const end = Date.now() + ms;
-  while (!(await check())) {
-    if (Date.now() > end) throw new Error("Timed out waiting");
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-}
-
-async function chat(server: TestServer, agentId: string): Promise<string[]> {
-  const [snapshot] = (await server.events.snapshot(`agent:${agentId}`)) as AgentEvent[];
-  if (snapshot?.type !== "snapshot") throw new Error("No snapshot");
-  return (snapshot.chat as ChatState).messages.map((message) =>
-    typeof message.content === "string"
-      ? `${message.role}: ${message.content}`
-      : `${message.role}: ${(message.content as { text?: string }[]).map((block) => block.text).join("")}`,
-  );
 }
 
 /** The agent's messages as seen live. */
@@ -1284,5 +1257,93 @@ fail_first = "artifact"
 
     expect(ran()).toEqual(["check", "test"]);
     expect(await actionRuns(server, workspaceId)).toHaveLength(2);
+  });
+});
+
+describe("the pipelines interface (start, afterRunEnded)", () => {
+  /** A module that starts runs through `PipelinesKey` and records every run that ends. */
+  function probe() {
+    const ended: PipelineRun[] = [];
+    let pipelines: Pipelines | undefined;
+    const module: ServerModule = {
+      id: "runs-probe",
+      requires: ["pipelines"],
+      core: false,
+      setup(host) {
+        pipelines = host.use(PipelinesKey);
+        pipelines.afterRunEnded((run) => ended.push(run));
+      },
+    };
+    const startThrough = (...args: Parameters<Pipelines["start"]>) => {
+      if (!pipelines) throw new Error("The probe module is not set up");
+      return pipelines.start(...args);
+    };
+    return { module, ended, startThrough };
+  }
+
+  const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
+    until(async () => (await getRun(server, runId)).state === state);
+
+  it("starts a run that passes, and the listener sees it end once", async () => {
+    const { module, ended, startThrough } = probe();
+    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const { workspaceId, agentId } = await workspace(server, "keystart");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const run = await startThrough(workspaceId, { pipeline: "p", brief: "Build the thing" });
+    await untilState(server, run.id, "passed");
+
+    expect(run).toMatchObject({ state: "running", askingAgentId: agentId });
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ id: run.id, state: "passed", endedAt: expect.any(Number) });
+  });
+
+  it("reports a failed gate stage to the listener with its message", async () => {
+    const { module, ended, startThrough } = probe();
+    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const { workspaceId } = await workspace(server, "keyfail");
+    userPipeline(
+      server.paths.root,
+      "p",
+      `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check"]\nfail_first = "artifact"\n`,
+    );
+
+    const run = await startThrough(workspaceId, { pipeline: "p", brief: "Build the thing" });
+    await untilState(server, run.id, "failed");
+
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({
+      id: run.id,
+      state: "failed",
+      message: "missing fail-first proof for adds (proofs/adds.md)",
+    });
+  });
+
+  it("runs the worker stage on the workerModel for this run only", async () => {
+    const { module, startThrough } = probe();
+    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const { workspaceId } = await workspace(server, "keymodel");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const run = await startThrough(workspaceId, {
+      pipeline: "p",
+      brief: "Build the thing",
+      workerModel: "fake/other-1",
+    });
+    await untilState(server, run.id, "passed");
+
+    const { workerAgentId } = await getRun(server, run.id);
+    const launched = readFileSync(join(scratch, "record.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
+      .find((entry) => entry.env.PI_SPORE_AGENT_ID === workerAgentId);
+    const { argv } = launched as { argv: string[] };
+    expect(argv.slice(argv.indexOf("--provider"), argv.indexOf("--provider") + 4)).toEqual([
+      "--provider",
+      "fake",
+      "--model",
+      "other-1",
+    ]);
   });
 });

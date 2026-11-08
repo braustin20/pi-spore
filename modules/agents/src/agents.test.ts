@@ -20,7 +20,7 @@ import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import type { Agents } from "./contract.js";
+import type { Agents, LaunchHook } from "./contract.js";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
@@ -1420,7 +1420,7 @@ describe("stage agents (R6)", () => {
       "--thinking",
       "low",
       "--tools",
-      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report",
+      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report,ask_coordinator",
       "--exclude-tools",
       "mcp__*",
     ]);
@@ -1554,5 +1554,61 @@ describe("stage agents (R6)", () => {
       modelId: "fake-1",
       thinking: "low",
     });
+  });
+});
+
+describe("launch hooks", () => {
+  const launchWith = async (...hooks: LaunchHook[]) => {
+    const registrar: ServerModule = {
+      id: "launch-hooks",
+      requires: ["agents"],
+      core: false,
+      setup(host) {
+        for (const hook of hooks) host.use(AgentsKey).addLaunchContext(hook);
+      },
+    };
+    await setup({}, {}, {}, [registrar]);
+  };
+  const replied = (agentId: string) => until(() => statuses(agentId).includes("idle"));
+
+  it("adds a hook's env and replaces the tools only for the workspace it names", async () => {
+    let laneFolder = "";
+    await launchWith((_agent, workspace) =>
+      workspace.path === laneFolder
+        ? { env: { PI_SPORE_LANE: "one" }, tools: ["a", "b"] }
+        : undefined,
+    );
+    const lane = await makeAgent("lane");
+    const plain = await makeAgent("plain");
+    laneFolder = lane.folder;
+
+    await json(await prompt(lane.agentId, "hi"));
+    await replied(lane.agentId);
+    await json(await prompt(plain.agentId, "hi"));
+    await replied(plain.agentId);
+
+    const [laneLaunch, plainLaunch] = launches();
+    expect(laneLaunch?.env.PI_SPORE_LANE).toBe("one");
+    expect(laneLaunch?.argv).toEqual(
+      expect.arrayContaining(["--tools", "a,b", "--exclude-tools", "mcp__*"]),
+    );
+    expect(server.agentTokens.find(laneLaunch?.env.PI_SPORE_TOKEN)).not.toHaveProperty("readOnly");
+    expect(plainLaunch?.env.PI_SPORE_LANE).toBeUndefined();
+    expect(plainLaunch?.argv).not.toContain("--tools");
+  });
+
+  it("fails the launch, naming the agent, when two hooks give tools", async () => {
+    await launchWith(
+      () => ({ tools: ["a"] }),
+      () => ({ tools: ["b"] }),
+    );
+    const { agentId } = await makeAgent();
+
+    await prompt(agentId, "hi");
+    await until(() => statuses(agentId).includes("failed"));
+    const failed = events(agentId).find(
+      (event) => event.type === "status" && event.status === "failed",
+    );
+    expect(JSON.stringify(failed)).toContain(agentId);
   });
 });

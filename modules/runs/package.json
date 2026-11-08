@@ -1,0 +1,37 @@
+{
+  "name": "@pi-spore/mod-runs",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": {
+      "@pi-spore/source": "./src/server.ts",
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    },
+    "./web": {
+      "@pi-spore/source": "./src/web.tsx",
+      "types": "./dist/web.d.ts",
+      "default": "./dist/web.js"
+    }
+  },
+  "dependencies": {
+    "@pi-spore/mod-actions": "0.0.0",
+    "@pi-spore/mod-agents": "0.0.0",
+    "@pi-spore/mod-artifacts": "0.0.0",
+    "@pi-spore/mod-attention": "0.0.0",
+    "@pi-spore/mod-pipelines": "0.0.0",
+    "@pi-spore/mod-projects": "0.0.0",
+    "@pi-spore/mod-workspaces": "0.0.0",
+    "@pi-spore/module-api": "0.0.0",
+    "@pi-spore/router": "0.0.0",
+    "@pi-spore/shared": "0.0.0",
+    "@pi-spore/ui": "0.0.0",
+    "lucide-react": "1.70.0",
+    "react": "19.3.1",
+    "typebox": "1.4.5"
+  },
+  "devDependencies": {
+    "react-dom": "19.3.1"
+  }
+}

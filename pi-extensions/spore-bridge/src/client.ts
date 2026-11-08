@@ -5,6 +5,9 @@ import { Check, Errors } from "typebox/value";
 const STAGE_ROLES = ["worker", "reviewer", "adversarial-reviewer"] as const;
 export type StageRole = (typeof STAGE_ROLES)[number];
 
+/** `PI_SPORE_RUN_ROLE`: the coordinator of a run, or an agent in one of its lanes (R7). */
+const RUN_ROLES = ["coordinator", "lane"] as const;
+
 /** How the extension finds the server: set by pi-spore on every agent process (architecture 2). */
 export interface BridgeEnv {
   url: string;
@@ -13,11 +16,13 @@ export interface BridgeEnv {
   chatKind: "worker" | "side" | "stage";
   /** Set exactly when `chatKind` is `stage`. */
   stageRole?: StageRole;
+  /** Set in a run's chats (R7): the coordinator, or an agent in one of its lanes. */
+  runRole?: (typeof RUN_ROLES)[number];
 }
 
 /**
- * Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, `PI_SPORE_CHAT_KIND`, and for a stage `PI_SPORE_STAGE_ROLE`, or names what is
- * missing or wrong.
+ * Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, `PI_SPORE_CHAT_KIND`, for a stage `PI_SPORE_STAGE_ROLE`, and in a run
+ * `PI_SPORE_RUN_ROLE`, or names what is missing or wrong.
  */
 export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): BridgeEnv {
   const url = env.PI_SPORE_URL;
@@ -27,7 +32,12 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
   if (!token)
     throw new Error("spore-bridge runs only inside pi-spore agents: PI_SPORE_TOKEN is not set");
   const kind = env.PI_SPORE_CHAT_KIND ?? "worker";
-  const base = { url: url.replace(/\/+$/, ""), token };
+  const runRole = RUN_ROLES.find((candidate) => candidate === env.PI_SPORE_RUN_ROLE);
+  if (env.PI_SPORE_RUN_ROLE !== undefined && !runRole)
+    throw new Error(
+      `spore-bridge: PI_SPORE_RUN_ROLE must be ${RUN_ROLES.join(" or ")}, not "${env.PI_SPORE_RUN_ROLE}"`,
+    );
+  const base = { url: url.replace(/\/+$/, ""), token, ...(runRole ? { runRole } : {}) };
   if (kind === "worker" || kind === "side") return { ...base, chatKind: kind };
   if (kind !== "stage")
     throw new Error(

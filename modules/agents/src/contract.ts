@@ -1,5 +1,5 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { Agent, AgentDialog, StageRole } from "@pi-spore/shared";
+import type { Agent, AgentDialog, StageRole, Workspace } from "@pi-spore/shared";
 import type { RoleDefaults } from "./launch.js";
 
 /** What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers. */
@@ -17,6 +17,19 @@ export interface AgentAttention {
    */
   waitingSince?: number;
 }
+
+/** What a launch hook adds to one agent's Pi process. */
+export interface LaunchContext {
+  /** Environment variables added to the agent's process. */
+  env?: Record<string, string>;
+  /**
+   * Replaces the agent's tool allowlist for this launch: `--tools <these> --exclude-tools mcp__*`. At most one hook
+   * may give it for one agent.
+   */
+  tools?: readonly string[];
+}
+
+export type LaunchHook = (agent: Agent, workspace: Workspace) => LaunchContext | undefined;
 
 export interface Agents {
   /**
@@ -62,6 +75,12 @@ export interface Agents {
    * must be safe to run again: a throw is logged and the chat stays for the next sweep.
    */
   beforeDeleteChat(listener: (agentId: string) => void): void;
+  /**
+   * Runs at each launch of an agent's process, so a module can add environment variables and replace the tools. It
+   * must be synchronous. The bridge token's read-only flag does not change. Throws when two hooks give `tools` for one
+   * agent.
+   */
+  addLaunchContext(hook: LaunchHook): void;
 }
 
 export const AgentsKey = defineInterface<Agents>("agents", "agents");

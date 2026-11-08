@@ -17,6 +17,7 @@ import {
 } from "./client.js";
 import { registerReportTool } from "./report.js";
 import { applyRules } from "./rules.js";
+import { registerRunTools } from "./runs.js";
 
 /** How long one wait for a run may hold a request; the server caps it at 30 s. */
 const WAIT_MS = 25_000;
@@ -92,59 +93,62 @@ export default function sporeBridge(pi: ExtensionAPI) {
     applyRules(event.systemPromptOptions, getAgentDir(), env);
   });
 
-  pi.registerTool({
-    name: "request_human_input",
-    label: "Ask the user",
-    description:
-      "File a question for the user on pi-spore's Home page and end your turn. The user answers when they can, " +
-      "maybe hours later or after a restart; the answer arrives as a new user message. Write the question so you " +
-      "can continue from the answer alone. Give choices when there are a few clear options; the user may still " +
-      "answer in their own words.",
-    promptSnippet:
-      "Ask the user a question that waits on Home; the answer arrives later as a message",
-    promptGuidelines: [
-      "Use request_human_input when you need a decision or information only the user has. Call it alone, as the last tool call of your turn, then stop.",
-      "If an ask_user tool is also available, use ask_user only for a quick choice while the user is watching the chat; it blocks and is lost if the process stops. Prefer request_human_input otherwise.",
-    ],
-    parameters: Type.Object({
-      question: Type.String({
-        minLength: 1,
-        maxLength: 4_000,
-        description: "The question, with the context needed to answer it",
-      }),
-      choices: Type.Optional(
-        Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
-          minItems: 2,
-          maxItems: 8,
-          description: "Short answer options, if there are a few clear ones",
+  // R3.5, R7.5: agents in a lane ask their coordinator (ask_coordinator) instead.
+  if (env.runRole !== "lane")
+    pi.registerTool({
+      name: "request_human_input",
+      label: "Ask the user",
+      description:
+        "File a question for the user on pi-spore's Home page and end your turn. The user answers when they can, " +
+        "maybe hours later or after a restart; the answer arrives as a new user message. Write the question so you " +
+        "can continue from the answer alone. Give choices when there are a few clear options; the user may still " +
+        "answer in their own words.",
+      promptSnippet:
+        "Ask the user a question that waits on Home; the answer arrives later as a message",
+      promptGuidelines: [
+        "Use request_human_input when you need a decision or information only the user has. Call it alone, as the last tool call of your turn, then stop.",
+        "If an ask_user tool is also available, use ask_user only for a quick choice while the user is watching the chat; it blocks and is lost if the process stops. Prefer request_human_input otherwise.",
+      ],
+      parameters: Type.Object({
+        question: Type.String({
+          minLength: 1,
+          maxLength: 4_000,
+          description: "The question, with the context needed to answer it",
         }),
-      ),
-    }),
-    async execute(toolCallId, params, signal) {
-      const { question } = await client.call(QuestionAnswer, "questions", {
-        body: {
-          question: params.question,
-          ...(params.choices ? { choices: params.choices } : {}),
-        },
-        receipt: toolCallId,
-        ...(signal ? { signal } : {}),
-      });
-      return {
-        content: text(
-          `The question is on the user's Home page (question ${question.id}). Stop now. ` +
-            "The answer arrives as a new user message.",
+        choices: Type.Optional(
+          Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
+            minItems: 2,
+            maxItems: 8,
+            description: "Short answer options, if there are a few clear ones",
+          }),
         ),
-        details: { questionId: question.id },
-        terminate: true,
-      };
-    },
-  });
+      }),
+      async execute(toolCallId, params, signal) {
+        const { question } = await client.call(QuestionAnswer, "questions", {
+          body: {
+            question: params.question,
+            ...(params.choices ? { choices: params.choices } : {}),
+          },
+          receipt: toolCallId,
+          ...(signal ? { signal } : {}),
+        });
+        return {
+          content: text(
+            `The question is on the user's Home page (question ${question.id}). Stop now. ` +
+              "The answer arrives as a new user message.",
+          ),
+          details: { questionId: question.id },
+          terminate: true,
+        };
+      },
+    });
 
   // ADR 0033: side chats get only request_human_input and the two read-only artifact tools (the launch allowlist),
   // so the card tools and artifacts_write stay off there.
   registerCardTools(pi, client);
   registerArtifactTools(pi, client);
   registerReportTool(pi, client, env);
+  registerRunTools(pi, client, env);
 
   pi.registerTool({
     name: "check",

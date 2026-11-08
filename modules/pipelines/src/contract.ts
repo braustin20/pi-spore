@@ -1,7 +1,26 @@
 import { type BridgeCaller, defineInterface } from "@pi-spore/module-api";
-import type { PipelineTurn, StageReport } from "@pi-spore/shared";
+import type { PipelineRun, PipelineTurn, StageReport } from "@pi-spore/shared";
+
+export interface StartRunRequest {
+  pipeline: string;
+  brief: string;
+  /** The agent that asked for the run and gets its approvals. Defaults to the workspace's active worker chat. */
+  askingAgentId?: string;
+  /** `provider/id`. The model of the worker stage (stage 0) for this run only, instead of the stage's own. */
+  workerModel?: string;
+}
 
 export interface Pipelines {
+  /**
+   * Starts a run as `POST /api/pipelines/workspaces/:id/runs` does, with the same errors: 409 `workspace_not_active`,
+   * 409 `pipeline_running`, 404 `pipeline_not_found`, 422 `bad_pipeline`.
+   */
+  start(workspaceId: string, request: StartRunRequest): Promise<PipelineRun>;
+  /**
+   * Runs for every run that ends (passed, failed, or stopped), inside the transaction that ends it, with the run as it
+   * is after the update. A throw rolls the end back.
+   */
+  afterRunEnded(listener: (run: PipelineRun) => void): void;
   /**
    * Records the report of a stage agent's turn and wakes the stage's job, in one transaction. A worker turn also keeps
    * the router's newest decision for its agent (R4.7). Throws 404

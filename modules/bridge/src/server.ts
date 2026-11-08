@@ -3,10 +3,13 @@ import { type ArtifactOwner, ArtifactsKey } from "@pi-spore/mod-artifacts/server
 import { QuestionsKey } from "@pi-spore/mod-attention/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
+import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type BridgeCaller, bridgeCaller, type ServerModule } from "@pi-spore/module-api";
 import {
   type ActionRun,
+  AnswerLaneRequest,
+  AskCoordinatorRequest,
   BridgeAddCardRequest,
   type BridgeArtifactFile,
   type BridgeArtifactList,
@@ -19,9 +22,12 @@ import {
   type Card,
   type CardColumn,
   FileQuestionRequest,
+  MergeLaneRequest,
   parseJsonBody,
+  ReviseLaneRequest,
   StageReport,
   StartBridgeRunRequest,
+  StartLaneRequest,
 } from "@pi-spore/shared";
 
 /** Longest a request may wait for a run to change, so clients do not time out. Same as the actions routes. */
@@ -46,7 +52,7 @@ export function tail(text: string): { text: string; truncated: boolean } {
  */
 export const bridgeModule: ServerModule = {
   id: "bridge",
-  requires: ["workspaces", "attention", "actions", "kanban", "artifacts", "pipelines"],
+  requires: ["workspaces", "attention", "actions", "kanban", "artifacts", "pipelines", "runs"],
   core: false,
   setup(host) {
     const workspaces = host.use(WorkspacesKey);
@@ -55,6 +61,7 @@ export const bridgeModule: ServerModule = {
     const cards = host.use(CardsKey);
     const artifacts = host.use(ArtifactsKey);
     const pipelines = host.use(PipelinesKey);
+    const runs = host.use(RunsKey);
 
     /** A run of the caller's workspace. Other workspaces' runs look like they do not exist. */
     const ownRun = (caller: BridgeCaller, id: string): ActionRun => {
@@ -196,7 +203,49 @@ export const bridgeModule: ServerModule = {
     host.routes.post("/questions", async (c) => {
       const caller = bridgeCaller(c);
       const request = parseJsonBody(FileQuestionRequest, await c.req.text(), "question");
+      if (runs.laneOf(caller.workspaceId)) {
+        throw new ApiError(
+          409,
+          "ask_coordinator",
+          "Agents in a run ask their coordinator: use ask_coordinator",
+        );
+      }
       return c.json({ question: questions.file(caller, request) }, 201);
+    });
+
+    host.routes.post("/lanes", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "start lanes");
+      const request = parseJsonBody(StartLaneRequest, await c.req.text(), "lane");
+      return c.json({ lane: await runs.startLane(caller, request) }, 201);
+    });
+
+    host.routes.post("/lanes/revise", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "revise lanes");
+      const request = parseJsonBody(ReviseLaneRequest, await c.req.text(), "lane revision");
+      return c.json({ lane: await runs.reviseLane(caller, request) });
+    });
+
+    host.routes.post("/lanes/merge", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "merge lanes");
+      const request = parseJsonBody(MergeLaneRequest, await c.req.text(), "lane merge");
+      return c.json({ lane: await runs.mergeLane(caller, request) });
+    });
+
+    // Lane reviewers are read-only and may ask their coordinator, so this route does not refuse read-only callers.
+    host.routes.post("/coordinator/questions", async (c) => {
+      const caller = bridgeCaller(c);
+      const request = parseJsonBody(AskCoordinatorRequest, await c.req.text(), "question");
+      return c.json({ question: runs.askCoordinator(caller, request) }, 201);
+    });
+
+    host.routes.post("/coordinator/answers", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "answer lanes");
+      const request = parseJsonBody(AnswerLaneRequest, await c.req.text(), "answer");
+      return c.json({ question: runs.answerLane(caller, request) });
     });
 
     // Reviewers are read-only and report too, so this route does not refuse read-only callers.

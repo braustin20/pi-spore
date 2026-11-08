@@ -35,6 +35,9 @@
       "path": "../pipelines"
     },
     {
+      "path": "../runs"
+    },
+    {
       "path": "../agents"
     },
     {

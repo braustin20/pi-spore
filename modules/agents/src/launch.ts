@@ -32,11 +32,11 @@ export const SIDE_CHAT_TOOLS: readonly string[] = [
 
 /**
  * The tools of a read-only pipeline stage agent (R6): the side chat's tools, plus spore-bridge's `report`, the one tool
- * that ends its turn.
+ * that ends its turn, and `ask_coordinator`, which spore-bridge registers only inside a run lane.
  */
 export const STAGE_REVIEWER_TOOLS: readonly string[] = [
   "--tools",
-  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report",
+  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report,ask_coordinator",
   "--exclude-tools",
   "mcp__*",
 ];
