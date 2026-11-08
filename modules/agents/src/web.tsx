@@ -479,6 +479,7 @@ function ChatView({
           <div className="mx-auto max-w-3xl">
             <WorkingIndicator label={activity(state)} />
             <Composer
+              chatId={agentId}
               busy={busy}
               disabled={!active}
               loadCommands={loadCommands}
