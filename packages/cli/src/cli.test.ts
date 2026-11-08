@@ -1067,3 +1067,68 @@ describe("pi-spore run", () => {
     expect(sent).toEqual([]);
   });
 });
+
+describe("pi-spore usage calibration", () => {
+  const emptyBuckets = Array.from({ length: 10 }, (_, index) => ({
+    from: index / 10,
+    to: (index + 1) / 10,
+    answers: 0,
+    localOutcomes: 0,
+    passed: 0,
+    enough: false,
+  }));
+  const report = {
+    threshold: 0.7,
+    minSample: 20,
+    decisions: 34,
+    outcomes: 30,
+    buckets: {
+      bounded: emptyBuckets,
+      explicit: emptyBuckets,
+      visual: emptyBuckets,
+      straightforward: emptyBuckets.map((bucket, index) =>
+        index === 0 ? { ...bucket, answers: 3 } : bucket,
+      ),
+    },
+    bars: [
+      { bar: 0.1, decisions: 34, wouldGoLocal: 34, localOutcomes: 30, passed: 23, enough: true },
+      { bar: 0.9, decisions: 34, wouldGoLocal: 3, localOutcomes: 0, passed: 0, enough: false },
+    ],
+    skipped: 0,
+  };
+
+  it("prints the summary, each bar with its sample size, and too little data", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json(report));
+    expect(await run(["usage", "calibration"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/usage/calibration");
+    expect(out.slice(0, 5)).toEqual([
+      "Bar now 0.7. 34 decisions with Jev answers, 30 local outcomes.",
+      "Suggested bar: none (no bar has 20 local outcomes with 90% passed)",
+      "bar  would go local   passed",
+      "0.1  34/34 (100%)     23/30 (77%)",
+      "0.9  3/34 (9%)        0/0  too little data",
+    ]);
+    expect(out).toContain("straightforward");
+    expect(out).toContain("  0.0-0.1  answers 3   passed 0/0  too little data");
+  });
+
+  it("names the suggested bar when there is one", async () => {
+    const { deps, out } = fakeDeps(() => Response.json({ ...report, suggestedBar: 0.3 }));
+    expect(await run(["usage", "calibration"], deps)).toBe(0);
+    expect(out[1]).toBe("Suggested bar: 0.3");
+  });
+
+  it("prints the body with --json", async () => {
+    const { deps, out } = fakeDeps(() => Response.json(report));
+    expect(await run(["usage", "calibration", "--json"], deps)).toBe(0);
+    expect(JSON.parse(out.join("\n"))).toEqual(report);
+  });
+
+  it("exits 2 on an unknown usage subcommand", async () => {
+    const { deps, err, sent } = fakeDeps(healthy);
+    expect(await run(["usage", "tokens"], deps)).toBe(2);
+    expect(await run(["usage"], deps)).toBe(2);
+    expect(err.at(-1)).toContain("Usage: pi-spore");
+    expect(sent).toEqual([]);
+  });
+});
