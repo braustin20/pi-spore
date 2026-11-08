@@ -29,6 +29,9 @@
       "path": "../../modules/workspaces"
     },
     {
+      "path": "../../modules/artifacts"
+    },
+    {
       "path": "../../modules/unity"
     },
     {

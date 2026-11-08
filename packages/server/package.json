@@ -10,6 +10,7 @@
     "@hono/node-server": "2.1.6",
     "@pi-spore/mod-actions": "0.0.0",
     "@pi-spore/mod-agents": "0.0.0",
+    "@pi-spore/mod-artifacts": "0.0.0",
     "@pi-spore/mod-attention": "0.0.0",
     "@pi-spore/mod-bridge": "0.0.0",
     "@pi-spore/mod-changes": "0.0.0",

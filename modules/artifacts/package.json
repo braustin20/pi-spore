@@ -1,0 +1,25 @@
+{
+  "name": "@pi-spore/mod-artifacts",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./server": {
+      "@pi-spore/source": "./src/server.ts",
+      "types": "./dist/server.d.ts",
+      "default": "./dist/server.js"
+    }
+  },
+  "dependencies": {
+    "@pi-spore/mod-projects": "0.0.0",
+    "@pi-spore/mod-workspaces": "0.0.0",
+    "@pi-spore/module-api": "0.0.0",
+    "@pi-spore/shared": "0.0.0",
+    "hono": "4.13.16"
+  },
+  "devDependencies": {
+    "@pi-spore/mod-vcs-folder": "0.0.0",
+    "@pi-spore/mod-vcs-git": "0.0.0",
+    "@pi-spore/server-core": "0.0.0"
+  }
+}
