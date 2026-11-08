@@ -47,7 +47,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   pi-spore's rules come from spore-bridge, not from a prompt file (ADR 0031).
 - Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (this
   process's agent token, ADR 0032), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker` or
-  `side`), and `PI_SPORE_UNITY_PROJECT` (Unity projects). Later: `PI_SPORE_RUN_ID` (in a run) and the workspace action env.
+  `side`), `PI_SPORE_UNITY_PROJECT` (Unity projects), and from launch hooks `PI_SPORE_RUN_ID` and `PI_SPORE_RUN_ROLE`
+  (`coordinator` or `lane`, section 9). Later: the workspace action env.
+- **Launch hooks** (ADR 0150). `AgentsKey.addLaunchContext(hook)` registers a synchronous hook that the manager calls
+  at each launch with the agent and its workspace. It may add `env` and replace the tool allowlist with `tools`
+  (`--tools <tools> --exclude-tools mcp__*`). Two hooks that give `tools` for one agent fail the launch. A hook never
+  changes the bridge token's read-only flag.
 - **Chats** (ADR 0030, ADR 0033, ADR 0120). The role of a workspace chat is `orchestrator`: a new chat starts on
   `subagents.agentOverrides.orchestrator` (model, thinking) from Pi's settings, and on Pi's own default when that
   override is missing. The `worker` role is a subagent on `spore/auto`; `worker` stays only as a chat `kind`, in
@@ -93,7 +98,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     assistant messages.
   - The thinking level comes from the role default. Env adds `PI_SPORE_CHAT_KIND=stage` and `PI_SPORE_STAGE_ROLE`.
   - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,request_human_input,artifacts_list,
-    artifacts_read,report`, `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
+    artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
+    `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
   - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
     picker), because the pipeline judges a reviewer by the model it ran on (R4.4).
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
@@ -131,8 +137,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     the Jev classifier (`router.classifier`, through `ctx.modelRegistry.classify`) whether another round is worth
     it, and adds `earlyStop: { stop, probability }` (stop at P >= 0.7), or `{ stop: false, error }` when the
     classifier fails (ADR 0140).
-  - Not built yet: `ask_coordinator` (inside a lane), and the coordinator's `start_lane`, `answer_lane`,
-    `merge_lane`.
+  - Run tools (R7, ADR 0150), by `PI_SPORE_RUN_ROLE`. The coordinator gets `start_lane` `{ name, brief, wave,
+    dependsOn?, pipeline?, model? }`, `revise_lane` `{ laneId, brief }`, `merge_lane` `{ laneId }`, and
+    `answer_lane` `{ questionId, answer }`, and coordinator rules in place of the orchestrator rules. A lane agent
+    gets `ask_coordinator` `{ question }` in place of `request_human_input`; it files the question and ends the turn
+    with `terminate: true`. Lane agents get one more paragraph of rules: ask the coordinator, never the user.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
   Restarting it with `--session` restores the conversation.
 - Spike Q1 ([notes](spikes/q1-rpc-agents.md)) confirmed the full setup loads in RPC mode. Rules from it:
@@ -262,12 +271,12 @@ export interface ServerHost {
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
 | Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card |
 | Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`), kind (worker, side), active, closed, closed at, title, forked from, model selection, session path, process state, parent agent |
-| Run | A coordinator conversation that owns lanes | id, project, coordinator agent, integration branch, spec artifact, state |
-| Lane | A workspace inside a run | id, run, workspace, wave, depends on, brief artifact, state |
+| Run | A coordinator conversation that owns lanes | id, project, run workspace, run line (`run/<slug>-<id>`), base, gates, coordinator agent |
+| Lane | A workspace inside a run | id, run, name, wave, depends on, brief artifact, pipeline, model, state, workspace, approval, message |
 | Pipeline | A declared stage list (file) | id, source (user, project, or built-in), stages |
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
 | Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer) |
-| Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state |
+| Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state; a lane's question is a `runs_questions` row |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
@@ -283,7 +292,7 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
   no native module to build. It supports FTS5 for the v2 search.
 - A lock file next to it. A second server refuses to start.
 - Each module owns its tables and ships numbered migrations.
-- **Jobs.** PR watching, deliveries, and pipeline stages are jobs; lane starts will be. Core owns the
+- **Jobs.** PR watching, deliveries, pipeline stages, lane starts, and lane merges are jobs. Core owns the
   runner (`host.jobs`, `packages/server-core/src/jobs.ts`) and its table `core_jobs`:
   - A module defines a kind (`<module id>.<name>`) as a list of named steps during setup, and starts jobs with
     `jobs.start(kind, subject, { key, after })`. Start is a plain insert, so it joins the caller's transaction; the
@@ -340,6 +349,15 @@ export interface VcsProvider {
   lines?: { list(project) };                             // branches (git)
   changes?: ChangeOps;                                   // scopes, files, diffs, records (git)
   publish?: PublishOps;                                  // push a line, never force (git)
+  integrate?: IntegrateOps;                              // join lines in a run's copy (git)
+}
+
+interface IntegrateOps {                                 // ADR 0150
+  createLine(project, line, base): Promise<void>;        // a branch at base, not checked out
+  merge(location, line): Promise<{ conflicts: string[] }>; // no commit; on a conflict it aborts and lists the files
+  commit(location, message): Promise<string>;            // commits the merge in progress
+  abort(location): Promise<void>;                        // undoes a merge in progress, if any
+  diff(location, line): Promise<string>;                 // what line adds since it left the copy's line
 }
 
 interface ChangeOps {
@@ -374,6 +392,9 @@ interface ChangeOps {
   - `push`: the branch's configured remote, else `origin`, else the only remote. `git push --set-upstream <remote>
     refs/heads/<line>:refs/heads/<line>`, never `--force`; a rejected push is 409 `push_failed` with git's message.
     `GIT_TERMINAL_PROMPT=0`, so a missing credential fails instead of waiting.
+- Git integrate (`modules/vcs-git/src/integrate.ts`): `merge`, `commit`, and `abort` first read the copy's current
+  branch and refuse with 409 `not_run_line` unless it starts with `run/`. That is the code-level rule that pi-spore
+  never merges into a base line (R9.3). `merge` runs `git merge --no-ff --no-commit`.
 
 ## 8. Pipelines
 
@@ -470,24 +491,67 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   by severity, tests with proofs, and Jev's answer. A Details panel shows the latest run and its open findings.
 - CLI: `pi-spore pipeline list <workspace>`, `pipeline start <workspace> <pipeline> (--brief <text> | --brief-file
   <path>)`, `pipeline runs <workspace>`, `pipeline show <run>`, `pipeline cancel <run>`, `pipeline retry <run>`.
+- Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, askingAgentId?, workerModel? })` does what
+  the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`).
+  `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it.
 - Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
   card when a run passes, and a tool for the orchestrator to start a run.
 
 ## 9. Runs and lanes
 
-See [ADR 0007](decisions/0007-coordinator-runs.md) and [ADR 0017](decisions/0017-integration-branch.md).
+See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-questions-up-the-chain.md),
+[ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md), and
+[ADR 0150](decisions/0150-run-worktree-and-green-merges.md). Requirements R7, R4.8.
 
-- A run creates the integration branch `run/<slug>-<id>` from the base branch and a coordinator agent in the main
-  checkout (read-only on the working copy; it writes only through spore-bridge tools and artifacts).
-- The coordinator writes the spec and lane briefs as artifacts, then calls `start_lane` per lane with wave and
-  dependencies. pi-spore creates each lane's worktree from the integration branch and starts its pipeline when its
-  wave is ready.
-- Lane model approval (R4.8): `start_lane` with no model override starts at once. An override in a higher tier than the
-  role default (ADR 0023) creates an Approval on Home and the lane waits.
-- When a lane's pipeline passes, the coordinator reviews the diff and calls `merge_lane`. pi-spore merges the lane
-  branch into the integration branch and re-runs the run's gates there. Conflicts go back to the coordinator.
-- When all lanes are merged, the coordinator (or the user) opens one PR from the integration branch. The human
-  merges.
+The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
+`pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
+
+- **Start.** `POST /api/runs` `{ projectId, name, base?, gates? }` needs a provider with `integrate` (else 422
+  `not_supported`). `base` defaults to the main copy's current line; `gates` to `check` and `test`. It creates
+  `run/<slug>-<last 6 of the run id>` at the base, the **run workspace** on it (isolation `existing`, with the base
+  stored, so its PR tab targets the base), and its orchestrator chat. That chat is the coordinator.
+- **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
+  the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,start_lane,
+  revise_lane,merge_lane,answer_lane`: no write or shell tools. Its token is not read-only, so it writes artifacts
+  and calls the run routes. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
+- **Lanes.** `start_lane` takes a brief that is an artifact of the run workspace (404 `brief_not_found`), a wave
+  (1 or more), lane ids it depends on (400 `bad_depends_on`), a pipeline (default `default`), and a model.
+  - Model (R4.8, ADR 0014): no model, or one whose tier (ADR 0023) is not above the worker role default's, makes
+    the lane `waiting`. A higher tier files a `lane-model` approval for the coordinator and the lane is `approval`.
+    Approve makes it `waiting`; decline makes it `declined`. A missing role default or tier is an error that names it.
+  - Job `runs.lane`, keyed by the lane: `ready` waits until every lane of a lower wave and every lane it depends on
+    is `merged` (`declined` lanes do not block), then creates the lane workspace (`new`, base the run line);
+    `launch` starts the pipeline with `PipelinesKey.start` (the coordinator is the asking chat, the lane model the
+    worker model); `await` waits; `report` writes the lane diff to `runs/<run>/lanes/<lane>.diff` in the run
+    workspace and delivers it to the coordinator, or delivers the failure.
+  - `afterRunEnded` moves the lane to `passed` or `failed` in the pipeline's own transaction.
+  - `revise_lane` sends a `passed` or `failed` lane back with a new brief; a new pipeline run starts in the same lane
+    workspace (409 `lane_not_revisable` otherwise). It is the answer to a conflict or a red gate.
+  - States: `approval`, `waiting`, `starting`, `running`, `passed`, `failed`, `declined`, `merging`, `merged`.
+- **Merge** (ADR 0150). `merge_lane` takes a `passed` lane (409 `lane_not_mergeable`), makes it `merging`, and
+  starts job `runs.merge`, keyed by the run, so merges go one at a time. `merge` aborts any merge a restart left,
+  then merges the lane line into the run worktree without a commit. A conflict aborts, puts the lane back to
+  `passed`, and sends the files to the coordinator. `gate` runs each run gate on the merged tree through
+  `ActionsKey.start` with a key per merge job and attempt. `finish` commits when all passed (`merged`, wakes waiting
+  lanes); on a red gate it writes the diff to `runs/<run>/lanes/<lane>-gates.diff`, aborts, puts the lane back to
+  `passed`, and sends the diff path and the last 4 KiB of the log. The run line only holds merges whose gates passed.
+  When every lane is `merged` or `declined`, the coordinator is told to have the user open the one PR from the run
+  workspace's PR tab. A human merges it.
+- **Questions** (R7.5, R7.6, ADR 0008). `ask_coordinator` from a lane agent inserts a `runs_questions` row and
+  delivers it to the coordinator in one transaction (403 `not_in_lane` outside a lane). The coordinator answers
+  with `answer_lane` from the spec, or asks the user with `request_human_input` first; the answer is stored and
+  delivered to the asking agent in one transaction (404 `question_not_found`, 409 `question_answered`). The bridge
+  refuses `request_human_input` from a lane with 409 `ask_coordinator`. There is no lane-to-lane route.
+- Bridge routes: `POST /api/bridge/lanes`, `/lanes/revise`, `/lanes/merge`, `/coordinator/answers` (not for
+  read-only callers), and `/coordinator/questions` (lane reviewers too). The runs module checks who may call each.
+- Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`. Topic
+  `runs:list` sends `{ type: "runs", runs }` on subscribe and after every change.
+- Web: a Runs page (`#/runs`, rail icon) with a start form and every run's lanes by wave, and a run panel on a run
+  workspace (the same card) or a lane workspace (a link to its run).
+- CLI: `pi-spore run start <project> <name> [--base <line>] [--gate <action>]...`, `run list [--project <id>]`,
+  `run show <run>`.
+- Not built yet: cancelling a run, a coordinator change when the user starts a new chat in the run workspace (the
+  run keeps the chat it started with), and a PR tool for the coordinator.
 
 ## 10. Model routing
 
@@ -1150,7 +1214,7 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
 - One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream),
   `agents:list` (agent list snapshots and updates), `workspaces:list` (workspace list snapshots and updates),
-  `attention:inbox` (Home), and `kanban:board` (the board).
+  `attention:inbox` (Home), `kanban:board` (the board), and `runs:list` (runs).
 - Modules add their own WebSocket routes with `host.sockets.add(path, open)`, under `/api/<module id>/`. `open`
   gets the path params and throws an ApiError to refuse the upgrade with its status. Every upgrade, `/api/ws`
   included, needs a loopback Host and Origin and the user's token in `?token=` (browsers cannot set headers on a
@@ -1162,6 +1226,7 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - CLI for approvals: `pi-spore approvals list [--all]`, `pi-spore approvals approve <id>`, `pi-spore approvals
   decline <id> [--note text]`.
 - `POST /api/bridge/reports` takes a stage agent's `report` (section 8), read-only callers included.
+- Run routes for spore-bridge are in section 9.
 - CLI for jobs: `pi-spore jobs [--all]` (id, kind, state, step, error), `pi-spore jobs retry <id>`, `pi-spore jobs
   cancel <id>`.
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
