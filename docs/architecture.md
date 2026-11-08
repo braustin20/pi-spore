@@ -780,8 +780,17 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
   PR, stores it, turns the watch on, and moves the workspace's card to Review (`CardsKey.workChanged`). The form
   starts with the workspace name as title, the card's body as body, and the workspace's base. A base like
   `origin/main` loses its remote name.
-- A PR opened outside pi-spore for the workspace's branch is found on `GET ...?refresh=1` and shown, with the watch
-  off.
+- A PR opened outside pi-spore for the workspace's branch (an agent's `gh pr create`) is found and shown, with the
+  watch off. `gh pr view <branch>` looks at open, merged, and closed PRs: the newest open one, else the newest.
+  pi-spore looks:
+  - on `GET ...?refresh=1`;
+  - when a chat of the workspace ends a run (its status leaves `busy`);
+  - in one `github-pr.discover` job (key `all`, one `look` step) at server start, then every 5 min (module option),
+    over every active workspace.
+  A look skips a workspace that is not active, has no folder or own branch, cannot be published, or has no card
+  outside Done. Without a stored PR it finds one by branch. A stored open PR with the watch off is read again, so
+  it is followed to merged; the watch job follows a watched one. A found PR never turns the watch on. A gh failure
+  (no GitHub remote, no login) is logged once per workspace, in one line, and the look goes on.
 - Tables: `github_pr_prs` (one per workspace: number, the last view as JSON, watch state, tries, the head whose
   failures were sent, the last clean head, message, poll times), `github_pr_sent` (bot comments already sent), and
   `github_pr_tries` (each automatic message, for the tab).
@@ -800,7 +809,9 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
   - At most 3 tries in a row (module option). A head with every check passed and nothing to send ends the run. After
     3 tries, or with no orchestrator chat, the watch is `waiting` with a message, and sends nothing until the user resumes
     (`watch on`), which starts a new run and sends the current failures again.
-  - A merged PR moves the card to Done; a merged or closed PR ends the watch (`done`).
+  - A merged PR moves the card to Done; a merged or closed PR ends the watch (`done`). A PR first seen merged
+    moves the card to Review (`PR #n opened`), then Done (`PR #n merged`), unless a card of the workspace is in
+    Done already. A closed unmerged PR moves nothing.
 - Topic `github-pr:<workspace id>` sends the status on subscribe and after each poll.
 
 | Route | Does |
@@ -943,7 +954,8 @@ R11.
   - workspace archived → Done (any archive; the user moves the card back if the work was dropped). The module
     listens with `WorkspacesKey.afterStateChange`.
   - Later modules move cards through `CardsKey.workChanged(workspaceId, column, reason)`: pipeline passed or PR
-    open → Review, PR merged → Done.
+    open → Review, PR merged → Done. `github-pr` finds a workspace's PR by itself (section 11e), also one an agent
+    opened with `gh`, so the card reaches Review and Done without the publish form.
 - Runs are not built yet, so a card starts only workspaces.
 
 API under `/api/kanban`:

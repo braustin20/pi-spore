@@ -37,18 +37,24 @@ const timer: JobTimer = (run, ms) => {
 // The test clock ticks once per call, so a delay is a few ms short of the one the module asked for.
 const wholeSeconds = (ms: number) => Math.round(ms / 1000) * 1000;
 
-/** Runs every poll that is due, waits for each to commit, and returns their delays. */
+/** The discover job's interval; no other timer in these tests has this delay, so the helpers can tell it apart. */
+const DISCOVER_MS = 17 * 60_000;
+const isDiscover = (entry: { ms: number }) => wholeSeconds(entry.ms) === DISCOVER_MS;
+
+/** Runs every timer that is due (the discover look too), waits for each to commit, and returns the poll delays. */
 async function tick(): Promise<number[]> {
   const due = timers.filter((entry) => !entry.cancelled);
   timers = [];
   for (const entry of due) await entry.run();
-  return due.map((entry) => wholeSeconds(entry.ms));
+  return due.filter((entry) => !isDiscover(entry)).map((entry) => wholeSeconds(entry.ms));
 }
 
 const scheduledDelays = () =>
-  timers.filter((entry) => !entry.cancelled).map((entry) => wholeSeconds(entry.ms));
+  timers
+    .filter((entry) => !entry.cancelled && !isDiscover(entry))
+    .map((entry) => wholeSeconds(entry.ms));
 
-async function makeServer(home?: string, startAt?: number) {
+async function makeServer(home?: string, startAt?: number, firstId = 1000) {
   agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
@@ -66,9 +72,12 @@ async function makeServer(home?: string, startAt?: number) {
       agents,
       attentionModule,
       kanbanModule,
-      createGithubPrModule({ gh: { command: process.execPath, args: [FAKE_GH, ghState] } }),
+      createGithubPrModule({
+        gh: { command: process.execPath, args: [FAKE_GH, ghState] },
+        discoverIntervalMs: DISCOVER_MS,
+      }),
     ],
-    { timer, ...(home ? { home, firstId: 1000 } : {}), ...(startAt ? { startAt } : {}) },
+    { timer, ...(home ? { home, firstId } : {}), ...(startAt ? { startAt } : {}) },
   );
 }
 
@@ -121,6 +130,7 @@ interface FakeGh {
   comments?: Record<string, unknown[]>;
   logs?: Record<string, string>;
   createError?: string;
+  viewError?: string;
 }
 const readGh = (): FakeGh => JSON.parse(readFileSync(ghState, "utf8")) as FakeGh;
 const editGh = (change: (state: FakeGh) => void) => {
@@ -194,6 +204,19 @@ async function setUp(
   }
   writeFileSync(join(workspace.path, "a.txt"), "two\n");
   git(workspace.path, "commit", "-q", "-am", "fix jump");
+  if (card) {
+    // The brief's run ends and the module looks for a PR once. Wait for that look, so it cannot reach into a test.
+    await until(() => {
+      try {
+        return (readGh().calls ?? []).length > 0;
+      } catch {
+        return false; // The fake gh is writing its state file.
+      }
+    });
+    editGh((state) => {
+      state.calls = [];
+    });
+  }
   return { workspace, cardId, origin };
 }
 
@@ -583,14 +606,18 @@ describe("watch", () => {
     await agents.manager().stopAll();
     server.close();
     timers = [];
-    server = await makeServer(home, 1_700_000_000_000 + later);
+    // The restart must not hand out the first server's job ids again, as the discover job starts at once.
+    server = await makeServer(home, 1_700_000_000_000 + later, 5000);
     return workspace;
   }
 
   it("picks up after a restart with the time that was left", async () => {
     const workspace = await publishThenRestart(10_000);
     await until(() => scheduledDelays().length === 1);
-    const [delay] = timers.map((entry) => entry.ms);
+    // The first server's discover timer is cancelled at start; the new one has the discover delay.
+    const [delay] = timers
+      .filter((entry) => !entry.cancelled && !isDiscover(entry))
+      .map((entry) => entry.ms);
     expect(delay).toBeGreaterThan(0);
     expect(delay).toBeLessThan(25_000);
     await tick();
@@ -628,5 +655,126 @@ describe("refresh", () => {
     await until(() => said(agentId).length === 1);
     expect(sends()).toBe(1);
     expect((await status(workspace.id)).tries).toHaveLength(1);
+  });
+});
+
+describe("finding a PR by itself", () => {
+  /** A PR on the workspace's branch, as `gh pr create` in a terminal would make it. */
+  const openOutside = (workspace: Workspace, fields: Record<string, unknown> = {}) =>
+    editGh((state) => {
+      const number = state.prs.length + 1;
+      state.prs.push({
+        number,
+        url: `https://github.com/owner/repo/pull/${number}`,
+        title: "Made by hand",
+        state: "OPEN",
+        isDraft: false,
+        headRefName: workspace.line,
+        baseRefName: "main",
+        headRefOid: "abc",
+        reviewDecision: "",
+        mergeable: "UNKNOWN",
+        statusCheckRollup: [],
+        ...fields,
+      });
+    });
+
+  /** Runs the discover look that is due. */
+  async function lookNow() {
+    await until(() => timers.some((entry) => !entry.cancelled && isDiscover(entry)));
+    await tick();
+  }
+
+  const detail = async (cardId: string) =>
+    json<CardDetail>(await server.request("GET", `/api/kanban/cards/${cardId}`));
+  const viewCalls = () => readGh().calls.filter((call) => call[0] === "pr" && call[1] === "view");
+
+  it("moves the card to Review when a PR is opened outside pi-spore", async () => {
+    const { workspace, cardId } = await setUp();
+    await lookNow();
+    expect((await detail(cardId)).card.column).not.toBe("review");
+
+    openOutside(workspace);
+    await lookNow();
+    const { card, history } = await detail(cardId);
+    expect(card.column).toBe("review");
+    expect(history.at(-1)?.reason).toBe("PR #1 opened");
+    expectOnlyAllowedCalls();
+  });
+
+  it("does not watch the PR it found", async () => {
+    const { workspace } = await setUp();
+    openOutside(workspace);
+    await lookNow();
+    expect((await status(workspace.id)).watch.state).toBe("off");
+    expect(server.store.all("SELECT 1 FROM core_jobs WHERE kind = 'github-pr.watch'")).toEqual([]);
+    expect(scheduledDelays()).toEqual([]);
+  });
+
+  it("moves the card to Done, with Review in its history, for a PR found merged", async () => {
+    const { workspace, cardId } = await setUp();
+    openOutside(workspace, { state: "MERGED" });
+    await lookNow();
+    const { card, history } = await detail(cardId);
+    expect(card.column).toBe("done");
+    expect(history.slice(-2).map((move) => move.reason)).toEqual(["PR #1 opened", "PR #1 merged"]);
+  });
+
+  it("does not move the card when the branch has no PR or only a closed one", async () => {
+    const { workspace, cardId } = await setUp();
+    await lookNow();
+    const before = (await detail(cardId)).card.column;
+    openOutside(workspace, { state: "CLOSED" });
+    await lookNow();
+    expect((await detail(cardId)).card.column).toBe(before);
+  });
+
+  it("follows a found PR to merged on a later look", async () => {
+    const { workspace, cardId } = await setUp();
+    openOutside(workspace);
+    await lookNow();
+    expect((await detail(cardId)).card.column).toBe("review");
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await lookNow();
+    expect((await detail(cardId)).card.column).toBe("done");
+    expect((await status(workspace.id)).pr?.state).toBe("merged");
+  });
+
+  it("does not look at a parked workspace", async () => {
+    const { workspace } = await setUp();
+    openOutside(workspace);
+    await json(await server.request("POST", `/api/workspaces/${workspace.id}/park`));
+    await lookNow();
+    expect(viewCalls()).toEqual([]);
+  });
+
+  it("looks as soon as a chat run ends, without a timer", async () => {
+    const { workspace, cardId } = await setUp();
+    const agentId = await worker(workspace.id);
+    openOutside(workspace);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/prompt`, { message: "carry on" }),
+    );
+    await until(async () => (await detail(cardId)).card.column === "review");
+  });
+
+  it("keeps going when gh fails for a workspace", async () => {
+    const { workspace, cardId } = await setUp();
+    editGh((state) => {
+      state.viewError = "none of the git remotes point to a known GitHub host";
+    });
+    await lookNow();
+    await lookNow();
+    expect(viewCalls()).toHaveLength(2);
+    expect((await detail(cardId)).card.column).not.toBe("review");
+
+    editGh((state) => {
+      delete state.viewError;
+    });
+    openOutside(workspace);
+    await lookNow();
+    expect((await detail(cardId)).card.column).toBe("review");
   });
 });
