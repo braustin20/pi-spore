@@ -1,12 +1,12 @@
 // @vitest-environment happy-dom
-import { AttentionWebKey } from "@pi-spore/mod-attention/web";
+import { type ApprovalViewProps, AttentionWebKey } from "@pi-spore/mod-attention/web";
 import {
   type CreateWorkspaceFormProps,
   WorkspaceViewKey,
   workspacesWeb,
 } from "@pi-spore/mod-workspaces/web";
 import { type ApiClient, ApiContext, type WebHost, type WebPage } from "@pi-spore/module-api";
-import type { Card, Project, Workspace } from "@pi-spore/shared";
+import type { Approval, Card, Project, Workspace } from "@pi-spore/shared";
 import { TooltipProvider } from "@pi-spore/ui";
 import type { ComponentType } from "react";
 import { act } from "react";
@@ -69,6 +69,7 @@ const started = {
 };
 
 const DeclineNote = () => null;
+const NoCreateForm = () => null;
 
 let container: HTMLElement | undefined;
 afterEach(() => {
@@ -264,5 +265,136 @@ describe("the model select in the card editor", () => {
 
     await act(async () => button(form, "Save").click());
     expect(patchBody(send)).toEqual(expect.objectContaining({ model: "anthropic/claude-a" }));
+  });
+});
+
+describe("the model select in the card-start approval view", () => {
+  const approval = (subject: unknown): Approval => ({
+    id: "a1",
+    kind: "card-start",
+    agentId: "chat0",
+    workspaceId: "w1",
+    title: "Start card c1",
+    reason: "It is next.",
+    subject,
+    state: "open",
+    createdAt: 0,
+  });
+  const asked = { kind: "new", isolation: "new" } as const;
+  const existing = { kind: "existing", workspaceId: "w1" } as const;
+
+  /** Renders the view the kanban module adds for `card-start`; `board` says when the snapshot arrives. */
+  async function renderApproval(
+    subject: unknown,
+    options: { cardFields?: Partial<Card>; board?: "first" | "later" } = {},
+  ) {
+    let View: ComponentType<ApprovalViewProps> | undefined;
+    let deliver = () => {};
+    const api = {
+      get: async (path: string) => {
+        if (path === "projects") return { projects: [project] };
+        if (path === "workspaces") return { workspaces: [workspace] };
+        if (path === "agents/models") return MODELS;
+        throw new Error(`unexpected GET ${path}`);
+      },
+      send: vi.fn(),
+      subscribe: (_topic: string, onEvent: (event: unknown) => void) => {
+        deliver = () => onEvent({ type: "board", cards: [card(options.cardFields)] });
+        if (options.board !== "later") deliver();
+        return () => {};
+      },
+    } as unknown as ApiClient;
+    kanbanWeb.setup({
+      api,
+      addPage: () => {},
+      use: (key: unknown) => {
+        if (key === AttentionWebKey) {
+          return {
+            addApprovalView: (_kind: string, view: typeof View) => {
+              View = view;
+            },
+            DeclineNote,
+          };
+        }
+        if (key === WorkspaceViewKey) return { addPanel: () => {}, CreateForm: NoCreateForm };
+        throw new Error("unexpected interface");
+      },
+    } as unknown as WebHost);
+    if (!View) throw new Error("the kanban module did not add its card-start view");
+    const Shown = View;
+
+    const approve = vi.fn();
+    container = document.body.appendChild(document.createElement("div"));
+    await act(async () => {
+      createRoot(container as HTMLElement).render(
+        <ApiContext value={api}>
+          <TooltipProvider>
+            <Shown approval={approval(subject)} busy={false} approve={approve} decline={vi.fn()} />
+          </TooltipProvider>
+        </ApiContext>,
+      );
+    });
+    const root = container;
+    const target = [...root.querySelectorAll("label")]
+      .find((label) => label.firstChild?.textContent === "Start in")
+      ?.querySelector("select") as HTMLSelectElement;
+    return { root, approve, target, deliver: () => act(async () => deliver()) };
+  }
+
+  it("approves with no changed subject when nothing changed", async () => {
+    const { root, approve } = await renderApproval({ cardId: "c1", target: asked });
+    await act(async () => button(root, "Approve and start").click());
+    expect(approve).toHaveBeenCalledWith(undefined);
+  });
+
+  it("sends the picked model with the asked target", async () => {
+    const { root, approve } = await renderApproval({ cardId: "c1", target: asked });
+    await choose(modelSelects(root)[0] as HTMLSelectElement, "openai/gpt-x");
+    await act(async () => button(root, "Approve and start").click());
+    expect(approve).toHaveBeenCalledWith({ cardId: "c1", target: asked, model: "openai/gpt-x" });
+  });
+
+  it("preselects the subject's model, and drops it when Default is picked", async () => {
+    const subject = { cardId: "c1", target: asked, model: "anthropic/claude-a" };
+    const { root, approve } = await renderApproval(subject);
+    const select = modelSelects(root)[0] as HTMLSelectElement;
+    expect(select.value).toBe("anthropic/claude-a");
+
+    await act(async () => button(root, "Approve and start").click());
+    expect(approve).toHaveBeenLastCalledWith(undefined);
+
+    await choose(select, "");
+    await act(async () => button(root, "Approve and start").click());
+    expect(approve).toHaveBeenLastCalledWith({ cardId: "c1", target: asked });
+  });
+
+  it("disables the select for an existing workspace and sends no model", async () => {
+    const { root, approve, target } = await renderApproval({ cardId: "c1", target: asked });
+    const select = modelSelects(root)[0] as HTMLSelectElement;
+    await choose(select, "openai/gpt-x");
+
+    await choose(target, JSON.stringify(existing));
+    const disabled = modelSelects(root)[0] as HTMLSelectElement;
+    expect(disabled.disabled).toBe(true);
+    expect(optionLabels(disabled)).toEqual(["The chat's current model"]);
+    expect(root.textContent).toContain("This workspace's chat keeps its model.");
+
+    await act(async () => button(root, "Approve and start").click());
+    expect(approve).toHaveBeenCalledWith({ cardId: "c1", target: existing });
+  });
+
+  it("names the card's model once the board arrives after the first render", async () => {
+    const { root, deliver } = await renderApproval(
+      { cardId: "c1", target: asked },
+      { cardFields: { model: "anthropic/claude-a" }, board: "later" },
+    );
+    expect(optionLabels(modelSelects(root)[0] as HTMLSelectElement)[0]).toBe(
+      "Default (orchestrator setting)",
+    );
+
+    await deliver();
+    expect(optionLabels(modelSelects(root)[0] as HTMLSelectElement)[0]).toBe(
+      "Card's model (anthropic/claude-a)",
+    );
   });
 });

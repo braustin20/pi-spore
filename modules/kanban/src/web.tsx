@@ -378,6 +378,20 @@ function ModelSelect({
   );
 }
 
+/** A start that sends no model uses the card's model, else the orchestrator setting. */
+const startDefaultLabel = (card: Card | undefined) =>
+  card?.model ? `Card's model (${card.model})` : "Default (orchestrator setting)";
+
+/** A start in an existing workspace reuses its chat, which keeps its model (ADR 0120). */
+function KeptModel() {
+  return (
+    <>
+      <ModelSelect value="" onChange={() => {}} defaultLabel="The chat's current model" disabled />
+      <p className="m-0 text-xs text-muted">This workspace's chat keeps its model.</p>
+    </>
+  );
+}
+
 /** Text field for labels: comma separated. */
 const splitLabels = (text: string) =>
   text
@@ -611,13 +625,7 @@ function StartWork({
             ))}
           </Select>
         </Field>
-        <ModelSelect
-          value=""
-          onChange={() => {}}
-          defaultLabel="The chat's current model"
-          disabled
-        />
-        <p className="m-0 text-xs text-muted">This workspace's chat keeps its model.</p>
+        <KeptModel />
         {error && <Notice tone="fail">{error}</Notice>}
         <div className="flex gap-1.5">
           <Button size="sm" variant="primary" type="submit" disabled={busy || workspaceId === ""}>
@@ -668,13 +676,7 @@ function StartWork({
         submit={submit}
         onCreated={created}
       >
-        <ModelSelect
-          value={model}
-          onChange={setModel}
-          defaultLabel={
-            card.model ? `Card's model (${card.model})` : "Default (orchestrator setting)"
-          }
-        />
+        <ModelSelect value={model} onChange={setModel} defaultLabel={startDefaultLabel(card)} />
       </CreateForm>
       {cancel}
     </div>
@@ -1165,7 +1167,10 @@ function CardStartView({ approval, busy, approve, decline }: ApprovalViewProps) 
       })),
   ];
   const [choice, setChoice] = useState(asked);
+  // Not the card's model: the card may arrive later, and "" already means the card's model.
+  const [model, setModel] = useState(subject.model ?? "");
   const chosen = choices.find((candidate) => candidate.key === choice) ?? choices[0];
+  const existing = chosen?.target.kind === "existing";
   const Note = DeclineNote as AttentionWeb["DeclineNote"];
   return (
     <div className="flex flex-col gap-2.5 text-sm">
@@ -1210,17 +1215,29 @@ function CardStartView({ approval, busy, approve, decline }: ApprovalViewProps) 
           ))}
         </Select>
       </Field>
+      {existing ? (
+        <KeptModel />
+      ) : (
+        <ModelSelect value={model} onChange={setModel} defaultLabel={startDefaultLabel(card)} />
+      )}
       <Note note={note} onChange={setNote} />
       <div className="flex gap-2">
         <Button
           variant="primary"
           disabled={busy || !card || !chosen}
-          onClick={() =>
-            chosen &&
+          onClick={() => {
+            if (!chosen) return;
+            const sentModel = existing ? "" : model;
             approve(
-              chosen.key === asked ? undefined : { cardId: subject.cardId, target: chosen.target },
-            )
-          }
+              chosen.key === asked && sentModel === (subject.model ?? "")
+                ? undefined
+                : {
+                    cardId: subject.cardId,
+                    target: chosen.target,
+                    ...(sentModel ? { model: sentModel } : {}),
+                  },
+            );
+          }}
         >
           Approve and start
         </Button>
