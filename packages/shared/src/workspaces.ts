@@ -49,7 +49,7 @@ export const CreateWorkspaceRequest = Type.Object(
     isolation: Isolation,
     /** For `existing`: the line to check out. */
     line: Type.Optional(Type.String({ minLength: 1 })),
-    /** For `new`: the line to start from. Default: the main copy's current line. */
+    /** For `new`: the line to start from. Default: the main copy's current line. For `existing`: recorded as the base. */
     base: Type.Optional(Type.String({ minLength: 1 })),
   },
   { additionalProperties: false },

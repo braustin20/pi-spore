@@ -74,6 +74,24 @@ export interface PublishOps {
 }
 
 /**
+ * Joining lines in a run's copy (R7.4, ADR 0150). Every operation on a copy refuses one whose line is not
+ * `run/...`, so pi-spore never merges into a base line (R9.3).
+ */
+export interface IntegrateOps {
+  /** Creates `line` at `base` without checking it out. Throws ApiError 409 when it cannot (Git: it exists). */
+  createLine(project: Project, line: string, base: string): Promise<void>;
+  /** Merges `line` into the copy's line and leaves the merge uncommitted. On a conflict, it undoes the merge and
+   * returns the conflicted paths. */
+  merge(location: WorkspaceLocation, line: string): Promise<{ conflicts: string[] }>;
+  /** Commits the merge in progress and returns the new record. */
+  commit(location: WorkspaceLocation, message: string): Promise<string>;
+  /** Undoes the merge in progress. Does nothing when there is none. */
+  abort(location: WorkspaceLocation): Promise<void>;
+  /** What `line` adds since it left the copy's line, as a patch. */
+  diff(location: WorkspaceLocation, line: string): Promise<string>;
+}
+
+/**
  * A version control provider (ADR 0005). Nothing outside a provider branches on `kind`. Optional capabilities are
  * detected by presence.
  */
@@ -98,6 +116,7 @@ export interface VcsProvider {
   };
   changes?: ChangeOps;
   publish?: PublishOps;
+  integrate?: IntegrateOps;
 }
 
 /** A project trait that a module detects and acts on, such as Unity. */

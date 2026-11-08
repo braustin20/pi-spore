@@ -3,21 +3,8 @@ import { relative, sep } from "node:path";
 import { ProjectsKey, type VcsProvider } from "@pi-spore/mod-projects/server";
 import { ApiError, type Exec, type ServerModule } from "@pi-spore/module-api";
 import { createGitChanges, createGitPublish } from "./changes.js";
-
-/** Runs git without a shell and returns stdout; a non-zero exit becomes an ApiError with git's own message. */
-async function git(
-  exec: Exec,
-  cwd: string,
-  args: readonly string[],
-  status: 409 | 422 = 422,
-): Promise<string> {
-  const result = await exec("git", args, { cwd, timeoutMs: 120_000 });
-  if (result.code !== 0) {
-    const message = result.stderr.trim() || result.stdout.trim() || `git ${args[0]} failed`;
-    throw new ApiError(status, "git_failed", `git ${args.join(" ")}: ${message}`);
-  }
-  return result.stdout;
-}
+import { git } from "./git.js";
+import { createGitIntegrate } from "./integrate.js";
 
 /** Copies pi-spore removes must sit inside its worktrees folder. This guards against deleting anything else. */
 function assertInside(parent: string, path: string): void {
@@ -100,6 +87,7 @@ export function createGitProvider(exec: Exec, worktrees: string): VcsProvider {
     },
     changes: createGitChanges(exec),
     publish: createGitPublish(exec),
+    integrate: createGitIntegrate(exec),
   };
 }
 
