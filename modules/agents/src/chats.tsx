@@ -1,21 +1,29 @@
 import type { Agent } from "@pi-spore/shared";
 import { Button, cn, Input, Tooltip } from "@pi-spore/ui";
-import { Eye, History, MessageSquare, MessageSquarePlus, Pencil, X } from "lucide-react";
+import { Eye, History, MessageSquare, MessageSquarePlus, Pencil, Workflow, X } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
 const label = (chat: Agent) => chat.title ?? "New chat";
 
-const ICONS = { worker: MessageSquare, side: Eye, older: History } as const;
+const ICONS = { worker: MessageSquare, side: Eye, stage: Workflow, older: History } as const;
 
 const group = (chat: Agent) => {
   if (chat.kind === "side") return "side";
+  if (chat.kind === "stage") return "stage";
   return chat.active ? "worker" : "older";
 };
 
 const HINTS = {
   worker: "Orchestrator chat: the one chat that can change files",
   side: "Side chat: read-only",
+  stage: "Pipeline stage agent",
   older: "Older orchestrator chat: read-only history",
+} as const;
+
+const SR_LABELS = {
+  side: "(side chat)",
+  stage: "(pipeline stage)",
+  older: "(older, read-only)",
 } as const;
 
 /** The chat's title, with a pencil that turns it into a text field. */
@@ -111,11 +119,7 @@ export function ChatBar({
                 >
                   <Icon aria-hidden="true" className="size-3.5 shrink-0" />
                   <span className="truncate">{label(chat)}</span>
-                  {kind !== "worker" && (
-                    <span className="sr-only">
-                      {kind === "side" ? "(side chat)" : "(older, read-only)"}
-                    </span>
-                  )}
+                  {kind !== "worker" && <span className="sr-only">{SR_LABELS[kind]}</span>}
                 </a>
                 <Tooltip
                   label={

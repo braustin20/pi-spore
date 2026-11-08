@@ -3,8 +3,15 @@ import type { AddressInfo } from "node:net";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { bridgeEnv } from "./client.js";
 import sporeBridge from "./index.js";
-import { RULES, RULES_SECTION, SIDE_RULES } from "./rules.js";
+import {
+  RULES,
+  RULES_SECTION,
+  SIDE_RULES,
+  STAGE_REVIEWER_RULES,
+  STAGE_WORKER_RULES,
+} from "./rules.js";
 
 interface Seen {
   method: string;
@@ -383,6 +390,50 @@ describe("spore-bridge", () => {
     expect(options.sections[RULES_SECTION]).toBe(SIDE_RULES);
     expect(SIDE_RULES).toContain("next to the orchestrator");
     expect(SIDE_RULES).toContain("read-only");
+  });
+
+  it.each([
+    ["worker", STAGE_WORKER_RULES, "implement worker"],
+    ["reviewer", STAGE_REVIEWER_RULES, "read-only reviewer"],
+    ["adversarial-reviewer", STAGE_REVIEWER_RULES, "read-only reviewer"],
+  ])("gives a %s stage agent its stage rules", async (role, rules, phrase) => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", role);
+    const options = { contextFiles: [], sections: {} as Record<string, string> };
+    await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
+    expect(options.sections[RULES_SECTION]).toBe(rules);
+    expect(rules).toContain(phrase);
+  });
+
+  it.each([
+    ["missing", undefined],
+    ["unknown", "orchestrator"],
+  ])("turns the tools off for a stage agent with a %s stage role", (_name, role) => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    if (role) vi.stubEnv("PI_SPORE_STAGE_ROLE", role);
+    expect(fakePi().tools.size).toBe(0);
+  });
+
+  it("names PI_SPORE_STAGE_ROLE when a stage has no valid role", () => {
+    expect(() =>
+      bridgeEnv({ PI_SPORE_URL: "http://x", PI_SPORE_TOKEN: "t", PI_SPORE_CHAT_KIND: "stage" }),
+    ).toThrow("PI_SPORE_STAGE_ROLE");
+    expect(() =>
+      bridgeEnv({
+        PI_SPORE_URL: "http://x",
+        PI_SPORE_TOKEN: "t",
+        PI_SPORE_CHAT_KIND: "stage",
+        PI_SPORE_STAGE_ROLE: "boss",
+      }),
+    ).toThrow('"boss"');
+    expect(
+      bridgeEnv({
+        PI_SPORE_URL: "http://x/",
+        PI_SPORE_TOKEN: "t",
+        PI_SPORE_CHAT_KIND: "stage",
+        PI_SPORE_STAGE_ROLE: "reviewer",
+      }),
+    ).toEqual({ url: "http://x", token: "t", chatKind: "stage", stageRole: "reviewer" });
   });
 
   it("refuses an unknown chat kind instead of guessing", () => {

@@ -35,6 +35,7 @@ export {
   RenameChatRequest,
   SetModelRequest,
   SetThinkingRequest,
+  StageRole,
   ThinkingLevel,
 } from "./agents.js";
 export {

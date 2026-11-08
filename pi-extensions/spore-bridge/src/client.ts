@@ -1,15 +1,24 @@
 import Type, { type Static, type TSchema } from "typebox";
 import { Check, Errors } from "typebox/value";
 
+/** The roles of a pipeline's stage agents. `PI_SPORE_STAGE_ROLE` holds one of them (R6). */
+const STAGE_ROLES = ["worker", "reviewer", "adversarial-reviewer"] as const;
+export type StageRole = (typeof STAGE_ROLES)[number];
+
 /** How the extension finds the server: set by pi-spore on every agent process (architecture 2). */
 export interface BridgeEnv {
   url: string;
   token: string;
-  /** `side`: a read-only side chat, which gets its own rules (ADR 0033). */
-  chatKind: "worker" | "side";
+  /** `side`: a read-only side chat (ADR 0033). `stage`: a pipeline stage agent (R6). Both get their own rules. */
+  chatKind: "worker" | "side" | "stage";
+  /** Set exactly when `chatKind` is `stage`. */
+  stageRole?: StageRole;
 }
 
-/** Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, and `PI_SPORE_CHAT_KIND`, or names what is missing or wrong. */
+/**
+ * Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, `PI_SPORE_CHAT_KIND`, and for a stage `PI_SPORE_STAGE_ROLE`, or names what is
+ * missing or wrong.
+ */
 export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): BridgeEnv {
   const url = env.PI_SPORE_URL;
   const token = env.PI_SPORE_TOKEN;
@@ -18,9 +27,18 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
   if (!token)
     throw new Error("spore-bridge runs only inside pi-spore agents: PI_SPORE_TOKEN is not set");
   const kind = env.PI_SPORE_CHAT_KIND ?? "worker";
-  if (kind !== "worker" && kind !== "side")
-    throw new Error(`spore-bridge: PI_SPORE_CHAT_KIND must be worker or side, not "${kind}"`);
-  return { url: url.replace(/\/+$/, ""), token, chatKind: kind };
+  const base = { url: url.replace(/\/+$/, ""), token };
+  if (kind === "worker" || kind === "side") return { ...base, chatKind: kind };
+  if (kind !== "stage")
+    throw new Error(
+      `spore-bridge: PI_SPORE_CHAT_KIND must be worker, side, or stage, not "${kind}"`,
+    );
+  const role = STAGE_ROLES.find((candidate) => candidate === env.PI_SPORE_STAGE_ROLE);
+  if (!role)
+    throw new Error(
+      `spore-bridge: PI_SPORE_STAGE_ROLE must be ${STAGE_ROLES.join(", ")} for a stage, not "${env.PI_SPORE_STAGE_ROLE ?? ""}"`,
+    );
+  return { ...base, chatKind: kind, stageRole: role };
 }
 
 export const RunStatus = Type.Union([

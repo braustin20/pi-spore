@@ -464,7 +464,7 @@ async function actionCommand(
 const AgentBody = Type.Object({ agent: AgentSchema });
 
 function chatLine(chat: Agent): string {
-  const kind = chat.kind === "side" ? "side" : chat.active ? "worker" : "older";
+  const kind = chat.kind !== "worker" ? chat.kind : chat.active ? "worker" : "older";
   const from = chat.forkedFrom ? `  (from ${chat.forkedFrom})` : "";
   return `${chat.id}  ${kind.padEnd(6)}  ${chat.status.padEnd(8)}  ${chat.title ?? "(no messages yet)"}${from}`;
 }

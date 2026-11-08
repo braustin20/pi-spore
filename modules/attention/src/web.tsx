@@ -69,6 +69,7 @@ const chatHref = (workspace: InboxWorkspace, chat: InboxChat) =>
 function chatName(chat: InboxChat): string {
   const title = chat.title ?? "New chat";
   if (chat.kind === "side") return `${title} (side chat)`;
+  if (chat.kind === "stage") return `${title} (pipeline stage)`;
   return chat.active ? title : `${title} (older chat)`;
 }
 

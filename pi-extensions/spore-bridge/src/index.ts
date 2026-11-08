@@ -88,7 +88,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
 
   // ADR 0031: pi-spore's rules replace the user's global AGENTS.md in agents.
   pi.on("before_agent_start", (event) => {
-    applyRules(event.systemPromptOptions, getAgentDir(), env.chatKind);
+    applyRules(event.systemPromptOptions, getAgentDir(), env);
   });
 
   pi.registerTool({
