@@ -79,6 +79,18 @@ describe("TurnList", () => {
     expect(root.textContent).toContain("adds");
     expect(root.textContent).toContain("proofs/adds.txt");
   });
+
+  it("shows the route a worker ran on, with the router's reasons", async () => {
+    const root = await render([
+      turn({
+        kind: "task",
+        role: "worker",
+        report: { turn: "t1", summary: "Done" },
+        routing: { route: "local", model: "strata/qwen", reasons: ["bounded", "free quota"] },
+      }),
+    ]);
+    expect(root.textContent).toContain("Route: local → strata/qwen. bounded. free quota");
+  });
 });
 
 describe("openFindings", () => {

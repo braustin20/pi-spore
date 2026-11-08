@@ -46,6 +46,14 @@ describe("workspaceStatus", () => {
     expect(workspaceStatus(workspace("active"), undefined).text).toBe("No agent yet");
   });
 
+  it("shows the router's waiting text for a busy agent", () => {
+    const waiting = { ...agent("busy"), routerStatus: "Waiting for local/qwen" };
+    expect(workspaceStatus(workspace("active"), waiting)).toEqual({
+      text: "Waiting for local/qwen",
+      tone: "warn",
+    });
+  });
+
   it("shows parked and archived over any agent status", () => {
     expect(workspaceStatus(workspace("parked"), agent("busy")).text).toBe("Parked");
     expect(workspaceStatus(workspace("archived"), undefined).text).toBe("Archived");

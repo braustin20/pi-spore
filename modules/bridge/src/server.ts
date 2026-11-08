@@ -203,7 +203,7 @@ export const bridgeModule: ServerModule = {
     host.routes.post("/reports", async (c) => {
       const caller = bridgeCaller(c);
       const request = parseJsonBody(StageReport, await c.req.text(), "report");
-      return c.json(pipelines.report(caller, request));
+      return c.json(await pipelines.report(caller, request));
     });
 
     host.routes.post("/runs", async (c) => {

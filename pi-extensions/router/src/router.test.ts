@@ -179,6 +179,26 @@ describe("Router: first request of a session", () => {
     expect(route.state).toMatchObject({ route: "spill", model: "openai/gpt-6.1-terra" });
   });
 
+  it("keeps a visual brief off the local model when Claude's windows are full", async () => {
+    await writeReading(
+      home,
+      {
+        plan: "claude",
+        source: "test",
+        windows: {
+          "5h": { utilization: 1, resetsAt: NOW + 3_600_000 },
+          "7d": { utilization: 1, resetsAt: NOW + 86_400_000 },
+        },
+      },
+      NOW - 60_000,
+    );
+    const { router } = harness();
+    const { ctx } = fakeContext(cwd, { classify: () => jevResult({ ...GOOD, visual: 0.2 }) });
+    const route = await router.route(userRequest("Make the menu screen look nicer"), ctx);
+    expect(route.state?.route).not.toBe("local");
+    expect((await readRecords(home, 1)).records[0]).toMatchObject({ pressure: true });
+  });
+
   it("ends the request with a clear error when no plan has room, and stores no state", async () => {
     for (const plan of ["claude", "codex"]) {
       await writeReading(
