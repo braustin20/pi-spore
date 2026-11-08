@@ -11,8 +11,9 @@ agent uses about 0.2 to 0.5 GB. Unity editors need several GB each, and the mach
 
 ## Decision
 
-- At most 4 live agent processes by default (setting `agents.maxLive`). Work for a fifth agent waits in a queue,
-  and Home shows it as waiting.
+- At most 8 live agent processes by default (setting `agents.maxLive`). Work for a ninth agent waits in a queue,
+  and Home shows it as waiting. The default was 4 until 2026-11-08; the user raised it after running several cards
+  at once on a machine with 62 GB of memory.
 - An agent process with no run, no queued input, and no open dialog stops after 10 idle minutes (setting
   `agents.idleStopMinutes`). Its session file keeps the conversation. It restarts with `--session` in about 1 s
   when it gets work.

@@ -141,8 +141,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     Archived transcripts are read from the session file directly, without starting Pi.
   - Every agent start has a timeout. On timeout, pi-spore stops the process and shows its stderr.
   - Agents run without pi-lens and get a `check` tool instead (ADR 0025).
-- Limits: at most 4 live agent processes; an idle agent process stops after 10 minutes, or at once when a chat
-  waits for a slot, longest idle first (ADR 0026). Running background helpers count as live processes in the 4
+- Limits: at most 8 live agent processes; an idle agent process stops after 10 minutes, or at once when a chat
+  waits for a slot, longest idle first (ADR 0026). Running background helpers count as live processes in the 8
   (ADR 0034).
 - **Helpers** (child runs, R3.3, ADR 0034, [spike Q5](spikes/q5-subagent-child-runs.md)). A worker's pi-subagents
   helpers show under it in the chat.
