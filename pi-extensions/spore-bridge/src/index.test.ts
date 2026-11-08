@@ -318,6 +318,7 @@ describe("spore-bridge", () => {
     expect(rules).toContain("before the first worker");
     expect(rules).toContain("Only one writer works in the worktree at a time");
     expect(rules).toContain("After three passes");
+    expect(rules).toContain("`async: true`, never `async: false`");
     expect(rules).toContain("request_human_input");
     expect(rules).toContain("Never merge into the base branch on your own");
     expect(rules).toContain("Merge a PR only when the user asks");

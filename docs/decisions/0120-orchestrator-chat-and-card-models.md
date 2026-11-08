@@ -68,6 +68,11 @@
   It sends a fresh worker the goal, the current diff, and the exact cuts to make. After three passes without
   success it re-splits the task or takes it over.
 - The user's yes to the plan covers its workers. The plan names the slices, and says they run on `spore/auto`.
+- **Subagents run in the background.** The orchestrator starts every subagent with `async: true`. A foreground
+  child runs inside the chat's process and does not load its extensions. It gets the providers they register, but
+  not their session hooks: `claude-bridge` records each session's prompt in `before_agent_start`, so a foreground
+  child's first request fails. It does not get virtual models either, so `spore/auto` would not resolve. A
+  background child loads the extensions and delivers its result to the chat as a message (ADR 0034).
 
 **4. The orchestrator's rules** go into pi-spore's rules in spore-bridge (`rules.ts`, ADR 0031), because agents in
 pi-spore do not see the user's global `AGENTS.md`. Draft:
@@ -92,6 +97,9 @@ Build
   of the pattern to copy, the invariants, the pass or fail command, and what to report. Give it a fresh context,
   not this conversation.
 - Only one writer works in the worktree at a time. Wait for a worker to finish before you start another.
+- Start every subagent (`worker`, `scout`, `researcher`, `reviewer`) with `async: true`, never `async: false`.
+  A foreground child does not load the extensions its model needs, so it fails. The result comes back to this
+  chat as a message. Do not poll for it.
 - After every worker, read the real diff. Do not trust the report alone.
 - Check for conciseness. Extra validation, duplicated types, code that skips an existing seam, and changes outside
   the brief are too much. Send a new worker the goal, the current diff, and the exact cuts. After three passes
