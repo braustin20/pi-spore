@@ -5,6 +5,7 @@ import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule, type StepOutcome } from "@pi-spore/module-api";
 import {
+  type AgentStatus,
   type PrEvent,
   type PrStatus,
   type PrTry,
@@ -75,7 +76,10 @@ interface PrRow {
 
 /** The job kind of a PR watch: key and subject are the workspace id (ADR 0004). */
 const WATCH_JOB = "github-pr.watch";
+/** The job kind that looks for PRs opened outside pi-spore: one job, key `all`, for every active workspace. */
+const DISCOVER_JOB = "github-pr.discover";
 const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
+const LOG_MESSAGE_CHARS = 200;
 
 export interface GithubPrModuleOptions {
   gh?: GhCommand;
@@ -84,6 +88,8 @@ export interface GithubPrModuleOptions {
   /** Poll interval after a change, doubling up to `maxIntervalMs` while nothing changes. */
   minIntervalMs?: number;
   maxIntervalMs?: number;
+  /** Time between looks for PRs opened outside pi-spore, at all active workspaces. */
+  discoverIntervalMs?: number;
 }
 
 /** A short, single-line form of a check list, to see whether anything changed between polls. */
@@ -94,11 +100,12 @@ const LOG_LINES = 80;
 const LOG_CHARS = 8 * 1024;
 const MAX_LOGS = 5;
 
-/** Defaults: 3 tries, polls every 30 s after a change and up to every 5 min. */
+/** Defaults: 3 tries, polls every 30 s after a change and up to every 5 min, looks for new PRs every 5 min. */
 export function createGithubPrModule(options: GithubPrModuleOptions = {}): ServerModule {
   const maxTries = options.maxTries ?? 3;
   const minInterval = options.minIntervalMs ?? 30_000;
   const maxInterval = options.maxIntervalMs ?? 5 * 60_000;
+  const discoverInterval = options.discoverIntervalMs ?? 5 * 60_000;
   return {
     id: "github-pr",
     requires: ["projects", "workspaces", "agents", "kanban"],
@@ -243,8 +250,13 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         if (before?.state === after.state) return;
         if (after.state === "open")
           cards.workChanged(workspaceId, "review", `PR #${after.number} opened`);
-        if (after.state === "merged")
+        if (after.state === "merged") {
+          // A PR found already merged was never seen open; the card's history still shows both steps. A Done card
+          // never goes back to Review.
+          if (!before && cards.forWorkspace(workspaceId).every((card) => card.column !== "done"))
+            cards.workChanged(workspaceId, "review", `PR #${after.number} opened`);
           cards.workChanged(workspaceId, "done", `PR #${after.number} merged`);
+        }
       };
 
       /** The message for the worker: failed checks with their log tails, then new bot comments. */
@@ -484,6 +496,44 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         if (watch && pr.state === "open") startWatch(workspace.id, minInterval);
       };
 
+      /** Stores the PR of the workspace's branch if there is one and pi-spore has none stored yet. */
+      const adoptByBranch = async (workspace: Workspace, line: string): Promise<void> => {
+        const found = await gh.view(workspace.path, line);
+        // A second look may have stored the PR while gh answered.
+        if (!found || load(workspace.id)) return;
+        adopt(workspace, found, false);
+        await publishStatus(workspace.id);
+      };
+
+      const lookFailed = new Set<string>();
+
+      /**
+       * Finds the PR of an active workspace that has a card on the board, so its card moves when an agent opened the
+       * PR with `gh pr create`. A found PR is not watched. An open PR that nothing watches is followed to merged here;
+       * the watch job follows the others.
+       */
+      const look = async (workspaceId: string): Promise<void> => {
+        try {
+          const workspace = workspaces.get(workspaceId);
+          if (workspace.state !== "active" || !existsSync(workspace.path) || !workspace.line)
+            return;
+          if (!(await providerOf(workspace)).publish) return;
+          if (!cards.forWorkspace(workspace.id).some((card) => card.column !== "done")) return;
+          const row = load(workspace.id);
+          if (!row) await adoptByBranch(workspace, workspace.line);
+          else if (row.watch_state === "off" && viewOf(row).state === "open")
+            await refreshView(workspace, row);
+        } catch (error) {
+          // No GitHub remote or no gh login fails every look, so each workspace says so once.
+          if (lookFailed.has(workspaceId)) return;
+          lookFailed.add(workspaceId);
+          const line = String((error as Error).message).split("\n")[0] ?? "";
+          host.log.warn(
+            `PR look failed for workspace ${workspaceId}: ${line}`.slice(0, LOG_MESSAGE_CHARS),
+          );
+        }
+      };
+
       const publishable = async (workspaceId: string) => {
         const workspace = workspaces.get(workspaceId);
         if (workspace.state !== "active") {
@@ -511,6 +561,35 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       host.jobs.define<{ workspaceId: string }, never>(WATCH_JOB, [
         { name: "poll", run: ({ subject }) => runWatchStep(subject.workspaceId) },
       ]);
+
+      host.jobs.define<Record<string, never>, never>(DISCOVER_JOB, [
+        {
+          name: "look",
+          run: async () => {
+            for (const workspace of workspaces.list({ state: "active" })) await look(workspace.id);
+            return { next: "look", after: discoverInterval };
+          },
+        },
+      ]);
+
+      // The server looks once at start, then every interval. Jobs from before the restart give way to the new one.
+      host.onStarted(() => {
+        for (const job of host.jobs.list({ kind: DISCOVER_JOB, key: "all", states: NOT_ENDED })) {
+          host.jobs.cancel(job.id);
+        }
+        host.jobs.start(DISCOVER_JOB, {}, { key: "all", after: 0 });
+      });
+
+      // A run that ends may have opened a PR.
+      const lastStatus = new Map<string, AgentStatus>();
+      agents.onChange((agentId, change) => {
+        if (change !== "status") return;
+        const agent = agents.get(agentId);
+        const previous = lastStatus.get(agentId);
+        lastStatus.set(agentId, agent.status);
+        if (previous !== "busy" || agent.status === "busy") return;
+        void look(agent.workspaceId);
+      });
 
       // The job commits its writes itself, so its listeners tell the UI. A cancel is followed by the caller's own publish.
       host.jobs.onChange((job) => {
@@ -559,8 +638,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           if (row) await refreshView(workspace, row);
           else if (workspace.line && (await providerOf(workspace)).publish) {
             // A PR opened outside pi-spore is shown, but not watched until the user turns the watch on.
-            const found = await gh.view(workspace.path, workspace.line);
-            if (found) adopt(workspace, found, false);
+            await adoptByBranch(workspace, workspace.line);
           }
         }
         return c.json(await status(workspace.id));

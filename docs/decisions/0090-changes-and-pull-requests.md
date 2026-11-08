@@ -42,5 +42,8 @@ run review bots on PRs (open question Q14).
 - Disabling `kanban` disables `github-pr`.
 - "Waiting for you" shows on the PR tab and the Details tab, not on Home: the attention module has no way for
   other modules to add items yet (Q18).
-- PR watch moves to the job runner when it lands.
+- PR watch runs as a `github-pr.watch` job on the job runner (ADR 0004).
+- pi-spore finds a workspace's PR by itself (at start, on a timer job, and when a chat ends a run), so a PR an
+  agent opened with `gh` moves the card to Review and Done. A found PR is followed, not watched: the watch, which
+  sends failures to the chat, stays the user's choice.
 - A bot that comments on every push uses up the 3 tries, then waits for the user, which is the intent.

@@ -5,6 +5,7 @@
 //   comments: { comment: [...], review: [...], review_comment: [...] } (REST items, one page each)
 //   logs:     { "<job id>": "log text" }
 //   createError: a message `gh pr create` fails with
+//   viewError:   a message `gh pr view` fails with
 // It answers only the commands pi-spore may run. Anything else exits 99, so a test sees a forbidden call.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -30,12 +31,15 @@ const flag = (name) => args.find((arg) => arg.startsWith(`--${name}=`))?.slice(n
 const [group, command] = args;
 if (group === "pr" && command === "view") {
   const selector = args[2];
-  const pr = state.prs.find(
-    (candidate) =>
-      String(candidate.number) === selector ||
-      candidate.url === selector ||
-      (candidate.headRefName === selector && candidate.state === "OPEN"),
-  );
+  if (state.viewError) fail(state.viewError);
+  // A branch matches a PR in any state, as in gh: an open one first, else the highest number.
+  const onBranch = state.prs.filter((candidate) => candidate.headRefName === selector);
+  const pr =
+    state.prs.find(
+      (candidate) => String(candidate.number) === selector || candidate.url === selector,
+    ) ??
+    onBranch.find((candidate) => candidate.state === "OPEN") ??
+    onBranch.sort((a, b) => b.number - a.number)[0];
   if (!pr) fail(`no pull requests found for branch "${selector}"`);
   save();
   process.stdout.write(JSON.stringify(pr));
