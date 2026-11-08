@@ -72,7 +72,7 @@ describe("reducePage", () => {
     expect(state.dialogs).toEqual([]);
 
     for (let i = 0; i < 7; i++)
-      state = reducePage(state, { type: "notice", level: "info", message: `n${i}` });
+      state = reducePage(state, { type: "notice", level: "warning", message: `n${i}` });
     expect(state.notices.map((notice) => notice.message)).toEqual(["n2", "n3", "n4", "n5", "n6"]);
 
     state = reducePage(state, {
@@ -86,6 +86,17 @@ describe("reducePage", () => {
       contextUsage: { tokens: 10, contextWindow: 100, percent: 10 },
     });
     expect(state.contextUsage?.percent).toBe(10);
+  });
+
+  it("keeps only the newest info notice, and keeps warnings and errors", () => {
+    let state = reducePage(emptyPage(), snapshot);
+    state = reducePage(state, { type: "notice", level: "info", message: "tps 1" });
+    state = reducePage(state, { type: "notice", level: "warning", message: "careful" });
+    state = reducePage(state, { type: "notice", level: "info", message: "tps 2" });
+    state = reducePage(state, { type: "notice", level: "info", message: "tps 3" });
+    expect(state.notices.map((notice) => notice.message)).toEqual(["careful", "tps 3"]);
+    const ids = state.notices.map((notice) => notice.id);
+    expect(new Set(ids).size).toBe(ids.length);
   });
 
   it("ignores status changes before the snapshot, and garbage", () => {
