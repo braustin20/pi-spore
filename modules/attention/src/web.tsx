@@ -20,9 +20,10 @@ import {
   Textarea,
 } from "@pi-spore/ui";
 import { Bell, CheckCheck, House } from "lucide-react";
-import { type ComponentType, type ReactNode, useState, useSyncExternalStore } from "react";
+import { type ComponentType, type ReactNode, useMemo, useState, useSyncExternalStore } from "react";
 import {
   chatAsks,
+  chatWaits,
   createInboxStore,
   type InboxStore,
   itemKey,
@@ -427,7 +428,11 @@ export const attentionWeb: WebModule = {
   core: true,
   setup(host) {
     const store = createInboxStore(host.api, showNotification);
-    const { DialogCard, addChatPanel } = host.use(AgentsWebKey);
+    const { DialogCard, addChatPanel, setUserWaits } = host.use(AgentsWebKey);
+    setUserWaits(() => {
+      const inbox = useSyncExternalStore(store.subscribe, store.get);
+      return useMemo(() => chatWaits(inbox), [inbox]);
+    });
     addChatPanel("attention", ({ chatId }) => <ChatAsks store={store} chatId={chatId} />);
     host.provide(AttentionWebKey, {
       addApprovalView: (kind, view) => {
