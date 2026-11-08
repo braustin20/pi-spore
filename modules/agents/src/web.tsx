@@ -202,7 +202,7 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
 /** Panels other modules added to the chat page, shown above the composer. */
 const chatPanels = new Map<string, ComponentType<{ chatId: string }>>();
 
-/** One chat: its messages, dialogs, and composer. An older worker chat shows its history without a composer. */
+/** One chat: its messages, dialogs, and composer. An older worker chat has a read-only strip in place of the composer. */
 function ChatView({
   workspace,
   agentId,
@@ -380,23 +380,6 @@ function ChatView({
 
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-5 xl:px-6">
-          {older && (
-            <Notice tone="warn">
-              <div className="flex items-center gap-2">
-                <span className="flex-1">
-                  This is an older orchestrator chat. It is read-only. Make it active to continue
-                  it; the current orchestrator chat stops first.
-                </span>
-                <Button
-                  size="sm"
-                  disabled={workspace.state !== "active"}
-                  onClick={() => void call("POST", "activate").then(onChatChanged)}
-                >
-                  Make active
-                </Button>
-              </div>
-            </Notice>
-          )}
           {agent?.kind === "side" && (
             <Notice>
               Side chat. It can read and search files but cannot change them, run commands, or start
@@ -478,6 +461,27 @@ function ChatView({
         </div>
       </div>
 
+      {older && (
+        <div className="shrink-0 px-4 pb-4 xl:px-6">
+          <div className="mx-auto max-w-3xl">
+            <Notice tone="warn">
+              <div className="flex items-center gap-2">
+                <Button
+                  size="sm"
+                  disabled={workspace.state !== "active"}
+                  onClick={() => void call("POST", "activate").then(onChatChanged)}
+                >
+                  Make active
+                </Button>
+                <span className="flex-1">
+                  This is an older orchestrator chat. It is read-only. Make it active to continue
+                  it; the current orchestrator chat stops first.
+                </span>
+              </div>
+            </Notice>
+          </div>
+        </div>
+      )}
       {!older && (
         <div className="shrink-0 px-4 pb-4 xl:px-6">
           <div className="mx-auto max-w-3xl">

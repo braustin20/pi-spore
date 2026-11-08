@@ -30,6 +30,7 @@
     "typebox": "1.4.5"
   },
   "devDependencies": {
-    "@pi-spore/server-core": "0.0.0"
+    "@pi-spore/server-core": "0.0.0",
+    "react-dom": "19.3.1"
   }
 }
