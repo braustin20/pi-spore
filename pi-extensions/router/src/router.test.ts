@@ -46,6 +46,7 @@ function harness(
     home,
     env: { PI_SPORE_AGENT_ID: "agent-1", PI_SPORE_WORKSPACE_ID: "ws-1" },
     now: () => NOW,
+    random: () => 0,
     sleep: async (ms) => {
       sleeps.push(ms);
     },
@@ -104,6 +105,45 @@ describe("Router: first request of a session", () => {
     expect(route.state).toMatchObject({ route: "cloud", model: SONNET });
     const { records } = await readRecords(home, 1);
     expect(records[0]?.reasons).toContain("visual: nonvisual 0.20 < 0.7");
+  });
+
+  describe("explore (ADR 0144)", () => {
+    const hard = () => jevResult({ ...GOOD, straightforward: 0.41 });
+    const withExplore = (explore: number) =>
+      writeFileSync(
+        join(home, "settings.json"),
+        JSON.stringify({ router: { cloud: SONNET, explore } }),
+      );
+    const workerEnv = { PI_SPORE_AGENT_ID: "agent-1", PI_SPORE_STAGE_ROLE: "worker" };
+
+    it("sends a worker stage local when only the straightforward answer fails, and records it", async () => {
+      withExplore(1);
+      const { router } = harness({ env: workerEnv });
+      const { ctx } = fakeContext(cwd, { classify: hard });
+      const route = await router.route(userRequest(BRIEF), ctx);
+      expect(route.state).toMatchObject({ route: "local", model: STRATA });
+      const { records } = await readRecords(home, 1);
+      expect(records[0]).toMatchObject({ route: "local", explore: true });
+      expect(records[0]?.reasons).toContain("straightforward: straightforward 0.41 < 0.7");
+    });
+
+    it("routes the same task to the cloud model when explore is 0", async () => {
+      withExplore(0);
+      const { router } = harness({ env: workerEnv, random: () => 0 });
+      const { ctx } = fakeContext(cwd, { classify: hard });
+      const route = await router.route(userRequest(BRIEF), ctx);
+      expect(route.state?.route).toBe("cloud");
+      const { records } = await readRecords(home, 1);
+      expect(records[0]?.explore).toBeUndefined();
+    });
+
+    it("does not explore outside a worker stage", async () => {
+      withExplore(1);
+      const { router } = harness({ env: { PI_SPORE_AGENT_ID: "agent-1" } });
+      const { ctx } = fakeContext(cwd, { classify: hard });
+      const route = await router.route(userRequest(BRIEF), ctx);
+      expect(route.state?.route).toBe("cloud");
+    });
   });
 
   it("skips the classifier when the task does not fit the local budget", async () => {

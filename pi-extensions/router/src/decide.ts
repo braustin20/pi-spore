@@ -14,6 +14,8 @@ export interface DecideInput {
   jev?: JevAnswers | { error: string };
   /** Usage state by plan name. */
   plans: Readonly<Record<string, PlanState>>;
+  /** The `router.explore` draw came up: send the task local if "straightforward" is its only blocker (ADR 0144). */
+  explore?: boolean;
 }
 
 export type Route = "local" | "cloud" | "spill" | "wait";
@@ -25,6 +27,8 @@ export interface Decision {
   reasons: string[];
   /** Usage pressure on the cloud model's plan (R4.10). */
   pressure: boolean;
+  /** The task went local only because of the explore draw (ADR 0144). */
+  explore?: boolean;
   /** The confidence Jev's answers needed. */
   threshold: number;
   /** For `wait`: the first reset of a full window, epoch ms. */
@@ -34,25 +38,34 @@ export interface Decision {
 const planOf = (settings: RouterSettings, model: string): string | undefined =>
   settings.plans[splitModel(model).provider];
 
-/** Whether the task should go to the cloud model and, if so, why. Undefined means the local target can take it. */
-function localBlockers(input: DecideInput, threshold: number): string[] {
+/**
+ * Why the task cannot go local, one line each; empty means the local target can take it. `questions` names the Jev
+ * questions among them.
+ */
+function localBlockers(
+  input: DecideInput,
+  threshold: number,
+): { blockers: string[]; questions: Question[] } {
   const { local, estimate, jev, settings } = input;
-  if ("missing" in local) return [local.missing];
-  if (estimate === undefined) return ["no token estimate"];
+  const other = (blocker: string) => ({ blockers: [blocker], questions: [] });
+  if ("missing" in local) return other(local.missing);
+  if (estimate === undefined) return other("no token estimate");
   if (estimate > local.budget) {
-    return [`estimate ${estimate} tokens is over the local budget of ${local.budget}`];
+    return other(`estimate ${estimate} tokens is over the local budget of ${local.budget}`);
   }
-  if (!jev) return ["classifier not asked"];
-  if ("error" in jev) return [jev.error];
+  if (!jev) return other("classifier not asked");
+  if ("error" in jev) return other(jev.error);
   const failed: string[] = [];
+  const questions: Question[] = [];
   for (const question of Object.keys(GOOD) as Question[]) {
     // Pressure never relaxes the visual check (R4.10).
     const needed = question === "visual" ? settings.threshold : threshold;
     if (jev[question] < needed) {
       failed.push(`${question}: ${GOOD[question]} ${jev[question].toFixed(2)} < ${needed}`);
+      questions.push(question);
     }
   }
-  return failed;
+  return { blockers: failed, questions };
 }
 
 /**
@@ -117,7 +130,26 @@ export function decide(input: DecideInput): Decision {
   const threshold = pressure ? settings.pressureThreshold : settings.threshold;
   const pressureNote = pressure ? [`${cloudPlan} usage pressure: threshold ${threshold}`] : [];
 
-  const blockers = localBlockers(input, threshold);
+  const { blockers, questions } = localBlockers(input, threshold);
+  if (
+    input.explore &&
+    questions.length === 1 &&
+    questions[0] === "straightforward" &&
+    !("missing" in input.local)
+  ) {
+    return {
+      route: "local",
+      model: input.local.model,
+      reasons: [
+        ...pressureNote,
+        ...blockers,
+        "explore: sent local to record an outcome (ADR 0144)",
+      ],
+      pressure,
+      explore: true,
+      threshold,
+    };
+  }
   if (blockers.length === 0 && !("missing" in input.local)) {
     return {
       route: "local",

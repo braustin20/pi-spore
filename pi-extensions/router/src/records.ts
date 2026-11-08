@@ -42,6 +42,8 @@ export const RoutingRecord = Type.Object({
   ),
   threshold: Type.Optional(Type.Number()),
   pressure: Type.Optional(Type.Boolean()),
+  /** Set when the task went local only because of the `router.explore` draw (ADR 0144). */
+  explore: Type.Optional(Type.Boolean()),
   /** The plan windows the decision saw, one line each. */
   usage: Type.Optional(Type.Array(Type.String())),
   resetsAt: Type.Optional(Type.Number()),

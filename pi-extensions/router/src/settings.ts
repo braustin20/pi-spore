@@ -37,6 +37,7 @@ const RouterSection = Type.Object(
     cloud: Type.Optional(ModelRef),
     localTargets: Type.Optional(Type.Array(LocalTarget, { minItems: 1 })),
     threshold: Type.Optional(Fraction),
+    explore: Type.Optional(Fraction),
     pressureThreshold: Type.Optional(Fraction),
     pressure: Type.Optional(
       Type.Object(
@@ -67,6 +68,8 @@ export interface RouterSettings {
   localTargets: LocalTarget[];
   /** Least probability of every "good" Jev answer for a local route (ADR 0024). */
   threshold: number;
+  /** Chance a pipeline worker task goes local when "straightforward" is its only blocker (ADR 0144). */
+  explore: number;
   /** The same under usage pressure. The visual question keeps `threshold`. */
   pressureThreshold: number;
   /** Claude usage pressure: weekly above `weekly`, or 5-hour at or above `fiveHour` (R4.10). */
@@ -110,6 +113,7 @@ export const DEFAULT_SETTINGS: Readonly<RouterSettings> = {
     },
   ],
   threshold: 0.7,
+  explore: 0,
   pressureThreshold: 0.55,
   pressure: { weekly: 0.75, fiveHour: 1 },
   usageMaxAgeMinutes: 60,
@@ -141,6 +145,7 @@ export function resolveSettings(file: unknown, path: string): RouterSettings {
     cloud: router.cloud ?? DEFAULT_SETTINGS.cloud,
     localTargets: router.localTargets ?? DEFAULT_SETTINGS.localTargets,
     threshold: router.threshold ?? DEFAULT_SETTINGS.threshold,
+    explore: router.explore ?? DEFAULT_SETTINGS.explore,
     pressureThreshold: router.pressureThreshold ?? DEFAULT_SETTINGS.pressureThreshold,
     pressure: { ...DEFAULT_SETTINGS.pressure, ...router.pressure },
     usageMaxAgeMinutes: router.usageMaxAgeMinutes ?? DEFAULT_SETTINGS.usageMaxAgeMinutes,
