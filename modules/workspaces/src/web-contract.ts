@@ -6,7 +6,7 @@ import type {
   Workspace,
 } from "@pi-spore/shared";
 import type { Tone } from "@pi-spore/ui";
-import type { ComponentType } from "react";
+import type { ComponentType, ReactNode } from "react";
 
 /**
  * A section another web module adds to the workspace's right column, such as Actions or Unity. It renders its own
@@ -60,6 +60,8 @@ export interface CreateWorkspaceFormProps {
   /** Sends the request. Default: `POST /api/workspaces`. */
   submit?: (request: CreateWorkspaceRequest) => Promise<CreateWorkspaceResponse>;
   onCreated: (result: CreateWorkspaceResponse) => void;
+  /** Extra fields shown after Where, such as the kanban model picker. */
+  children?: ReactNode;
 }
 
 export interface WorkspaceView {
