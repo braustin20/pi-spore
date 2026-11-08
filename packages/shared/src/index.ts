@@ -170,6 +170,7 @@ export {
   CreateRunRequest,
   Lane,
   LaneState,
+  MergeLaneRequest,
   ReviseLaneRequest,
   Run,
   RunList,

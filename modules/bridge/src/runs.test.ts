@@ -1,5 +1,13 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -28,6 +36,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bridgeModule } from "./server.js";
 import { asAgent, chat, json, until } from "./testing.js";
 
+const GATE_ACTION = fileURLToPath(new URL("../test-fixtures/gate-action.mjs", import.meta.url));
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 
 let scratch: string;
@@ -44,7 +53,8 @@ afterEach(async () => {
     await agents.manager().stopAll();
     server.close();
   }
-  rmSync(scratch, { recursive: true, force: true });
+  // A lane job may still write in its worktree when the server closes; rmSync retries ENOTEMPTY.
+  rmSync(scratch, { recursive: true, force: true, maxRetries: 3 });
 });
 
 /** A module that hands the tests the interfaces the bridge will call in slice 4. */
@@ -119,10 +129,20 @@ const git = (cwd: string, ...args: string[]) =>
     encoding: "utf8",
   }).trim();
 
-/** A git project on `main` with one commit. */
-async function project(server: TestServer, name: string) {
+/** config.toml text that declares each gate action as the gate-action fixture in the given mode. */
+const gateConfig = (modes: Record<string, string>) =>
+  Object.entries(modes)
+    .map(
+      ([name, mode]) =>
+        `[actions.${name}]\nrun = ${JSON.stringify([process.execPath, GATE_ACTION, join(scratch, "counter.txt"), name, mode])}\n`,
+    )
+    .join("\n");
+
+/** A git project on `main` with one commit. Gate actions are committed, so the run worktree sees them. */
+async function project(server: TestServer, name: string, gates: Record<string, string> = {}) {
   const folder = join(scratch, name);
-  mkdirSync(folder, { recursive: true });
+  mkdirSync(join(folder, ".pi-spore"), { recursive: true });
+  writeFileSync(join(folder, ".pi-spore", "config.toml"), gateConfig(gates));
   writeFileSync(join(folder, "a.txt"), "one\n");
   git(folder, "init", "-q", "-b", "main");
   git(folder, "add", ".");
@@ -397,6 +417,162 @@ describe("the lane model approval (R4.8)", () => {
 
     expect((await laneOf(server, run.id, strong.id)).state).toBe("declined");
     await until(async () => (await laneOf(server, run.id, next.id)).state === "running");
+  });
+});
+
+/** Commits a file in a lane's workspace, as its worker would, and passes the lane. */
+async function laneChanges(
+  server: TestServer,
+  run: Run,
+  laneId: string,
+  file: string,
+  content: string,
+) {
+  await until(async () => (await laneOf(server, run.id, laneId)).state === "running");
+  const workspace = await workspaceOf(
+    server,
+    (await laneOf(server, run.id, laneId)).workspaceId as string,
+  );
+  writeFileSync(join(workspace.path, file), content);
+  git(workspace.path, "add", ".");
+  git(workspace.path, "commit", "-q", "-m", `change ${file}`);
+  await passLane(server, run.id, laneId);
+}
+
+const untilDelivered = (server: TestServer, agentId: string, text: string) =>
+  until(async () => (await chat(server, agentId)).some((message) => message.includes(text)));
+const deliveredWith = async (server: TestServer, agentId: string, text: string) =>
+  (await chat(server, agentId)).find((message) => message.includes(text)) as string;
+
+describe("merging a lane (ADR 0150)", () => {
+  const GREEN = { check: "pass", test: "pass" };
+
+  it("merges a passed lane into the run line after its gates pass, then starts the next wave from it", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "merge", GREEN);
+    const main = git(folder, "rev-parse", "main");
+    const { run, coordinator } = await createRun(server, projectId, "merge");
+    const first = await startLane(run, coordinator, "first");
+    const second = await startLane(run, coordinator, "second", { wave: 2 });
+    await laneChanges(server, run, first.id, "feature.txt", "lane change\n");
+    const before = git(folder, "rev-parse", run.line);
+
+    const merging = await runs.mergeLane(coordinator, { laneId: first.id });
+
+    expect(merging.state).toBe("merging");
+    await until(async () => (await laneOf(server, run.id, first.id)).state === "merged");
+    expect(git(folder, "rev-parse", `${run.line}^1`)).toBe(before);
+    expect(git(folder, "log", "-1", "--format=%s", run.line)).toBe(
+      `Merge lane first (${first.id})`,
+    );
+    expect(git(folder, "show", `${run.line}:feature.txt`)).toBe("lane change");
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "is merged into");
+    expect(delivery).toContain("gates passed");
+    expect(delivery).not.toContain("All lanes");
+    await until(async () => (await laneOf(server, run.id, second.id)).state === "running");
+    const next = await workspaceOf(
+      server,
+      (await laneOf(server, run.id, second.id)).workspaceId as string,
+    );
+    expect(readFileSync(join(next.path, "feature.txt"), "utf8")).toBe("lane change\n");
+    expect(git(folder, "rev-parse", "main")).toBe(main);
+  });
+
+  it("puts a conflicting lane back to passed, names the files, and leaves the run line alone", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "conflict", GREEN);
+    const main = git(folder, "rev-parse", "main");
+    const { run, coordinator } = await createRun(server, projectId, "conflict");
+    const lane = await startLane(run, coordinator, "clash");
+    await laneChanges(server, run, lane.id, "a.txt", "lane\n");
+    const runWorkspace = await workspaceOf(server, run.workspaceId);
+    writeFileSync(join(runWorkspace.path, "a.txt"), "run\n");
+    git(runWorkspace.path, "add", ".");
+    git(runWorkspace.path, "commit", "-q", "-m", "run change");
+    const before = git(folder, "rev-parse", run.line);
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    await untilDelivered(server, run.coordinatorAgentId, "conflicts with");
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "conflicts with");
+    expect(delivery).toContain("a.txt");
+    expect(delivery).toContain("revise_lane");
+    expect(delivery).toContain(`merge ${run.line} into its branch`);
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({
+      state: "passed",
+      message: "merge conflict in a.txt",
+    });
+    expect(git(folder, "rev-parse", run.line)).toBe(before);
+    expect(git(runWorkspace.path, "status", "--porcelain")).toBe("");
+    expect(existsSync(join(git(runWorkspace.path, "rev-parse", "--git-dir"), "MERGE_HEAD"))).toBe(
+      false,
+    );
+    expect(git(folder, "rev-parse", "main")).toBe(main);
+  });
+
+  it("aborts the merge when a gate fails on the merged tree, and tells the coordinator the diff and the log", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "red", { check: "pass", test: "fail" });
+    const main = git(folder, "rev-parse", "main");
+    const { run, coordinator } = await createRun(server, projectId, "red");
+    const lane = await startLane(run, coordinator, "bad");
+    await laneChanges(server, run, lane.id, "feature.txt", "broken\n");
+    const before = git(folder, "rev-parse", run.line);
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    await untilDelivered(server, run.coordinatorAgentId, "gate test failed");
+    const diffPath = `runs/${run.id}/lanes/${lane.id}-gates.diff`;
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "gate test failed");
+    expect(delivery).toContain(diffPath);
+    expect(delivery).toContain("gate output: boom");
+    expect(delivery).toContain("revise_lane");
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({
+      state: "passed",
+      message: "gate test failed",
+    });
+    const diff = await artifacts.read({ scope: "workspace", id: run.workspaceId }, diffPath);
+    expect(diff.bytes.toString("utf8")).toContain("+broken");
+    const runWorkspace = await workspaceOf(server, run.workspaceId);
+    expect(git(folder, "rev-parse", run.line)).toBe(before);
+    expect(git(runWorkspace.path, "status", "--porcelain")).toBe("");
+    expect(existsSync(join(runWorkspace.path, "feature.txt"))).toBe(false);
+    expect(git(folder, "rev-parse", "main")).toBe(main);
+  });
+
+  it("tells the coordinator to open the one PR when the last lane is merged", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "last", GREEN);
+    const main = git(folder, "rev-parse", "main");
+    const { run, coordinator } = await createRun(server, projectId, "last");
+    const lane = await startLane(run, coordinator, "only");
+    await laneChanges(server, run, lane.id, "feature.txt", "x\n");
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    await untilDelivered(server, run.coordinatorAgentId, "All lanes of the run are merged");
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "All lanes");
+    expect(delivery).toContain("PR tab");
+    expect(git(folder, "rev-parse", "main")).toBe(main);
+  });
+
+  it("refuses a lane that is not passed with 409 lane_not_mergeable, and a stranger lane with 404", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "refuse-merge", GREEN);
+    const { run, coordinator } = await createRun(server, projectId, "refuse-merge");
+    const lane = await startLane(run, coordinator, "early");
+
+    await expect(runs.mergeLane(coordinator, { laneId: lane.id })).rejects.toMatchObject({
+      status: 409,
+      code: "lane_not_mergeable",
+    });
+    await expect(runs.mergeLane(coordinator, { laneId: "nope" })).rejects.toMatchObject({
+      status: 404,
+      code: "lane_not_found",
+    });
+    await expect(
+      runs.mergeLane({ agentId: "a", workspaceId: "w" }, { laneId: lane.id }),
+    ).rejects.toMatchObject({ status: 403, code: "not_coordinator" });
   });
 });
 

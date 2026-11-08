@@ -1,8 +1,14 @@
 import { type BridgeCaller, defineInterface } from "@pi-spore/module-api";
-import type { Lane, ReviseLaneRequest, Run, StartLaneRequest } from "@pi-spore/shared";
+import type {
+  Lane,
+  MergeLaneRequest,
+  ReviseLaneRequest,
+  Run,
+  StartLaneRequest,
+} from "@pi-spore/shared";
 
 /**
- * Runs for the bridge (R7). `startLane` and `reviseLane` answer 403 `not_coordinator` when the caller's workspace is not
+ * Runs for the bridge (R7). `startLane`, `reviseLane`, and `mergeLane` answer 403 `not_coordinator` when the caller's workspace is not
  * a run workspace.
  */
 export interface Runs {
@@ -17,6 +23,13 @@ export interface Runs {
    * workspace. 409 `lane_not_revisable` for a lane in another state.
    */
   reviseLane(caller: BridgeCaller, request: ReviseLaneRequest): Promise<Lane>;
+  /**
+   * Merges a `passed` lane of the caller's run into the run line, but commits the merge only when the run's gates
+   * pass on the merged tree (ADR 0150). The lane is `merging` until then, and `merged` after. A conflict or a failed
+   * gate puts it back to `passed` and tells the coordinator. 404 `lane_not_found` for a lane outside the run; 409
+   * `lane_not_mergeable` for a lane that is not `passed`.
+   */
+  mergeLane(caller: BridgeCaller, request: MergeLaneRequest): Promise<Lane>;
   /** The lane whose workspace this is. */
   laneOf(workspaceId: string): { runId: string; laneId: string } | undefined;
   /** The run whose workspace this is. */

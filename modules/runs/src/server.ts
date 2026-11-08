@@ -1,3 +1,4 @@
+import { ActionsKey } from "@pi-spore/mod-actions/server";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { ArtifactsKey } from "@pi-spore/mod-artifacts/server";
 import { ApprovalsKey } from "@pi-spore/mod-attention/server";
@@ -16,6 +17,7 @@ import {
   CreateRunRequest,
   type Lane,
   type LaneState,
+  type MergeLaneRequest,
   parseJsonBody,
   type ReviseLaneRequest,
   type Run,
@@ -111,6 +113,19 @@ interface LaneSubject {
   laneId: string;
 }
 
+/** The job kind of a lane merge, keyed by the run id so the merges of one run go one at a time, in order. */
+const MERGE_JOB = "runs.merge";
+
+/** `gate` and `attempt` are the place in the run's gates; `failure` is the first gate that failed, for `finish`. */
+interface MergeCheckpoint {
+  gate: number;
+  attempt: number;
+  failure?: { action: string; logTail: string };
+}
+
+/** How much of a failed gate's log goes to the coordinator. */
+const LOG_TAIL_CHARS = 4096;
+
 /** The approval kind filed when a lane asks for a model above the worker role default (R4.8, ADR 0014). */
 const LANE_MODEL = "lane-model";
 const LaneModelSubject = Type.Object({ laneId: Type.String() }, { additionalProperties: false });
@@ -156,6 +171,24 @@ const failedMessage = (lane: LaneRow) =>
     "You can call revise_lane with a new brief to run it again.",
   ].join("\n");
 
+const conflictMessage = (lane: LaneRow, line: string, files: readonly string[]) =>
+  [
+    `Lane "${lane.name}" (${lane.id}) conflicts with ${line} in: ${files.join(", ")}.`,
+    `The run line did not move. You can call revise_lane with a brief that tells the lane to merge ${line} into its branch and resolve these files.`,
+  ].join("\n");
+
+const gateFailedMessage = (
+  lane: LaneRow,
+  failure: { action: string; logTail: string },
+  diffPath: string,
+) =>
+  [
+    `Lane "${lane.name}" (${lane.id}) merged, but the gate ${failure.action} failed on the merged tree. The run line did not move.`,
+    `The lane's diff is the artifact ${diffPath}. The end of the gate log:`,
+    failure.logTail,
+    "You can call revise_lane with a new brief to fix it.",
+  ].join("\n");
+
 export const runsModule: ServerModule = {
   id: "runs",
   requires: ["projects", "workspaces", "agents", "artifacts", "attention", "actions", "pipelines"],
@@ -168,6 +201,7 @@ export const runsModule: ServerModule = {
     const artifacts = host.use(ArtifactsKey);
     const approvals = host.use(ApprovalsKey);
     const pipelines = host.use(PipelinesKey);
+    const actions = host.use(ActionsKey);
 
     const loadRun = (id: string) =>
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE id = ?", id);
@@ -360,6 +394,29 @@ export const runsModule: ServerModule = {
       return laneToView(loadLane(lane.id) as LaneRow);
     };
 
+    const mergeLane = async (caller: BridgeCaller, request: MergeLaneRequest): Promise<Lane> => {
+      const run = runOfCaller(caller);
+      const lane = loadLane(request.laneId);
+      if (lane?.run_id !== run.id) {
+        throw new ApiError(404, "lane_not_found", `No lane ${request.laneId} in run ${run.id}`);
+      }
+      if (lane.state !== "passed") {
+        throw new ApiError(
+          409,
+          "lane_not_mergeable",
+          `Lane ${lane.id} is ${lane.state}; only a passed lane can be merged`,
+        );
+      }
+      host.store.transaction(() => {
+        host.store.run(
+          "UPDATE runs_lanes SET state = 'merging', message = NULL WHERE id = ?",
+          lane.id,
+        );
+        host.jobs.start(MERGE_JOB, { laneId: lane.id } satisfies LaneSubject, { key: run.id });
+      });
+      return laneToView(loadLane(lane.id) as LaneRow);
+    };
+
     approvals.register({
       kind: LANE_MODEL,
       subject: LaneModelSubject,
@@ -501,6 +558,153 @@ export const runsModule: ServerModule = {
       host.jobs.wake(LANE_JOB, lane.id);
     });
 
+    /** The run's worktree and the lane's branch: where a merge happens, and what it merges. */
+    const mergeSite = async (run: RunRow, lane: LaneRow) => {
+      const { integrate } = await integrateOf(run.project_id);
+      return {
+        integrate,
+        location: { path: workspaces.get(run.workspace_id).path, line: run.line },
+        laneLine: workspaces.get(lane.workspace_id as string).line as string,
+      };
+    };
+
+    const mergingLane = (subject: LaneSubject): LaneRow | undefined => {
+      const lane = loadLane(subject.laneId);
+      return lane?.state === "merging" ? lane : undefined;
+    };
+
+    const merge = async ({ subject }: { subject: LaneSubject }): Promise<StepOutcome<never>> => {
+      const lane = mergingLane(subject);
+      if (!lane) return { next: null };
+      const run = requireRun(lane.run_id);
+      const { integrate, location, laneLine } = await mergeSite(run, lane);
+      // A restart may have left an earlier try of this merge in progress.
+      await integrate.abort(location);
+      const { conflicts } = await integrate.merge(location, laneLine);
+      if (conflicts.length === 0) return {};
+      return {
+        next: null,
+        commit: () => {
+          host.store.run(
+            "UPDATE runs_lanes SET state = 'passed', message = ? WHERE id = ?",
+            `merge conflict in ${conflicts.join(", ")}`,
+            lane.id,
+          );
+          agents.deliver(run.coordinator_agent_id, conflictMessage(lane, run.line, conflicts));
+        },
+      };
+    };
+
+    /**
+     * Runs the gate at the checkpoint's place on the merged tree. The key holds the job id, which is new for each
+     * `mergeLane` call, so a lane merged again after a revise runs its gates again, while a step that runs again after
+     * a restart gets the same action run back.
+     */
+    const gate = async ({
+      id,
+      subject,
+      checkpoint,
+    }: {
+      id: string;
+      subject: LaneSubject;
+      checkpoint: MergeCheckpoint | undefined;
+    }): Promise<StepOutcome<MergeCheckpoint>> => {
+      const lane = mergingLane(subject);
+      if (!lane) return { next: null };
+      const run = requireRun(lane.run_id);
+      const gates = JSON.parse(run.gates) as string[];
+      const index = checkpoint?.gate ?? 0;
+      const attempt = checkpoint?.attempt ?? 0;
+      const action = gates[index] as string;
+      const started = await actions.start(run.workspace_id, action, "pipeline", {
+        key: `${run.id}:${lane.id}:${id}:${action}:${attempt}`,
+      });
+      const ended = await actions.wait(started.id);
+      if (ended.status === "interrupted") {
+        return { next: "gate", checkpoint: { gate: index, attempt: attempt + 1 } };
+      }
+      if (ended.status === "succeeded") {
+        return index + 1 < gates.length
+          ? { next: "gate", checkpoint: { gate: index + 1, attempt: 0 } }
+          : { next: "finish" };
+      }
+      const { text } = await actions.readLog(ended.id, undefined);
+      const logTail = [ended.error, text.slice(-LOG_TAIL_CHARS)].filter(Boolean).join("\n");
+      return {
+        next: "finish",
+        checkpoint: { gate: index, attempt, failure: { action, logTail } },
+      };
+    };
+
+    const finish = async ({
+      subject,
+      checkpoint,
+    }: {
+      subject: LaneSubject;
+      checkpoint: MergeCheckpoint | undefined;
+    }): Promise<StepOutcome<never>> => {
+      const lane = mergingLane(subject);
+      if (!lane) return { next: null };
+      const run = requireRun(lane.run_id);
+      const { integrate, location, laneLine } = await mergeSite(run, lane);
+      const failure = checkpoint?.failure;
+      if (failure) {
+        const path = `runs/${run.id}/lanes/${lane.id}-gates.diff`;
+        await artifacts.write(
+          { scope: "workspace", id: run.workspace_id },
+          path,
+          await integrate.diff(location, laneLine),
+        );
+        await integrate.abort(location);
+        return {
+          next: null,
+          commit: () => {
+            host.store.run(
+              "UPDATE runs_lanes SET state = 'passed', message = ? WHERE id = ?",
+              `gate ${failure.action} failed`,
+              lane.id,
+            );
+            agents.deliver(run.coordinator_agent_id, gateFailedMessage(lane, failure, path));
+          },
+        };
+      }
+      // After a restart the commit may already be made. Then the lane adds nothing to the run line, and a second
+      // commit would fail on an empty merge.
+      if ((await integrate.diff(location, laneLine)) !== "") {
+        await integrate.commit(location, `Merge lane ${lane.name} (${lane.id})`);
+      }
+      return {
+        next: null,
+        commit: () => {
+          host.store.run(
+            "UPDATE runs_lanes SET state = 'merged', message = NULL WHERE id = ?",
+            lane.id,
+          );
+          wakeWaiting(run.id);
+          const done = lanesOf(run.id).every(
+            (other) => other.state === "merged" || other.state === "declined",
+          );
+          agents.deliver(
+            run.coordinator_agent_id,
+            [
+              `Lane "${lane.name}" (${lane.id}) is merged into ${run.line}. The gates passed on the merged tree.`,
+              ...(done
+                ? [
+                    "All lanes of the run are merged. Tell the user to open the one PR from this workspace's PR tab. pi-spore never merges to the base line.",
+                  ]
+                : []),
+            ].join("\n"),
+          );
+        },
+      };
+    };
+
+    host.jobs.define(MERGE_JOB, [
+      { name: "merge", run: merge },
+      { name: "gate", run: gate },
+      { name: "finish", run: finish },
+    ] satisfies JobStep<LaneSubject, MergeCheckpoint>[]);
+
     agents.addLaunchContext((agent, workspace) => {
       const run = runByWorkspace(workspace.id);
       if (run) {
@@ -523,6 +727,7 @@ export const runsModule: ServerModule = {
     const api: Runs = {
       startLane,
       reviseLane,
+      mergeLane,
       laneOf: (workspaceId) => {
         const lane = host.store.get<LaneRow>(
           "SELECT * FROM runs_lanes WHERE workspace_id = ?",

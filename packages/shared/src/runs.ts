@@ -85,3 +85,9 @@ export const ReviseLaneRequest = Type.Object(
   { additionalProperties: false },
 );
 export type ReviseLaneRequest = Static<typeof ReviseLaneRequest>;
+
+export const MergeLaneRequest = Type.Object(
+  { laneId: Type.String({ minLength: 1 }) },
+  { additionalProperties: false },
+);
+export type MergeLaneRequest = Static<typeof MergeLaneRequest>;
