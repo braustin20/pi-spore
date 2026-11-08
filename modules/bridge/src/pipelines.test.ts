@@ -19,6 +19,7 @@ import { attentionModule } from "@pi-spore/mod-attention/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { type Pipelines, PipelinesKey, pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
@@ -90,6 +91,7 @@ async function start(
       kanbanModule,
       artifactsModule,
       pipelinesModule,
+      runsModule,
       bridgeModule,
       ...(options.extraModules ?? []),
     ],

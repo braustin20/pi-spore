@@ -597,3 +597,157 @@ describe("a restart", () => {
     expect(lane.workspaceId).toBeUndefined();
   });
 });
+
+/** A started lane whose worker stage agent is up, with a bridge client for it and for the coordinator. */
+async function laneWithWorker(server: TestServer, run: Run, coordinator: BridgeCaller) {
+  const started = await startLane(run, coordinator, "asker");
+  await until(async () => (await laneOf(server, run.id, started.id)).state === "running");
+  const lane = await laneOf(server, run.id, started.id);
+  const worker = await laneWorker(server, lane);
+  return {
+    lane,
+    worker: worker.agentId,
+    asWorker: asAgent(server, worker.agentId, lane.workspaceId as string),
+    asCoordinator: asAgent(server, coordinator.agentId, coordinator.workspaceId),
+  };
+}
+
+describe("bridge routes for a run (R7.3)", () => {
+  it("lets the coordinator start a lane, and refuses a lane agent with 403 not_coordinator", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "route-start");
+    const { run, coordinator } = await createRun(server, projectId, "route-start");
+    await artifacts.write(
+      { scope: "workspace", id: run.workspaceId },
+      "briefs/one.md",
+      "Build one",
+    );
+    const body = { name: "one", brief: "briefs/one.md", wave: 1, pipeline: "p" };
+
+    const started = await json<{ lane: Lane }>(
+      await asAgent(server, coordinator.agentId, run.workspaceId)("POST", "lanes", body),
+      201,
+    );
+
+    expect(started.lane).toMatchObject({ name: "one", runId: run.id, state: "waiting" });
+    const { asWorker } = await laneWithWorker(server, run, coordinator);
+    const refused = await asWorker("POST", "lanes", body);
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "not_coordinator" } });
+  });
+});
+
+describe("questions up the chain (R7.5, ADR 0008)", () => {
+  it("delivers a lane agent's question to the coordinator's chat with no call from the coordinator", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "ask");
+    const { run, coordinator } = await createRun(server, projectId, "ask");
+    const { lane, asWorker } = await laneWithWorker(server, run, coordinator);
+
+    const { question } = await json<{ question: { id: string; state: string } }>(
+      await asWorker("POST", "coordinator/questions", { question: "Which hash?" }),
+      201,
+    );
+
+    expect(question.state).toBe("open");
+    await untilDelivered(server, run.coordinatorAgentId, question.id);
+    const message = await deliveredWith(server, run.coordinatorAgentId, question.id);
+    expect(message).toContain(`"asker" (${lane.id})`);
+    expect(message).toContain("Which hash?");
+    expect(message).toContain("answer_lane");
+    expect(message).toContain("request_human_input");
+  });
+
+  it("keeps a question across a restart and delivers it when the coordinator can take it", async () => {
+    const home = join(scratch, "home");
+    const first = await start({ home });
+    const { projectId } = await project(first, "ask-restart");
+    const { run, coordinator } = await createRun(first, projectId, "ask-restart");
+    const { asWorker } = await laneWithWorker(first, run, coordinator);
+    await json(await first.request("POST", `/api/workspaces/${run.workspaceId}/park`));
+    const { question } = await json<{ question: { id: string } }>(
+      await asWorker("POST", "coordinator/questions", { question: "Still there?" }),
+      201,
+    );
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const restarted = await start({ home, firstId: 1_000 });
+    await json(await restarted.request("POST", `/api/workspaces/${run.workspaceId}/resume`));
+
+    await untilDelivered(restarted, run.coordinatorAgentId, question.id);
+    expect(await deliveredWith(restarted, run.coordinatorAgentId, question.id)).toContain(
+      "Still there?",
+    );
+  });
+
+  it("delivers the coordinator's answer to the asking agent, and refuses a second answer with 409", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "answer");
+    const { run, coordinator } = await createRun(server, projectId, "answer");
+    const { worker, asWorker, asCoordinator } = await laneWithWorker(server, run, coordinator);
+    const { question } = await json<{ question: { id: string } }>(
+      await asWorker("POST", "coordinator/questions", { question: "Which hash?" }),
+      201,
+    );
+
+    const refused = await asWorker("POST", "coordinator/answers", {
+      questionId: question.id,
+      answer: "sha256",
+    });
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "not_coordinator" } });
+    const answered = await json<{ question: { state: string; answer: string } }>(
+      await asCoordinator("POST", "coordinator/answers", {
+        questionId: question.id,
+        answer: "sha256",
+      }),
+    );
+
+    expect(answered.question).toMatchObject({ state: "answered", answer: "sha256" });
+    await untilDelivered(server, worker, "Answer: sha256");
+    const message = await deliveredWith(server, worker, "Answer: sha256");
+    expect(message).toContain(question.id);
+    expect(message).toContain("Which hash?");
+    const second = await asCoordinator("POST", "coordinator/answers", {
+      questionId: question.id,
+      answer: "md5",
+    });
+    expect(second.status).toBe(409);
+    expect(await second.json()).toMatchObject({ error: { code: "question_answered" } });
+    const unknown = await asCoordinator("POST", "coordinator/answers", {
+      questionId: "nope",
+      answer: "x",
+    });
+    expect(unknown.status).toBe(404);
+  });
+
+  it("refuses request_human_input from a lane agent with 409 ask_coordinator, and still takes the coordinator's", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "human");
+    const { run, coordinator } = await createRun(server, projectId, "human");
+    const { asWorker, asCoordinator } = await laneWithWorker(server, run, coordinator);
+
+    const refused = await asWorker("POST", "questions", { question: "Which hash?" });
+
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: { code: "ask_coordinator" } });
+    await json(await asCoordinator("POST", "questions", { question: "Which hash?" }), 201);
+  });
+
+  it("refuses a caller outside a lane with 403 not_in_lane", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "no-lane");
+    const { run, coordinator } = await createRun(server, projectId, "no-lane");
+
+    const refused = await asAgent(server, coordinator.agentId, run.workspaceId)(
+      "POST",
+      "coordinator/questions",
+      { question: "Who am I?" },
+    );
+
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "not_in_lane" } });
+  });
+});

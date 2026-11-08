@@ -167,6 +167,8 @@ export {
   WatchRequest,
 } from "./pull-requests.js";
 export {
+  AnswerLaneRequest,
+  AskCoordinatorRequest,
   CreateRunRequest,
   Lane,
   LaneState,
@@ -174,6 +176,7 @@ export {
   ReviseLaneRequest,
   Run,
   RunList,
+  RunQuestion,
   StartLaneRequest,
 } from "./runs.js";
 export { slugify } from "./slug.js";

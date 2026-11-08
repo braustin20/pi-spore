@@ -14,6 +14,8 @@ import {
 } from "@pi-spore/module-api";
 import { loadSettings, TIERS, tierOf } from "@pi-spore/router";
 import {
+  type AnswerLaneRequest,
+  type AskCoordinatorRequest,
   CreateRunRequest,
   type Lane,
   type LaneState,
@@ -21,6 +23,7 @@ import {
   parseJsonBody,
   type ReviseLaneRequest,
   type Run,
+  type RunQuestion,
   type StartLaneRequest,
   slugify,
 } from "@pi-spore/shared";
@@ -75,6 +78,17 @@ const MIGRATIONS = [
   )`,
   "CREATE INDEX runs_lanes_by_run ON runs_lanes (run_id, created_at)",
   "CREATE INDEX runs_lanes_by_workspace ON runs_lanes (workspace_id)",
+  `CREATE TABLE runs_questions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    lane_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER
+  )`,
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -103,6 +117,17 @@ interface LaneRow {
   pipeline_run_id: string | null;
   approval_id: string | null;
   message: string | null;
+  created_at: number;
+}
+
+interface QuestionRow {
+  id: string;
+  run_id: string;
+  lane_id: string;
+  agent_id: string;
+  question: string;
+  answer: string | null;
+  state: RunQuestion["state"];
   created_at: number;
 }
 
@@ -149,6 +174,17 @@ const laneToView = (row: LaneRow): Lane => ({
   createdAt: row.created_at,
 });
 
+const questionToView = (row: QuestionRow): RunQuestion => ({
+  id: row.id,
+  runId: row.run_id,
+  laneId: row.lane_id,
+  agentId: row.agent_id,
+  question: row.question,
+  ...(row.answer === null ? {} : { answer: row.answer }),
+  state: row.state,
+  createdAt: row.created_at,
+});
+
 const runToView = (row: RunRow, lanes: readonly LaneRow[]): Run => ({
   id: row.id,
   projectId: row.project_id,
@@ -160,6 +196,20 @@ const runToView = (row: RunRow, lanes: readonly LaneRow[]): Run => ({
   createdAt: row.created_at,
   lanes: lanes.map(laneToView),
 });
+
+const questionMessage = (lane: LaneRow, question: QuestionRow) =>
+  [
+    `Lane "${lane.name}" (${lane.id}) asks (question ${question.id}):`,
+    question.question,
+    "Answer it from the spec with answer_lane. If the spec does not say, ask the user with request_human_input first, then answer.",
+  ].join("\n");
+
+const answerMessage = (question: QuestionRow, answer: string) =>
+  [
+    `Your coordinator answered your question ${question.id}.`,
+    `Question: ${question.question}`,
+    `Answer: ${answer}`,
+  ].join("\n");
 
 const passedMessage = (lane: LaneRow, diffPath: string) =>
   `Lane "${lane.name}" (${lane.id}) passed its pipeline. Its diff is the artifact ${diffPath}. Review it, then call merge_lane to merge it or revise_lane to send it back.`;
@@ -214,6 +264,10 @@ export const runsModule: ServerModule = {
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE workspace_id = ?", workspaceId);
     const loadLane = (id: string) =>
       host.store.get<LaneRow>("SELECT * FROM runs_lanes WHERE id = ?", id);
+    const laneByWorkspace = (workspaceId: string) =>
+      host.store.get<LaneRow>("SELECT * FROM runs_lanes WHERE workspace_id = ?", workspaceId);
+    const loadQuestion = (id: string) =>
+      host.store.get<QuestionRow>("SELECT * FROM runs_questions WHERE id = ?", id);
     const lanesOf = (runId: string) =>
       host.store.all<LaneRow>(
         "SELECT * FROM runs_lanes WHERE run_id = ? ORDER BY created_at, id",
@@ -415,6 +469,59 @@ export const runsModule: ServerModule = {
         host.jobs.start(MERGE_JOB, { laneId: lane.id } satisfies LaneSubject, { key: run.id });
       });
       return laneToView(loadLane(lane.id) as LaneRow);
+    };
+
+    const askCoordinator = (caller: BridgeCaller, request: AskCoordinatorRequest): RunQuestion => {
+      const lane = laneByWorkspace(caller.workspaceId);
+      if (!lane) {
+        throw new ApiError(
+          403,
+          "not_in_lane",
+          `Workspace ${caller.workspaceId} is not a lane; only lane agents ask a coordinator`,
+        );
+      }
+      const run = requireRun(lane.run_id);
+      const id = host.newId();
+      return host.store.transaction(() => {
+        host.store.run(
+          `INSERT INTO runs_questions (id, run_id, lane_id, agent_id, question, state, created_at)
+           VALUES (?, ?, ?, ?, ?, 'open', ?)`,
+          id,
+          run.id,
+          lane.id,
+          caller.agentId,
+          request.question,
+          host.now(),
+        );
+        const row = loadQuestion(id) as QuestionRow;
+        agents.deliver(run.coordinator_agent_id, questionMessage(lane, row));
+        return questionToView(row);
+      });
+    };
+
+    const answerLane = (caller: BridgeCaller, request: AnswerLaneRequest): RunQuestion => {
+      const run = runOfCaller(caller);
+      const question = loadQuestion(request.questionId);
+      if (question?.run_id !== run.id) {
+        throw new ApiError(
+          404,
+          "question_not_found",
+          `No question ${request.questionId} in run ${run.id}`,
+        );
+      }
+      if (question.state !== "open") {
+        throw new ApiError(409, "question_answered", `Question ${question.id} has an answer`);
+      }
+      return host.store.transaction(() => {
+        host.store.run(
+          "UPDATE runs_questions SET answer = ?, state = 'answered', answered_at = ? WHERE id = ?",
+          request.answer,
+          host.now(),
+          question.id,
+        );
+        agents.deliver(question.agent_id, answerMessage(question, request.answer));
+        return questionToView(loadQuestion(question.id) as QuestionRow);
+      });
     };
 
     approvals.register({
@@ -715,10 +822,7 @@ export const runsModule: ServerModule = {
             }
           : undefined;
       }
-      const lane = host.store.get<LaneRow>(
-        "SELECT * FROM runs_lanes WHERE workspace_id = ?",
-        workspace.id,
-      );
+      const lane = laneByWorkspace(workspace.id);
       return lane
         ? { env: { PI_SPORE_RUN_ID: lane.run_id, PI_SPORE_RUN_ROLE: "lane" } }
         : undefined;
@@ -728,11 +832,10 @@ export const runsModule: ServerModule = {
       startLane,
       reviseLane,
       mergeLane,
+      askCoordinator,
+      answerLane,
       laneOf: (workspaceId) => {
-        const lane = host.store.get<LaneRow>(
-          "SELECT * FROM runs_lanes WHERE workspace_id = ?",
-          workspaceId,
-        );
+        const lane = laneByWorkspace(workspaceId);
         return lane ? { runId: lane.run_id, laneId: lane.id } : undefined;
       },
       runOf: (workspaceId) => {

@@ -91,3 +91,32 @@ export const MergeLaneRequest = Type.Object(
   { additionalProperties: false },
 );
 export type MergeLaneRequest = Static<typeof MergeLaneRequest>;
+
+/** A question a lane agent asked its coordinator (R7.5, ADR 0008). */
+export const RunQuestion = Type.Object({
+  id: Type.String(),
+  runId: Type.String(),
+  laneId: Type.String(),
+  /** The lane agent that asked, and gets the answer. */
+  agentId: Type.String(),
+  question: Type.String(),
+  answer: Type.Optional(Type.String()),
+  state: Type.Union([Type.Literal("open"), Type.Literal("answered")]),
+  createdAt: Type.Integer(),
+});
+export type RunQuestion = Static<typeof RunQuestion>;
+
+export const AskCoordinatorRequest = Type.Object(
+  { question: Type.String({ minLength: 1, maxLength: 4_000 }) },
+  { additionalProperties: false },
+);
+export type AskCoordinatorRequest = Static<typeof AskCoordinatorRequest>;
+
+export const AnswerLaneRequest = Type.Object(
+  {
+    questionId: Type.String({ minLength: 1 }),
+    answer: Type.String({ minLength: 1, maxLength: 8_000 }),
+  },
+  { additionalProperties: false },
+);
+export type AnswerLaneRequest = Static<typeof AnswerLaneRequest>;

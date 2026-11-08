@@ -1,9 +1,12 @@
 import { type BridgeCaller, defineInterface } from "@pi-spore/module-api";
 import type {
+  AnswerLaneRequest,
+  AskCoordinatorRequest,
   Lane,
   MergeLaneRequest,
   ReviseLaneRequest,
   Run,
+  RunQuestion,
   StartLaneRequest,
 } from "@pi-spore/shared";
 
@@ -30,6 +33,17 @@ export interface Runs {
    * `lane_not_mergeable` for a lane that is not `passed`.
    */
   mergeLane(caller: BridgeCaller, request: MergeLaneRequest): Promise<Lane>;
+  /**
+   * Files a question of the caller's lane for its run's coordinator and delivers it to the coordinator chat in the
+   * same transaction (R7.5, ADR 0008). 403 `not_in_lane` when the caller's workspace is not a lane.
+   */
+  askCoordinator(caller: BridgeCaller, request: AskCoordinatorRequest): RunQuestion;
+  /**
+   * Stores the coordinator's answer and delivers it to the asking lane agent in the same transaction. 403
+   * `not_coordinator` for a caller outside the run workspace; 404 `question_not_found` for a question outside the
+   * run; 409 `question_answered` for a second answer.
+   */
+  answerLane(caller: BridgeCaller, request: AnswerLaneRequest): RunQuestion;
   /** The lane whose workspace this is. */
   laneOf(workspaceId: string): { runId: string; laneId: string } | undefined;
   /** The run whose workspace this is. */

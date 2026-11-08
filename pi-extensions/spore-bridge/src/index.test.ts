@@ -8,6 +8,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeEnv } from "./client.js";
 import sporeBridge from "./index.js";
 import {
+  COORDINATOR_RULES,
+  LANE_RULES,
   RULES,
   RULES_SECTION,
   SIDE_RULES,
@@ -690,5 +692,104 @@ describe("spore-bridge report tool", () => {
     await expect(
       fakePi().tool("report").execute("toolu_1", revise, undefined, undefined, ctx),
     ).rejects.toThrow("Turn t0 is not open");
+  });
+});
+
+describe("spore-bridge run tools", () => {
+  const RUN_TOOLS = ["start_lane", "revise_lane", "merge_lane", "answer_lane"];
+  const rulesOf = async (pi: ReturnType<typeof fakePi>) => {
+    const options = { contextFiles: [], sections: {} as Record<string, string> };
+    await pi.handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
+    return options.sections[RULES_SECTION];
+  };
+
+  it("gives the coordinator the four run tools, request_human_input, and the coordinator rules", async () => {
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    const pi = fakePi();
+
+    for (const name of RUN_TOOLS) expect(pi.tools.has(name)).toBe(true);
+    expect(pi.tools.has("request_human_input")).toBe(true);
+    expect(pi.tools.has("ask_coordinator")).toBe(false);
+    expect(await rulesOf(pi)).toBe(COORDINATOR_RULES);
+    expect(COORDINATOR_RULES).toContain("never edit files or run commands");
+    expect(COORDINATOR_RULES).toContain("answer_lane");
+    expect(COORDINATOR_RULES).toContain("PR tab");
+  });
+
+  it("sends each run tool to its route with the tool call id as receipt, and ends no turn", async () => {
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    const lane = (state: string) => ({ body: { lane: { id: "l1", name: "api", state } } });
+    reply("POST /api/bridge/lanes", { status: 201, ...lane("waiting") });
+    reply("POST /api/bridge/lanes/revise", lane("starting"));
+    reply("POST /api/bridge/lanes/merge", lane("merging"));
+    reply("POST /api/bridge/coordinator/answers", { body: { question: { id: "q1" } } });
+    const pi = fakePi();
+
+    const start = await pi
+      .tool("start_lane")
+      .execute("t1", { name: "api", brief: "briefs/api.md", wave: 1 });
+    const revise = await pi
+      .tool("revise_lane")
+      .execute("t2", { laneId: "l1", brief: "briefs/api2.md" });
+    const merge = await pi.tool("merge_lane").execute("t3", { laneId: "l1" });
+    const answer = await pi
+      .tool("answer_lane")
+      .execute("t4", { questionId: "q1", answer: "sha256" });
+
+    expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
+      ["/api/bridge/lanes", "t1", { name: "api", brief: "briefs/api.md", wave: 1 }],
+      ["/api/bridge/lanes/revise", "t2", { laneId: "l1", brief: "briefs/api2.md" }],
+      ["/api/bridge/lanes/merge", "t3", { laneId: "l1" }],
+      ["/api/bridge/coordinator/answers", "t4", { questionId: "q1", answer: "sha256" }],
+    ]);
+    expect(start.content[0]?.text).toBe('Lane "api" (l1) was added; it is waiting.');
+    expect(revise.content[0]?.text).toContain("it is starting");
+    expect(merge.content[0]?.text).toContain("The result arrives later as a message.");
+    expect(answer.content[0]?.text).toContain("question q1");
+    for (const result of [start, revise, merge, answer]) expect(result.terminate).toBeUndefined();
+  });
+
+  it("gives a lane stage agent ask_coordinator, not request_human_input, and the lane paragraph", async () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "lane");
+    reply("POST /api/bridge/coordinator/questions", {
+      status: 201,
+      body: { question: { id: "q1" } },
+    });
+    const pi = fakePi();
+
+    expect(pi.tools.has("request_human_input")).toBe(false);
+    for (const name of RUN_TOOLS) expect(pi.tools.has(name)).toBe(false);
+    const result = await pi.tool("ask_coordinator").execute("t1", { question: "Which hash?" });
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/coordinator/questions",
+        auth: "Bearer agent-token",
+        receipt: "t1",
+        body: { question: "Which hash?" },
+      },
+    ]);
+    expect(result.terminate).toBe(true);
+    expect(result.content[0]?.text).toContain("question q1");
+    expect(await rulesOf(pi)).toBe(`${STAGE_WORKER_RULES}\n\n${LANE_RULES}`);
+    expect(LANE_RULES).toContain("never the user");
+  });
+
+  it("gives a plain worker neither the run tools nor ask_coordinator", async () => {
+    const pi = fakePi();
+
+    expect(pi.tools.has("request_human_input")).toBe(true);
+    for (const name of [...RUN_TOOLS, "ask_coordinator"]) expect(pi.tools.has(name)).toBe(false);
+    expect(await rulesOf(pi)).toBe(RULES);
+  });
+
+  it("names PI_SPORE_RUN_ROLE when it is not coordinator or lane", () => {
+    expect(() =>
+      bridgeEnv({ PI_SPORE_URL: "http://x", PI_SPORE_TOKEN: "t", PI_SPORE_RUN_ROLE: "boss" }),
+    ).toThrow('PI_SPORE_RUN_ROLE must be coordinator or lane, not "boss"');
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "boss");
+    expect(fakePi().tools.size).toBe(0);
   });
 });
