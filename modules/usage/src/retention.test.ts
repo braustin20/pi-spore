@@ -7,6 +7,7 @@ import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fakePipelines } from "./fake-pipelines.js";
 import { createUsageModule } from "./server.js";
 
 const DAY = 86_400_000;
@@ -36,7 +37,55 @@ async function startWithLog(days: number): Promise<void> {
   mkdirSync(join(home, "usage"), { recursive: true });
   writeFileSync(routingFile(), line(START) + line(START + 20 * DAY) + UNREADABLE);
   server = await createTestServer(
-    [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, createUsageModule()],
+    [
+      fakePipelines().module,
+      projectsModule,
+      vcsGitModule,
+      vcsFolderModule,
+      workspacesModule,
+      createUsageModule(),
+    ],
+    { home, startAt: START + days * DAY + SLACK },
+  );
+}
+
+const outcomeIds = (): string[] =>
+  (server as TestServer).store
+    .all<{ run_id: string }>("SELECT run_id FROM usage_outcomes ORDER BY run_id")
+    .map((row) => row.run_id);
+
+/** Two ended runs, at START and 20 days later, stored by a first server; a second one starts `days` after START. */
+async function startWithOutcomes(days: number): Promise<void> {
+  const first = fakePipelines();
+  const before = await createTestServer(
+    [
+      first.module,
+      projectsModule,
+      vcsGitModule,
+      vcsFolderModule,
+      workspacesModule,
+      createUsageModule(),
+    ],
+    { home, startAt: START },
+  );
+  first.end({
+    id: "old",
+    agentId: "a",
+    endedAt: START,
+    turns: [{ kind: "review", verdict: "approve" }],
+  });
+  first.end({ id: "new", agentId: "a", endedAt: START + 20 * DAY });
+  before.close();
+  const second = fakePipelines();
+  server = await createTestServer(
+    [
+      second.module,
+      projectsModule,
+      vcsGitModule,
+      vcsFolderModule,
+      workspacesModule,
+      createUsageModule(),
+    ],
     { home, startAt: START + days * DAY + SLACK },
   );
 }
@@ -52,5 +101,15 @@ describe("usage retention", () => {
     expect(readFileSync(routingFile(), "utf8")).toBe(
       line(START) + line(START + 20 * DAY) + UNREADABLE,
     );
+  });
+
+  it("deletes outcome rows older than the limit and keeps newer ones", async () => {
+    await startWithOutcomes(31);
+    expect(outcomeIds()).toEqual(["new"]);
+  });
+
+  it("keeps every outcome row inside the limit", async () => {
+    await startWithOutcomes(29);
+    expect(outcomeIds()).toEqual(["new", "old"]);
   });
 });

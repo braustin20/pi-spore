@@ -97,3 +97,51 @@ export const RoutingDecisionsResponse = Type.Object({
   skipped: Type.Integer(),
 });
 export type RoutingDecisionsResponse = Static<typeof RoutingDecisionsResponse>;
+
+/** One tenth of the 0 to 1 range for one Jev question (ADR 0144). */
+export const CalibrationBucket = Type.Object({
+  from: Type.Number(),
+  to: Type.Number(),
+  /** Decisions whose answer to the question falls here. */
+  answers: Type.Integer(),
+  /** Local runs with a verdict among those decisions. */
+  localOutcomes: Type.Integer(),
+  passed: Type.Integer(),
+  /** False under the minimum sample: too little data to read a share. */
+  enough: Type.Boolean(),
+});
+export type CalibrationBucket = Static<typeof CalibrationBucket>;
+
+/** What a bar between 0.1 and 0.9 would have done to the decisions Jev answered. */
+export const CalibrationBar = Type.Object({
+  bar: Type.Number(),
+  decisions: Type.Integer(),
+  /** Decisions whose four answers are all at or above the bar. */
+  wouldGoLocal: Type.Integer(),
+  localOutcomes: Type.Integer(),
+  passed: Type.Integer(),
+  enough: Type.Boolean(),
+});
+export type CalibrationBar = Static<typeof CalibrationBar>;
+
+export const CalibrationResponse = Type.Object({
+  /** `router.threshold` now. */
+  threshold: Type.Number(),
+  minSample: Type.Integer(),
+  /** Router decisions with four Jev answers. */
+  decisions: Type.Integer(),
+  /** Local decisions that a pipeline run with a verdict joined. */
+  outcomes: Type.Integer(),
+  buckets: Type.Object({
+    bounded: Type.Array(CalibrationBucket),
+    explicit: Type.Array(CalibrationBucket),
+    visual: Type.Array(CalibrationBucket),
+    straightforward: Type.Array(CalibrationBucket),
+  }),
+  bars: Type.Array(CalibrationBar),
+  /** The lowest bar with enough local outcomes and at least 90% passed. Absent when none qualifies. */
+  suggestedBar: Type.Optional(Type.Number()),
+  /** Lines of the decision file that did not parse. */
+  skipped: Type.Integer(),
+});
+export type CalibrationResponse = Static<typeof CalibrationResponse>;

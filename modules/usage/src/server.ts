@@ -1,14 +1,17 @@
+import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { loadSettings, pruneRecords, readPlans, readRecords, windowViews } from "@pi-spore/router";
 import type {
+  CalibrationResponse,
   RoutingDecisionsResponse,
   TokenUseResponse,
   TokenUseRow,
   UsagePlansResponse,
   UsageWarning,
 } from "@pi-spore/shared";
+import { calibration, type Outcome } from "./calibration.js";
 import { SessionIndex } from "./tokens.js";
 
 const WINDOW_NAMES: Readonly<Record<string, string>> = { "5h": "5-hour", "7d": "weekly" };
@@ -43,27 +46,72 @@ export function warningsFor(
   });
 }
 
+const MIGRATIONS = [
+  `CREATE TABLE usage_outcomes (
+    run_id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    state TEXT NOT NULL,
+    verdict TEXT,
+    review_rounds INTEGER NOT NULL,
+    fix_passes INTEGER NOT NULL,
+    ended_at INTEGER NOT NULL
+  )`,
+];
+
+interface OutcomeRow {
+  agent_id: string;
+  verdict: Outcome["verdict"];
+  ended_at: number;
+}
+
 /**
  * Subscription usage (R18, ADR 0022): plan windows from the files the router's usage tap writes, token use from
- * pi-spore's session files, and the router's decisions. The data is written by the router extension in any Pi
- * process, so this module owns no tables; it reads the files on each request.
+ * pi-spore's session files, and the router's decisions. The router extension writes those files in any Pi process,
+ * so this module reads them on each request. It owns one table, `usage_outcomes` (ADR 0144): how each pipeline run
+ * with a worker ended, to judge the router's local choices against its decisions.
  */
 export function createUsageModule(): ServerModule {
   return {
     id: "usage",
-    requires: ["projects", "workspaces"],
+    requires: ["projects", "workspaces", "pipelines"],
     core: false,
     setup(host) {
       const projects = host.use(ProjectsKey);
       const workspaces = host.use(WorkspacesKey);
+      const pipelines = host.use(PipelinesKey);
       const sessions = new SessionIndex(host.home.sessions);
       const settings = () =>
         loadSettings(host.home.root).catch((error: unknown) => {
           throw new ApiError(422, "bad_settings", (error as Error).message);
         });
 
+      host.store.migrate("usage", MIGRATIONS);
+
+      // Runs inside the pipelines transaction. The verdict is the last review of the first reviewer stage.
+      pipelines.afterRunEnded((run) => {
+        if (!run.workerAgentId) return;
+        const reviews = run.turns.filter((turn) => turn.kind === "review");
+        const firstStage = Math.min(...reviews.map((turn) => turn.stageIndex));
+        const verdict = reviews.findLast(
+          (turn) => turn.stageIndex === firstStage && turn.report?.verdict,
+        )?.report?.verdict;
+        host.store.run(
+          "INSERT OR REPLACE INTO usage_outcomes (run_id, workspace_id, agent_id, state, verdict, review_rounds, fix_passes, ended_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          run.id,
+          run.workspaceId,
+          run.workerAgentId,
+          run.state,
+          verdict ?? null,
+          reviews.length,
+          run.turns.filter((turn) => turn.kind === "fix").length,
+          run.endedAt ?? host.now(),
+        );
+      });
+
       // ADR 0121: the router writes this file from any Pi process, so only this server trims it.
       workspaces.onRetention(async (cutoff) => {
+        host.store.run("DELETE FROM usage_outcomes WHERE ended_at < ?", cutoff);
         const count = await pruneRecords(host.home.root, cutoff);
         if (count > 0) host.log.info("Retention deleted routing decisions", { count });
       });
@@ -161,6 +209,18 @@ export function createUsageModule(): ServerModule {
         }
         const { records, skipped } = await readRecords(host.home.root, limit);
         const body: RoutingDecisionsResponse = { decisions: records, skipped };
+        return c.json(body);
+      });
+
+      host.routes.get("/calibration", async (c) => {
+        const { threshold } = await settings();
+        const { records, skipped } = await readRecords(host.home.root, Number.POSITIVE_INFINITY);
+        const outcomes = host.store
+          .all<OutcomeRow>(
+            "SELECT agent_id, verdict, ended_at FROM usage_outcomes WHERE verdict IS NOT NULL",
+          )
+          .map((row) => ({ agentId: row.agent_id, verdict: row.verdict, endedAt: row.ended_at }));
+        const body: CalibrationResponse = calibration(records, outcomes, threshold, skipped);
         return c.json(body);
       });
     },

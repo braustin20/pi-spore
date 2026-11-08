@@ -14,6 +14,7 @@ import {
   UsagePlansResponse,
 } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fakePipelines } from "./fake-pipelines.js";
 import { formatAge, formatTokens, formatUntil } from "./format.js";
 import { createUsageModule, warningsFor } from "./server.js";
 
@@ -24,7 +25,7 @@ let scratch: string;
 beforeEach(async () => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-usage-mod-")));
   server = await createTestServer(
-    [projectsModule, vcsGitModule, workspacesModule, createUsageModule()],
+    [fakePipelines().module, projectsModule, vcsGitModule, workspacesModule, createUsageModule()],
     { startAt: START },
   );
 });
