@@ -938,6 +938,7 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 
   | Route | Does |
   |---|---|
+  | `GET /api/agents/models` | The models Pi offers, `{ models }`, for the start dropdowns when no chat runs (ADR 0120). Starts a short-lived Pi process that counts against `agents.maxLive`; cached for 60 s. 502 `models_unavailable` if Pi fails or answers badly. |
   | `GET /api/agents?workspaceId=` | The workspace's chats: the active orchestrator chat, side chats, then older orchestrator chats, newest first in each group. |
   | `POST /api/agents` `{ workspaceId, model? }` | The active orchestrator chat; the first call creates it (201), on `model` when given (ADR 0120). |
   | `POST /api/agents/chats` `{ workspaceId, kind, fork?, model? }` | Starts an orchestrator chat (replaces the active one, on `model` when given) or a side chat; `fork` copies the orchestrator chat's context. |

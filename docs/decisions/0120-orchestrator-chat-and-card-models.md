@@ -132,8 +132,11 @@ Finish
 - The orchestrator rules are a draft. The user tunes them from real runs.
 - pi-spore must keep working with a settings file that lacks `orchestrator`. It then uses Pi's default model.
 - Open points for the build:
-  1. The dropdown needs a model list when no chat is running. Today the list comes from a running chat
-    (`get_available_models`). The build must pick a source and count its cost against `agents.maxLive`.
+  1. Settled: the dropdown's model list comes from a short-lived `pi --mode rpc --no-session` process. The server
+    starts it, asks `get_available_models`, and stops it, whether the ask worked or not (`GET /api/agents/models`).
+    The process counts against `agents.maxLive` (ADR 0026) and waits for a free slot like a chat. The answer is
+    cached for 60 seconds, so opening a dialog does not start a process each time. A running chat's list is not
+    reused. A missing or malformed answer is a 502 error that names the cause, never an empty list.
   2. A pi-subagents `worker` run in the chat is shown as a child run (ADR 0034). Its resolved model shows there.
 - Build order, one card each: (1) `orchestrator` role and the `router.cloud` check; (2) card `model` field and
   `agents_agents.model`; (3) the model list route; (4) dropdowns on the board and on Home; (5) orchestrator rules

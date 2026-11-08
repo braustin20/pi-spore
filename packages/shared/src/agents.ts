@@ -277,6 +277,10 @@ export const DialogAnswer = Type.Object(
 );
 export type DialogAnswer = Static<typeof DialogAnswer>;
 
+/** Pi's `get_available_models` data, and the answer of `GET /api/agents/models` (ADR 0120). */
+export const ModelChoices = Type.Object({ models: Type.Array(AgentModel) });
+export type ModelChoices = Static<typeof ModelChoices>;
+
 export const ModelList = Type.Object({
   models: Type.Array(AgentModel),
   thinkingLevels: Type.Array(ThinkingLevel),

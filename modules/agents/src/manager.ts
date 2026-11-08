@@ -15,6 +15,8 @@ import {
   chatTitle,
   type DialogAnswer,
   emptyChat,
+  ModelChoices,
+  parse,
   type Workspace,
 } from "@pi-spore/shared";
 import {
@@ -75,6 +77,10 @@ export interface ManagerOptions {
   maxLive: number;
   idleStopMs: number;
   startTimeoutMs: number;
+  /** How long a model list from `availableModels()` stays valid. */
+  modelsCacheMs: number;
+  /** How to launch the short-lived Pi process that lists models when no chat runs (ADR 0120). */
+  probe(): Promise<{ cwd: string; env: Record<string, string>; args: string[] }>;
   /** Decoded image bytes kept in memory for pages (ADR 0060); older images are read from session files again. */
   imageCacheBytes: number;
 }
@@ -181,6 +187,10 @@ export class AgentManager {
   private readonly waiting: (() => void)[] = [];
   private readonly images: ChatImages;
   private inspectCount = 1;
+  /** Model-list processes now running. They hold a slot like a chat does. */
+  private probes = 0;
+  private modelCache: { at: number; models: AgentModel[] } | undefined;
+  private modelsInFlight: Promise<AgentModel[]> | undefined;
 
   constructor(private readonly options: ManagerOptions) {
     this.images = new ChatImages(options.imageCacheBytes);
@@ -426,7 +436,55 @@ export class AgentManager {
   }
 
   liveCount(): number {
-    return this.othersLive(undefined);
+    return this.othersLive(undefined) + this.probes;
+  }
+
+  /** The models Pi offers, with no chat needed. Cached, and one process at a time (ADR 0120). */
+  availableModels(): Promise<AgentModel[]> {
+    const cached = this.modelCache;
+    if (cached && this.options.now() - cached.at < this.options.modelsCacheMs)
+      return Promise.resolve(cached.models);
+    this.modelsInFlight ??= this.probeModels().finally(() => {
+      this.modelsInFlight = undefined;
+    });
+    return this.modelsInFlight;
+  }
+
+  private async probeModels(): Promise<AgentModel[]> {
+    await this.acquireSlot();
+    this.probes++;
+    try {
+      const { cwd, env, args } = await this.options.probe();
+      const process = new PiProcess(this.options.pi, {
+        cwd,
+        env,
+        args,
+        onEvent: () => {},
+        onDialog: () => {},
+        onNotice: () => {},
+        onChildRuns: () => {},
+        onInspectReply: () => {},
+        onExit: () => {},
+      });
+      try {
+        const data = await process.request("get_available_models", {}, this.options.startTimeoutMs);
+        const { models } = parse(ModelChoices, data, "Pi model list");
+        this.modelCache = { at: this.options.now(), models };
+        return models;
+      } catch (error) {
+        const tail = process.stderrTail();
+        throw new ApiError(
+          502,
+          "models_unavailable",
+          `Could not list models: ${(error as Error).message}${tail ? `\n${tail}` : ""}`,
+        );
+      } finally {
+        await process.stop(1_000);
+      }
+    } finally {
+      this.probes--;
+      this.releaseSlot();
+    }
   }
 
   /**
@@ -626,9 +684,9 @@ export class AgentManager {
   }
 
   /** Waits for a free live slot, in arrival order. */
-  private async acquireSlot(live: Live): Promise<void> {
-    while (this.othersLive(live) + this.runningChildren() >= this.options.maxLive) {
-      if (live.status !== "waiting") this.setStatus(live, "waiting");
+  private async acquireSlot(live?: Live): Promise<void> {
+    while (this.othersLive(live) + this.probes + this.runningChildren() >= this.options.maxLive) {
+      if (live && live.status !== "waiting") this.setStatus(live, "waiting");
       await new Promise<void>((resolve) => this.waiting.push(resolve));
     }
   }
