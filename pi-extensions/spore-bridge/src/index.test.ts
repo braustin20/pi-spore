@@ -223,6 +223,19 @@ describe("spore-bridge", () => {
     expect(result.content[0]?.text).toBe("Added card c1  [backlog]  Phase 1  labels: plan:x");
   });
 
+  it("passes a card's model to the board, and null clears it", async () => {
+    reply("POST /api/bridge/cards", { status: 201, body: { card: card() } });
+    reply("POST /api/bridge/cards/c1", { body: { card: card() } });
+    await fakePi()
+      .tool("kanban_add_card")
+      .execute("toolu_m1", { title: "Phase 1", model: "fake/card-model" });
+    await fakePi().tool("kanban_update_card").execute("toolu_m2", { cardId: "c1", model: null });
+    expect(seen.map((call) => call.body)).toEqual([
+      { title: "Phase 1", model: "fake/card-model" },
+      { model: null },
+    ]);
+  });
+
   it("lists cards with their blockers and the project's workspaces", async () => {
     reply("GET /api/bridge/cards", {
       body: {

@@ -64,6 +64,8 @@ const MIGRATIONS = [
   // ADR 0100: the agent that made a card, and the one that changed it last. JSON CardAuthor, NULL for the user.
   "ALTER TABLE kanban_cards ADD COLUMN created_by TEXT",
   "ALTER TABLE kanban_cards ADD COLUMN changed_by TEXT",
+  // ADR 0120: the model of the chat that work from the card starts, `provider/id`.
+  "ALTER TABLE kanban_cards ADD COLUMN model TEXT",
 ];
 
 /** The approval kind of `kanban_start_card` (ADR 0100). */
@@ -76,6 +78,7 @@ interface CardRow {
   project_id: string | null;
   labels: string;
   due: string | null;
+  model: string | null;
   column_id: CardColumn;
   position: number;
   workspace_id: string | null;
@@ -206,6 +209,7 @@ export const kanbanModule: ServerModule = {
         ...(row.project_id === null ? {} : { projectId: row.project_id }),
         labels: readLabels(row),
         ...(row.due === null ? {} : { due: row.due }),
+        ...(row.model === null ? {} : { model: row.model }),
         column: row.column_id,
         position: row.position,
         ...(row.workspace_id === null ? {} : { workspaceId: row.workspace_id }),
@@ -366,14 +370,15 @@ export const kanbanModule: ServerModule = {
       host.store.transaction(() => {
         host.store.run(
           `INSERT INTO kanban_cards
-            (id, title, body, project_id, labels, due, column_id, position, created_by, changed_by, created_at, updated_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
+            (id, title, body, project_id, labels, due, model, column_id, position, created_by, changed_by, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?, ?)`,
           id,
           request.title.trim(),
           request.body ?? "",
           request.projectId ?? null,
           JSON.stringify(cleanLabels(request.labels ?? [])),
           request.due === undefined ? null : checkDue(request.due),
+          request.model ?? null,
           column,
           author,
           author,
@@ -407,19 +412,21 @@ export const kanbanModule: ServerModule = {
         ...(request.due === undefined
           ? {}
           : { due: request.due === null ? null : checkDue(request.due) }),
+        ...(request.model === undefined ? {} : { model: request.model }),
         changed_by: by ? JSON.stringify(by) : null,
         updated_at: host.now(),
       };
       host.store.transaction(() => {
         host.store.run(
-          `UPDATE kanban_cards SET title = ?, body = ?, project_id = ?, labels = ?, due = ?, changed_by = ?,
-             updated_at = ?
+          `UPDATE kanban_cards SET title = ?, body = ?, project_id = ?, labels = ?, due = ?, model = ?,
+             changed_by = ?, updated_at = ?
            WHERE id = ?`,
           next.title,
           next.body,
           next.project_id,
           next.labels,
           next.due,
+          next.model,
           next.changed_by,
           next.updated_at,
           row.id,
@@ -468,11 +475,18 @@ export const kanbanModule: ServerModule = {
     const startCard = async (
       id: string,
       target: CardStartTarget,
-      options: { projectId?: string; confirmBlocked?: boolean; origin: string },
+      options: { projectId?: string; confirmBlocked?: boolean; model?: string; origin: string },
     ): Promise<StartCardResponse> => {
       const row = load(id);
       refuseOpenWorkspace(row);
       const existing = target.kind === "existing" ? targetWorkspace(target.workspaceId) : undefined;
+      if (existing && options.model !== undefined) {
+        throw new ApiError(
+          400,
+          "model_needs_new_workspace",
+          `The workspace "${existing.name}" keeps the model of its chat; choose a model only for a new workspace`,
+        );
+      }
       const asked = existing?.projectId ?? options.projectId;
       if (row.project_id && asked && asked !== row.project_id) {
         throw new ApiError(
@@ -507,7 +521,8 @@ export const kanbanModule: ServerModule = {
         });
         workspace = created.workspace;
       } else workspace = existing as Workspace;
-      const chat = await agents.activeWorker(workspace.id);
+      const model = options.model ?? row.model ?? undefined;
+      const chat = await agents.activeWorker(workspace.id, model === undefined ? {} : { model });
       host.store.transaction(() => {
         host.store.run(
           "UPDATE kanban_cards SET workspace_id = ?, project_id = ?, updated_at = ? WHERE id = ?",
@@ -544,6 +559,7 @@ export const kanbanModule: ServerModule = {
         const result = await startCard(subject.cardId, subject.target, {
           projectId: asking.projectId,
           confirmBlocked: true,
+          ...(subject.model === undefined ? {} : { model: subject.model }),
           origin: `The user approved starting it here, as an agent asked. The agent's reason: ${approval.reason}`,
         });
         return `Card "${result.card.title}" (${result.card.id}) started in ${
@@ -683,6 +699,7 @@ export const kanbanModule: ServerModule = {
       const body = await startCard(c.req.param("id"), target, {
         ...("projectId" in request && request.projectId ? { projectId: request.projectId } : {}),
         ...(request.confirmBlocked ? { confirmBlocked: true } : {}),
+        ...(request.model === undefined ? {} : { model: request.model }),
         origin: "The user started it here.",
       });
       return c.json(body, 201);

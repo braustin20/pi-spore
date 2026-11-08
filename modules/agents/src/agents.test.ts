@@ -469,6 +469,46 @@ describe("agents", () => {
     });
   });
 
+  describe("the model of a new chat (ADR 0120)", () => {
+    it("starts a new worker chat on the model it was created with and the role's thinking", async () => {
+      await setup();
+      const { workspaceId } = await makeAgent();
+      expect(
+        (
+          await server.request("POST", "/api/agents/chats", {
+            workspaceId,
+            kind: "worker",
+            model: "no-slash",
+          })
+        ).status,
+      ).toBe(400);
+      const { agent } = await json<{ agent: { id: string } }>(
+        await server.request("POST", "/api/agents/chats", {
+          workspaceId,
+          kind: "worker",
+          model: "fake/picked-1",
+        }),
+        201,
+      );
+      const [fresh] = (await server.events.snapshot(`agent:${agent.id}`)) as AgentEvent[];
+      expect(fresh).toMatchObject({
+        model: { provider: "fake", id: "picked-1" },
+        thinkingLevel: "high",
+      });
+      await json(await prompt(agent.id, "one"));
+      await until(() => existsSync(record));
+      const argv = launches()[0]?.argv ?? [];
+      expect(argv.slice(argv.indexOf("--provider"))).toEqual([
+        "--provider",
+        "fake",
+        "--model",
+        "picked-1",
+        "--thinking",
+        "high",
+      ]);
+    });
+  });
+
   describe("orchestrator role (ADR 0120)", () => {
     const withSettings = (settings: unknown) => {
       const agentDir = join(scratch, "pi-agent");

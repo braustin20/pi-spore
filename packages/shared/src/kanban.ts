@@ -1,4 +1,5 @@
 import Type, { type Static } from "typebox";
+import { ModelRef } from "./agents.js";
 import { CreateWorkspaceResponse, Isolation, Workspace, WorkspaceState } from "./workspaces.js";
 
 /** The fixed board columns (R11.2, ADR 0012). */
@@ -75,6 +76,8 @@ export const Card = Type.Object({
   projectId: Type.Optional(Type.String()),
   labels: Type.Array(Type.String()),
   due: Type.Optional(DueDate),
+  /** The model of the chat that work from this card starts (ADR 0120). */
+  model: Type.Optional(ModelRef),
   column: CardColumn,
   /** Order within the column, from 0. */
   position: Type.Integer(),
@@ -122,6 +125,7 @@ export const CreateCardRequest = Type.Object(
     projectId: Type.Optional(Type.String({ minLength: 1 })),
     labels: Type.Optional(Labels),
     due: Type.Optional(DueDate),
+    model: Type.Optional(ModelRef),
     /** Default: backlog. The card goes to the end of the column. */
     column: Type.Optional(CardColumn),
     blockedBy: Type.Optional(Blockers),
@@ -138,6 +142,7 @@ export const UpdateCardRequest = Type.Object(
     projectId: Type.Optional(Type.Union([Type.String({ minLength: 1 }), Type.Null()])),
     labels: Type.Optional(Labels),
     due: Type.Optional(Type.Union([DueDate, Type.Null()])),
+    model: Type.Optional(Type.Union([ModelRef, Type.Null()])),
     blockedBy: Type.Optional(Blockers),
   },
   { additionalProperties: false },
@@ -184,6 +189,8 @@ export const StartCardRequest = Type.Union([
       isolation: Isolation,
       line: Type.Optional(Type.String({ minLength: 1 })),
       base: Type.Optional(Type.String({ minLength: 1 })),
+      /** The model of the new chat. Default: the card's model. */
+      model: Type.Optional(ModelRef),
       /** The user said yes to starting a blocked card. Without it a blocked card answers 409 `card_blocked`. */
       confirmBlocked: Type.Optional(Type.Boolean()),
     },
@@ -193,6 +200,8 @@ export const StartCardRequest = Type.Union([
     {
       /** An active workspace of the card's project. */
       workspaceId: Type.String({ minLength: 1 }),
+      /** Refused: the workspace's chat keeps its model. */
+      model: Type.Optional(ModelRef),
       confirmBlocked: Type.Optional(Type.Boolean()),
     },
     { additionalProperties: false },
@@ -212,7 +221,12 @@ export type StartCardResponse = Static<typeof StartCardResponse>;
 
 /** The subject of a `card-start` approval (ADR 0100). */
 export const CardStartSubject = Type.Object(
-  { cardId: Type.String({ minLength: 1 }), target: CardStartTarget },
+  {
+    cardId: Type.String({ minLength: 1 }),
+    target: CardStartTarget,
+    /** The model of the new chat, when the user changed it on approval. */
+    model: Type.Optional(ModelRef),
+  },
   { additionalProperties: false },
 );
 export type CardStartSubject = Static<typeof CardStartSubject>;
@@ -226,6 +240,7 @@ export const BridgeAddCardRequest = Type.Object(
     body: Type.Optional(Body),
     labels: Type.Optional(Labels),
     due: Type.Optional(DueDate),
+    model: Type.Optional(ModelRef),
     column: Type.Optional(CardColumn),
     /** Card ids. */
     blockedBy: Type.Optional(CardIds),
@@ -240,6 +255,7 @@ export const BridgeUpdateCardRequest = Type.Object(
     body: Type.Optional(Body),
     labels: Type.Optional(Labels),
     due: Type.Optional(Type.Union([DueDate, Type.Null()])),
+    model: Type.Optional(Type.Union([ModelRef, Type.Null()])),
     column: Type.Optional(CardColumn),
     /** Card ids; replaces the list. */
     blockedBy: Type.Optional(CardIds),

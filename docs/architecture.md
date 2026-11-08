@@ -52,7 +52,13 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   `subagents.agentOverrides.orchestrator` (model, thinking) from Pi's settings, and on Pi's own default when that
   override is missing. The `worker` role is a subagent on `spore/auto`; `worker` stays only as a chat `kind`, in
   `PI_SPORE_CHAT_KIND`, and in the routes. An agent is one chat: one row in `agents_agents` with a `kind` (`worker` or
-  `side`), an `active` flag, a `title`, and `forked_from` (the worker chat a side chat copies).
+  `side`), an `active` flag, a `title`, `forked_from` (the worker chat a side chat copies), and a nullable `model`
+  (`provider/id`).
+  - The model of a new chat (ADR 0120): `AgentsKey.activeWorker(workspaceId, { model? })`, `POST /api/agents`, and a
+    worker chat from `POST /api/agents/chats` take an optional `model`, stored in `agents_agents.model`. On the first
+    start, `--provider` and `--model` come from it, else from `agentOverrides.orchestrator`; `--thinking` always
+    comes from the role default. A resumed session keeps its own model. An existing chat keeps its model, so
+    `activeWorker` ignores `model` when the workspace already has one.
   - A workspace has one active worker chat (a partial unique index). Only it and side chats can run; an older worker
     chat is read-only history and refuses to start with 409 `chat_inactive`. The manager also refuses to start a
     worker chat while another worker chat of the workspace has a live process (409 `worker_running`).
@@ -92,7 +98,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     16 KiB of its log. An aborted tool call cancels the run.
   - Card tools (ADR 0100), limited to cards of the agent's project: `kanban_list_cards` `{ label?, column? }` (also
     lists the project's active workspaces), `kanban_add_card` and `kanban_update_card` (title, body, column, labels,
-    due day, `blockedBy` card ids), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
+    due day, `blockedBy` card ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
     base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
     `new` unless another is given.
@@ -222,7 +228,7 @@ export interface ServerHost {
 | Stage | One stage execution | id, pipeline run, name, round, agent, verdict, findings |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
-| Card | A kanban card | id, project, column, position, title, body, labels, due, blocked by, workspace, created by and changed by (agent) |
+| Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
 | UsageSnapshot | Latest plan window numbers (a file per plan, `usage/<plan>.json`) | plan, window (5h, 7d), utilization, resets at, seen at, source |
@@ -728,7 +734,8 @@ R11.
 
 - The `kanban` module (`modules/kanban/`, not core, requires `projects`, `workspaces`, `agents`, and `attention`)
   owns three tables: `kanban_cards` (title, Markdown body, project, labels, due day, column, position, the workspace
-  started from it, and the agent that created it and the one that changed it last),
+  started from it, the agent that created it and the one that changed it last, and an optional `model`, `provider/id`
+  checked with a TypeBox pattern, for the chat that work from the card starts, ADR 0120),
   `kanban_links` ("blocked by": a card or a workspace), and `kanban_events` (each move between columns, with its
   reason).
 - Columns are fixed in v1: Backlog, Ready, In progress, Review, Done. `position` orders a column from 0; every move
@@ -747,11 +754,15 @@ R11.
   brief as a follow-up after its current run. A card with an open workspace answers 409 `card_has_workspace`. A
   blocked card answers 409 `card_blocked` unless the request carries `confirmBlocked: true`; the board asks the user
   first.
+- The model of the new chat (ADR 0120): the request's `model`, else the card's, else `agentOverrides.orchestrator`.
+  It goes to `AgentsKey.activeWorker`. In an existing workspace the chat keeps its model, so a `model` in the request
+  answers 400 `model_needs_new_workspace`; the card's model is then unused.
 - Agents (ADR 0100) reach cards through `CardsKey` from the bridge module: cards of their own project only, with
   `createdBy` and `changedBy` set to the agent and its workspace. A change or move by the user clears `changedBy`.
   A move by an agent is recorded with reason `agent`. `CardsKey.requestStart` checks the card and target, then files
-  a `card-start` approval (subject `{ cardId, target }`); approving it starts the work as above, with the target the
-  user chose, and tells the asking agent where it started.
+  a `card-start` approval (subject `{ cardId, target, model? }`); approving it starts the work as above, with the
+  target and model the user chose (a changed subject is checked with the same schema), and tells the asking agent
+  where it started.
 - Automatic moves happen only on a state change, so a manual move stays until the next one:
   - workspace started from the card → In progress;
   - workspace archived → Done (any archive; the user moves the card back if the work was dropped). The module
@@ -765,12 +776,12 @@ API under `/api/kanban`:
 | Route | Does |
 |---|---|
 | `GET /cards?projectId=&label=&workspaceId=` | Cards in board order. |
-| `POST /cards` `{ title, body?, projectId?, labels?, due?, column?, blockedBy? }` | Adds a card at the end of its column (default Backlog). |
+| `POST /cards` `{ title, body?, projectId?, labels?, due?, column?, blockedBy?, model? }` | Adds a card at the end of its column (default Backlog). |
 | `GET /cards/:id` | The card and its history of moves. |
-| `PATCH /cards/:id` | Changes the fields given; `null` clears project or due. `blockedBy` replaces the list. |
+| `PATCH /cards/:id` | Changes the fields given; `null` clears project, due, or model. `blockedBy` replaces the list. |
 | `POST /cards/:id/move` `{ column, index? }` | Moves or reorders. Without `index`, the card goes to the end. |
 | `DELETE /cards/:id` | Deletes the card, its links both ways, and its history. |
-| `POST /cards/:id/start` | Starts work from the card in a new or an existing workspace (above). |
+| `POST /cards/:id/start` `{ …, model? }` | Starts work from the card in a new or an existing workspace (above). |
 
 - Topic `kanban:board` sends every card on subscribe and after every change.
 - The Board page (`#/board`, `#/board/<card id>`, rail icon) shows the columns with a project and a label filter.
@@ -920,8 +931,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   | Route | Does |
   |---|---|
   | `GET /api/agents?workspaceId=` | The workspace's chats: the active worker chat, side chats, then older worker chats, newest first in each group. |
-  | `POST /api/agents` `{ workspaceId }` | The active worker chat; the first call creates it (201). |
-  | `POST /api/agents/chats` `{ workspaceId, kind, fork? }` | Starts a worker chat (replaces the active one) or a side chat; `fork` copies the worker chat's context. |
+  | `POST /api/agents` `{ workspaceId, model? }` | The active worker chat; the first call creates it (201), on `model` when given (ADR 0120). |
+  | `POST /api/agents/chats` `{ workspaceId, kind, fork?, model? }` | Starts a worker chat (replaces the active one, on `model` when given) or a side chat; `fork` copies the worker chat's context. |
   | `POST /api/agents/:id/activate` | Makes an older worker chat the active one; the current one stops first. |
   | `POST /api/agents/:id/title` `{ title }` | Renames a chat. |
   | `POST /api/agents/:id/close` | Closes a chat for good (ADR 0110). 409 `chat_busy` while it works. |

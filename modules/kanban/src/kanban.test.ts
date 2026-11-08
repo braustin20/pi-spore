@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -31,6 +31,7 @@ const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", 
 let server: TestServer;
 let agents: ReturnType<typeof createAgentsModule>;
 let scratch: string;
+let record: string;
 let cards: Cards;
 
 /** Hands the test the module's interface, as another module would get it. */
@@ -44,11 +45,13 @@ const probe: ServerModule = {
 };
 
 beforeEach(async () => {
+  scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-kanban-")));
+  record = join(scratch, "launches.jsonl");
   agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
-    roleDefaults: async () => ({}),
-    baseEnv: { PATH: process.env.PATH },
+    roleDefaults: async () => ({ provider: "fake", modelId: "orchestrator-1", thinking: "high" }),
+    baseEnv: { PATH: process.env.PATH, FAKE_PI_RECORD: record },
     idleStopMs: 60_000,
     startTimeoutMs: 1_000,
   });
@@ -62,13 +65,23 @@ beforeEach(async () => {
     kanbanModule,
     probe,
   ]);
-  scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-kanban-")));
 });
 afterEach(async () => {
   await agents.manager().stopAll();
   server.close();
   rmSync(scratch, { recursive: true, force: true });
 });
+
+/** The `--provider`, `--model`, and `--thinking` values of the chat launches so far. */
+const launchModels = () =>
+  (existsSync(record) ? readFileSync(record, "utf8") : "")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      const { argv } = JSON.parse(line) as { argv: string[] };
+      const after = (flag: string) => argv[argv.indexOf(flag) + 1];
+      return `${after("--provider")}/${after("--model")} ${after("--thinking")}`;
+    });
 
 async function json(response: Response, status = 200): Promise<unknown> {
   const body: unknown = await response.json();
@@ -401,6 +414,113 @@ describe("starting work from a card", () => {
         422,
       ),
     ).toBe("project_mismatch");
+  });
+});
+
+describe("the model of a new chat (ADR 0120)", () => {
+  it("stores a card's model, checks its shape, and clears it", async () => {
+    const card = await addCard({ title: "Pick a model", model: "fake/card-model" });
+    expect(card.model).toBe("fake/card-model");
+    expect((await cardCall("PATCH", card.id, { title: "Renamed" })).model).toBe("fake/card-model");
+    expect((await cardCall("PATCH", card.id, { model: "fake/other" })).model).toBe("fake/other");
+    expect((await cardCall("PATCH", card.id, { model: null })).model).toBeUndefined();
+    for (const model of ["no-slash", "/id", "provider/", "a b/c"]) {
+      expect(
+        (await server.request("PATCH", `/api/kanban/cards/${card.id}`, { model })).status,
+      ).toBe(400);
+    }
+    expect(
+      (await server.request("POST", "/api/kanban/cards", { title: "x", model: "x" })).status,
+    ).toBe(400);
+  });
+
+  it("starts the chat on the card's model, with the thinking of the role", async () => {
+    const game = await addProject("game");
+    const card = await addCard({ title: "Use mine", projectId: game.id, model: "fake/card-model" });
+    await startCard(card.id, { isolation: "in-place" });
+    expect(launchModels()).toEqual(["fake/card-model high"]);
+  });
+
+  it("prefers the model of the start over the card's", async () => {
+    const game = await addProject("game");
+    const card = await addCard({ title: "Use mine", projectId: game.id, model: "fake/card-model" });
+    await startCard(card.id, { isolation: "in-place", model: "fake/start-model" });
+    expect(launchModels()).toEqual(["fake/start-model high"]);
+  });
+
+  it("uses the orchestrator default when neither names a model", async () => {
+    const game = await addProject("game");
+    const card = await addCard({ title: "Default", projectId: game.id });
+    await startCard(card.id, { isolation: "in-place" });
+    expect(launchModels()).toEqual(["fake/orchestrator-1 high"]);
+  });
+
+  it("refuses a model for an existing workspace and starts nothing", async () => {
+    const game = await addProject("game");
+    const workspace = await addWorkspace(game.id, "Crafting");
+    const card = await addCard({ title: "Too late", projectId: game.id });
+    const response = await server.request("POST", `/api/kanban/cards/${card.id}/start`, {
+      workspaceId: workspace.id,
+      model: "fake/start-model",
+    });
+    expect(await errorCode(response, 400)).toBe("model_needs_new_workspace");
+    expect((await getCard(card.id)).card).toMatchObject({ column: "backlog" });
+  });
+
+  it("starts an approved card on the model the user changed it to", async () => {
+    const game = await addProject("game");
+    const asking = await addWorkspace(game.id, "Planner");
+    const { agent } = parse(
+      Type.Object({ agent: Type.Object({ id: Type.String() }) }),
+      await json(await server.request("POST", "/api/agents", { workspaceId: asking.id }), 201),
+      "agent",
+    );
+    const card = await addCard({
+      title: "Approve me",
+      projectId: game.id,
+      model: "fake/card-model",
+    });
+    const target = { kind: "new", isolation: "in-place" };
+    const approval = cards.requestStart({ agentId: agent.id, workspaceId: asking.id }, card.id, {
+      target: { kind: "new", isolation: "in-place" },
+      reason: "Next",
+    });
+
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval.id}/approve`, {
+        subject: { cardId: card.id, target, model: "fake/changed-model" },
+      }),
+    );
+    // Wait for both deliveries (the brief and the decision) so none outlives the test.
+    await until(
+      async () =>
+        userMessages(agent.id).some((text) => text.includes("approved your request")) &&
+        launchModels().includes("fake/changed-model high"),
+    );
+    expect(launchModels()).not.toContain("fake/card-model high");
+  });
+
+  it("re-checks the model of a changed approval", async () => {
+    const game = await addProject("game");
+    const asking = await addWorkspace(game.id, "Planner");
+    const { agent } = parse(
+      Type.Object({ agent: Type.Object({ id: Type.String() }) }),
+      await json(await server.request("POST", "/api/agents", { workspaceId: asking.id }), 201),
+      "agent",
+    );
+    const card = await addCard({ title: "Approve me", projectId: game.id });
+    const approval = cards.requestStart({ agentId: agent.id, workspaceId: asking.id }, card.id, {
+      target: { kind: "new", isolation: "in-place" },
+      reason: "Next",
+    });
+    const response = await server.request(
+      "POST",
+      `/api/attention/approvals/${approval.id}/approve`,
+      {
+        subject: { cardId: card.id, target: { kind: "new", isolation: "in-place" }, model: "bad" },
+      },
+    );
+    expect(response.status).toBe(400);
   });
 });
 

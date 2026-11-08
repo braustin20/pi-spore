@@ -53,6 +53,10 @@ export type AgentRole = Static<typeof AgentRole>;
 export const ChatKind = Type.Union([Type.Literal("worker"), Type.Literal("side")]);
 export type ChatKind = Static<typeof ChatKind>;
 
+/** A model as `provider/id`: a provider without a slash or space, then an id without a space (ADR 0120). */
+export const ModelRef = Type.String({ pattern: "^[^\\s/]+/\\S+$" });
+export type ModelRef = Static<typeof ModelRef>;
+
 /** One Pi conversation of a workspace: a chat. */
 export const Agent = Type.Object({
   id: Type.String(),
@@ -178,7 +182,12 @@ export const AgentList = Type.Object({ agents: Type.Array(Agent) });
 export type AgentList = Static<typeof AgentList>;
 
 export const CreateAgentRequest = Type.Object(
-  { workspaceId: Type.String({ minLength: 1 }), role: Type.Optional(AgentRole) },
+  {
+    workspaceId: Type.String({ minLength: 1 }),
+    role: Type.Optional(AgentRole),
+    /** The model of the new chat. An existing active chat keeps its own. */
+    model: Type.Optional(ModelRef),
+  },
   { additionalProperties: false },
 );
 export type CreateAgentRequest = Static<typeof CreateAgentRequest>;
@@ -189,6 +198,8 @@ export const CreateChatRequest = Type.Object(
     workspaceId: Type.String({ minLength: 1 }),
     kind: ChatKind,
     fork: Type.Optional(Type.Boolean()),
+    /** The model of a new worker chat. A side chat ignores it. */
+    model: Type.Optional(ModelRef),
   },
   { additionalProperties: false },
 );
