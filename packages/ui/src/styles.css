@@ -157,7 +157,13 @@
     border-left: 2px solid var(--line);
     color: var(--text-muted);
   }
+  /* Block display lets a wide table scroll inside the message instead of widening the chat. Normal wrapping keeps
+     cells from shrinking to one letter, so the table scrolls instead. */
   .md table {
+    display: block;
+    max-width: 100%;
+    overflow-x: auto;
+    overflow-wrap: normal;
     border-collapse: collapse;
     font-size: 0.9em;
   }
