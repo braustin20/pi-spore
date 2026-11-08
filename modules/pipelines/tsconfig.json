@@ -1,0 +1,29 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"]
+  },
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../../packages/module-api"
+    },
+    {
+      "path": "../../packages/shared"
+    },
+    {
+      "path": "../projects"
+    },
+    {
+      "path": "../workspaces"
+    },
+    {
+      "path": "../agents"
+    },
+    {
+      "path": "../artifacts"
+    }
+  ]
+}

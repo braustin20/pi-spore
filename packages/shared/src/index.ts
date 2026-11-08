@@ -125,6 +125,23 @@ export {
   UpdateCardRequest,
 } from "./kanban.js";
 export {
+  PIPELINE_ID_PATTERN,
+  PipelineEvent,
+  PipelineFile,
+  PipelineList,
+  PipelineRun,
+  PipelineRunList,
+  PipelineRunState,
+  PipelineSource,
+  PipelineStage,
+  PipelineTurn,
+  PipelineTurnKind,
+  PipelineView,
+  StageReport,
+  StartPipelineRequest,
+  TestProof,
+} from "./pipelines.js";
+export {
   AddProjectRequest,
   GlobalSettingsView,
   Project,

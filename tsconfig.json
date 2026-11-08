@@ -65,6 +65,9 @@
       "path": "modules/github-pr"
     },
     {
+      "path": "modules/pipelines"
+    },
+    {
       "path": "packages/server"
     },
     {
