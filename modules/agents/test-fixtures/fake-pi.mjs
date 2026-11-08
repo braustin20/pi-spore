@@ -12,6 +12,8 @@
 //                  state "gone" leaves the snapshot. Send it as a prompt, or as one while streaming (it is a command).
 //   "helper-clear" clears the widget, as pi-subagents does about 10 s after the last run ends
 //   "helper-bad"   sets the widget to a payload of an unknown version
+//   "router-status:<text>"  sets the router's `pi-spore-router` status, as its extension does while a local model is
+//                  busy; "router-status-clear" clears it. Both run as commands, even while streaming
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
@@ -21,7 +23,10 @@
 //   "hang"    replies with plain text and sends no report
 //   {...}     a report: the fake first writes an assistant message with a tool call, as Pi does before a tool runs, so
 //             the session already records the model. An entry field `model: "<provider>/<id>"` switches the model
-//             first, as `set_model` does; the field is not sent. The fake reads the turn id from the prompt line `Turn: <id>`, POSTs { ...entry, turn } to /api/bridge/reports with its token and a receipt, and ends
+//             first, as `set_model` does; the field is not sent. A field `routing: { route, model, reasons }` is not
+//             sent either: the fake appends it as a router record (kind "initial", its own PI_SPORE_AGENT_ID) to
+//             `<FAKE_PI_HOME>/usage/routing.jsonl` first. A list appends its records in order; a record may set
+//             `agentId` to play another agent. The fake reads the turn id from the prompt line `Turn: <id>`, POSTs { ...entry, turn } to /api/bridge/reports with its token and a receipt, and ends
 //             the turn. The reply says the server's answer.
 // A script with no entry left writes an error to stderr and replies with text.
 // A prompt sent while streaming with streamingBehavior "followUp" runs after the current run ends, as in Pi.
@@ -308,7 +313,20 @@ async function scripted(text) {
   if (entry === "hang") return `waiting (${role} ${position})`;
   const turn = /^Turn: (\S+)$/m.exec(text)?.[1];
   if (!turn) return "no turn id in the prompt";
-  const { model: switchTo, ...fields } = entry;
+  const { model: switchTo, routing, ...fields } = entry;
+  if (routing) {
+    const usage = join(process.env.FAKE_PI_HOME, "usage");
+    mkdirSync(usage, { recursive: true });
+    for (const decision of [routing].flat()) {
+      const record = {
+        at: Date.now(),
+        kind: "initial",
+        agentId: process.env.PI_SPORE_AGENT_ID,
+        ...decision,
+      };
+      appendFileSync(join(usage, "routing.jsonl"), `${JSON.stringify(record)}\n`);
+    }
+  }
   if (switchTo) {
     const slash = switchTo.indexOf("/");
     model = { ...model, provider: switchTo.slice(0, slash), id: switchTo.slice(slash + 1) };
@@ -444,6 +462,17 @@ const handle = (command) => {
         if (state === "gone") helpers.delete(runId);
         else helpers.set(runId, { agent, state });
         publishHelpers();
+        return respond(id, type, { disposition: "handled" });
+      }
+      if (command.message.startsWith("router-status")) {
+        const text = command.message.slice("router-status:".length);
+        write({
+          type: "extension_ui_request",
+          id: `s${Date.now()}${Math.random()}`,
+          method: "setStatus",
+          statusKey: "pi-spore-router",
+          ...(command.message === "router-status-clear" ? {} : { statusText: text }),
+        });
         return respond(id, type, { disposition: "handled" });
       }
       if (command.message === "helper-clear" || command.message === "helper-bad") {

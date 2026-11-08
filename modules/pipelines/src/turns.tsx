@@ -51,7 +51,7 @@ function Findings({ report }: { report: StageReport }) {
   );
 }
 
-function Report({ report }: { report: StageReport }) {
+function Report({ report, routing }: { report: StageReport; routing: PipelineTurn["routing"] }) {
   const { earlyStop } = report;
   return (
     <div className="mt-1.5 flex flex-col text-sm">
@@ -67,6 +67,12 @@ function Report({ report }: { report: StageReport }) {
             </li>
           ))}
         </ul>
+      )}
+      {routing && (
+        <p className="m-0 mt-1.5 text-xs text-muted">
+          Route: {routing.route}
+          {routing.model ? ` → ${routing.model}` : ""}. {routing.reasons.join(". ")}
+        </p>
       )}
       {earlyStop && (
         <p className="m-0 mt-1.5 text-xs text-muted">
@@ -110,7 +116,7 @@ export function TurnList({
             </a>
           </div>
           {turn.report ? (
-            <Report report={turn.report} />
+            <Report report={turn.report} routing={turn.routing} />
           ) : (
             <p className="m-0 mt-1.5 text-sm text-muted">Waiting for the report.</p>
           )}

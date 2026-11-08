@@ -450,8 +450,8 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
                   >
                     {chatName(run.chat)}
                   </a>
-                  <Chip tone={run.status === "waiting" ? "warn" : "run"}>
-                    {RUNNING_TEXT[run.status]}
+                  <Chip tone={run.status === "waiting" || run.detail ? "warn" : "run"}>
+                    {run.detail ?? RUNNING_TEXT[run.status]}
                   </Chip>
                   <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted">
                     since {ago(run.since, Date.now())}

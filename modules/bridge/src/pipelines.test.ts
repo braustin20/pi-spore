@@ -287,6 +287,28 @@ describe("a pipeline run", () => {
     expect(prompt).toContain(`\nTurn: ${turn.id}\n`);
   });
 
+  it("keeps the route the worker ran on, taking only the record of its own agent", async () => {
+    const home = join(scratch, "fake-home");
+    const routing = { route: "local", model: "strata/qwen", reasons: ["bounded", "free quota"] };
+    // A newer record for another agent must not be taken.
+    const other = { route: "cloud", model: "other/model", reasons: ["x"], agentId: "someone-else" };
+    // The fake Pi is not told the home, so the test gives it the server's.
+    const server = await start({
+      home,
+      env: {
+        ...scriptEnv({ worker: [{ ...DONE, routing: [routing, other] }] }),
+        FAKE_PI_HOME: home,
+      },
+    });
+    const { workspaceId } = await workspace(server, "routed");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    expect((await getRun(server, run.id)).turns[0]?.routing).toEqual(routing);
+  });
+
   it("answers 409 pipeline_running for a second start while a run is running", async () => {
     const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
     const { workspaceId } = await workspace(server, "twice");
@@ -749,6 +771,129 @@ describe("min_strength_over (R4.4)", () => {
     expect(run.message).toContain(
       "fake/weak (tier local) is not stronger than spore/auto (tier light)",
     );
+  });
+});
+
+describe("the local implementer question (R4.10)", () => {
+  const PINNED = `id = "p"
+
+[[stage]]
+name = "implement"
+role = "worker"
+model = "claude-bridge/claude-sonnet-5-5"
+`;
+  const ROUTED = PINNED.replace('model = "claude-bridge/claude-sonnet-5-5"', 'tier = "route"');
+
+  /** A fresh Claude plan snapshot: the test clock starts at the default `startAt`, so this is seen now. */
+  const writeClaude = (home: string, weekly: number) => {
+    mkdirSync(join(home, "usage"), { recursive: true });
+    writeFileSync(
+      join(home, "usage", "claude.json"),
+      JSON.stringify({
+        plan: "claude",
+        source: "test",
+        seenAt: 1_700_000_000_000,
+        windows: { "7d": { utilization: weekly, seenAt: 1_700_000_000_000 } },
+      }),
+    );
+  };
+
+  const openApprovals = async (server: TestServer) =>
+    (
+      await json<{ approvals: Approval[] }>(
+        await server.request("GET", "/api/attention/approvals?state=open"),
+      )
+    ).approvals;
+
+  const modelOf = (agentId: string) => {
+    const { argv } = readFileSync(join(scratch, "record.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
+      .find((entry) => entry.env.PI_SPORE_AGENT_ID === agentId) as { argv: string[] };
+    return `${argv[argv.indexOf("--provider") + 1]}/${argv[argv.indexOf("--model") + 1]}`;
+  };
+
+  const decide = async (server: TestServer, how: "approve" | "decline") => {
+    const [approval] = await openApprovals(server);
+    await json(await server.request("POST", `/api/attention/approvals/${approval?.id}/${how}`, {}));
+  };
+
+  it("files one approval and starts no worker while it is open, even after a retry", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    writeClaude(server.paths.root, 0.8);
+    const { run } = await runUntil(server, "ask", PINNED, "waiting_user");
+
+    const stageJob = () =>
+      server.services.jobs.list({
+        kind: "pipelines.stage",
+        states: ["running", "waiting"],
+      })[0] as JobView;
+    await until(() => stageJob().state === "waiting");
+    await json(await server.request("POST", `/api/jobs/${stageJob().id}/retry`));
+    await until(() => stageJob().state === "waiting");
+
+    const approvals = await openApprovals(server);
+    expect(approvals).toHaveLength(1);
+    expect(approvals[0]).toMatchObject({
+      kind: "pipeline-local-implementer",
+      title: 'Switch stage "implement" to the local implementer?',
+      subject: { runId: run.id },
+      agentId: run.askingAgentId,
+    });
+    expect(approvals[0]?.reason).toContain("claude-bridge/claude-sonnet-5-5");
+    expect(approvals[0]?.reason).toContain("claude 7d 80%");
+    expect(await getRun(server, run.id)).toMatchObject({ state: "waiting_user", turns: [] });
+    expect((await getRun(server, run.id)).workerAgentId).toBeUndefined();
+    expect(existsSync(join(scratch, "record.jsonl"))).toBe(false);
+  });
+
+  it("runs the stage on spore/auto when the user approves", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    writeClaude(server.paths.root, 0.8);
+    const { run } = await runUntil(server, "approve", PINNED, "waiting_user");
+
+    await decide(server, "approve");
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    expect(modelOf((await getRun(server, run.id)).workerAgentId as string)).toBe("spore/auto");
+    expect(await openApprovals(server)).toHaveLength(0);
+  });
+
+  it("keeps the pinned model when the user declines, and never changes settings", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    writeTiers(server.paths.root, TIERS);
+    const settings = readFileSync(join(server.paths.root, "settings.json"), "utf8");
+    writeClaude(server.paths.root, 0.8);
+    const { run } = await runUntil(server, "decline", PINNED, "waiting_user");
+
+    await decide(server, "decline");
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    expect(modelOf((await getRun(server, run.id)).workerAgentId as string)).toBe(
+      "claude-bridge/claude-sonnet-5-5",
+    );
+    expect(readFileSync(join(server.paths.root, "settings.json"), "utf8")).toBe(settings);
+  });
+
+  it("asks nothing without plan pressure", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    writeClaude(server.paths.root, 0.5);
+
+    const { run } = await runUntil(server, "calm", PINNED, "passed");
+
+    expect(modelOf(run.workerAgentId as string)).toBe("claude-bridge/claude-sonnet-5-5");
+    expect(await openApprovals(server)).toHaveLength(0);
+  });
+
+  it("asks nothing for a stage that already routes, even under pressure", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    writeClaude(server.paths.root, 0.8);
+
+    const { run } = await runUntil(server, "routed", ROUTED, "passed");
+
+    expect(modelOf(run.workerAgentId as string)).toBe("spore/auto");
+    expect(await openApprovals(server)).toHaveLength(0);
   });
 });
 

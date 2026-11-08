@@ -130,6 +130,19 @@ export const PipelineTurn = Type.Object({
   role: StageRole,
   agentId: Type.String(),
   report: Type.Optional(StageReport),
+  /** The router's newest decision for a worker turn's agent (R4.7). Absent for a stage on a fixed model. */
+  routing: Type.Optional(
+    Type.Object({
+      route: Type.Union([
+        Type.Literal("local"),
+        Type.Literal("cloud"),
+        Type.Literal("spill"),
+        Type.Literal("wait"),
+      ]),
+      model: Type.Optional(Type.String()),
+      reasons: Type.Array(Type.String()),
+    }),
+  ),
   createdAt: Type.Integer(),
   reportedAt: Type.Optional(Type.Integer()),
 });

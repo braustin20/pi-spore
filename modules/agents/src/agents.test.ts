@@ -119,9 +119,9 @@ const statuses = (agentId: string) =>
   events(agentId).flatMap((event) => (event.type === "status" ? [event.status] : []));
 const status = (agentId: string) => statuses(agentId).at(-1);
 
-async function until(check: () => boolean, ms = 5_000): Promise<void> {
+async function until(check: () => boolean | Promise<boolean>, ms = 5_000): Promise<void> {
   const end = Date.now() + ms;
-  while (!check()) {
+  while (!(await check())) {
     if (Date.now() > end) throw new Error("Timed out waiting");
     await new Promise((resolve) => setTimeout(resolve, 10));
   }
@@ -1116,6 +1116,54 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
     await until(() => listed().length === 4);
     expect(listed()).toEqual([1, 2, 1, undefined]);
     expect(await view()).not.toHaveProperty("helpersRunning");
+  });
+
+  describe("router status (R4.5)", () => {
+    const routerStatus = async (agentId: string) =>
+      (await json<{ agent: Agent }>(await server.request("GET", `/api/agents/${agentId}`))).agent
+        .routerStatus;
+    const busyAgent = async (slowMs = 60_000) => {
+      await setup();
+      const { agentId } = await makeAgent();
+      await json(await prompt(agentId, `slow:${slowMs}`));
+      await until(() => status(agentId) === "busy");
+      return agentId;
+    };
+
+    it("shows the router's waiting text on the agent view and the list, and drops it when cleared", async () => {
+      const agentId = await busyAgent();
+      const before = server.events.eventsOf("agents:list").length;
+      await json(await prompt(agentId, "router-status:Waiting for local/qwen"));
+      await until(async () => (await routerStatus(agentId)) === "Waiting for local/qwen");
+      const listed = () =>
+        (server.events.eventsOf("agents:list").slice(before) as { agent?: Agent }[]).flatMap(
+          (event) => (event.agent ? [event.agent.routerStatus] : []),
+        );
+      expect(listed().at(-1)).toBe("Waiting for local/qwen");
+
+      await json(await prompt(agentId, "router-status-clear"));
+      await until(async () => (await routerStatus(agentId)) === undefined);
+      expect(listed().at(-1)).toBeUndefined();
+    });
+
+    it("drops the text when the run settles", async () => {
+      // The fake only sees an abort between reply chunks, so the reply is short.
+      const agentId = await busyAgent(400);
+      await json(await prompt(agentId, "router-status:Waiting for local/qwen"));
+      await until(async () => (await routerStatus(agentId)) !== undefined);
+      await json(await server.request("POST", `/api/agents/${agentId}/abort`));
+      await until(() => status(agentId) === "idle");
+      expect(await routerStatus(agentId)).toBeUndefined();
+    });
+
+    it("drops the text when the process exits", async () => {
+      const agentId = await busyAgent();
+      await json(await prompt(agentId, "router-status:Waiting for local/qwen"));
+      await until(async () => (await routerStatus(agentId)) !== undefined);
+      await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+      await until(() => status(agentId) === "stopped");
+      expect(await routerStatus(agentId)).toBeUndefined();
+    });
   });
 
   it("counts running helpers against maxLive: a new agent waits until they end", async () => {

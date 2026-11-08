@@ -63,11 +63,15 @@ function Transcript({
   }
   return (
     <div className="flex flex-col gap-2">
-      {state.task && <pre className="m-0 whitespace-pre-wrap text-muted">{state.task}</pre>}
+      {state.task && (
+        <pre className="m-0 [overflow-wrap:anywhere] whitespace-pre-wrap text-muted">
+          {state.task}
+        </pre>
+      )}
       {state.messages.map((message, index) => (
         // The messages are a fixed window of one reply, never reordered.
         // biome-ignore lint/suspicious/noArrayIndexKey: see above
-        <pre key={index} className="m-0 whitespace-pre-wrap">
+        <pre key={index} className="m-0 [overflow-wrap:anywhere] whitespace-pre-wrap">
           <span className="text-muted">
             {message.role}
             {message.name ? ` ${message.name}` : ""}:{" "}
@@ -75,7 +79,9 @@ function Transcript({
           {message.text}
         </pre>
       ))}
-      {state.finalOutput && <pre className="m-0 whitespace-pre-wrap">{state.finalOutput}</pre>}
+      {state.finalOutput && (
+        <pre className="m-0 [overflow-wrap:anywhere] whitespace-pre-wrap">{state.finalOutput}</pre>
+      )}
       {state.truncated && <p className="m-0 text-muted">pi-subagents cut this short.</p>}
     </div>
   );

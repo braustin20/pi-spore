@@ -12,7 +12,16 @@ import {
   type ServerModule,
   type StepOutcome,
 } from "@pi-spore/module-api";
-import { loadSettings, type RouterSettings, TIERS, tierOf } from "@pi-spore/router";
+import {
+  loadSettings,
+  planState,
+  type RouterSettings,
+  readPlans,
+  readRecords,
+  splitModel,
+  TIERS,
+  tierOf,
+} from "@pi-spore/router";
 import {
   type PipelineEvent,
   type PipelineRun,
@@ -75,8 +84,12 @@ const MIGRATIONS = [
   "CREATE INDEX pipelines_turns_by_run ON pipelines_turns (run_id, created_at)",
   // The round-limit approval a run waits on (slice 5).
   "ALTER TABLE pipelines_runs ADD COLUMN approval_id TEXT",
-  // The model of the worker stage for this run only (`start`'s `workerModel`).
+  // The local-implementer approval a run waits on, and the worker model that answer chose (R4.10). Not `approval_id`:
+  // the decide step reads that one for the round limit.
+  "ALTER TABLE pipelines_runs ADD COLUMN local_approval_id TEXT",
   "ALTER TABLE pipelines_runs ADD COLUMN worker_model TEXT",
+  // The router's newest decision for a worker turn's agent, as JSON (R4.7). Null for a stage on a fixed model.
+  "ALTER TABLE pipelines_turns ADD COLUMN routing TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -86,6 +99,14 @@ const RoundLimitSubject = Type.Object(
   { additionalProperties: false },
 );
 type RoundLimitSubject = Static<typeof RoundLimitSubject>;
+
+/** The approval kind filed when a pinned cloud worker model is under plan pressure (R4.10). */
+const LOCAL_IMPLEMENTER = "pipeline-local-implementer";
+const LocalImplementerSubject = Type.Object(
+  { runId: Type.String() },
+  { additionalProperties: false },
+);
+type LocalImplementerSubject = Static<typeof LocalImplementerSubject>;
 
 // JSON columns are written by this module only: the database is inside the boundary.
 interface RunRow {
@@ -104,6 +125,7 @@ interface RunRow {
   message: string | null;
   tests: string;
   approval_id: string | null;
+  local_approval_id: string | null;
   worker_model: string | null;
   created_at: number;
   ended_at: number | null;
@@ -119,6 +141,7 @@ interface TurnRow {
   role: PipelineTurn["role"];
   agent_id: string;
   report: string | null;
+  routing: string | null;
   created_at: number;
   reported_at: number | null;
 }
@@ -156,6 +179,9 @@ const turnToView = (row: TurnRow): PipelineTurn => ({
   role: row.role,
   agentId: row.agent_id,
   ...(row.report ? { report: JSON.parse(row.report) as StageReport } : {}),
+  ...(row.routing
+    ? { routing: JSON.parse(row.routing) as NonNullable<PipelineTurn["routing"]> }
+    : {}),
   createdAt: row.created_at,
   ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
 });
@@ -404,6 +430,37 @@ export const pipelinesModule: ServerModule = {
       return undefined;
     };
 
+    /**
+     * R4.10: the worker model and its plan notes when the stage pins a cloud model whose plan is under pressure.
+     * A model with no tier is not asked about: the stage goes on as before.
+     */
+    const pressuredPin = async (
+      stage: PipelineStage,
+    ): Promise<{ model: string; notes: string[] } | undefined> => {
+      let model = modelOf(stage);
+      if (!model) {
+        const defaults = await agents.roleDefaults("worker");
+        if (defaults.provider && defaults.modelId)
+          model = `${defaults.provider}/${defaults.modelId}`;
+      }
+      if (!model || model === ROUTE_MODEL) return undefined;
+      const settings = await loadSettings(host.home.root);
+      try {
+        if (tierOf(settings, model) === "local") return undefined;
+      } catch {
+        return undefined;
+      }
+      const plan = settings.plans[splitModel(model).provider];
+      if (!plan) return undefined;
+      const snapshot = (await readPlans(host.home.root)).plans.find((entry) => entry.plan === plan);
+      const state = planState(plan, snapshot, host.now(), {
+        maxAgeMs: settings.usageMaxAgeMinutes * 60_000,
+        weekly: settings.pressure.weekly,
+        fiveHour: settings.pressure.fiveHour,
+      });
+      return state.pressure ? { model, notes: state.notes } : undefined;
+    };
+
     const advanceWorker = async (
       run: RunRow,
       stage: PipelineStage,
@@ -411,6 +468,31 @@ export const pipelinesModule: ServerModule = {
     ): Promise<StepOutcome<StageCheckpoint>> => {
       const briefPath = `pipelines/${run.id}/brief.md`;
       await artifacts.write({ scope: "workspace", id: run.workspace_id }, briefPath, run.brief);
+      const pinned = run.worker_model === null ? await pressuredPin(stage) : undefined;
+      if (pinned) {
+        return {
+          wait: true,
+          commit: () => {
+            const message = `Stage ${stage.name} waits on your answer: switch to the local implementer?`;
+            const approval = approvals.file(
+              { agentId: run.asking_agent_id, workspaceId: run.workspace_id },
+              {
+                kind: LOCAL_IMPLEMENTER,
+                title: `Switch stage "${stage.name}" to the local implementer?`,
+                reason: `The worker model ${pinned.model} is pinned, and its plan is under usage pressure (${pinned.notes.join("; ")}). Approve runs this run's stage on ${ROUTE_MODEL}: the router sends it local only when the task is bounded, and visual work stays on the cloud. Decline keeps ${pinned.model}. Settings do not change.`,
+                subject: { runId: run.id },
+              },
+            );
+            host.store.run(
+              "UPDATE pipelines_runs SET state = 'waiting_user', local_approval_id = ?, worker_model = ?, message = ? WHERE id = ?",
+              approval.id,
+              pinned.model,
+              message,
+              run.id,
+            );
+          },
+        };
+      }
       const model = run.worker_model ?? modelOf(stage);
       return {
         checkpoint: { boot: bootId },
@@ -516,6 +598,11 @@ export const pipelinesModule: ServerModule = {
     }: {
       subject: StageSubject;
     }): Promise<StepOutcome<StageCheckpoint>> => {
+      // Retry or a restart runs this step again while the user answers the local-implementer question.
+      const waiting = loadRun(subject.runId);
+      if (waiting?.state === "waiting_user" && waiting.stage_index === subject.stageIndex) {
+        return { wait: true };
+      }
       const run = runOf(subject);
       if (!run) return { next: null };
       const stage = stageOf(run, subject.stageIndex);
@@ -760,7 +847,24 @@ export const pipelinesModule: ServerModule = {
     ];
     host.jobs.define(STAGE_JOB, steps);
 
-    const report = (caller: BridgeCaller, request: StageReport): { turn: PipelineTurn } => {
+    const report = async (
+      caller: BridgeCaller,
+      request: StageReport,
+    ): Promise<{ turn: PipelineTurn }> => {
+      // The transaction is synchronous, so the router's records are read before it.
+      let routing: string | null = null;
+      const open = host.store.get<TurnRow>(
+        "SELECT * FROM pipelines_turns WHERE id = ?",
+        request.turn,
+      );
+      if (open?.role === "worker") {
+        const { records } = await readRecords(host.home.root, 500);
+        const decision = records.find((record) => record.agentId === open.agent_id);
+        if (decision) {
+          const { route, model, reasons } = decision;
+          routing = JSON.stringify({ route, ...(model === undefined ? {} : { model }), reasons });
+        }
+      }
       const turn = host.store.transaction((): TurnRow => {
         const row = host.store.get<TurnRow>(
           "SELECT * FROM pipelines_turns WHERE id = ?",
@@ -785,9 +889,10 @@ export const pipelinesModule: ServerModule = {
           throw new ApiError(400, "bad_report", "A reviewer report has no tests");
         const reportedAt = host.now();
         host.store.run(
-          "UPDATE pipelines_turns SET report = ?, reported_at = ? WHERE id = ?",
+          "UPDATE pipelines_turns SET report = ?, reported_at = ?, routing = ? WHERE id = ?",
           JSON.stringify(request),
           reportedAt,
+          routing,
           row.id,
         );
         if (request.tests) {
@@ -798,7 +903,7 @@ export const pipelinesModule: ServerModule = {
           );
         }
         host.jobs.wake(STAGE_JOB, run.workspace_id);
-        return { ...row, report: JSON.stringify(request), reported_at: reportedAt };
+        return { ...row, report: JSON.stringify(request), routing, reported_at: reportedAt };
       });
       publish(requireRun(turn.run_id).workspace_id);
       return { turn: turnToView(turn) };
@@ -820,6 +925,25 @@ export const pipelinesModule: ServerModule = {
         } else {
           endRun(run.id, "stopped", "Declined at the review round limit");
         }
+        host.jobs.wake(STAGE_JOB, run.workspace_id);
+      },
+    });
+
+    approvals.register({
+      kind: LOCAL_IMPLEMENTER,
+      subject: LocalImplementerSubject,
+      // All effects are in `decided`, in the transaction that stores the decision.
+      approve: async () => `The stage runs on ${ROUTE_MODEL} for this run.`,
+      decided: (subject: LocalImplementerSubject, approval, approved) => {
+        const run = loadRun(subject.runId);
+        // A run that was stopped or moved on ignores the decision.
+        if (run?.state !== "waiting_user" || run.local_approval_id !== approval.id) return;
+        // Filing stored the pinned model as the worker model, so a decline keeps it and the stage never asks again.
+        host.store.run(
+          "UPDATE pipelines_runs SET state = 'running', message = NULL, worker_model = ? WHERE id = ?",
+          approved ? ROUTE_MODEL : run.worker_model,
+          run.id,
+        );
         host.jobs.wake(STAGE_JOB, run.workspace_id);
       },
     });

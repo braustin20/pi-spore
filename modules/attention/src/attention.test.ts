@@ -217,6 +217,15 @@ describe("Home inbox", () => {
     expect((await inbox()).running).toEqual([]);
   });
 
+  it("carries the router's waiting text on the running item", async () => {
+    const { agentId } = await makeAgent("routed");
+    await json(await prompt(agentId, "slow:60000"));
+    await until(async () => (await inbox()).running.length === 1);
+    await json(await prompt(agentId, "router-status:Waiting for local/qwen"));
+    await until(async () => (await inbox()).running[0]?.detail === "Waiting for local/qwen");
+    expect((await inbox()).running).toMatchObject([{ agentId, status: "busy" }]);
+  });
+
   it("does not show an aborted run as finished", async () => {
     const { agentId } = await makeAgent("aborted");
     await json(await prompt(agentId, "slow:400"));

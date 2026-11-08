@@ -139,6 +139,8 @@ interface Live {
   idleTimer?: NodeJS.Timeout;
   /** Background pi-subagents helpers of the running process, from its `subagent-async` widget (ADR 0034). */
   children: ChildRun[];
+  /** "Waiting for <model>" while the router holds the next request for a busy local model (R4.5). */
+  routerStatus?: string;
   /** The last payload error shown, so a broken payload that repeats every second shows one notice. */
   childrenError?: string;
   /** Waiting `/subagents-inspect-rpc` requests, by request id. */
@@ -254,6 +256,7 @@ export class AgentManager {
       status: live.status,
       ...(live.error ? { error: live.error } : {}),
       ...(runningCount(live.children) > 0 ? { helpersRunning: runningCount(live.children) } : {}),
+      ...(live.routerStatus ? { routerStatus: live.routerStatus } : {}),
       createdAt: record.createdAt,
     };
   }
@@ -537,6 +540,7 @@ export class AgentManager {
         onDialog: () => {},
         onNotice: () => {},
         onChildRuns: () => {},
+        onRouterStatus: () => {},
         onInspectReply: () => {},
         onExit: () => {},
       });
@@ -824,6 +828,7 @@ export class AgentManager {
       onDialog: (dialog, timeoutMs) => this.openDialog(live, dialog, timeoutMs),
       onNotice: (level, message) => this.publish(live, { type: "notice", level, message }),
       onChildRuns: (lines) => this.setChildren(live, lines),
+      onRouterStatus: (text) => this.setRouterStatus(live, text),
       onInspectReply: (lines) => this.onInspectReply(live, lines),
       onExit: (code, signal) => this.onExit(live, process, code, signal),
     });
@@ -923,6 +928,7 @@ export class AgentManager {
       this.clearIdle(live);
       this.setStatus(live, "busy");
     } else if (event.type === "agent_settled") {
+      this.setRouterStatus(live, undefined);
       if (event.aborted !== true) this.setWaiting(live, this.options.now());
       this.setStatus(live, "idle");
       void this.refreshStats(live);
@@ -931,6 +937,13 @@ export class AgentManager {
       live.thinkingLevel = event.level;
       this.publishModel(live);
     }
+  }
+
+  private setRouterStatus(live: Live, text: string | undefined): void {
+    if (live.routerStatus === text) return;
+    if (text === undefined) delete live.routerStatus;
+    else live.routerStatus = text;
+    this.publishChat(live);
   }
 
   /** Takes the agent's latest helper list. Only a change a page shows is published (the widget repeats each second). */
@@ -1010,6 +1023,7 @@ export class AgentManager {
       this.publish(live, { type: "children", children: [] });
     }
     live.inspects.clear();
+    this.setRouterStatus(live, undefined);
     if (live.token) this.options.tokens.revoke(live.token);
     delete live.token;
     live.chat = { ...live.chat, busy: false, running: [] };

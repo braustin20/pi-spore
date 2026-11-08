@@ -150,8 +150,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     Archived transcripts are read from the session file directly, without starting Pi.
   - Every agent start has a timeout. On timeout, pi-spore stops the process and shows its stderr.
   - Agents run without pi-lens and get a `check` tool instead (ADR 0025).
-- Limits: at most 4 live agent processes; an idle agent process stops after 10 minutes, or at once when a chat
-  waits for a slot, longest idle first (ADR 0026). Running background helpers count as live processes in the 4
+- Limits: at most 8 live agent processes; an idle agent process stops after 10 minutes, or at once when a chat
+  waits for a slot, longest idle first (ADR 0026). Running background helpers count as live processes in the 8
   (ADR 0034).
 - **Helpers** (child runs, R3.3, ADR 0034, [spike Q5](spikes/q5-subagent-child-runs.md)). A worker's pi-subagents
   helpers show under it in the chat.
@@ -470,6 +470,14 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   missing model or tier, or a weaker model, throws: the job waits with the error, shown on the run as `blocked`,
   and Retry checks again after the user fixes the settings. When the report comes, the reviewer's own `modelsUsed`
   is checked the same way; a failure ends the run `failed`.
+- **Local implementer** (R4.10, R3.4). Before the worker starts, its model is the stage `model`, else the worker role
+  default. If that model is not `spore/auto`, its tier is not `local`, and its plan (`router.plans`) has fresh usage
+  pressure (the router's thresholds), the run is `waiting_user` with a `pipeline-local-implementer` approval on Home
+  for the asking chat, and no worker starts. Approve runs this run's worker on `spore/auto`; decline keeps the pinned
+  model. The answer is stored on the run (`worker_model`), so a run asks once. Settings never change. A model with no
+  tier or a provider with no plan is not asked about.
+- **Route** (R4.7). A worker report stores the newest `routing.jsonl` record for the worker agent on its turn
+  (`routing`: route, model, reasons). A stage on a fixed model has none.
 - **Gates** (R6.5, ADR 0016). With `fail_first = "artifact"`, each test in the manifest needs a non-empty proof
   artifact, or the run fails with `missing fail-first proof for <test>` before any action runs. Then each gate
   action runs once through `ActionsKey.start(..., "pipeline", { key })` with the key `<run>:<stage>:<action>:<attempt>`,
@@ -488,11 +496,12 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 - Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.
 - Web: a Pipeline tab (after PR) with a start form when no run is active, and the runs: state, current stage,
   message, `blocked` with Retry, Cancel, and each stage's turns with links to the agents' chats, verdicts, findings
-  by severity, tests with proofs, and Jev's answer. A Details panel shows the latest run and its open findings.
+  by severity, tests with proofs, the worker's route, and Jev's answer. A Details panel shows the latest run and its open findings.
 - CLI: `pi-spore pipeline list <workspace>`, `pipeline start <workspace> <pipeline> (--brief <text> | --brief-file
   <path>)`, `pipeline runs <workspace>`, `pipeline show <run>`, `pipeline cancel <run>`, `pipeline retry <run>`.
 - Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, askingAgentId?, workerModel? })` does what
-  the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`).
+  the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`), so
+  that run never asks about the local implementer.
   `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it.
 - Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
   card when a run passes, and a tool for the orchestrator to start a run.
@@ -592,6 +601,9 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
 - Queue (ADR 0010): a session routed local takes a slot through a lock file,
   `$XDG_RUNTIME_DIR/pi-spore/<target>.<n>.lock`, one per slot up to `concurrency`. The file holds the pid; a lock of a
   dead process is taken over. A busy target makes the request wait, with a "Waiting for <model>" status and notice.
+  In pi-spore the agents module forwards that status (key `pi-spore-router`) as the agent view's `routerStatus`,
+  cleared when the run settles or the process exits. The workspace list and Home's running list show it (tone
+  `warn`) while the agent is busy (R4.5).
   The slot is held for the agent run and freed on `agent_settled`, on session shutdown, and on escalation. The same
   files work in pi-spore and in plain `pi`. Without `XDG_RUNTIME_DIR` the router cannot lock and routes to cloud.
 - Starting a local target: before the first local request of a run, the router emits `pi-spore:local-route` on
@@ -607,8 +619,9 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   numbers counts as having room; the reason says "usage unknown". If the spill plan is full too, the route is `wait`:
   the request ends with an error that names the first reset, and no state is stored, so the next message routes
   again.
-- Not built yet: the "switch to local implementer?" Approval for roles pinned to a cloud model. Pipelines use the
-  router through `tier = "route"` (section 8, R4.9).
+- Pipelines use the router through `tier = "route"`, the built-in default's implement stage (section 8, R4.9). A
+  worker pinned to a cloud model under usage pressure gets the `pipeline-local-implementer` approval (section 8,
+  R4.10).
 
 ### Router settings
 
@@ -738,7 +751,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     `approval_kind_unknown`.
   - `POST /api/attention/approvals/:id/decline` `{ note? }` stores the decline and delivers it with the note.
   - A kind's optional `decided(subject, approval, approved)` runs inside the transaction that stores either
-    decision; a throw rolls it back and leaves the approval open. Pipelines use it for `pipeline-round-limit`.
+    decision; a throw rolls it back and leaves the approval open. Pipelines use it for `pipeline-round-limit` and
+    `pipeline-local-implementer`.
   - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
@@ -1165,7 +1179,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   supplies a fresh snapshot. The status line follows the active orchestrator chat. When that chat is idle or
   stopped and waits for the user (`AgentsWebKey.setUserWaits`, section 11b), the line says "Waiting for your
   answer". Otherwise an idle chat with a running helper (`helpersRunning`, section 2) says "Working (helper
-  running)", tone `run`.
+  running)", tone `run`. A busy chat whose router waits for a local model shows its `routerStatus` ("Waiting for
+  <model>", section 10), tone `warn`.
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 
