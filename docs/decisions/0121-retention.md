@@ -1,6 +1,6 @@
 # 0121. Delete the data of finished work after a retention time
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-07
 - Requirements: R17.1, R17.2
 - Changes: ADR 0110 (closed chats are no longer kept forever)
@@ -45,8 +45,8 @@ When an item is older than `retention.days`:
 - Active or parked workspaces, and the open chats in them.
 - Git branches, kanban cards, artifacts, and the folder of an in-place workspace (archive never removed it).
 - A card whose workspace is deleted keeps the card. Its workspace link is cleared and the card is marked archived
-  (`archived_at`). The board hides archived cards behind a "Show archived" toggle. Moving an archived card out of
-  Done clears the mark.
+  (`archived_at`). The board hides archived cards behind a "Show archived" toggle. Moving an archived card to
+  another column clears the mark.
 - Data outside pi-spore's own tables and folders, such as pi-subagents' temp run state and copies of history in
   forks that are still open.
 - Anything outside `~/.pi-spore`. Each delete checks that its path is inside the folder it belongs to and refuses
@@ -74,7 +74,8 @@ When an item is older than `retention.days`:
   approvals of a closed chat.
 - The server core offers `ServerHost.pruneResponses(before)` for its stored responses. The workspaces module calls
   it in each run.
-- No new chat starts in an archived workspace (409 `workspace_archived`), so a run cannot race a new chat.
+- No new chat starts in an archived workspace (409 `workspace_archived` for the worker chat, 409
+  `workspace_not_active` for other chats, as before), so a run cannot race a new chat.
 - Listeners must be safe to run again. A listener that throws is logged and the others still run. A workspace whose
   listeners did not all succeed keeps its row and is tried again on the next run.
 - The workspaces module removes the workspace row last and sends a `removed` event on `workspaces:list`.

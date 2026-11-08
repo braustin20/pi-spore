@@ -66,11 +66,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     orchestrator chat starts empty. Make active works the same way for an older chat. Both refuse with 409 `worker_busy`
     while the current orchestrator chat is busy, starting, or waiting for a slot. Chat changes of one workspace run one at
     a time.
-  - Close (ADR 0110): the "x" on a chat tab sets `closed = 1` and `active = 0`, and stops the process. The row and
-    session file stay, because other modules hold agent ids. A closed chat is left out of the chat list, the
+  - Close (ADR 0110): the "x" on a chat tab sets `closed = 1`, `active = 0`, and `closed_at`, and stops the process.
+    The row and session file stay until retention deletes them (section 14, ADR 0121). A closed chat is left out of the chat list, the
     `agents:list` snapshot, and Home; a `removed` event drops it from open pages. It cannot be activated again
     (409 `chat_closed`). A chat that is working refuses with 409 `chat_busy`. Closing the active orchestrator chat leaves
-    the workspace without one, and the next `POST /api/agents` starts a fresh chat.
+    the workspace without one, and the next `POST /api/agents` starts a fresh chat. In an archived workspace it
+    answers 409 `workspace_archived` instead, so no new chat races retention.
   - A chat that becomes inactive drops its Home items: its failure, its finished mark, and its open questions, which
     are closed (ADR 0033). Pending deliveries to it wait until it is active again.
   - Side chats: any number, next to the worker, counted against `agents.maxLive` like any agent. They start empty,
@@ -198,6 +199,8 @@ export interface ServerHost {
   provide<T>(key: InterfaceKey<T>, impl: T): void;  // export an operation or interface
   use<T>(key: InterfaceKey<T>): T;                  // only keys of modules in `requires`
   log: Logger;
+  onStarted(listener): void;              // awaited after every module's setup, before the server listens
+  pruneResponses(before: number): number; // deletes stored API responses older than `before` (ADR 0121)
 }
 ```
 
@@ -212,7 +215,10 @@ export interface ServerHost {
   - every required module is present and enabled;
   - core modules are not disabled;
   - the dependency graph has no cycle.
-- Setup runs in dependency order.
+- Setup runs in dependency order. Then `onStarted` listeners run in the same order; a throw is logged and does not
+  stop startup.
+- Server-only helpers are in `@pi-spore/module-api/node`, so the web bundle never imports Node modules:
+  `removeInside(root, target)` deletes a path only when it is inside `root`, also through symlinked folders.
 - A module reaches another only through `host.use()` with an `InterfaceKey` that the other module exports. It never
   imports another module's internals. Biome import rules enforce this.
 - Core modules: `projects`, `vcs-git`, `vcs-folder`, `workspaces`, `agents`, `chat`, `artifacts`, `attention`.
@@ -225,8 +231,8 @@ export interface ServerHost {
 | Entity | Meaning | Key fields |
 |---|---|---|
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
-| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), card |
-| Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`), kind (worker, side), active, title, forked from, model selection, session path, process state, parent agent |
+| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card |
+| Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`), kind (worker, side), active, closed, closed at, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, coordinator agent, integration branch, spec artifact, state |
 | Lane | A workspace inside a run | id, run, workspace, wave, depends on, brief artifact, state |
 | Pipeline | A declared stage list (file) | id, source (user or project), stages |
@@ -234,7 +240,7 @@ export interface ServerHost {
 | Stage | One stage execution | id, pipeline run, name, round, agent, verdict, findings |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
-| Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, created by and changed by (agent) |
+| Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
 | UsageSnapshot | Latest plan window numbers (a file per plan, `usage/<plan>.json`) | plan, window (5h, 7d), utilization, resets at, seen at, source |
@@ -263,7 +269,8 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
   - Delivery is at least once: a crash between Pi's accept and the `done` write sends the message again.
   - Deliveries do not use the job runner yet; it does not exist. They move to it when it lands.
 - **Idempotency.** Mutating API requests carry an `Idempotency-Key`. The response is stored and replayed for a repeat
-  of the same key. Server errors (5xx) are not stored, so a retry runs again.
+  of the same key. Server errors (5xx) are not stored, so a retry runs again. Retention deletes stored responses
+  older than `retention.days` (section 14).
 - **Receipts.** Mutating spore-bridge calls send the tool call id as their `Idempotency-Key`. The server scopes it to
   the calling agent (`bridge/<agent id>/<tool call id>`), so a replayed tool call returns the first result
   (R16.3, ADR 0032).
@@ -764,6 +771,9 @@ R11.
 - Due dates are calendar days (`YYYY-MM-DD`). The board compares them with the browser's local day: a card in any
   column but Done is overdue after its day, and "due today" on it.
 - Removing a project leaves its id on cards; the board shows "removed project".
+- Retention (ADR 0121) never deletes a card. When it deletes a workspace, the workspace's cards lose the link and get
+  `archived_at`, and blocker links to that workspace go. The board hides archived cards behind a "Show archived"
+  toggle, shown only when there are any. Any move clears the mark.
 - Starting work from a card (R11.4, ADR 0100): `POST /api/kanban/cards/:id/start` with either the create-workspace
   fields (a new workspace through `WorkspacesKey.create`, named after the card) or `{ workspaceId }` (an active
   workspace of the card's project; a parked one is 409 `workspace_not_active`, another project's 422
@@ -833,10 +843,19 @@ API under `/api/kanban`:
   3. `<project>/.pi-spore/config.toml` (project file, may be committed);
   4. `<project>/.pi-spore/config.local.toml` (local override, gitignored);
   5. run or workspace override in the store.
-- Every resolved value carries its source. The UI shows it. "Detected" values (Unity traits, editor version) come
+- Every resolved value carries its source. The UI shows it. Sources are `default`, `global`, `project file`,
+  `local override`, and `detected`. "Detected" values (Unity traits, editor version) come
   from modules.
 - The project file is checked on load and must not contain model keys. Model choices live in Pi settings, global
   settings, or local overrides.
+
+Global settings (`~/.pi-spore/settings.json`). The projects module reads them fresh on each use and shows them on
+the Projects page, in the Global settings panel, with their source (`GET /api/projects/settings`). The router reads
+its own `router` and `tiers` sections of the same file.
+
+| Key | Type | Meaning |
+|---|---|---|
+| `retention.days` | whole number, 0 or more, default 30 | Delete the data of finished work after this many days (section 14). `0` keeps everything. Any other value answers 422 `bad_settings`, which names `retention.days`, and retention deletes nothing. |
 
 `config.toml` sketch:
 
@@ -937,8 +956,30 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   pipelines/             user pipelines
   usage/<plan>.json      latest plan usage snapshots (written by the usage tap)
   usage/routing.jsonl    routing decisions (written by the router)
-  logs/                  server, action, and agent stderr logs
+  logs/actions/<workspace>/<run>.log   action run output
 ```
+
+The server and agent stderr are not written to files.
+
+### Retention
+
+See [ADR 0121](decisions/0121-retention.md). The workspaces module sweeps once after startup and then once a day.
+With `retention.days = N` (N > 0), it deletes data older than N days:
+
+- an archived workspace, counted from `archived_at`: its session folder, chats, deliveries, questions, approvals,
+  review comments, PR records, action runs and logs, and Unity lease, then its row. A `removed` event on
+  `workspaces:list` drops it from the list.
+- a closed chat, counted from `closed_at`: its session file, deliveries, questions, approvals, and row. The server
+  forgets it too, so its id answers 404. A closed chat stays while an open fork of it has not started.
+- action runs that ended before the limit, in any workspace, with their logs;
+- lines of `usage/routing.jsonl` with an older `at` (unreadable lines stay);
+- stored API responses (`core_idempotency`).
+
+It never deletes active or parked workspaces, git branches, kanban cards, artifacts, the folder of an in-place
+workspace, or anything outside `~/.pi-spore`. Modules take part through `WorkspacesKey.onRetention(cutoff)` and
+`WorkspacesKey.beforeDeleteWorkspace(workspace)`, and attention through `AgentsKey.beforeDeleteChat(agentId)`. Each
+deletes its own rows and files. A listener that fails is logged; a workspace or chat whose cleanup failed keeps its
+row and is tried again on the next sweep. Each kind of data deleted gets one log line with a count.
 
 ## 15. API, events, CLI
 
