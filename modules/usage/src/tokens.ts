@@ -111,13 +111,20 @@ export class SessionIndex {
         const path = join(dir, name);
         const info = await stat(path).catch(() => undefined);
         if (!info?.isFile()) continue;
-        seen.add(path);
         const cached = this.cache.get(path);
         if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
+          seen.add(path);
           result.push(cached.use);
           continue;
         }
-        const use = sumSession(await readFile(path, "utf8"), workspaceId);
+        // Retention can delete the file between the stat and the read.
+        const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return undefined;
+          throw error;
+        });
+        if (text === undefined) continue;
+        seen.add(path);
+        const use = sumSession(text, workspaceId);
         this.cache.set(path, { size: info.size, mtimeMs: info.mtimeMs, use });
         result.push(use);
       }

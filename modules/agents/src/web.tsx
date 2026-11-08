@@ -116,15 +116,18 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
   const [chats, setChats] = useState<Agent[] | undefined>();
   const [error, setError] = useState<string | undefined>();
 
+  const archived = workspace.state === "archived";
+
   const load = useCallback(async () => {
     try {
-      await api.send("POST", "agents", { workspaceId });
+      // An archived workspace starts no chat (409 workspace_archived); it shows the chats it still has.
+      if (!archived) await api.send("POST", "agents", { workspaceId });
       const body = await api.get(`agents?workspaceId=${encodeURIComponent(workspaceId)}`);
       setChats(parse(AgentList, body, "chat list").agents);
     } catch (caught) {
       setError(message(caught));
     }
-  }, [api, workspaceId]);
+  }, [api, workspaceId, archived]);
 
   useEffect(() => {
     setChats(undefined);
@@ -162,6 +165,13 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
   };
 
   if (!selected) {
+    if (archived && chats && !error) {
+      return (
+        <div className="p-4">
+          <Notice tone="warn">This workspace is archived and has no chats.</Notice>
+        </div>
+      );
+    }
     return error ? (
       <div className="p-4">
         <Notice tone="fail">{error}</Notice>

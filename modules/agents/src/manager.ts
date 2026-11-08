@@ -275,6 +275,19 @@ export class AgentManager {
     this.publishChat(live);
   }
 
+  /**
+   * Deletes a chat from memory for retention (ADR 0121): it stops, drops its caches, and pages forget it. The caller
+   * deletes the store rows and files. Unlike `close`, the id answers 404 afterwards.
+   */
+  async forget(id: string): Promise<void> {
+    const live = this.get(id);
+    await this.stop(id);
+    for (const dialogId of [...live.dialogs.keys()]) this.closeDialog(live, dialogId);
+    this.agents.delete(id);
+    this.images.forget(id);
+    this.options.events.publish("agents:list", { type: "removed", id });
+  }
+
   /** What Home needs about every open agent. */
   attention(): AgentAttention[] {
     return [...this.agents.values()]

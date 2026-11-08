@@ -39,6 +39,11 @@ export interface Agents {
    * changed (an older worker chat is not active, ADR 0030).
    */
   onChange(listener: (agentId: string, change: AgentChange) => void): void;
+  /**
+   * Runs before retention deletes a closed chat's row (ADR 0121), so a module drops what it holds for that agent. It
+   * must be safe to run again: a throw is logged and the chat stays for the next sweep.
+   */
+  beforeDeleteChat(listener: (agentId: string) => void): void;
 }
 
 export const AgentsKey = defineInterface<Agents>("agents", "agents");
