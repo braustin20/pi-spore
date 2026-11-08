@@ -41,6 +41,17 @@ export function newItems(seen: ReadonlySet<string>, inbox: Inbox): InboxItem[] {
   return inbox.items.filter((item) => !seen.has(itemKey(item)));
 }
 
+/** The open questions and approvals of one chat, in inbox order. The chat page shows these above its composer. */
+export function chatAsks(
+  inbox: Inbox | undefined,
+  chatId: string,
+): Extract<InboxItem, { kind: "question" | "approval" }>[] {
+  return (inbox?.items ?? []).filter(
+    (item): item is Extract<InboxItem, { kind: "question" | "approval" }> =>
+      (item.kind === "question" || item.kind === "approval") && item.chat.id === chatId,
+  );
+}
+
 export interface InboxStore {
   subscribe(listener: () => void): () => void;
   /** The latest inbox, or undefined before the first one arrives. */

@@ -12,6 +12,7 @@ import {
 import { Button, Chip, EmptyState, Notice, Select, Spinner, Tooltip } from "@pi-spore/ui";
 import { MessageSquare } from "lucide-react";
 import {
+  type ComponentType,
   type ReactNode,
   useCallback,
   useEffect,
@@ -28,7 +29,7 @@ import { Helpers } from "./helpers.js";
 import { MessageList } from "./messages.js";
 import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
-import { AgentsWebKey } from "./web-contract.js";
+import { type AgentsWeb, AgentsWebKey } from "./web-contract.js";
 
 export * from "./web-contract.js";
 
@@ -197,6 +198,9 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
     />
   );
 }
+
+/** Panels other modules added to the chat page, shown above the composer. */
+const chatPanels = new Map<string, ComponentType<{ chatId: string }>>();
 
 /** One chat: its messages, dialogs, and composer. An older worker chat shows its history without a composer. */
 function ChatView({
@@ -477,6 +481,8 @@ function ChatView({
       {!older && (
         <div className="shrink-0 px-4 pb-4 xl:px-6">
           <div className="mx-auto max-w-3xl">
+            {active &&
+              [...chatPanels].map(([id, ChatPanel]) => <ChatPanel key={id} chatId={agentId} />)}
             <WorkingIndicator label={activity(state)} />
             <Composer
               chatId={agentId}
@@ -534,7 +540,13 @@ export const agentsWeb: WebModule = {
   requires: ["workspaces"],
   core: true,
   setup(host) {
-    host.provide(AgentsWebKey, { DialogCard });
+    const web: AgentsWeb = {
+      addChatPanel: (id, panel) => {
+        chatPanels.set(id, panel);
+      },
+      DialogCard,
+    };
+    host.provide(AgentsWebKey, web);
     const view = host.use(WorkspaceViewKey);
     view.setMain(ChatPane);
     view.setStatus(useAgentStatus);
