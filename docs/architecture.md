@@ -135,6 +135,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
     `child_not_found` for a run not in the list or an agent that is not running, 400 `bad_child_id` for an id with
     characters other than letters, digits, and `: _ . -`, 503 when pi-subagents does not answer in 10 s or fails.
+  - The chat's Transcript button asks once per step, with the step id as `child`. pi-subagents records a running
+    run's session file only on its step, so a run-level read has no messages until the run ends. A run without
+    steps is read at run level. An empty reply shows "No messages yet." While the run is running and the
+    transcript is open, the page reads it again every 3 s.
   - Side chats have no subagent tools (ADR 0033), so they have no helpers.
 
 ## 3. Repo layout

@@ -22,25 +22,45 @@ const seconds = (run: ChildRun, now: number) => {
   return Math.max(0, Math.floor(((run.endedAt ?? now) - run.startedAt) / 1_000));
 };
 
-/** What a helper's agent did. Fetched when opened, because the agent's process answers it. */
-function Transcript({ agentId, run }: { agentId: string; run: ChildRun }) {
+/**
+ * What a helper's agent did. Fetched when opened, because the agent's process answers it.
+ * pi-subagents keeps a running run's session on its step, so a run with steps is asked per step.
+ */
+function Transcript({
+  agentId,
+  run,
+  childId,
+}: {
+  agentId: string;
+  run: ChildRun;
+  childId?: string;
+}) {
   const api = useApi();
   const [state, setState] = useState<ChildTranscript | string | undefined>();
+  const running = run.state === "running";
   useEffect(() => {
     let current = true;
-    api
-      .get(`agents/${agentId}/children/${encodeURIComponent(run.id)}/transcript`)
-      .then((body) => current && setState(parse(TranscriptBody, body, "transcript").transcript))
-      .catch((caught: unknown) => {
-        if (current) setState(caught instanceof Error ? caught.message : String(caught));
-      });
+    const path = `agents/${agentId}/children/${encodeURIComponent(run.id)}/transcript`;
+    const read = () =>
+      api
+        .get(childId === undefined ? path : `${path}?child=${encodeURIComponent(childId)}`)
+        .then((body) => current && setState(parse(TranscriptBody, body, "transcript").transcript))
+        .catch((caught: unknown) => {
+          if (current) setState(caught instanceof Error ? caught.message : String(caught));
+        });
+    read();
+    const timer = running ? setInterval(read, 3_000) : undefined;
     return () => {
       current = false;
+      clearInterval(timer);
     };
-  }, [api, agentId, run.id]);
+  }, [api, agentId, run.id, childId, running]);
 
   if (state === undefined) return <p className="m-0 text-muted">Reading…</p>;
   if (typeof state === "string") return <p className="m-0 text-fail">{state}</p>;
+  if (!state.task && state.messages.length === 0 && !state.finalOutput) {
+    return <p className="m-0 text-muted">No messages yet.</p>;
+  }
   return (
     <div className="flex flex-col gap-2">
       {state.task && <pre className="m-0 whitespace-pre-wrap text-muted">{state.task}</pre>}
@@ -84,7 +104,16 @@ function Row({ agentId, run, now }: { agentId: string; run: ChildRun; now: numbe
           {run.steps.length > 1 && <Chip tone={TONE[step.state]}>{step.state}</Chip>}
         </div>
       ))}
-      {open && <Transcript agentId={agentId} run={run} />}
+      {open && run.steps.length === 0 && <Transcript agentId={agentId} run={run} />}
+      {open &&
+        run.steps.map((step) => (
+          <div key={step.id} className="flex flex-col gap-1">
+            {run.steps.length > 1 && (
+              <span className="text-xs text-muted">{step.agent ?? step.label}</span>
+            )}
+            <Transcript agentId={agentId} run={run} childId={step.id} />
+          </div>
+        ))}
     </li>
   );
 }
