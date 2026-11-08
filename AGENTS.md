@@ -19,8 +19,9 @@ agents across Git projects, with first-class Unity support. Read these before ch
 - Run external programs (`git`, `gh`, `unity`, `pi`) with `execFile` and argv arrays. Never through a shell, unless
   an action is declared with `shell = true`.
 - Never read secrets or copied gitignored files into logs, transcripts, or artifacts.
-- pi-spore never merges to a base branch, never enables auto-merge, never changes a role's model without approval,
-  and never closes a Unity editor without an explicit yes.
+- pi-spore never merges to a base branch on its own, never enables auto-merge, never changes a role's model without
+  approval, and never closes a Unity editor without an explicit yes. An agent merges a PR only when the user asks
+  for that merge, or when it asks and the user says yes (ADR 0130).
 
 ## Delegation (ADR 0120)
 
