@@ -507,6 +507,7 @@ const REASONS: Readonly<Record<string, string>> = {
   agent: "moved by an agent",
   "workspace-started": "workspace started",
   "workspace-archived": "workspace archived",
+  "run-started": "run started",
 };
 
 /** Asks before a blocked card starts. True when it may start. */
@@ -525,8 +526,9 @@ const startTargets = (card: Card, workspaces: readonly Workspace[]) =>
   );
 
 /**
- * Starts work from the card (R11.4, ADR 0100): in a new workspace with the usual create form, or in an active
- * workspace of its project. Either way the card's brief goes to that workspace's worker chat.
+ * Starts work from the card (R11.4, ADR 0100): in a new workspace with the usual create form, in an active
+ * workspace of its project, or in a new run. The card's brief goes to the workspace's worker chat, or to the run's
+ * coordinator chat.
  */
 function StartWork({
   card,
@@ -542,13 +544,15 @@ function StartWork({
   onDone: () => void;
 }) {
   const api = useApi();
-  const [mode, setMode] = useState<"new" | "existing" | undefined>();
+  const [mode, setMode] = useState<"new" | "existing" | "run" | undefined>();
   const [confirmed, setConfirmed] = useState(false);
   const [notes, setNotes] = useState<string[]>([]);
   const [started, setStarted] = useState<string | undefined>();
   const targets = startTargets(card, workspaces);
   const [workspaceId, setWorkspaceId] = useState("");
   const [model, setModel] = useState("");
+  const [runProjectId, setRunProjectId] = useState("");
+  const [base, setBase] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
@@ -567,7 +571,7 @@ function StartWork({
     );
   }
   if (!mode) {
-    const choose = (next: "new" | "existing") => {
+    const choose = (next: "new" | "existing" | "run") => {
       if (!confirmBlocked(card)) return;
       setConfirmed(card.blocked);
       setMode(next);
@@ -575,7 +579,8 @@ function StartWork({
     return (
       <div className="flex flex-col gap-2">
         <p className="m-0 text-xs text-muted">
-          The card's brief goes to the workspace's worker chat, which starts on it.
+          The card's brief goes to the workspace's worker chat, or to a run's coordinator chat. The
+          chat starts on it.
         </p>
         <div className="flex flex-wrap gap-1.5">
           <Button size="sm" onClick={() => choose("new")}>
@@ -583,6 +588,9 @@ function StartWork({
           </Button>
           <Button size="sm" disabled={targets.length === 0} onClick={() => choose("existing")}>
             Start in an existing workspace
+          </Button>
+          <Button size="sm" onClick={() => choose("run")}>
+            Start a run
           </Button>
         </div>
       </div>
@@ -631,6 +639,69 @@ function StartWork({
         <div className="flex gap-1.5">
           <Button size="sm" variant="primary" type="submit" disabled={busy || workspaceId === ""}>
             Start here
+          </Button>
+          <Button size="sm" variant="ghost" type="button" onClick={() => setMode(undefined)}>
+            Cancel
+          </Button>
+        </div>
+      </form>
+    );
+  }
+  if (mode === "run") {
+    const start = (event: SubmitEvent) => {
+      event.preventDefault();
+      setBusy(true);
+      setError(undefined);
+      api
+        .send("POST", `kanban/cards/${card.id}/start`, {
+          run: true,
+          ...(card.projectId === undefined ? { projectId: runProjectId } : {}),
+          ...(base ? { base } : {}),
+          ...(model ? { model } : {}),
+          ...(confirmed ? { confirmBlocked: true } : {}),
+        })
+        .then((body) => {
+          onDone();
+          window.location.hash = `#/workspaces/${parse(StartCardResponse, body, "start card").workspace.id}`;
+        })
+        .catch((caught: unknown) => {
+          setError(message(caught));
+          setBusy(false);
+        });
+    };
+    return (
+      <form onSubmit={start} className="flex flex-col gap-2">
+        {card.projectId === undefined && (
+          <Field label="Project">
+            <Select value={runProjectId} onChange={(event) => setRunProjectId(event.target.value)}>
+              <option value="">Choose a project...</option>
+              {projects
+                .filter((project) => project.vcs === "git")
+                .map((project) => (
+                  <option key={project.id} value={project.id}>
+                    {project.name}
+                  </option>
+                ))}
+            </Select>
+          </Field>
+        )}
+        <Field label="Base line">
+          <Input
+            value={base}
+            onChange={(event) => setBase(event.target.value)}
+            placeholder="The project's current line"
+          />
+        </Field>
+        <ModelSelect value={model} onChange={setModel} defaultLabel={startDefaultLabel(card)} />
+        {error && <Notice tone="fail">{error}</Notice>}
+        <div className="flex gap-1.5">
+          <Button
+            size="sm"
+            variant="primary"
+            type="submit"
+            disabled={busy || (card.projectId === undefined && runProjectId === "")}
+          >
+            Start run
           </Button>
           <Button size="sm" variant="ghost" type="button" onClick={() => setMode(undefined)}>
             Cancel
@@ -1168,6 +1239,7 @@ function CardStartView({ approval, busy, approve, decline }: ApprovalViewProps) 
     ...[
       { kind: "new", isolation: "new" } as const,
       { kind: "new", isolation: "in-place" } as const,
+      { kind: "run" } as const,
       ...(card ? startTargets(card, workspaces) : []).map(
         (workspace) => ({ kind: "existing", workspaceId: workspace.id }) as const,
       ),

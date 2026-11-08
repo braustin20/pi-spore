@@ -187,8 +187,9 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
       "Ask the user to start work from a card of this project, then end your turn. Nothing starts until the " +
       "user approves on pi-spore's Home page; they may change the target or decline. The decision arrives as a " +
       "new user message. Target: an active workspace of this project by workspaceId (for related work, see " +
-      "kanban_list_cards), or a new workspace without workspaceId, with isolation new (a new worktree or copy, " +
-      "the default), existing (an existing branch, given as line), or in-place (the main checkout).",
+      "kanban_list_cards), a new coordinator run with run true, or a new workspace without workspaceId, with " +
+      "isolation new (a new worktree or copy, the default), existing (an existing branch, given as line), or " +
+      "in-place (the main checkout).",
     promptSnippet: "Ask the user to approve starting work from a card",
     promptGuidelines: [
       "Use kanban_start_card only when the user asks you to start a card. Call it alone, as the last tool call of your turn, then stop.",
@@ -212,7 +213,13 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
         Type.String({ minLength: 1, description: "Branch for isolation existing" }),
       ),
       base: Type.Optional(
-        Type.String({ minLength: 1, description: "Branch a new worktree starts from" }),
+        Type.String({ minLength: 1, description: "Branch a new worktree or run starts from" }),
+      ),
+      run: Type.Optional(
+        Type.Boolean({
+          description:
+            "Start a new coordinator run instead of a workspace; base is the line it starts from",
+        }),
       ),
     }),
     async execute(toolCallId, params, signal) {
@@ -221,14 +228,21 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
           "Give either workspaceId (an existing workspace) or isolation, line, and base (a new one), not both",
         );
       }
+      if (params.run && (params.workspaceId || params.isolation || params.line)) {
+        throw new Error(
+          "Give run (a new run, with an optional base) or workspaceId, isolation, and line (a workspace), not both",
+        );
+      }
       const target = params.workspaceId
         ? { kind: "existing", workspaceId: params.workspaceId }
-        : {
-            kind: "new",
-            isolation: params.isolation ?? "new",
-            ...(params.line ? { line: params.line } : {}),
-            ...(params.base ? { base: params.base } : {}),
-          };
+        : params.run
+          ? { kind: "run", ...(params.base ? { base: params.base } : {}) }
+          : {
+              kind: "new",
+              isolation: params.isolation ?? "new",
+              ...(params.line ? { line: params.line } : {}),
+              ...(params.base ? { base: params.base } : {}),
+            };
       const { approval } = await client.call(
         ApprovalAnswer,
         `cards/${encodeURIComponent(params.cardId)}/start`,

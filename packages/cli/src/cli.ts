@@ -89,9 +89,11 @@ Commands:
   card rm <card>
   card start <card> --new [--mode new|existing|in-place] [--line <branch>] [--base <branch>]
   card start <card> --workspace <workspace>
-                                           Start work from a card in a new workspace or an active one of
-                                           its project; the brief goes to its worker chat. Add
-                                           --blocked-ok to start a blocked card
+  card start <card> --run [--base <branch>]
+                                           Start work from a card in a new workspace, an active one of
+                                           its project, or a new run; the brief goes to the worker chat
+                                           or the run's coordinator chat. Add --blocked-ok to start a
+                                           blocked card
   approvals list [--all]                   Open approvals agents asked for; --all includes decided ones
   approvals approve <approval>
   approvals decline <approval> [--note <text>]
@@ -591,22 +593,27 @@ async function cardCommand(api: Api, deps: CliDeps, args: string[], json: boolea
     const { positional, options, on } = parseArgs(
       rest,
       ["workspace", "mode", "line", "base"],
-      ["new", "blocked-ok"],
+      ["new", "run", "blocked-ok"],
     );
     if (positional.length !== 1) throw usageError("card start takes one card id");
-    if (on.has("new") === (options.workspace !== undefined))
-      throw usageError("card start needs either --new or --workspace <id>");
+    const targets = [on.has("new"), on.has("run"), options.workspace !== undefined];
+    if (targets.filter(Boolean).length !== 1)
+      throw usageError("card start needs one of --new, --workspace <id>, or --run");
     if (options.workspace && (options.mode || options.line || options.base))
       throw usageError("--mode, --line, and --base go with --new only");
+    if (on.has("run") && (options.mode || options.line))
+      throw usageError("--run takes --base only");
     const mode = (options.mode ?? "new") as Isolation;
     if (!MODES.includes(mode)) throw usageError(`--mode must be one of ${MODES.join(", ")}`);
     const request = options.workspace
       ? { workspaceId: options.workspace }
-      : {
-          isolation: mode,
-          ...(options.line ? { line: options.line } : {}),
-          ...(options.base ? { base: options.base } : {}),
-        };
+      : on.has("run")
+        ? { run: true, ...(options.base ? { base: options.base } : {}) }
+        : {
+            isolation: mode,
+            ...(options.line ? { line: options.line } : {}),
+            ...(options.base ? { base: options.base } : {}),
+          };
     const result = await api.call(
       "POST",
       `kanban/cards/${positional[0]}/start`,
@@ -619,8 +626,12 @@ async function cardCommand(api: Api, deps: CliDeps, args: string[], json: boolea
     if (json) return deps.out(JSON.stringify(result));
     for (const warning of result.created?.warnings ?? []) deps.err(`warning: ${warning}`);
     deps.out(`Started ${cardLine(result.card, await projects())}`);
-    deps.out(`In ${workspaceLine(result.workspace)}`);
-    deps.out(`Brief sent to chat ${result.chatId}`);
+    deps.out(
+      result.run
+        ? `In run ${result.run.id} (${workspaceLine(result.workspace)})`
+        : `In ${workspaceLine(result.workspace)}`,
+    );
+    deps.out(`Brief sent to ${result.run ? "coordinator " : ""}chat ${result.chatId}`);
     return reportSteps(deps, result.created?.steps ?? [], json);
   }
   throw usageError(`Unknown command: card ${args.join(" ")}`);
