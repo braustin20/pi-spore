@@ -547,7 +547,7 @@ function RightColumn({
     >
       <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1">
         <div className="flex h-11 shrink-0 items-end border-b border-line pr-2">
-          <TabsList className="flex-1 border-b-0">
+          <TabsList className="min-w-0 flex-1 overflow-x-auto border-b-0">
             <TabsTrigger value="details">Details</TabsTrigger>
             {sortedTabs.map((extra) => (
               <TabsTrigger key={extra.id} value={extra.id}>

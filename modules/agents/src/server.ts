@@ -209,7 +209,7 @@ export function createAgentsModule(
           if (change === "status" && agents.view(agentId).status === "idle")
             host.jobs.wake(DELIVERY_JOB, agentId);
         },
-        maxLive: options.maxLive ?? 4,
+        maxLive: options.maxLive ?? 8,
         idleStopMs: options.idleStopMs ?? 10 * 60_000,
         startTimeoutMs: options.startTimeoutMs ?? 30_000,
         modelsCacheMs: options.modelsCacheMs ?? 60_000,

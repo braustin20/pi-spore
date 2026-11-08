@@ -396,7 +396,7 @@ function ChatView({
       {bar}
 
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
-        <div className="mx-auto flex max-w-3xl flex-col gap-3 px-4 py-5 xl:px-6">
+        <div className="flex flex-col gap-3 px-4 py-5 xl:px-6">
           {agent?.kind === "side" && (
             <Notice>
               Side chat. It can read and search files but cannot change them, run commands, or start
@@ -417,7 +417,7 @@ function ChatView({
           )}
           {agent?.error && (
             <Notice tone="fail">
-              <pre className="m-0 whitespace-pre-wrap">{agent.error}</pre>
+              <pre className="m-0 [overflow-wrap:anywhere] whitespace-pre-wrap">{agent.error}</pre>
             </Notice>
           )}
           {[
@@ -428,7 +428,7 @@ function ChatView({
               text && (
                 <Notice key={text} tone="fail">
                   <div className="flex items-start gap-2">
-                    <span className="flex-1">{text}</span>
+                    <span className="min-w-0 flex-1 [overflow-wrap:anywhere]">{text}</span>
                     <Button size="sm" variant="ghost" onClick={dismiss}>
                       Dismiss
                     </Button>
@@ -481,48 +481,44 @@ function ChatView({
 
       {older && (
         <div className="shrink-0 px-4 pb-4 xl:px-6">
-          <div className="mx-auto max-w-3xl">
-            <Notice tone="warn">
-              <div className="flex items-center gap-2">
-                <Button
-                  size="sm"
-                  disabled={workspace.state !== "active"}
-                  onClick={() => void call("POST", "activate").then(onChatChanged)}
-                >
-                  Make active
-                </Button>
-                <span className="flex-1">
-                  This is an older orchestrator chat. It is read-only. Make it active to continue
-                  it; the current orchestrator chat stops first.
-                </span>
-              </div>
-            </Notice>
-          </div>
+          <Notice tone="warn">
+            <div className="flex items-center gap-2">
+              <Button
+                size="sm"
+                disabled={workspace.state !== "active"}
+                onClick={() => void call("POST", "activate").then(onChatChanged)}
+              >
+                Make active
+              </Button>
+              <span className="flex-1">
+                This is an older orchestrator chat. It is read-only. Make it active to continue it;
+                the current orchestrator chat stops first.
+              </span>
+            </div>
+          </Notice>
         </div>
       )}
       {!older && (
         <div className="shrink-0 px-4 pb-4 xl:px-6">
-          <div className="mx-auto max-w-3xl">
-            {active &&
-              [...chatPanels].map(([id, ChatPanel]) => <ChatPanel key={id} chatId={agentId} />)}
-            <WorkingIndicator label={activity(state)} />
-            <Composer
-              chatId={agentId}
-              busy={busy}
-              disabled={!active}
-              loadCommands={loadCommands}
-              controls={controls}
-              imageInput={state.model?.input?.includes("image")}
-              onSend={async (text, whileBusy, images) => {
-                await call("POST", "prompt", {
-                  message: text,
-                  ...(images.length > 0 ? { images } : {}),
-                  ...(busy ? { whileBusy } : {}),
-                });
-              }}
-              onAbort={() => void call("POST", "abort")}
-            />
-          </div>
+          {active &&
+            [...chatPanels].map(([id, ChatPanel]) => <ChatPanel key={id} chatId={agentId} />)}
+          <WorkingIndicator label={activity(state)} />
+          <Composer
+            chatId={agentId}
+            busy={busy}
+            disabled={!active}
+            loadCommands={loadCommands}
+            controls={controls}
+            imageInput={state.model?.input?.includes("image")}
+            onSend={async (text, whileBusy, images) => {
+              await call("POST", "prompt", {
+                message: text,
+                ...(images.length > 0 ? { images } : {}),
+                ...(busy ? { whileBusy } : {}),
+              });
+            }}
+            onAbort={() => void call("POST", "abort")}
+          />
         </div>
       )}
     </section>
