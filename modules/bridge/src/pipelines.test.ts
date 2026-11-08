@@ -1,8 +1,16 @@
 import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
@@ -17,6 +25,7 @@ import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { JobView } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type {
+  ActionRun,
   Approval,
   BridgeArtifactFile,
   ChatState,
@@ -28,6 +37,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bridgeModule } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
+const GATE_ACTION = fileURLToPath(new URL("../test-fixtures/gate-action.mjs", import.meta.url));
 
 let scratch: string;
 let servers: { server: TestServer; agents: ReturnType<typeof createAgentsModule> }[];
@@ -95,10 +105,14 @@ async function json<T = Record<string, unknown>>(response: Response, status = 20
 }
 
 /** A folder project with one in-place workspace and its worker chat, the chat that asks for pipeline runs. */
-async function workspace(server: TestServer, name: string, options: { git?: boolean } = {}) {
+async function workspace(
+  server: TestServer,
+  name: string,
+  options: { git?: boolean; config?: string } = {},
+) {
   const folder = join(scratch, name);
   mkdirSync(join(folder, ".pi-spore"), { recursive: true });
-  writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+  writeFileSync(join(folder, ".pi-spore", "config.toml"), options.config ?? "");
   if (options.git) {
     writeFileSync(join(folder, "a.txt"), "one\n");
     for (const args of [
@@ -298,24 +312,6 @@ describe("a pipeline run", () => {
     expect(brief.content).toBe("Build the thing");
     const prompt = (await chat(server, done.workerAgentId as string))[0];
     expect(prompt).toContain(`\nTurn: ${turn.id}\n`);
-  });
-
-  it("fails the run when the next stage is a gate stage, which is not built yet", async () => {
-    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
-    const { workspaceId } = await workspace(server, "gate");
-    userPipeline(
-      server.paths.root,
-      "p",
-      `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check"]\n`,
-    );
-
-    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
-    await until(async () => (await getRun(server, run.id)).state === "failed");
-
-    expect(await getRun(server, run.id)).toMatchObject({
-      stageIndex: 1,
-      message: "stage gates: gate stages are not built yet",
-    });
   });
 
   it("answers 409 pipeline_running for a second start while a run is running", async () => {
@@ -892,5 +888,250 @@ describe("reviewer report rules", () => {
     expect(withTests.status).toBe(400);
     expect(await withTests.json()).toMatchObject({ error: { code: "bad_report" } });
     expect((await getRun(server, started.id)).turns[1]?.report).toBeUndefined();
+  });
+});
+
+describe("a gate stage", () => {
+  const GATES = `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check", "test"]\nfail_first = "artifact"\n`;
+  const reviewThenGates = `${withReview("rounds = 1", "fix_passes = 1")}\n[[stage]]\nname = "gates"\ngates = ["check"]\nfail_first = "artifact"\n`;
+
+  /** The labels the gate actions appended to the counter file, one per run. */
+  const counterOf = () => join(scratch, "counter.txt");
+  const ran = (): string[] =>
+    existsSync(counterOf()) ? readFileSync(counterOf(), "utf8").split("\n").filter(Boolean) : [];
+
+  /** config.toml text that declares each action as the gate-action fixture in the given mode. */
+  const config = (modes: Record<string, string>) =>
+    Object.entries(modes)
+      .map(
+        ([name, mode]) =>
+          `[actions.${name}]\nrun = ${JSON.stringify([process.execPath, GATE_ACTION, counterOf(), name, mode])}\n`,
+      )
+      .join("\n");
+
+  /** A workspace artifact, as a worker would have saved it. */
+  const saveArtifact = (server: TestServer, workspaceId: string, path: string, content: string) => {
+    const file = join(server.paths.artifacts, "workspaces", workspaceId, path);
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, content);
+  };
+
+  const actionRuns = async (server: TestServer, workspaceId: string) =>
+    (
+      await json<{ runs: ActionRun[] }>(
+        await server.request("GET", `/api/actions/workspaces/${workspaceId}/runs`),
+      )
+    ).runs;
+
+  /** Starts `pipeline` in a fresh workspace whose actions run in `modes`, with the proof `adds` already saved. */
+  async function startGates(
+    server: TestServer,
+    name: string,
+    pipeline: string,
+    modes: Record<string, string>,
+  ) {
+    const { workspaceId } = await workspace(server, name, { config: config(modes) });
+    saveArtifact(server, workspaceId, "proofs/adds.md", "FAIL: adds\n");
+    userPipeline(server.paths.root, "p", pipeline);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    return { workspaceId, runId: run.id };
+  }
+
+  const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
+    until(async () => (await getRun(server, runId)).state === state);
+
+  it("fails the run for a missing proof, and starts no gate action", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId } = await workspace(server, "noproof", {
+      config: config({ check: "pass", test: "pass" }),
+    });
+    userPipeline(server.paths.root, "p", GATES);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await untilState(server, run.id, "failed");
+
+    expect((await getRun(server, run.id)).message).toBe(
+      "missing fail-first proof for adds (proofs/adds.md)",
+    );
+    expect(ran()).toEqual([]);
+    expect(await actionRuns(server, workspaceId)).toEqual([]);
+  });
+
+  it("fails the run for an empty proof", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId } = await workspace(server, "emptyproof", {
+      config: config({ check: "pass", test: "pass" }),
+    });
+    saveArtifact(server, workspaceId, "proofs/adds.md", "");
+    userPipeline(server.paths.root, "p", GATES);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await untilState(server, run.id, "failed");
+
+    expect((await getRun(server, run.id)).message).toContain("missing fail-first proof for adds");
+    expect(ran()).toEqual([]);
+  });
+
+  it("still needs the proof of a test that a later worker report leaves out", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [
+          {
+            summary: "Done",
+            tests: [
+              { name: "a", proof: "proofs/a.md" },
+              { name: "b", proof: "proofs/b.md" },
+            ],
+          },
+          { summary: "Fixed", tests: [{ name: "a", proof: "proofs/a.md" }] },
+        ],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }],
+      }),
+    });
+    const { workspaceId } = await workspace(server, "dropped", {
+      config: config({ check: "pass" }),
+    });
+    saveArtifact(server, workspaceId, "proofs/a.md", "FAIL: a\n");
+    userPipeline(server.paths.root, "p", reviewThenGates);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await untilState(server, run.id, "failed");
+
+    const done = await getRun(server, run.id);
+    expect(kinds(done)).toEqual(["task1", "review1", "fix1"]);
+    expect(done.message).toBe("missing fail-first proof for b (proofs/b.md)");
+    expect(ran()).toEqual([]);
+  });
+
+  it("passes the default shape: implement, review, adversarial, then each gate once with trigger pipeline", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE],
+        reviewer: [{ summary: "Good", verdict: "approve" }],
+        "adversarial-reviewer": [{ summary: "Solid", verdict: "approve" }],
+      }),
+    });
+    writeTiers(server.paths.root, TIERS);
+    const pipeline = `${IMPLEMENT}
+[[stage]]
+name = "review"
+role = "reviewer"
+model = "fake/strong"
+rounds = 2
+min_strength_over = "implement"
+
+[[stage]]
+name = "adversarial"
+role = "adversarial-reviewer"
+model = "fake/strong"
+rounds = 1
+fix_passes = 1
+
+[[stage]]
+name = "gates"
+gates = ["check", "test"]
+fail_first = "artifact"
+`;
+
+    const { workspaceId, runId } = await startGates(server, "default", pipeline, {
+      check: "pass",
+      test: "pass",
+    });
+    await untilState(server, runId, "passed");
+
+    expect(kinds(await getRun(server, runId))).toEqual(["task1", "review1", "review1"]);
+    expect(ran()).toEqual(["check", "test"]);
+    const runs = await actionRuns(server, workspaceId);
+    expect(runs.map((run) => [run.action, run.trigger, run.status]).sort()).toEqual([
+      ["check", "pipeline", "succeeded"],
+      ["test", "pipeline", "succeeded"],
+    ]);
+  });
+
+  it("ends the run failed with the log tail of the failing gate, and runs no later gate", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+
+    const { runId } = await startGates(server, "failing", GATES, { check: "fail", test: "pass" });
+    await untilState(server, runId, "failed");
+
+    const run = await getRun(server, runId);
+    expect(run.message).toContain("gate check failed");
+    expect(run.message).toContain("gate output: boom");
+    expect(ran()).toEqual(["check"]);
+  });
+
+  it("starts one new attempt for a gate action that a restart cut off, and the run passes", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({ worker: [DONE] });
+    const first = await start({ home, env });
+    const { workspaceId } = await workspace(first, "restartgate", {
+      config: config({ check: "pass", test: "hang-first" }),
+    });
+    saveArtifact(first, workspaceId, "proofs/adds.md", "FAIL: adds\n");
+    userPipeline(home, "p", GATES);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(first, workspaceId), 201);
+    await until(() => ran().length === 2);
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+    await untilState(second, run.id, "passed");
+
+    expect(ran()).toEqual(["check", "test", "test"]);
+    const runs = await actionRuns(second, workspaceId);
+    expect(runs.map((found) => [found.action, found.status]).sort()).toEqual([
+      ["check", "succeeded"],
+      ["test", "interrupted"],
+      ["test", "succeeded"],
+    ]);
+  });
+
+  it("starts no second action when a gate step runs again under the same key", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId, runId } = await startGates(server, "samekey", GATES, {
+      check: "pass",
+      test: "pass",
+    });
+    await untilState(server, runId, "passed");
+    // A crash after the actions ended but before the stage moved on leaves this state: the job is on the gate step
+    // with no checkpoint. The test sets it by hand, since a real crash cannot be timed.
+    server.store.run(
+      "UPDATE pipelines_runs SET state = 'running', ended_at = NULL, message = NULL WHERE id = ?",
+      runId,
+    );
+    const job = server.services.jobs
+      .list({ kind: "pipelines.stage" })
+      .find((found) => (found.subject as { stageIndex: number }).stageIndex === 1) as JobView;
+    server.store.run(
+      "UPDATE core_jobs SET state = 'waiting', step = 'gate', checkpoint = NULL WHERE id = ?",
+      job.id,
+    );
+
+    await json(await server.request("POST", `/api/jobs/${job.id}/retry`));
+    await untilState(server, runId, "passed");
+
+    expect(ran()).toEqual(["check", "test"]);
+    expect(await actionRuns(server, workspaceId)).toHaveLength(2);
+  });
+
+  it("waits with the error for an unknown action, and a retry after the fix runs it", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId, runId } = await startGates(server, "unknown", GATES, { check: "pass" });
+    await until(async () => (await getRun(server, runId)).blocked !== undefined);
+
+    expect((await getRun(server, runId)).blocked).toContain("test");
+    expect(ran()).toEqual(["check"]);
+    const folder = join(scratch, "unknown");
+    writeFileSync(
+      join(folder, ".pi-spore", "config.toml"),
+      config({ check: "pass", test: "pass" }),
+    );
+    const job = server.services.jobs.list({ kind: "pipelines.stage", states: ["waiting"] })[0];
+    await json(await server.request("POST", `/api/jobs/${job?.id}/retry`));
+    await untilState(server, runId, "passed");
+
+    expect(ran()).toEqual(["check", "test"]);
+    expect(await actionRuns(server, workspaceId)).toHaveLength(2);
   });
 });

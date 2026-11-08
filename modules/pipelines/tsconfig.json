@@ -20,6 +20,9 @@
       "path": "../workspaces"
     },
     {
+      "path": "../actions"
+    },
+    {
       "path": "../agents"
     },
     {

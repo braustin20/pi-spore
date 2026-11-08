@@ -1,4 +1,5 @@
 import { join } from "node:path";
+import { ActionsKey } from "@pi-spore/mod-actions/server";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { ArtifactsKey } from "@pi-spore/mod-artifacts/server";
 import { ApprovalsKey } from "@pi-spore/mod-attention/server";
@@ -129,10 +130,18 @@ interface StageSubject {
   stageIndex: number;
 }
 
-/** The server start that last waited for the stage's report. A different one means a restart (R6.6). */
+/**
+ * `boot` is the server start that last waited for the stage's report; a different one means a restart (R6.6).
+ * `gate` and `attempt` are a gate stage's place: the gate to run, and how often a restart cut it off.
+ */
 interface StageCheckpoint {
-  boot: string;
+  boot?: string;
+  gate?: number;
+  attempt?: number;
 }
+
+/** How much of a failed gate's log goes into the run's message. */
+const LOG_TAIL_CHARS = 4096;
 
 const turnToView = (row: TurnRow): PipelineTurn => ({
   id: row.id,
@@ -249,7 +258,7 @@ const restartMessage = (turnId: string) =>
 
 export const pipelinesModule: ServerModule = {
   id: "pipelines",
-  requires: ["projects", "workspaces", "agents", "artifacts", "attention"],
+  requires: ["projects", "workspaces", "agents", "artifacts", "attention", "actions"],
   core: false,
   setup(host) {
     host.store.migrate("pipelines", MIGRATIONS);
@@ -258,6 +267,7 @@ export const pipelinesModule: ServerModule = {
     const agents = host.use(AgentsKey);
     const artifacts = host.use(ArtifactsKey);
     const approvals = host.use(ApprovalsKey);
+    const actions = host.use(ActionsKey);
     const userDir = join(host.home.root, "pipelines");
     const bootId = host.newId();
 
@@ -504,12 +514,83 @@ export const pipelinesModule: ServerModule = {
       const stage = stageOf(run, subject.stageIndex);
       if (stage.role === "worker") return advanceWorker(run, stage, subject.stageIndex);
       if (stage.role) return advanceReviewer(run, stage, subject.stageIndex);
-      // Slice 6 builds the gate stages.
-      return {
-        next: null,
-        commit: () =>
-          endRun(run.id, "failed", `stage ${stage.name}: gate stages are not built yet`),
-      };
+      return advanceGates(run, stage);
+    };
+
+    /** ADR 0016: the proofs are checked once, before any gate action starts. The gate steps then run the actions. */
+    const advanceGates = async (
+      run: RunRow,
+      stage: PipelineStage,
+    ): Promise<StepOutcome<StageCheckpoint>> => {
+      if (stage.fail_first === "artifact") {
+        for (const test of JSON.parse(run.tests) as TestProof[]) {
+          if (!(await hasProof(run, test))) {
+            return {
+              next: null,
+              commit: () =>
+                endRun(
+                  run.id,
+                  "failed",
+                  `missing fail-first proof for ${test.name} (${test.proof})`,
+                ),
+            };
+          }
+        }
+      }
+      return { next: "gate" };
+    };
+
+    /** A proof is a non-empty workspace artifact. A path the artifacts module refuses is as missing as an absent file. */
+    const hasProof = async (run: RunRow, test: TestProof): Promise<boolean> => {
+      try {
+        const { bytes } = await artifacts.read(
+          { scope: "workspace", id: run.workspace_id },
+          test.proof,
+        );
+        return bytes.length > 0;
+      } catch (error) {
+        if (error instanceof ApiError && ["file_not_found", "bad_path"].includes(error.code)) {
+          return false;
+        }
+        throw error;
+      }
+    };
+
+    /**
+     * Runs the gate at the checkpoint's place. The key is built from the run, stage, gate, and attempt, so a step that
+     * runs again after a restart gets the same action run back instead of starting another. An unknown action throws:
+     * the job waits with the error until the user fixes config.toml and retries.
+     */
+    const runGate = async ({
+      subject,
+      checkpoint,
+    }: {
+      subject: StageSubject;
+      checkpoint: StageCheckpoint | undefined;
+    }): Promise<StepOutcome<StageCheckpoint>> => {
+      const run = runOf(subject);
+      if (!run) return { next: null };
+      const stage = stageOf(run, subject.stageIndex);
+      const gates = stage.gates as string[];
+      const gate = checkpoint?.gate ?? 0;
+      const attempt = checkpoint?.attempt ?? 0;
+      const name = gates[gate] as string;
+      const started = await actions.start(run.workspace_id, name, "pipeline", {
+        key: `${run.id}:${stage.name}:${name}:${attempt}`,
+      });
+      const ended = await actions.wait(started.id);
+      if (ended.status === "interrupted")
+        return { next: "gate", checkpoint: { gate, attempt: attempt + 1 } };
+      if (ended.status === "succeeded") {
+        return gate + 1 < gates.length
+          ? { next: "gate", checkpoint: { gate: gate + 1, attempt: 0 } }
+          : { next: "finish" };
+      }
+      const { text } = await actions.readLog(ended.id, undefined);
+      const message = [`gate ${name} failed`, ended.error, text.slice(-LOG_TAIL_CHARS)]
+        .filter((part) => part)
+        .join("\n");
+      return { next: null, commit: () => endRun(run.id, "failed", message) };
     };
 
     const awaitReport = async ({
@@ -667,6 +748,7 @@ export const pipelinesModule: ServerModule = {
       { name: "advance", run: advance },
       { name: "await", run: awaitReport },
       { name: "decide", run: decide },
+      { name: "gate", run: runGate },
       { name: "finish", run: finish },
     ];
     host.jobs.define(STAGE_JOB, steps);
