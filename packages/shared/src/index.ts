@@ -113,6 +113,7 @@ export {
 } from "./kanban.js";
 export {
   AddProjectRequest,
+  GlobalSettingsView,
   Project,
   ProjectConfigView,
   ProjectLines,

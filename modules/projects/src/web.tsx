@@ -1,5 +1,11 @@
 import { useApi, type WebModule } from "@pi-spore/module-api";
-import { Project, ProjectConfigView, ProjectList, parse } from "@pi-spore/shared";
+import {
+  GlobalSettingsView,
+  Project,
+  ProjectConfigView,
+  ProjectList,
+  parse,
+} from "@pi-spore/shared";
 import {
   Button,
   Chip,
@@ -21,6 +27,7 @@ import Type from "typebox";
 
 const ConfigBody = Type.Object({ config: ProjectConfigView, warnings: Type.Array(Type.String()) });
 const ProjectBody = Type.Object({ project: Project });
+const GlobalSettingsBody = Type.Object({ settings: GlobalSettingsView });
 
 function TraitChips({ project }: { project: Project }) {
   return (
@@ -41,6 +48,17 @@ function ProjectsPage() {
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
+  const [settings, setSettings] = useState<GlobalSettingsView | undefined>();
+  const [settingsError, setSettingsError] = useState<string | undefined>();
+
+  useEffect(() => {
+    api
+      .get("projects/settings")
+      .then((body) => setSettings(parse(GlobalSettingsBody, body, "global settings").settings))
+      .catch((caught: unknown) =>
+        setSettingsError(caught instanceof Error ? caught.message : String(caught)),
+      );
+  }, [api]);
 
   const load = useCallback(() => {
     api
@@ -91,6 +109,35 @@ function ProjectsPage() {
             Add project
           </Button>
         </form>
+      </Panel>
+      <Panel>
+        <PanelHeader title="Global settings" />
+        <div className="flex flex-col gap-3">
+          {settingsError && <Notice tone="fail">{settingsError}</Notice>}
+          {settings && (
+            <Table>
+              <tbody>
+                <tr>
+                  <TableHead className="w-56">Delete finished work after</TableHead>
+                  <TableCell>
+                    <code>
+                      {settings.retentionDays.value === 0
+                        ? "never"
+                        : `${settings.retentionDays.value} days`}
+                    </code>
+                  </TableCell>
+                  <TableCell className="w-24 text-right">
+                    <Chip>{settings.retentionDays.source}</Chip>
+                  </TableCell>
+                </tr>
+              </tbody>
+            </Table>
+          )}
+          <p className="m-0 text-sm text-muted">
+            Change it in <code>~/.pi-spore/settings.json</code> (<code>retention.days</code>, 0
+            keeps everything).
+          </p>
+        </div>
       </Panel>
       {error && <Notice tone="fail">{error}</Notice>}
       {projects === undefined && !error && <p className="text-muted">Loading...</p>}
