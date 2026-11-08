@@ -27,6 +27,7 @@ export {
   chatTitle,
   DialogAnswer,
   IMAGE_TYPES,
+  ModelChoices,
   ModelList,
   orderChats,
   PromptImage,

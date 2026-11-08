@@ -104,6 +104,8 @@ export interface AgentsModuleOptions {
   maxLive?: number;
   idleStopMs?: number;
   startTimeoutMs?: number;
+  /** How long the model list stays cached, in ms. */
+  modelsCacheMs?: number;
   /** Replaces the resolution of the user's Pi setup; tests use it to keep the real one out. */
   resourceArgs?: ManagerOptions["resourceArgs"];
   roleDefaults?: ManagerOptions["roleDefaults"];
@@ -141,14 +143,16 @@ export function createAgentsModule(
       const listeners: ((agentId: string, change: AgentChange) => void)[] = [];
       let deliveries: Deliveries | undefined;
 
+      const resourceArgs =
+        options.resourceArgs ??
+        ((cwd: string) => resolveResourceArgs(cwd, agentDir, exclude, SPORE_EXTENSIONS));
+
       const agents = new AgentManager({
         pi: options.pi ?? { command: "pi", args: [] },
         events: host.events,
         log: host.log,
         sessionsDir: host.home.sessions,
-        resourceArgs:
-          options.resourceArgs ??
-          ((cwd) => resolveResourceArgs(cwd, agentDir, exclude, SPORE_EXTENSIONS)),
+        resourceArgs,
         roleDefaults: options.roleDefaults ?? ((role) => readRoleDefaults(agentDir, role)),
         env: async (agent, workspace) => {
           const extra: Record<string, string> = {
@@ -190,6 +194,13 @@ export function createAgentsModule(
         maxLive: options.maxLive ?? 4,
         idleStopMs: options.idleStopMs ?? 10 * 60_000,
         startTimeoutMs: options.startTimeoutMs ?? 30_000,
+        modelsCacheMs: options.modelsCacheMs ?? 60_000,
+        probe: async () => ({
+          cwd: host.home.root,
+          // No PI_SPORE_URL or token: this process is not an agent and has no bridge.
+          env: agentEnv(options.baseEnv ?? process.env, {}),
+          args: [...(await resourceArgs(host.home.root)), "--no-session"],
+        }),
         imageCacheBytes: options.imageCacheBytes ?? 64 * MIB,
       });
       const imageLimits = {
@@ -472,6 +483,9 @@ export function createAgentsModule(
         agents.rename(id, title);
         return c.json({ agent: agents.view(id) });
       });
+
+      // Before "/:id", or "models" is read as an agent id.
+      host.routes.get("/models", async (c) => c.json({ models: await agents.availableModels() }));
 
       host.routes.get("/:id", (c) => c.json({ agent: agents.view(c.req.param("id")) }));
 
