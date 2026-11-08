@@ -19,6 +19,7 @@ import {
   type TraitDefinition,
   type VcsProvider,
 } from "./contract.js";
+import { readGlobalSettings } from "./settings.js";
 
 export * from "./contract.js";
 
@@ -131,6 +132,7 @@ export const projectsModule: ServerModule = {
       },
       configFiles: (project) => readConfigFiles(project.path),
       checkConfigSection,
+      globalSettings: () => readGlobalSettings(host.home.root),
     };
     host.provide(ProjectsKey, projects);
 
@@ -198,6 +200,10 @@ export const projectsModule: ServerModule = {
       );
       return c.json({ project: await toProject(row) }, 201);
     });
+
+    host.routes.get("/settings", async (c) =>
+      c.json({ settings: await projects.globalSettings() }),
+    );
 
     host.routes.get("/:id", async (c) =>
       c.json({ project: await projects.get(c.req.param("id")) }),

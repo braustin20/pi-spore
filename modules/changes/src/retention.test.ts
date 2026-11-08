@@ -1,0 +1,124 @@
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createAgentsModule } from "@pi-spore/mod-agents/server";
+import { projectsModule } from "@pi-spore/mod-projects/server";
+import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
+import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
+import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
+import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createChangesModule } from "./server.js";
+
+const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
+
+const DAY = 86_400_000;
+const START = 1_700_000_000_000;
+// The test clock ticks once per call, so a restart time is a little past a whole number of days.
+const SLACK = 10_000;
+
+let home: string;
+let scratch: string;
+let servers: TestServer[];
+let agentModules: ReturnType<typeof createAgentsModule>[];
+
+beforeEach(() => {
+  home = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-changes-retention-home-")));
+  scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-changes-retention-repos-")));
+  servers = [];
+  agentModules = [];
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ retention: { days: 30 } }));
+});
+afterEach(async () => {
+  for (const agents of agentModules) await agents.manager().stopAll();
+  for (const server of servers) server.close();
+  rmSync(home, { recursive: true, force: true });
+  rmSync(scratch, { recursive: true, force: true });
+});
+
+async function start(startAt: number, firstId = 0): Promise<TestServer> {
+  const agents = createAgentsModule({
+    pi: { command: process.execPath, args: [FAKE_PI] },
+    resourceArgs: async () => ["--no-extensions"],
+    roleDefaults: async () => ({}),
+    baseEnv: { PATH: process.env.PATH },
+  });
+  agentModules.push(agents);
+  const server = await createTestServer(
+    [
+      projectsModule,
+      vcsGitModule,
+      vcsFolderModule,
+      workspacesModule,
+      agents,
+      createChangesModule(),
+    ],
+    { home, startAt, firstId },
+  );
+  servers.push(server);
+  return server;
+}
+
+const stop = async (): Promise<void> => {
+  await agentModules.pop()?.manager().stopAll();
+  servers.pop()?.close();
+};
+
+async function ok<T>(response: Response, status = 200): Promise<T> {
+  const body = (await response.json()) as T;
+  if (response.status !== status)
+    throw new Error(`Expected ${status}, got ${response.status}: ${JSON.stringify(body)}`);
+  return body;
+}
+
+async function makeWorkspace(server: TestServer, name: string): Promise<string> {
+  const folder = join(scratch, name);
+  mkdirSync(folder);
+  const { project } = await ok<{ project: { id: string } }>(
+    await server.request("POST", "/api/projects", { path: folder }),
+    201,
+  );
+  const { workspace } = await ok<{ workspace: { id: string } }>(
+    await server.request("POST", "/api/workspaces", {
+      projectId: project.id,
+      name,
+      isolation: "in-place",
+    }),
+    201,
+  );
+  return workspace.id;
+}
+
+const archive = async (server: TestServer, id: string) =>
+  ok(await server.request("POST", `/api/workspaces/${id}/archive`, {}));
+
+const comments = (server: TestServer, workspaceId: string): number =>
+  server.store.all("SELECT 1 FROM changes_comments WHERE workspace_id = ?", workspaceId).length;
+
+/** An archived workspace with one review comment, then a restart `days` later. */
+async function archivedThenRestarted(days: number) {
+  const first = await start(START);
+  const workspaceId = await makeWorkspace(first, "review");
+  first.store.run(
+    `INSERT INTO changes_comments (id, workspace_id, path, side, line, code, body, created_at)
+     VALUES ('comment-1', ?, 'a.txt', 'new', 1, 'one', 'Why?', ?)`,
+    workspaceId,
+    START,
+  );
+  await archive(first, workspaceId);
+  await stop();
+  return { server: await start(START + days * DAY + SLACK, 1000), workspaceId };
+}
+
+describe("changes retention", () => {
+  it("deletes the review comments of an archived workspace past the limit", async () => {
+    const { server, workspaceId } = await archivedThenRestarted(31);
+    expect(comments(server, workspaceId)).toBe(0);
+  });
+
+  it("keeps the review comments of an archived workspace inside the limit", async () => {
+    const { server, workspaceId } = await archivedThenRestarted(29);
+    expect(comments(server, workspaceId)).toBe(1);
+  });
+});

@@ -5,6 +5,7 @@ import type {
   ChangeScope,
   ChangeScopeKind,
   FileDiff,
+  GlobalSettingsView,
   Isolation,
   Project,
   ProjectConfigView,
@@ -144,6 +145,8 @@ export interface Projects {
   configFiles(project: Project): Promise<RawConfigFiles>;
   /** Checks a section against its schema; a mismatch answers 422 `bad_project_config`. */
   checkConfigSection<const S extends TSchema>(schema: S, value: unknown, what: string): Static<S>;
+  /** Reads `<home>/settings.json` fresh. A bad `retention.days` answers 422 `bad_settings`. */
+  globalSettings(): Promise<GlobalSettingsView>;
 }
 
 export const ProjectsKey = defineInterface<Projects>("projects", "projects");

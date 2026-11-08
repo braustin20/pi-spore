@@ -140,6 +140,11 @@ export class ChatImages {
     });
   }
 
+  /** Drops what the chat showed. Cached bytes are shared by content and age out by size. */
+  forget(agentId: string): void {
+    this.known.delete(agentId);
+  }
+
   knows(agentId: string, ref: string): boolean {
     return this.known.get(agentId)?.has(ref) === true;
   }

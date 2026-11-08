@@ -92,6 +92,11 @@ export function createUnityModule(options: UnityModuleOptions = {}): ServerModul
         return undefined;
       });
 
+      // ADR 0121: the lease of a deleted workspace goes with it.
+      workspaces.beforeDeleteWorkspace(async (workspace) => {
+        host.store.run("DELETE FROM unity_leases WHERE workspace_id = ?", workspace.id);
+      });
+
       host.routes.get("/workspaces/:id", async (c) => {
         const workspace = workspaces.get(c.req.param("id"));
         const project = await projects.get(workspace.projectId);

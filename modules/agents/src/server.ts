@@ -3,6 +3,7 @@ import { join } from "node:path";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
+import { removeInside } from "@pi-spore/module-api/node";
 import {
   type Agent,
   CreateAgentRequest,
@@ -63,6 +64,8 @@ const MIGRATIONS = [
   "UPDATE agents_agents SET role = 'orchestrator'",
   // ADR 0120: the model a new chat starts on, `provider/id`. NULL: the role's default.
   "ALTER TABLE agents_agents ADD COLUMN model TEXT",
+  // ADR 0121: retention counts a closed chat from the day it was closed.
+  "ALTER TABLE agents_agents ADD COLUMN closed_at INTEGER",
 ];
 
 interface Row {
@@ -135,12 +138,18 @@ export function createAgentsModule(
     },
     setup(host) {
       host.store.migrate("agents", MIGRATIONS);
+      // The table has no updated_at, so chats closed before the migration count from now (ADR 0121).
+      host.store.run(
+        "UPDATE agents_agents SET closed_at = ? WHERE closed = 1 AND closed_at IS NULL",
+        host.now(),
+      );
       const workspaces = host.use(WorkspacesKey);
       const projects = host.use(ProjectsKey);
       const agentDir =
         options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
       const exclude = options.excludeExtensions ?? ["npm:pi-lens"];
       const listeners: ((agentId: string, change: AgentChange) => void)[] = [];
+      const chatDeleteListeners: ((agentId: string) => void)[] = [];
       let deliveries: Deliveries | undefined;
 
       const resourceArgs =
@@ -320,6 +329,7 @@ export function createAgentsModule(
         return inOrder(workspace.id, async () => {
           const existing = activeWorker(workspace.id);
           if (existing) return { agent: agents.view(existing.id), created: false };
+          requireNotArchived(workspace);
           return {
             agent: insert(newRow(workspace.id, "worker", null, model ?? null)),
             created: true,
@@ -339,8 +349,63 @@ export function createAgentsModule(
         onChange: (listener) => {
           listeners.push(listener);
         },
+        beforeDeleteChat: (listener) => {
+          chatDeleteListeners.push(listener);
+        },
       };
       host.provide(AgentsKey, api);
+
+      // ADR 0121. Deliveries go first: a flush already running for a forgotten chat only fails on its next read.
+      const dropChat = async (row: Row) => {
+        host.store.run("DELETE FROM agents_deliveries WHERE agent_id = ?", row.id);
+        host.store.run("DELETE FROM agents_agents WHERE id = ?", row.id);
+        await agents.forget(row.id);
+      };
+
+      workspaces.onRetention(async (cutoff) => {
+        // An open fork that has not started reads its parent's session on its first start.
+        const old = host.store.all<Row>(
+          `SELECT * FROM agents_agents AS parent WHERE closed = 1 AND closed_at < ?
+             AND NOT EXISTS (SELECT 1 FROM agents_agents AS fork
+               WHERE fork.forked_from = parent.id AND fork.closed = 0 AND fork.session_file IS NULL)`,
+          cutoff,
+        );
+        let count = 0;
+        for (const row of old) {
+          try {
+            for (const listener of chatDeleteListeners) listener(row.id);
+            if (row.session_file) await removeInside(host.home.sessions, row.session_file);
+            await dropChat(row);
+            count++;
+          } catch (error) {
+            host.log.error("Retention could not delete a closed chat", {
+              agent: row.id,
+              error: String(error),
+            });
+          }
+        }
+        if (count > 0) host.log.info("Retention deleted closed chats", { count });
+      });
+
+      workspaces.beforeDeleteWorkspace(async (workspace) => {
+        const rows = host.store.all<Row>(
+          "SELECT * FROM agents_agents WHERE workspace_id = ?",
+          workspace.id,
+        );
+        for (const row of rows) await dropChat(row);
+        await removeInside(host.home.sessions, join(host.home.sessions, workspace.id));
+      });
+
+      // Retention deletes an archived workspace's chats, so a new row would race it (ADR 0121).
+      const requireNotArchived = (workspace: Workspace) => {
+        if (workspace.state === "archived") {
+          throw new ApiError(
+            409,
+            "workspace_archived",
+            "The workspace is archived; it cannot start a new chat",
+          );
+        }
+      };
 
       const requireActive = (workspace: Workspace) => {
         if (workspace.state !== "active") {
@@ -469,7 +534,11 @@ export function createAgentsModule(
               "The chat is working. Abort or stop it first, then close it.",
             );
           }
-          host.store.run("UPDATE agents_agents SET active = 0, closed = 1 WHERE id = ?", id);
+          host.store.run(
+            "UPDATE agents_agents SET active = 0, closed = 1, closed_at = ? WHERE id = ?",
+            host.now(),
+            id,
+          );
           await agents.close(id);
           return c.json({ ok: true });
         });

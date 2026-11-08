@@ -38,6 +38,7 @@ export const SettingSource = Type.Union([
   Type.Literal("detected"),
   Type.Literal("project file"),
   Type.Literal("local override"),
+  Type.Literal("global"),
 ]);
 export type SettingSource = Static<typeof SettingSource>;
 
@@ -46,6 +47,12 @@ export const ProjectConfigView = Type.Object({
   branchPrefix: Type.Object({ value: Type.String(), source: SettingSource }),
 });
 export type ProjectConfigView = Static<typeof ProjectConfigView>;
+
+/** Settings that apply to the whole install, from `~/.pi-spore/settings.json`. */
+export const GlobalSettingsView = Type.Object({
+  retentionDays: Type.Object({ value: Type.Integer({ minimum: 0 }), source: SettingSource }),
+});
+export type GlobalSettingsView = Static<typeof GlobalSettingsView>;
 
 export const ProjectLines = Type.Object({
   lines: Type.Array(Type.String()),

@@ -295,6 +295,16 @@ export const attentionModule: ServerModule = {
       if (change === "chat" && !agents.get(agentId).active) closeQuestions(agentId);
       changed();
     });
+    // ADR 0121: what a deleted chat or workspace asked goes with it.
+    const deleteWhere = (column: "agent_id" | "workspace_id", id: string) => {
+      host.store.run(`DELETE FROM attention_questions WHERE ${column} = ?`, id);
+      host.store.run(`DELETE FROM attention_approvals WHERE ${column} = ?`, id);
+      changed();
+    };
+    agents.beforeDeleteChat((agentId) => deleteWhere("agent_id", agentId));
+    workspaces.beforeDeleteWorkspace(async (workspace) =>
+      deleteWhere("workspace_id", workspace.id),
+    );
     host.events.onSubscribe(
       INBOX_TOPIC,
       async (): Promise<InboxEvent[]> => [{ type: "inbox", inbox: await inbox() }],

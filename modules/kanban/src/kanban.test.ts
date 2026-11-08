@@ -658,6 +658,17 @@ describe("automatic moves", () => {
     expect((await getCard(card.id)).card.column).toBe("backlog");
   });
 
+  it("clears the archived mark when a card leaves Done", async () => {
+    const card = await addCard({ title: "Old work", column: "done" });
+    server.store.run("UPDATE kanban_cards SET archived_at = ? WHERE id = ?", 5, card.id);
+    expect((await getCard(card.id)).card.archivedAt).toBe(5);
+
+    await cardCall("POST", `${card.id}/move`, { column: "ready" });
+    const { card: moved } = await getCard(card.id);
+    expect(moved.column).toBe("ready");
+    expect(moved.archivedAt).toBeUndefined();
+  });
+
   it("lets other modules move the cards of a workspace", async () => {
     const game = await addProject("game");
     const card = await addCard({ title: "Review me", projectId: game.id });

@@ -1,6 +1,6 @@
 import type { Workspace } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { ago, groupWorkspaces } from "./list.js";
+import { ago, groupWorkspaces, reduceWorkspaceList } from "./list.js";
 
 const workspace = (id: string, state: Workspace["state"], updatedAt: number, projectId = "p1") =>
   ({
@@ -54,5 +54,18 @@ describe("ago", () => {
     expect(ago(now - 5 * 60_000, now)).toBe("5m");
     expect(ago(now - 3 * 3_600_000 - 59 * 60_000, now)).toBe("3h");
     expect(ago(now - 2 * 86_400_000, now)).toBe("2d");
+  });
+});
+
+describe("reduceWorkspaceList", () => {
+  it("drops a workspace on a removed event", () => {
+    const kept = workspace("kept", "active", 1);
+    const gone = workspace("gone", "archived", 2);
+    expect(reduceWorkspaceList([kept, gone], { type: "removed", id: "gone" })).toEqual([kept]);
+  });
+
+  it("ignores a removed event for an unknown id", () => {
+    const kept = workspace("kept", "active", 1);
+    expect(reduceWorkspaceList([kept], { type: "removed", id: "other" })).toEqual([kept]);
   });
 });
