@@ -1,6 +1,7 @@
 import type { Agent, Workspace } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { needsRefresh, reduceAgentList, workspaceStatus } from "./status.js";
+import { needsRefresh, reduceAgentList, workspaceStatus, workspaceStatuses } from "./status.js";
+import type { UserWait } from "./web-contract.js";
 
 const workspace = (state: Workspace["state"]): Workspace => ({
   id: "w1",
@@ -48,6 +49,46 @@ describe("workspaceStatus", () => {
   it("shows parked and archived over any agent status", () => {
     expect(workspaceStatus(workspace("parked"), agent("busy")).text).toBe("Parked");
     expect(workspaceStatus(workspace("archived"), undefined).text).toBe("Archived");
+  });
+});
+
+describe("workspaceStatuses", () => {
+  const chat = (id: string, status: Agent["status"], extra: Partial<Agent> = {}): Agent => ({
+    ...agent(status),
+    id,
+    ...extra,
+  });
+  const lines = (agents: Agent[], waits: [string, UserWait][]) =>
+    workspaceStatuses([workspace("active")], agents, new Map(waits)).get("w1")!;
+
+  it("shows that the active worker chat waits for the user, and Idle again once answered", () => {
+    expect(lines([chat("a1", "idle")], [["a1", "question"]])).toEqual({
+      text: "Waiting for your answer",
+      tone: "warn",
+    });
+    expect(lines([chat("a1", "idle")], []).text).toBe("Idle");
+    expect(lines([chat("a1", "stopped")], [["a1", "approval"]]).text).toBe(
+      "Waiting for your answer",
+    );
+  });
+
+  it("keeps a busy or failed chat's own status", () => {
+    expect(lines([chat("a1", "busy")], [["a1", "dialog"]]).text).toBe("Working");
+    expect(lines([chat("a1", "failed")], [["a1", "question"]]).text).toBe("Agent failed");
+  });
+
+  it("ignores a side chat's or an older chat's wait (ADR 0030)", () => {
+    const agents = [
+      chat("a1", "idle"),
+      chat("side", "idle", { kind: "side" }),
+      chat("old", "idle", { active: false }),
+    ];
+    expect(
+      lines(agents, [
+        ["side", "question"],
+        ["old", "approval"],
+      ]).text,
+    ).toBe("Idle");
   });
 });
 

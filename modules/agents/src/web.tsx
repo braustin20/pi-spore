@@ -28,8 +28,8 @@ import { Composer, DialogCard } from "./composer.js";
 import { Helpers } from "./helpers.js";
 import { MessageList } from "./messages.js";
 import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
-import { reduceAgentList, workspaceStatus } from "./status.js";
-import { type AgentsWeb, AgentsWebKey } from "./web-contract.js";
+import { reduceAgentList, workspaceStatuses } from "./status.js";
+import { type AgentsWeb, AgentsWebKey, type UserWait, type UseUserWaits } from "./web-contract.js";
 
 export * from "./web-contract.js";
 
@@ -511,6 +511,11 @@ function ChatView({
   );
 }
 
+const NO_WAITS: ReadonlyMap<string, UserWait> = new Map();
+
+/** Tells which chats wait for the user. The attention module replaces it. */
+let useUserWaits: UseUserWaits = () => NO_WAITS;
+
 /** Status lines follow the shared agent stream, including its snapshot on reconnect. */
 function useAgentStatus(workspaces: readonly Workspace[]) {
   const api = useApi();
@@ -523,20 +528,8 @@ function useAgentStatus(workspaces: readonly Workspace[]) {
     [api],
   );
 
-  return useMemo(() => {
-    // The status line follows the active worker chat (ADR 0030).
-    const workers = new Map(
-      agents
-        .filter((agent) => agent.kind === "worker" && agent.active)
-        .map((agent) => [agent.workspaceId, agent]),
-    );
-    return new Map(
-      workspaces.map((workspace) => [
-        workspace.id,
-        workspaceStatus(workspace, workers.get(workspace.id)),
-      ]),
-    );
-  }, [agents, workspaces]);
+  const waits = useUserWaits();
+  return useMemo(() => workspaceStatuses(workspaces, agents, waits), [agents, workspaces, waits]);
 }
 
 export const agentsWeb: WebModule = {
@@ -547,6 +540,9 @@ export const agentsWeb: WebModule = {
     const web: AgentsWeb = {
       addChatPanel: (id, panel) => {
         chatPanels.set(id, panel);
+      },
+      setUserWaits: (hook) => {
+        useUserWaits = hook;
       },
       DialogCard,
     };

@@ -1,7 +1,7 @@
 import type { ApiClient } from "@pi-spore/module-api";
 import type { Inbox, InboxItem } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { chatAsks, createInboxStore, itemKey, notification } from "./inbox-store.js";
+import { chatAsks, chatWaits, createInboxStore, itemKey, notification } from "./inbox-store.js";
 
 const workspace = { id: "w1", name: "Colors", projectName: "game", state: "active" as const };
 const chat = { id: "a1", title: "Pick colors", kind: "worker" as const, active: true };
@@ -127,5 +127,42 @@ describe("chatAsks", () => {
 
   it("returns nothing before the first inbox", () => {
     expect(chatAsks(undefined, "a1")).toEqual([]);
+  });
+});
+
+describe("chatWaits", () => {
+  it("names, per chat, why it waits for the user: its newest open question, approval, or dialog", () => {
+    const items: InboxItem[] = [
+      { kind: "finished", at: 9, agentId: "a3", workspace, chat: { ...chat, id: "a3" } },
+      {
+        kind: "failed",
+        at: 8,
+        agentId: "a4",
+        workspace,
+        chat: { ...chat, id: "a4" },
+        error: "boom",
+      },
+      {
+        kind: "dialog",
+        at: 7,
+        agentId: "a2",
+        workspace,
+        chat: { ...chat, id: "a2" },
+        dialog: { id: "d1", method: "confirm" },
+      },
+      question("q2", 5),
+      question("q1", 1),
+    ];
+    expect(chatWaits({ items, running: [] })).toEqual(
+      new Map([
+        ["a2", "dialog"],
+        ["a1", "question"],
+      ]),
+    );
+  });
+
+  it("is empty before the first inbox and once everything is answered", () => {
+    expect(chatWaits(undefined).size).toBe(0);
+    expect(chatWaits({ items: [], running: [] }).size).toBe(0);
   });
 });
