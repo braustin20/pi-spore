@@ -17,6 +17,7 @@ import {
   planState,
   type RouterSettings,
   readPlans,
+  readRecords,
   splitModel,
   TIERS,
   tierOf,
@@ -87,6 +88,8 @@ const MIGRATIONS = [
   // the decide step reads that one for the round limit.
   "ALTER TABLE pipelines_runs ADD COLUMN local_approval_id TEXT",
   "ALTER TABLE pipelines_runs ADD COLUMN worker_model TEXT",
+  // The router's newest decision for a worker turn's agent, as JSON (R4.7). Null for a stage on a fixed model.
+  "ALTER TABLE pipelines_turns ADD COLUMN routing TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -138,6 +141,7 @@ interface TurnRow {
   role: PipelineTurn["role"];
   agent_id: string;
   report: string | null;
+  routing: string | null;
   created_at: number;
   reported_at: number | null;
 }
@@ -175,6 +179,9 @@ const turnToView = (row: TurnRow): PipelineTurn => ({
   role: row.role,
   agentId: row.agent_id,
   ...(row.report ? { report: JSON.parse(row.report) as StageReport } : {}),
+  ...(row.routing
+    ? { routing: JSON.parse(row.routing) as NonNullable<PipelineTurn["routing"]> }
+    : {}),
   createdAt: row.created_at,
   ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
 });
@@ -836,7 +843,24 @@ export const pipelinesModule: ServerModule = {
     ];
     host.jobs.define(STAGE_JOB, steps);
 
-    const report = (caller: BridgeCaller, request: StageReport): { turn: PipelineTurn } => {
+    const report = async (
+      caller: BridgeCaller,
+      request: StageReport,
+    ): Promise<{ turn: PipelineTurn }> => {
+      // The transaction is synchronous, so the router's records are read before it.
+      let routing: string | null = null;
+      const open = host.store.get<TurnRow>(
+        "SELECT * FROM pipelines_turns WHERE id = ?",
+        request.turn,
+      );
+      if (open?.role === "worker") {
+        const { records } = await readRecords(host.home.root, 500);
+        const decision = records.find((record) => record.agentId === open.agent_id);
+        if (decision) {
+          const { route, model, reasons } = decision;
+          routing = JSON.stringify({ route, ...(model === undefined ? {} : { model }), reasons });
+        }
+      }
       const turn = host.store.transaction((): TurnRow => {
         const row = host.store.get<TurnRow>(
           "SELECT * FROM pipelines_turns WHERE id = ?",
@@ -861,9 +885,10 @@ export const pipelinesModule: ServerModule = {
           throw new ApiError(400, "bad_report", "A reviewer report has no tests");
         const reportedAt = host.now();
         host.store.run(
-          "UPDATE pipelines_turns SET report = ?, reported_at = ? WHERE id = ?",
+          "UPDATE pipelines_turns SET report = ?, reported_at = ?, routing = ? WHERE id = ?",
           JSON.stringify(request),
           reportedAt,
+          routing,
           row.id,
         );
         if (request.tests) {
@@ -874,7 +899,7 @@ export const pipelinesModule: ServerModule = {
           );
         }
         host.jobs.wake(STAGE_JOB, run.workspace_id);
-        return { ...row, report: JSON.stringify(request), reported_at: reportedAt };
+        return { ...row, report: JSON.stringify(request), routing, reported_at: reportedAt };
       });
       publish(requireRun(turn.run_id).workspace_id);
       return { turn: turnToView(turn) };

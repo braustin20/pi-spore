@@ -314,6 +314,28 @@ describe("a pipeline run", () => {
     expect(prompt).toContain(`\nTurn: ${turn.id}\n`);
   });
 
+  it("keeps the route the worker ran on, taking only the record of its own agent", async () => {
+    const home = join(scratch, "fake-home");
+    const routing = { route: "local", model: "strata/qwen", reasons: ["bounded", "free quota"] };
+    // A newer record for another agent must not be taken.
+    const other = { route: "cloud", model: "other/model", reasons: ["x"], agentId: "someone-else" };
+    // The fake Pi is not told the home, so the test gives it the server's.
+    const server = await start({
+      home,
+      env: {
+        ...scriptEnv({ worker: [{ ...DONE, routing: [routing, other] }] }),
+        FAKE_PI_HOME: home,
+      },
+    });
+    const { workspaceId } = await workspace(server, "routed");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    expect((await getRun(server, run.id)).turns[0]?.routing).toEqual(routing);
+  });
+
   it("answers 409 pipeline_running for a second start while a run is running", async () => {
     const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
     const { workspaceId } = await workspace(server, "twice");
