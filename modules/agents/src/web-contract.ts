@@ -10,6 +10,11 @@ export interface DialogAnswerFields {
 
 /** What the agents web module shares with other pages, so Home shows the same dialog cards as the chat (R5.6). */
 export interface AgentsWeb {
+  /**
+   * Adds (or replaces, by `id`) a component the chat page shows above the composer of an active chat. It gets the chat's id. The attention
+   * module uses it for the chat's open questions and approvals.
+   */
+  addChatPanel(id: string, panel: ComponentType<{ chatId: string }>): void;
   DialogCard: ComponentType<{
     dialog: AgentDialog;
     onAnswer: (answer: DialogAnswerFields) => void;

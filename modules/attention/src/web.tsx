@@ -21,7 +21,13 @@ import {
 } from "@pi-spore/ui";
 import { Bell, CheckCheck, House } from "lucide-react";
 import { type ComponentType, type ReactNode, useState, useSyncExternalStore } from "react";
-import { createInboxStore, type InboxStore, itemKey, notification } from "./inbox-store.js";
+import {
+  chatAsks,
+  createInboxStore,
+  type InboxStore,
+  itemKey,
+  notification,
+} from "./inbox-store.js";
 import { type ApprovalViewProps, AttentionWebKey } from "./web-contract.js";
 
 export * from "./web-contract.js";
@@ -287,6 +293,42 @@ function ItemCard({
   );
 }
 
+/** The chat's open questions and approvals above its composer: the same cards as Home, so an answer leaves both. */
+function ChatAsks({ store, chatId }: { store: InboxStore; chatId: string }) {
+  const inbox = useSyncExternalStore(store.subscribe, store.get);
+  const [error, setError] = useState<string | undefined>();
+  const asks = chatAsks(inbox, chatId);
+  if (asks.length === 0) return null;
+  return (
+    <div className="mb-3 flex flex-col gap-3">
+      {error && (
+        <Notice tone="fail">
+          <div className="flex items-start gap-2">
+            <span className="flex-1">{error}</span>
+            <Button size="sm" variant="ghost" onClick={() => setError(undefined)}>
+              Dismiss
+            </Button>
+          </div>
+        </Notice>
+      )}
+      {asks.map((item) => (
+        <Panel key={itemKey(item)} aria-label={`${TITLES[item.kind]} from this chat`}>
+          <div className="flex flex-col gap-3">
+            <div>
+              <Chip tone={TONES[item.kind]}>{TITLES[item.kind]}</Chip>
+            </div>
+            {item.kind === "question" ? (
+              <QuestionCard question={item.question} onError={setError} />
+            ) : (
+              <ApprovalCard approval={item.approval} onError={setError} />
+            )}
+          </div>
+        </Panel>
+      ))}
+    </div>
+  );
+}
+
 const RUNNING_TEXT: Record<RunningItem["status"], string> = {
   busy: "Working",
   starting: "Starting",
@@ -381,7 +423,8 @@ export const attentionWeb: WebModule = {
   core: true,
   setup(host) {
     const store = createInboxStore(host.api, showNotification);
-    const { DialogCard } = host.use(AgentsWebKey);
+    const { DialogCard, addChatPanel } = host.use(AgentsWebKey);
+    addChatPanel("attention", ({ chatId }) => <ChatAsks store={store} chatId={chatId} />);
     host.provide(AttentionWebKey, {
       addApprovalView: (kind, view) => {
         approvalViews.set(kind, view);

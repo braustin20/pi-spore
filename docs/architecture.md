@@ -520,6 +520,14 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   answer; the same dialog card as the chat (from the agents web interface `AgentsWebKey`); a failure with its error;
   a finished agent with Open chat and Dismiss. Running work is a short list below. The Home rail icon shows the item
   count through `RailItem.useBadge`.
+- The chat page shows its own open questions and approvals above the composer, so the user need not go to Home. The
+  agents web interface has `AgentsWebKey.addChatPanel(id, component)`: the chat page renders each added component,
+  given the chat's id, above the composer of an active chat. With none added, the chat looks as before. The attention
+  web module adds one. It reads the same `attention:inbox` store as Home, keeps the items of this chat with
+  `chatAsks(inbox, chatId)` (open questions and approvals, in inbox order), and renders them with Home's
+  `QuestionCard` and approval views. An answer is the same call from both places, and the inbox update removes the
+  item from both. Failures, finished work, and dialogs stay as they were (dialogs show in the chat already). An older
+  worker chat, a side chat, or a workspace that is not active shows no panel; their questions are closed (ADR 0033).
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not.
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,

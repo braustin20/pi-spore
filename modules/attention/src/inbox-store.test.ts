@@ -1,7 +1,7 @@
 import type { ApiClient } from "@pi-spore/module-api";
 import type { Inbox, InboxItem } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { createInboxStore, itemKey, notification } from "./inbox-store.js";
+import { chatAsks, createInboxStore, itemKey, notification } from "./inbox-store.js";
 
 const workspace = { id: "w1", name: "Colors", projectName: "game", state: "active" as const };
 const chat = { id: "a1", title: "Pick colors", kind: "worker" as const, active: true };
@@ -86,5 +86,46 @@ describe("the inbox store", () => {
         error: "Pi exited\nmore",
       }),
     ).toEqual({ title: "Agent failed in Colors (game, Pick colors)", body: "Pi exited" });
+  });
+});
+
+describe("chatAsks", () => {
+  const approval = (id: string, agentId: string, at: number): InboxItem => ({
+    kind: "approval",
+    at,
+    agentId,
+    workspace,
+    chat: { ...chat, id: agentId },
+    approval: {
+      id,
+      kind: "card-start",
+      agentId,
+      workspaceId: "w1",
+      title: "Start a card",
+      reason: "Because",
+      subject: {},
+      state: "open",
+      createdAt: at,
+    },
+  });
+
+  it("returns the open questions and approvals of one chat, in inbox order, and nothing else", () => {
+    const items: InboxItem[] = [
+      question("q2", 5),
+      approval("p9", "a2", 4),
+      approval("p1", "a1", 3),
+      { kind: "failed", at: 3, agentId: "a1", workspace, chat, error: "boom" },
+      { kind: "finished", at: 2, agentId: "a1", workspace, chat },
+      question("q1", 1),
+    ];
+    expect(chatAsks({ items, running: [] }, "a1").map(itemKey)).toEqual([
+      "question:q2",
+      "approval:p1",
+      "question:q1",
+    ]);
+  });
+
+  it("returns nothing before the first inbox", () => {
+    expect(chatAsks(undefined, "a1")).toEqual([]);
   });
 });
