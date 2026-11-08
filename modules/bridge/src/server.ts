@@ -1,4 +1,5 @@
 import { ActionsKey } from "@pi-spore/mod-actions/server";
+import { type ArtifactOwner, ArtifactsKey } from "@pi-spore/mod-artifacts/server";
 import { QuestionsKey } from "@pi-spore/mod-attention/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
@@ -6,10 +7,13 @@ import { ApiError, type BridgeCaller, bridgeCaller, type ServerModule } from "@p
 import {
   type ActionRun,
   BridgeAddCardRequest,
+  type BridgeArtifactFile,
+  type BridgeArtifactList,
   type BridgeCardList,
   type BridgeRunLog,
   BridgeStartCardRequest,
   BridgeUpdateCardRequest,
+  BridgeWriteArtifactRequest,
   CARD_COLUMNS,
   type Card,
   type CardColumn,
@@ -40,13 +44,14 @@ export function tail(text: string): { text: string; truncated: boolean } {
  */
 export const bridgeModule: ServerModule = {
   id: "bridge",
-  requires: ["workspaces", "attention", "actions", "kanban"],
+  requires: ["workspaces", "attention", "actions", "kanban", "artifacts"],
   core: false,
   setup(host) {
     const workspaces = host.use(WorkspacesKey);
     const questions = host.use(QuestionsKey);
     const actions = host.use(ActionsKey);
     const cards = host.use(CardsKey);
+    const artifacts = host.use(ArtifactsKey);
 
     /** A run of the caller's workspace. Other workspaces' runs look like they do not exist. */
     const ownRun = (caller: BridgeCaller, id: string): ActionRun => {
@@ -136,6 +141,53 @@ export const bridgeModule: ServerModule = {
       const request = parseJsonBody(BridgeStartCardRequest, await c.req.text(), "start request");
       const approval = cards.requestStart(caller, c.req.param("id"), request);
       return c.json({ approval }, 201);
+    });
+
+    /** The folder of a scope: always the caller's own workspace or its project, never one the request names. */
+    const artifactOwner = (caller: BridgeCaller, scope: string): ArtifactOwner => {
+      if (scope === "workspace") return { scope, id: caller.workspaceId };
+      if (scope === "project") return { scope, id: projectOf(caller) };
+      throw new ApiError(400, "bad_query", '"scope" must be workspace or project');
+    };
+
+    host.routes.get("/artifacts", async (c) => {
+      const caller = bridgeCaller(c);
+      const body: BridgeArtifactList = {
+        workspace: await artifacts.list(artifactOwner(caller, "workspace")),
+        project: await artifacts.list(artifactOwner(caller, "project")),
+      };
+      return c.json(body);
+    });
+
+    host.routes.get("/artifacts/file", async (c) => {
+      const caller = bridgeCaller(c);
+      const owner = artifactOwner(caller, c.req.query("scope") ?? "");
+      const { info, bytes } = await artifacts.read(owner, c.req.query("path") ?? "");
+      let content: string;
+      try {
+        content = new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      } catch {
+        throw new ApiError(
+          415,
+          "not_text",
+          `${info.path} is not a text file; the user can open it in the Artifacts tab`,
+        );
+      }
+      const body: BridgeArtifactFile = { artifact: info, content };
+      return c.json(body);
+    });
+
+    host.routes.post("/artifacts", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "write artifacts");
+      const request = parseJsonBody(BridgeWriteArtifactRequest, await c.req.text(), "artifact");
+      const artifact = await artifacts.write(
+        artifactOwner(caller, request.scope),
+        request.path,
+        request.content,
+        caller.agentId,
+      );
+      return c.json({ artifact });
     });
 
     host.routes.post("/questions", async (c) => {

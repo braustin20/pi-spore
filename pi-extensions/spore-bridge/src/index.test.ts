@@ -265,6 +265,57 @@ describe("spore-bridge", () => {
     );
   });
 
+  const artifact = (extra: Record<string, unknown> = {}) => ({
+    scope: "workspace",
+    ownerId: "w1",
+    path: "plans/a.md",
+    bytes: 12,
+    updatedAt: 1,
+    ...extra,
+  });
+
+  it("writes an artifact with the tool call id as receipt", async () => {
+    reply("POST /api/bridge/artifacts", { body: { artifact: artifact() } });
+    const result = await fakePi()
+      .tool("artifacts_write")
+      .execute("toolu_a1", { scope: "workspace", path: "plans/a.md", content: "# Plan" });
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/artifacts",
+        auth: "Bearer agent-token",
+        receipt: "toolu_a1",
+        body: { scope: "workspace", path: "plans/a.md", content: "# Plan" },
+      },
+    ]);
+    expect(result.content[0]?.text).toBe("Wrote workspace  plans/a.md  12 bytes");
+  });
+
+  it("lists the artifacts of both scopes, one line each", async () => {
+    reply("GET /api/bridge/artifacts", {
+      body: {
+        workspace: [artifact()],
+        project: [artifact({ scope: "project", path: "notes.md", bytes: 3, promotedFrom: "w1" })],
+      },
+    });
+    const result = await fakePi().tool("artifacts_list").execute("toolu_a2", {});
+    expect(result.content[0]?.text).toBe(
+      [
+        "workspace  plans/a.md  12 bytes",
+        "project  notes.md  3 bytes  promoted from workspace w1",
+      ].join("\n"),
+    );
+  });
+
+  it("reads an artifact by scope and path", async () => {
+    reply("GET /api/bridge/artifacts/file", { body: { artifact: artifact(), content: "# Plan" } });
+    const result = await fakePi()
+      .tool("artifacts_read")
+      .execute("toolu_a3", { scope: "workspace", path: "plans/a.md" });
+    expect(seen[0]?.path).toBe("/api/bridge/artifacts/file?scope=workspace&path=plans%2Fa.md");
+    expect(result.content[0]?.text).toBe("# Plan");
+  });
+
   it("asks to start a card in an existing workspace and ends the turn", async () => {
     reply("POST /api/bridge/cards/c1/start", {
       status: 201,

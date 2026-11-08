@@ -41,3 +41,21 @@ export const ArtifactsEvent = Type.Object({
   project: Type.Array(ArtifactInfo),
 });
 export type ArtifactsEvent = Static<typeof ArtifactsEvent>;
+
+/** What `artifacts_list` gets: the files of the calling agent's workspace and of its project. */
+export const BridgeArtifactList = Type.Object({
+  workspace: Type.Array(ArtifactInfo),
+  project: Type.Array(ArtifactInfo),
+});
+export type BridgeArtifactList = Static<typeof BridgeArtifactList>;
+
+/** What `artifacts_read` gets: the file as text. */
+export const BridgeArtifactFile = Type.Object({ artifact: ArtifactInfo, content: Type.String() });
+export type BridgeArtifactFile = Static<typeof BridgeArtifactFile>;
+
+/** The owner is the calling agent's workspace or project, never named in the request. */
+export const BridgeWriteArtifactRequest = Type.Object(
+  { scope: ArtifactScope, path: Type.String(), content: Type.String() },
+  { additionalProperties: false },
+);
+export type BridgeWriteArtifactRequest = Static<typeof BridgeWriteArtifactRequest>;

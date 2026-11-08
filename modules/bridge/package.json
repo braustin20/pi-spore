@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@pi-spore/mod-actions": "0.0.0",
+    "@pi-spore/mod-artifacts": "0.0.0",
     "@pi-spore/mod-attention": "0.0.0",
     "@pi-spore/mod-kanban": "0.0.0",
     "@pi-spore/mod-workspaces": "0.0.0",

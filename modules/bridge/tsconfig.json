@@ -23,6 +23,9 @@
       "path": "../actions"
     },
     {
+      "path": "../artifacts"
+    },
+    {
       "path": "../attention"
     },
     {
