@@ -353,7 +353,7 @@ export function createAgentsModule(
           throw new ApiError(
             409,
             "worker_busy",
-            "The worker chat is working. Abort or stop it first, then switch chats.",
+            "The orchestrator chat is working. Abort or stop it first, then switch chats.",
           );
         }
         host.store.run("UPDATE agents_agents SET active = 0 WHERE id = ?", current.id);
@@ -407,7 +407,7 @@ export function createAgentsModule(
               throw new ApiError(
                 409,
                 "nothing_to_fork",
-                "The worker chat has no messages yet, so there is no context to copy",
+                "The orchestrator chat has no messages yet, so there is no context to copy",
               );
             }
             forkedFrom = worker.id;
@@ -420,7 +420,11 @@ export function createAgentsModule(
       host.routes.post("/:id/activate", async (c) => {
         const target = agents.view(c.req.param("id"));
         if (target.kind !== "worker")
-          throw new ApiError(409, "not_a_worker_chat", "Only a worker chat can be made active");
+          throw new ApiError(
+            409,
+            "not_a_worker_chat",
+            "Only an orchestrator chat can be made active",
+          );
         if (agents.isClosed(target.id))
           throw new ApiError(409, "chat_closed", "This chat is closed");
         requireActive(workspaces.get(target.workspaceId));

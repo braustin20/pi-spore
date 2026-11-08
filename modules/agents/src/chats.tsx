@@ -13,9 +13,9 @@ const group = (chat: Agent) => {
 };
 
 const HINTS = {
-  worker: "Worker chat: the one chat that can change files",
+  worker: "Orchestrator chat: the one chat that can change files",
   side: "Side chat: read-only",
-  older: "Older worker chat: read-only history",
+  older: "Older orchestrator chat: read-only history",
 } as const;
 
 /** The chat's title, with a pencil that turns it into a text field. */
@@ -140,7 +140,7 @@ export function ChatBar({
       </nav>
       <Title key={selected.id} chat={selected} onRename={onRename} />
       <Tooltip
-        label="Start a fresh worker chat. The current one stops and stays readable."
+        label="Start a fresh orchestrator chat. The current one stops and stays readable."
         side="bottom"
       >
         <Button
@@ -153,14 +153,14 @@ export function ChatBar({
           New chat
         </Button>
       </Tooltip>
-      <Tooltip label="A read-only chat next to the worker, started empty" side="bottom">
+      <Tooltip label="A read-only chat next to the orchestrator, started empty" side="bottom">
         <Button size="sm" variant="ghost" disabled={!canStart} onClick={() => onNew("side", false)}>
           <Eye />
           Side chat
         </Button>
       </Tooltip>
       <Tooltip
-        label="A read-only chat that starts with a copy of the worker chat's context"
+        label="A read-only chat that starts with a copy of the orchestrator chat's context"
         side="bottom"
       >
         <Button size="sm" variant="ghost" disabled={!canStart} onClick={() => onNew("side", true)}>

@@ -310,11 +310,26 @@ describe("spore-bridge", () => {
     expect(options.sections[RULES_SECTION]).toBe(RULES);
   });
 
+  it("gives the chat the orchestrator rules and keeps the pi-spore rules", async () => {
+    const options = { contextFiles: [], sections: {} as Record<string, string> };
+    await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
+    const rules = options.sections[RULES_SECTION] ?? "";
+    expect(rules).toContain("You are the orchestrator of this workspace");
+    expect(rules).toContain("before the first worker");
+    expect(rules).toContain("Only one writer works in the worktree at a time");
+    expect(rules).toContain("After three passes");
+    expect(rules).toContain("request_human_input");
+    expect(rules).toContain("Never merge into the base branch");
+    expect(rules).not.toContain("the worker of one workspace");
+  });
+
   it("gives a side chat the side chat rules", async () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
     const options = { contextFiles: [], sections: {} as Record<string, string> };
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
     expect(options.sections[RULES_SECTION]).toBe(SIDE_RULES);
+    expect(SIDE_RULES).toContain("next to the orchestrator");
+    expect(SIDE_RULES).toContain("read-only");
   });
 
   it("refuses an unknown chat kind instead of guessing", () => {

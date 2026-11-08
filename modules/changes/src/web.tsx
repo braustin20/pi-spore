@@ -592,7 +592,7 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
       );
       setComments([]);
       setNote(
-        `Sent ${sent.comments.length} comment${sent.comments.length === 1 ? "" : "s"} to the worker chat.`,
+        `Sent ${sent.comments.length} comment${sent.comments.length === 1 ? "" : "s"} to the orchestrator chat.`,
       );
     } catch (caught) {
       setError(message(caught));
