@@ -4,6 +4,7 @@ import { ChevronRight } from "lucide-react";
 import type { ReactNode } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { bashSummary } from "./bash-summary.js";
 import { ChatImages, ImageRow, LinkedImage, RemoteImage } from "./images-web.js";
 import { isImagePath, keepFileUrls, linkTarget } from "./links.js";
 
@@ -49,9 +50,11 @@ function clip(text: string, max = 4_000): string {
 const TOOL_TONE = { running: "run", error: "fail", done: "ok", waiting: "neutral" } as const;
 
 /** A one-line hint of a tool call's arguments for the collapsed row, such as the path or command. */
-function summary(args: unknown): string {
+function summary(name: string, args: unknown): string {
   if (typeof args === "string") return args.split("\n")[0] ?? "";
   if (typeof args !== "object" || args === null) return "";
+  if (name === "bash" && "command" in args && typeof args.command === "string")
+    return bashSummary(args.command);
   const first = Object.values(args).find((value) => typeof value === "string");
   return typeof first === "string" ? (first.split("\n")[0] ?? "") : "";
 }
@@ -161,7 +164,7 @@ function ToolCall({
             {name}
           </code>
           <span className="min-w-0 flex-1 truncate font-mono text-xs text-muted">
-            {summary(args)}
+            {summary(name, args)}
           </span>
           {state === "running" && <Spinner />}
           <Chip tone={TOOL_TONE[state]}>{state}</Chip>
