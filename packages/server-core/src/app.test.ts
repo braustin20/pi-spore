@@ -6,6 +6,7 @@ import { HealthResponse, parse, ValidationError } from "@pi-spore/shared";
 import { afterEach, describe, expect, it } from "vitest";
 import { AgentTokenStore } from "./agent-tokens.js";
 import { CORE_MIGRATIONS, createApp } from "./app.js";
+import { createJobService, realTimer } from "./jobs.js";
 import { SqliteStore } from "./store.js";
 import { createTestServer, silentLog, TEST_TOKEN, type TestServer } from "./testing.js";
 
@@ -54,6 +55,13 @@ describe("GET /api/health", () => {
       token: TEST_TOKEN,
       agentTokens: new AgentTokenStore(),
       store,
+      jobs: createJobService({
+        store,
+        log: silentLog,
+        now: () => 0,
+        newId: () => "id",
+        timer: realTimer,
+      }),
       log: silentLog,
     });
 
@@ -292,6 +300,13 @@ describe("web app", () => {
       token: TEST_TOKEN,
       agentTokens: new AgentTokenStore(),
       store,
+      jobs: createJobService({
+        store,
+        log: silentLog,
+        now: () => 0,
+        newId: () => "id",
+        timer: realTimer,
+      }),
       log: silentLog,
       webDist: dist,
     });

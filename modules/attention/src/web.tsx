@@ -5,6 +5,7 @@ import type {
   InboxChat,
   InboxItem,
   InboxWorkspace,
+  Job,
   Question,
   RunningItem,
 } from "@pi-spore/shared";
@@ -340,6 +341,37 @@ const RUNNING_TEXT: Record<RunningItem["status"], string> = {
   failed: "Failed",
 };
 
+/** A restart stopped this job part way. Retry runs its step again; Cancel ends it. */
+function InterruptedJob({ job, onError }: { job: Job; onError: (text: string) => void }) {
+  const api = useApi();
+  const call = (action: "retry" | "cancel") =>
+    api
+      .send("POST", `jobs/${job.id}/${action}`)
+      .catch((caught: unknown) => onError(message(caught)));
+  return (
+    <li className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2 text-sm">
+        <span className="min-w-0 flex-1 truncate font-semibold">{job.kind}</span>
+        <span className="text-muted">step {job.step}</span>
+        <span className="text-xs whitespace-nowrap text-muted">
+          {ago(job.updatedAt, Date.now())}
+        </span>
+        <Button size="sm" onClick={() => void call("retry")}>
+          Retry
+        </Button>
+        <Button size="sm" variant="ghost" onClick={() => void call("cancel")}>
+          Cancel
+        </Button>
+      </div>
+      {job.error && (
+        <pre className="m-0 max-h-40 overflow-auto rounded-lg bg-raised p-2 text-xs whitespace-pre-wrap">
+          {job.error}
+        </pre>
+      )}
+    </li>
+  );
+}
+
 /** Asks for permission only when the user clicks, never on load (R15.2). */
 function NotificationButton() {
   const supported = typeof Notification !== "undefined";
@@ -380,7 +412,7 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
           </Notice>
         )}
         {inbox === undefined && <p className="m-0 text-sm text-muted">Loading...</p>}
-        {inbox && inbox.items.length === 0 && (
+        {inbox && inbox.items.length === 0 && inbox.interrupted.length === 0 && (
           <EmptyState icon={CheckCheck} title="Nothing needs you">
             Questions, approvals, dialogs, failures, and finished work from every workspace show up
             here.
@@ -389,6 +421,16 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
         {inbox?.items.map((item) => (
           <ItemCard key={itemKey(item)} item={item} DialogCard={DialogCard} onError={setError} />
         ))}
+        {inbox && inbox.interrupted.length > 0 && (
+          <Panel aria-label="Interrupted work">
+            <PanelHeader title="Interrupted work" />
+            <ul className="m-0 flex list-none flex-col gap-3 p-0">
+              {inbox.interrupted.map((job) => (
+                <InterruptedJob key={job.id} job={job} onError={setError} />
+              ))}
+            </ul>
+          </Panel>
+        )}
         {inbox && inbox.running.length > 0 && (
           <Panel>
             <PanelHeader title="Running" />
@@ -447,7 +489,10 @@ export const attentionWeb: WebModule = {
       rail: {
         order: 0,
         icon: House,
-        useBadge: () => useSyncExternalStore(store.subscribe, store.get)?.items.length ?? 0,
+        useBadge: () => {
+          const inbox = useSyncExternalStore(store.subscribe, store.get);
+          return (inbox?.items.length ?? 0) + (inbox?.interrupted.length ?? 0);
+        },
       },
       component: makeHomePage(store, DialogCard),
     });

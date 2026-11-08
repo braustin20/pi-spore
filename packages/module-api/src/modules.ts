@@ -89,7 +89,83 @@ export interface SocketRoutes {
   add(path: string, open: SocketOpener): void;
 }
 
-/** What a server module gets during setup. Settings and jobs are added with the modules that need them. */
+/** Where a job is in its life. `waiting` and `interrupted` jobs need a wake, a retry, or a restart. */
+export type JobState = "running" | "waiting" | "interrupted" | "done" | "cancelled";
+
+export interface JobView {
+  id: string;
+  kind: string;
+  key: string | null;
+  subject: unknown;
+  state: JobState;
+  /** The step the job is on; a `running` job runs it next, or runs it again after a restart. */
+  step: string;
+  attempts: number;
+  error: string | null;
+  /** When the current step is due, in ms, or null for now. */
+  runAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+}
+
+export interface JobContext<S, C> {
+  id: string;
+  subject: S;
+  checkpoint: C | undefined;
+  /** Failed runs of this step since it last succeeded. */
+  attempts: number;
+}
+
+/**
+ * What a step returns after its async work. The runner runs `commit` and stores the next step, the checkpoint, and
+ * the due time in one transaction, so a cut-off step leaves either all of it or none.
+ */
+export interface StepOutcome<C> {
+  /** Writes the step's store effects. A throw rolls back the whole outcome and counts as a failed run. */
+  commit?: () => void;
+  checkpoint?: C;
+  /** The step to run next. Default: the next one in the list. `null`, or past the end of the list, ends the job. */
+  next?: string | null;
+  /** Run the next step after this many ms. */
+  after?: number;
+  /** Stay on this step in state `waiting`, until a wake, a retry, or a restart. `commit` still runs. */
+  wait?: true;
+}
+
+export interface JobStep<S, C> {
+  name: string;
+  /** A step that waits on an agent turn cannot be re-run after a restart: the job becomes `interrupted` instead. */
+  agentTurn?: boolean;
+  run(context: JobContext<S, C>): Promise<StepOutcome<C>>;
+}
+
+/**
+ * Runs `run` after `ms`. The promise `run` returns settles when the step and its commit are done. Returns a function
+ * that cancels the timer.
+ */
+export type JobTimer = (run: () => Promise<void>, ms: number) => () => void;
+
+/** The durable job runner (ADR 0004). Jobs survive a restart: the runner resumes them on the step they were on. */
+export interface JobRunner {
+  /** Declares a job kind. The kind starts with `<module id>.`. A repeated kind throws. */
+  define<S, C>(kind: string, steps: readonly JobStep<S, C>[]): void;
+  /**
+   * Stores a new job on its first step and returns its id. It joins the caller's transaction, and the job runs only
+   * if that transaction commits. Of the jobs with one `key`, only the oldest not ended runs, so they keep their order.
+   */
+  start(kind: string, subject: unknown, options?: { key?: string; after?: number }): string;
+  /** Makes the `waiting` jobs of this kind and key due now. Jobs in other states are not changed. */
+  wake(kind: string, key: string): void;
+  /** Ends a job that has not ended. A step already running finishes, but writes nothing. */
+  cancel(id: string): void;
+  list(filter?: { states?: readonly JobState[]; kind?: string; key?: string }): JobView[];
+  /** Called after a job changes state or step. It is not called when a job starts. */
+  onChange(listener: (job: JobView) => void): void;
+  /** Deletes `done` and `cancelled` jobs last changed before `before`, a time in ms. Returns the count. */
+  prune(before: number): number;
+}
+
+/** What a server module gets during setup. Settings are added with the modules that need them. */
 export interface ServerHost extends ModuleInterfaces {
   readonly events: EventHub;
   readonly log: Logger;
@@ -106,6 +182,7 @@ export interface ServerHost extends ModuleInterfaces {
   /** The server's own base URL, such as `http://127.0.0.1:7420`, for agent processes. */
   readonly url: string;
   readonly agentTokens: AgentTokens;
+  readonly jobs: JobRunner;
   /** Runs after every module's setup, before the server listens. A throw is logged and does not stop startup. */
   onStarted(listener: () => Promise<void> | void): void;
   /** Deletes stored API responses (idempotency records) created before `before`, a time in ms. Returns the count. */

@@ -236,6 +236,33 @@ describe("retention sweep", () => {
     expect(keys).toEqual(["new-key"]);
   });
 
+  it("deletes ended jobs older than the cutoff and keeps newer and running ones", async () => {
+    setDays(30);
+    const first = await seed();
+    const insert = (id: string, state: string, updatedAt: number) =>
+      first.server.store.run(
+        `INSERT INTO core_jobs (id, kind, key, subject, state, step, attempts, created_at, updated_at)
+         VALUES (?, 'x.kind', NULL, '{}', ?, 'only', 0, ?, ?)`,
+        id,
+        state,
+        START,
+        updatedAt,
+      );
+    insert("old-done", "done", START);
+    insert("old-cancelled", "cancelled", START);
+    insert("new-done", "done", START + 10 * DAY);
+    insert("old-running", "running", START);
+    first.server.close();
+    servers.pop();
+
+    const server = await start(BASE, { startAt: START + 31 * DAY, firstId: 1000 });
+
+    const ids = server.store
+      .all<{ id: string }>("SELECT id FROM core_jobs ORDER BY id")
+      .map((row) => row.id);
+    expect(ids).toEqual(["new-done", "old-running"]);
+  });
+
   it("leaves the folder of an in-place workspace alone", async () => {
     setDays(30);
     const { server, workspace, folder } = await archivedThenRestarted(31);

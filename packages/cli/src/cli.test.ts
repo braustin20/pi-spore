@@ -594,6 +594,60 @@ describe("pi-spore approvals", () => {
   });
 });
 
+describe("pi-spore jobs", () => {
+  const job = {
+    id: "J1",
+    kind: "workspaces.pr-watch",
+    key: "W1",
+    subject: {},
+    state: "interrupted",
+    step: "poll",
+    attempts: 1,
+    error: "Server stopped",
+    runAt: null,
+    createdAt: 1,
+    updatedAt: 2,
+  };
+
+  it("lists jobs that have not ended, one line each", async () => {
+    const { deps, out, sent } = fakeDeps(() =>
+      Response.json({ jobs: [job, { ...job, id: "J2", state: "running", error: null }] }),
+    );
+    expect(await run(["jobs"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/jobs");
+    expect(out).toEqual([
+      "J1  workspaces.pr-watch  interrupted  poll  Server stopped",
+      "J2  workspaces.pr-watch  running  poll",
+    ]);
+  });
+
+  it("asks for every state with --all", async () => {
+    const { deps, sent } = fakeDeps(() => Response.json({ jobs: [] }));
+    expect(await run(["jobs", "--all"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe(
+      "http://127.0.0.1:7420/api/jobs?state=running&state=waiting&state=interrupted&state=done&state=cancelled",
+    );
+  });
+
+  it("retries and cancels a job and prints its new state", async () => {
+    const { deps, out, sent } = fakeDeps((key) =>
+      Response.json({ ...job, state: key.endsWith("/retry") ? "running" : "cancelled" }),
+    );
+    expect(await run(["jobs", "retry", "J1"], deps)).toBe(0);
+    expect(await run(["jobs", "cancel", "J1"], deps)).toBe(0);
+    expect(sent.map((request) => request.url)).toEqual([
+      "http://127.0.0.1:7420/api/jobs/J1/retry",
+      "http://127.0.0.1:7420/api/jobs/J1/cancel",
+    ]);
+    expect(out).toEqual(["J1 is now running", "J1 is now cancelled"]);
+  });
+
+  it("rejects a job answer of the wrong shape", async () => {
+    const { deps } = fakeDeps(() => Response.json({ jobs: [{ id: "J1" }] }));
+    expect(await run(["jobs"], deps)).not.toBe(0);
+  });
+});
+
 describe("pi-spore usage", () => {
   it("prints usage and exits 2 with no command", async () => {
     const { deps, out } = fakeDeps(healthy);

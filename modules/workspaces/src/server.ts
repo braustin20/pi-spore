@@ -323,6 +323,8 @@ export const workspacesModule: ServerModule = {
         const responses = host.pruneResponses(cutoff);
         if (responses > 0)
           host.log.info("Retention deleted stored responses", { count: responses });
+        const jobs = host.jobs.prune(cutoff);
+        if (jobs > 0) host.log.info("Retention deleted ended jobs", { count: jobs });
         const old = host.store.all<Row>(
           "SELECT * FROM workspaces_workspaces WHERE state = 'archived' AND archived_at < ?",
           cutoff,

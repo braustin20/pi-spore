@@ -10,10 +10,12 @@ import {
   attachUpgrades,
   CORE_MIGRATIONS,
   createApp,
+  createJobService,
   ensureHome,
   ensureToken,
   exec,
   newId,
+  realTimer,
   resolveHome,
   SocketRouter,
   SqliteStore,
@@ -71,17 +73,20 @@ const token = ensureToken(paths.token);
 const events = new WebSocketHub(log);
 const agentTokens = new AgentTokenStore();
 const sockets = new SocketRouter(log);
+const now = Date.now;
+const jobs = createJobService({ store, log, now, newId: () => newId(), timer: realTimer });
 const modules = await setupModules(serverModules, [], {
   events,
   log,
   store,
   home: paths,
   exec,
-  now: Date.now,
+  now,
   newId: () => newId(),
   url: `http://127.0.0.1:${port}`,
   agentTokens,
   sockets,
+  jobs,
 });
 
 const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
@@ -93,6 +98,7 @@ const app = createApp({
   token,
   agentTokens,
   store,
+  jobs,
   log,
   ...(existsSync(webDist) ? { webDist } : {}),
 });
@@ -109,6 +115,7 @@ attachUpgrades(server, token, (pathname) =>
 
 for (const signal of ["SIGINT", "SIGTERM"] as const) {
   process.once(signal, () => {
+    jobs.stop();
     events.close();
     sockets.close();
     server.close();

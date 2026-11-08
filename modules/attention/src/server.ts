@@ -263,7 +263,10 @@ export const attentionModule: ServerModule = {
       }
       items.sort((a, b) => b.at - a.at);
       running.sort((a, b) => b.since - a.since);
-      return { items, running };
+      const interrupted = host.jobs
+        .list({ states: ["interrupted"] })
+        .sort((a, b) => b.updatedAt - a.updatedAt);
+      return { items, interrupted, running };
     };
 
     // Many changes come in bursts (status, then dialog); one inbox per tick is enough.
@@ -291,6 +294,7 @@ export const attentionModule: ServerModule = {
       if (changes > 0)
         host.log.info("Closed the questions of an inactive chat", { agent: agentId });
     };
+    host.jobs.onChange(changed);
     agents.onChange((agentId, change) => {
       if (change === "chat" && !agents.get(agentId).active) closeQuestions(agentId);
       changed();

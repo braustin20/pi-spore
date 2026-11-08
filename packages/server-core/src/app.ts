@@ -6,10 +6,18 @@ import {
   type Logger,
   type Store,
 } from "@pi-spore/module-api";
-import { type HealthResponse, ValidationError } from "@pi-spore/shared";
+import {
+  type HealthResponse,
+  type Job,
+  type JobList,
+  JobState,
+  parse,
+  ValidationError,
+} from "@pi-spore/shared";
 import { Hono } from "hono";
 import type { AgentTokenStore } from "./agent-tokens.js";
 import { isLoopbackHost } from "./guards.js";
+import type { JobService } from "./jobs.js";
 import { tokensMatch } from "./token.js";
 import { serveWeb } from "./web.js";
 
@@ -23,6 +31,7 @@ export interface AppOptions {
   /** Tokens of agent processes, valid only on bridge routes. */
   agentTokens: AgentTokenStore;
   store: Store;
+  jobs: JobService;
   log: Logger;
   /** Built web app to serve at `/`. Absent in tests and when the web app is not built. */
   webDist?: string;
@@ -41,7 +50,26 @@ export const CORE_MIGRATIONS = [
     body TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  `CREATE TABLE core_jobs (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    key TEXT,
+    subject TEXT NOT NULL,
+    state TEXT NOT NULL,
+    step TEXT NOT NULL,
+    checkpoint TEXT,
+    run_at INTEGER,
+    started_at INTEGER,
+    attempts INTEGER NOT NULL,
+    error TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  )`,
+  "CREATE INDEX core_jobs_state ON core_jobs (state)",
+  "CREATE INDEX core_jobs_kind_key ON core_jobs (kind, key)",
 ];
+
+const NOT_ENDED: readonly JobState[] = ["running", "waiting", "interrupted"];
 
 export function createApp(options: AppOptions): Hono {
   const app = new Hono();
@@ -137,6 +165,37 @@ export function createApp(options: AppOptions): Hono {
         options.now(),
       );
     }
+  });
+
+  const findJob = (id: string): Job => {
+    const job = options.jobs.get(id);
+    if (!job) throw new ApiError(404, "job_not_found", `No job ${id}`);
+    return job;
+  };
+
+  app.get("/api/jobs", (c) => {
+    const given = c.req.queries("state");
+    const states = given ? given.map((state) => parse(JobState, state, "job state")) : NOT_ENDED;
+    const body: JobList = { jobs: options.jobs.list({ states }) };
+    return c.json(body);
+  });
+
+  app.post("/api/jobs/:id/retry", (c) => {
+    const job = findJob(c.req.param("id"));
+    if (job.state !== "interrupted" && job.state !== "waiting") {
+      throw new ApiError(409, "job_not_retryable", `Job ${job.id} is ${job.state}`);
+    }
+    options.jobs.retry(job.id);
+    return c.json(findJob(job.id));
+  });
+
+  app.post("/api/jobs/:id/cancel", (c) => {
+    const job = findJob(c.req.param("id"));
+    if (job.state === "done" || job.state === "cancelled") {
+      throw new ApiError(409, "job_not_cancellable", `Job ${job.id} is ${job.state}`);
+    }
+    options.jobs.cancel(job.id);
+    return c.json(findJob(job.id));
   });
 
   for (const module of options.modules) app.route(`/api/${module.id}`, module.routes);

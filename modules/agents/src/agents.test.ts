@@ -16,11 +16,12 @@ import { unityModule } from "@pi-spore/mod-unity/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { AgentsModuleOptions } from "./server.js";
-import { type AgentEvent, createAgentsModule } from "./server.js";
+import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
 
 const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
@@ -34,6 +35,7 @@ async function setup(
   options: AgentsModuleOptions = {},
   extraEnv: Record<string, string> = {},
   serverOptions: { home?: string; firstId?: number } = {},
+  extraModules: readonly ServerModule[] = [],
 ) {
   agentsModule = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
@@ -54,7 +56,15 @@ async function setup(
     ...options,
   });
   server = await createTestServer(
-    [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, unityModule, agentsModule],
+    [
+      projectsModule,
+      vcsGitModule,
+      vcsFolderModule,
+      workspacesModule,
+      unityModule,
+      agentsModule,
+      ...extraModules,
+    ],
     serverOptions,
   );
 }
@@ -972,6 +982,7 @@ describe("chats (ADR 0030)", () => {
       );
       INSERT INTO agents_agents SELECT * FROM old;
       DROP TABLE old;
+      ALTER TABLE agents_deliveries DROP COLUMN job_id;
       DELETE FROM core_migrations WHERE module = 'agents' AND version >= 4;
     `);
     db.close();
@@ -1181,5 +1192,110 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
     ]);
     await json(await server.request("POST", `/api/agents/${agentId}/stop`));
     expect(await get("children/run-1/transcript")).toEqual([404, "child_not_found"]);
+  });
+});
+
+describe("deliveries on the job runner", () => {
+  const delivery = () =>
+    server.store.get<{
+      state: string;
+      attempts: number;
+      error: string | null;
+      job_id: string | null;
+    }>("SELECT state, attempts, error, job_id FROM agents_deliveries");
+
+  it("gives a pending row from before the runner a job and sends it, oldest first", async () => {
+    const home = join(scratch, "home");
+    await setup({}, {}, { home });
+    const { agentId } = await makeAgent();
+    await agentsModule.manager().stopAll();
+    server.close();
+
+    // Rows as an older version left them: pending, with no job.
+    const db = new DatabaseSync(server.paths.database);
+    for (const [id, message, createdAt] of [
+      ["d2", "second", 2],
+      ["d1", "first", 1],
+    ] as const)
+      db.prepare(
+        "INSERT INTO agents_deliveries (id, agent_id, message, state, created_at) VALUES (?, ?, ?, 'pending', ?)",
+      ).run(id, agentId, message, createdAt);
+    db.close();
+
+    await setup({}, {}, { home, firstId: 1_000 });
+    await until(
+      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
+    );
+    expect(texts(await chat(agentId))).toEqual([
+      "user: first",
+      "assistant: echo: first",
+      "user: second",
+      "assistant: echo: second",
+    ]);
+    expect(
+      server.store
+        .all<{ job_id: string | null }>("SELECT job_id FROM agents_deliveries")
+        .every((row) => row.job_id),
+    ).toBe(true);
+  });
+
+  /** Pi exits at once while the returned flag file exists. */
+  async function failingPi() {
+    // Pi exits at once while the flag file exists, so the start fails without waiting for a timeout.
+    const flag = join(scratch, "pi-down");
+    const wrapper = join(scratch, "pi-wrapper.mjs");
+    writeFileSync(flag, "");
+    writeFileSync(
+      wrapper,
+      `import { existsSync } from "node:fs";\nif (existsSync(${JSON.stringify(flag)})) process.exit(1);\nawait import(${JSON.stringify(FAKE_PI)});\n`,
+    );
+    let deliver: (agentId: string, message: string) => void = () => {
+      throw new Error("not set up");
+    };
+    const deliverer: ServerModule = {
+      id: "deliverer",
+      requires: ["agents"],
+      core: false,
+      setup(host) {
+        deliver = host.use(AgentsKey).deliver;
+      },
+    };
+    await setup({ pi: { command: process.execPath, args: [wrapper] } }, {}, {}, [deliverer]);
+    return { deliver: (agentId: string, message: string) => deliver(agentId, message), flag };
+  }
+
+  it("keeps a row pending with its error when the send fails, and sends it after a wake", async () => {
+    const { deliver, flag } = await failingPi();
+    const { agentId, workspaceId } = await makeAgent();
+
+    deliver(agentId, "hello");
+    await until(() => delivery()?.attempts === 1);
+    expect(delivery()).toMatchObject({ state: "pending", attempts: 1, error: expect.any(String) });
+
+    rmSync(flag);
+    await json(await server.request("POST", `/api/workspaces/${workspaceId}/park`));
+    await json(await server.request("POST", `/api/workspaces/${workspaceId}/resume`));
+    await until(() => delivery()?.state === "done");
+    expect(delivery()).toMatchObject({ attempts: 2, error: null });
+    expect(texts(await chat(agentId))).toEqual(["user: hello", "assistant: echo: hello"]);
+  });
+
+  it("tries a failed row again, first, when a new message comes", async () => {
+    const { deliver, flag } = await failingPi();
+    const { agentId } = await makeAgent();
+
+    deliver(agentId, "first");
+    await until(() => delivery()?.attempts === 1);
+    rmSync(flag);
+    deliver(agentId, "second");
+    await until(
+      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
+    );
+    expect(texts(await chat(agentId))).toEqual([
+      "user: first",
+      "assistant: echo: first",
+      "user: second",
+      "assistant: echo: second",
+    ]);
   });
 });

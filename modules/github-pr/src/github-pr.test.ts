@@ -10,10 +10,11 @@ import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import type { JobTimer } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { CardDetail, PrStatus, Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createGithubPrModule, type PrTimer } from "./server.js";
+import { createGithubPrModule } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 const FAKE_GH = fileURLToPath(new URL("../test-fixtures/fake-gh.mjs", import.meta.url));
@@ -22,10 +23,10 @@ let server: TestServer;
 let scratch: string;
 let agents: ReturnType<typeof createAgentsModule>;
 let ghState: string;
-/** Polls the module scheduled, run by `tick`. */
+/** Polls the runner scheduled, run by `tick`. */
 let timers: { run: () => Promise<void>; ms: number; cancelled: boolean }[];
 
-const timer: PrTimer = (run, ms) => {
+const timer: JobTimer = (run, ms) => {
   const entry = { run, ms, cancelled: false };
   timers.push(entry);
   return () => {
@@ -33,17 +34,21 @@ const timer: PrTimer = (run, ms) => {
   };
 };
 
-/** Runs every poll that is due and returns their delays. */
+// The test clock ticks once per call, so a delay is a few ms short of the one the module asked for.
+const wholeSeconds = (ms: number) => Math.round(ms / 1000) * 1000;
+
+/** Runs every poll that is due, waits for each to commit, and returns their delays. */
 async function tick(): Promise<number[]> {
   const due = timers.filter((entry) => !entry.cancelled);
   timers = [];
   for (const entry of due) await entry.run();
-  return due.map((entry) => entry.ms);
+  return due.map((entry) => wholeSeconds(entry.ms));
 }
 
-const scheduledDelays = () => timers.filter((entry) => !entry.cancelled).map((entry) => entry.ms);
+const scheduledDelays = () =>
+  timers.filter((entry) => !entry.cancelled).map((entry) => wholeSeconds(entry.ms));
 
-async function makeServer(home?: string) {
+async function makeServer(home?: string, startAt?: number) {
   agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
@@ -61,9 +66,9 @@ async function makeServer(home?: string) {
       agents,
       attentionModule,
       kanbanModule,
-      createGithubPrModule({ gh: { command: process.execPath, args: [FAKE_GH, ghState] }, timer }),
+      createGithubPrModule({ gh: { command: process.execPath, args: [FAKE_GH, ghState] } }),
     ],
-    home ? { home, firstId: 1000 } : {},
+    { timer, ...(home ? { home, firstId: 1000 } : {}), ...(startAt ? { startAt } : {}) },
   );
 }
 
@@ -196,7 +201,7 @@ const status = async (workspaceId: string) =>
   json<PrStatus>(await server.request("GET", `/api/github-pr/workspaces/${workspaceId}`));
 
 async function publish(workspace: Workspace) {
-  return json<PrStatus>(
+  const opened = await json<PrStatus>(
     await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/publish`, {
       title: "Fix the jump",
       body: "-- starts like an option",
@@ -205,6 +210,9 @@ async function publish(workspace: Workspace) {
     }),
     201,
   );
+  // The runner sets the first poll's timer on its next tick.
+  await until(() => scheduledDelays().length === 1);
+  return opened;
 }
 
 /** The workspace's worker chat; starting from a card made it already. */
@@ -450,8 +458,9 @@ describe("watch", () => {
     const resumed = await json<PrStatus>(
       await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/watch`, { on: true }),
     );
-    expect(resumed.watch).toMatchObject({ state: "watching", tries: 1 });
+    expect(resumed.watch).toMatchObject({ state: "watching", tries: 0 });
     await until(() => said(agentId).length === 4);
+    expect((await status(workspace.id)).watch).toMatchObject({ state: "watching", tries: 1 });
   });
 
   it("starts a new run of tries after a head where every check passed", async () => {
@@ -553,27 +562,71 @@ describe("watch", () => {
     await json(
       await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/watch`, { on: true }),
     );
-    expect(scheduledDelays()).toHaveLength(1);
+    // The job polls now, then sets the timer for the next poll.
+    await until(() => scheduledDelays().length === 1);
     await json(await server.request("POST", `/api/workspaces/${workspace.id}/park`));
     expect(scheduledDelays()).toEqual([]);
     await json(await server.request("POST", `/api/workspaces/${workspace.id}/resume`));
+    await until(() => scheduledDelays().length === 1);
     expect(scheduledDelays()).toEqual([30_000]);
   });
 
-  it("picks up after a restart", async () => {
+  /** Publishes on a server at `home`, then restarts it `later` ms on, with the timers cleared. */
+  async function publishThenRestart(later: number, beforeRestart?: () => void) {
     const home = join(scratch, "home");
     await agents.manager().stopAll();
     server.close();
     server = await makeServer(home);
     const { workspace } = await setUp();
     await publish(workspace);
+    beforeRestart?.();
     await agents.manager().stopAll();
     server.close();
     timers = [];
+    server = await makeServer(home, 1_700_000_000_000 + later);
+    return workspace;
+  }
 
-    server = await makeServer(home);
-    expect(scheduledDelays()).toEqual([30_000]);
+  it("picks up after a restart with the time that was left", async () => {
+    const workspace = await publishThenRestart(10_000);
+    await until(() => scheduledDelays().length === 1);
+    const [delay] = timers.map((entry) => entry.ms);
+    expect(delay).toBeGreaterThan(0);
+    expect(delay).toBeLessThan(25_000);
     await tick();
     expect((await status(workspace.id)).watch.polledAt).toBeDefined();
+  });
+
+  it("starts a watch job for a watch from before the runner", async () => {
+    const workspace = await publishThenRestart(10_000, () =>
+      server.store.run("DELETE FROM core_jobs WHERE kind = 'github-pr.watch'"),
+    );
+    await until(() => scheduledDelays().length === 1);
+    await tick();
+    expect((await status(workspace.id)).watch.polledAt).toBeDefined();
+  });
+});
+
+describe("refresh", () => {
+  it("stores the view but never sends feedback; the watch job sends once", async () => {
+    const { workspace } = await setUp();
+    const agentId = await worker(workspace.id);
+    await publish(workspace);
+    setChecks([run("test", "FAILURE")], "h1");
+
+    const refreshed = await json<PrStatus>(
+      await server.request("GET", `/api/github-pr/workspaces/${workspace.id}?refresh=1`),
+    );
+    expect(refreshed.pr?.headId).toBe("h1");
+    const sends = () =>
+      server.store.all("SELECT 1 FROM agents_deliveries WHERE message LIKE 'Pull request #%'")
+        .length;
+    expect(sends()).toBe(0);
+    expect(refreshed.tries).toEqual([]);
+
+    await tick();
+    await until(() => said(agentId).length === 1);
+    expect(sends()).toBe(1);
+    expect((await status(workspace.id)).tries).toHaveLength(1);
   });
 });
