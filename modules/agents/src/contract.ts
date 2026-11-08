@@ -26,9 +26,10 @@ export interface Agents {
   deliver(agentId: string, message: string): void;
   /**
    * The workspace's active worker chat, created first if the workspace has none yet, as `POST /api/agents` does.
-   * Throws a 404 ApiError for an unknown workspace.
+   * Throws a 404 ApiError for an unknown workspace. `model` (`provider/id`) is the model of a chat created by this
+   * call; an existing chat keeps its own (ADR 0120).
    */
-  activeWorker(workspaceId: string): Promise<Agent>;
+  activeWorker(workspaceId: string, options?: { model?: string }): Promise<Agent>;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
   /** Every agent, for Home. */

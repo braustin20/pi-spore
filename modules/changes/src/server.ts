@@ -300,7 +300,7 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
           throw new ApiError(
             409,
             "no_worker_chat",
-            "The workspace has no worker chat yet. Open its chat first.",
+            "The workspace has no orchestrator chat yet. Open its chat first.",
           );
         }
         const sentAt = host.now();

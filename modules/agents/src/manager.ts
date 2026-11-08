@@ -25,7 +25,7 @@ import {
 } from "./child-runs.js";
 import type { AgentAttention, AgentChange } from "./contract.js";
 import { ChatImages } from "./images.js";
-import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS } from "./launch.js";
+import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS, withModel } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
 import { readTranscript } from "./transcript.js";
 
@@ -45,6 +45,8 @@ export interface AgentRecord {
   waitingSince: number | null;
   /** The user closed the chat: it is off the chat bar and Home, and never runs again. Its session file stays. */
   closed: boolean;
+  /** The model a new session starts on, `provider/id`, or null for the role's default (ADR 0120). */
+  model: string | null;
 }
 
 export interface ManagerOptions {
@@ -569,7 +571,10 @@ export class AgentManager {
       }
     }
     if (!live.model || !live.thinkingLevel) {
-      const defaults = await this.options.roleDefaults(live.record.role);
+      const defaults = withModel(
+        await this.options.roleDefaults(live.record.role),
+        live.record.model,
+      );
       if (!live.model && defaults.provider && defaults.modelId) {
         live.model = { provider: defaults.provider, id: defaults.modelId };
       }
@@ -600,7 +605,7 @@ export class AgentManager {
       throw new ApiError(
         409,
         "chat_inactive",
-        "This is an older worker chat. It is read-only until you make it active again.",
+        "This is an older orchestrator chat. It is read-only until you make it active again.",
       );
     }
     if (record.kind !== "worker") return;
@@ -614,7 +619,7 @@ export class AgentManager {
         throw new ApiError(
           409,
           "worker_running",
-          "Another worker chat of this workspace is still running. Stop it first.",
+          "Another orchestrator chat of this workspace is still running. Stop it first.",
         );
       }
     }
@@ -757,12 +762,14 @@ export class AgentManager {
         throw new ApiError(
           409,
           "fork_source_missing",
-          "The worker chat this side chat copies has no session file anymore.",
+          "The orchestrator chat this side chat copies has no session file anymore.",
         );
       }
       return ["--fork", source, "--session-dir", dir];
     }
-    const role = modelArgs(await this.options.roleDefaults(live.record.role));
+    const role = modelArgs(
+      withModel(await this.options.roleDefaults(live.record.role), live.record.model),
+    );
     return ["--session-dir", dir, ...role];
   }
 
