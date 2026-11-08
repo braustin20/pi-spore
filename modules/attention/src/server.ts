@@ -250,6 +250,8 @@ export const attentionModule: ServerModule = {
           items.push({ kind: "dialog", at: openedAt, ...base, dialog });
         if (agent.status === "failed")
           items.push({ kind: "failed", at: since, ...base, error: agent.error ?? "Agent failed" });
+        else if (agent.status === "idle" && agent.helpersRunning)
+          running.push({ ...base, status: "helpers", since });
         else if (
           waitingSince !== undefined &&
           !asking.has(agent.id) &&

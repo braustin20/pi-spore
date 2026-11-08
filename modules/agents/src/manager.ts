@@ -226,6 +226,7 @@ export class AgentManager {
       ...(record.forkedFrom === null ? {} : { forkedFrom: record.forkedFrom }),
       status: live.status,
       ...(live.error ? { error: live.error } : {}),
+      ...(runningCount(live.children) > 0 ? { helpersRunning: runningCount(live.children) } : {}),
       createdAt: record.createdAt,
     };
   }
@@ -873,6 +874,7 @@ export class AgentManager {
     if (JSON.stringify(children) === JSON.stringify(live.children)) return;
     const before = runningCount(live.children);
     live.children = children;
+    if (runningCount(children) !== before) this.options.onChange(live.record.id, "helpers");
     this.publish(live, { type: "children", children });
     if (runningCount(children) < before) this.releaseSlot();
     // An agent kept alive by a helper may be idle now.

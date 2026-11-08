@@ -334,6 +334,7 @@ const RUNNING_TEXT: Record<RunningItem["status"], string> = {
   busy: "Working",
   starting: "Starting",
   waiting: "Waiting for a free agent slot",
+  helpers: "Working (helper running)",
   idle: "Idle",
   stopped: "Stopped",
   failed: "Failed",

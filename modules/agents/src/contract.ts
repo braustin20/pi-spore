@@ -1,8 +1,8 @@
 import { defineInterface } from "@pi-spore/module-api";
 import type { Agent, AgentDialog } from "@pi-spore/shared";
 
-/** What changed about an agent. `chat`: its title or active flag. */
-export type AgentChange = "status" | "dialog" | "waiting" | "chat";
+/** What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers. */
+export type AgentChange = "status" | "dialog" | "waiting" | "chat" | "helpers";
 
 /** One agent with what Home shows about it (R15). */
 export interface AgentAttention {
