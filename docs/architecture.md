@@ -51,8 +51,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - **Chats** (ADR 0030, ADR 0033, ADR 0120). The role of a workspace chat is `orchestrator`: a new chat starts on
   `subagents.agentOverrides.orchestrator` (model, thinking) from Pi's settings, and on Pi's own default when that
   override is missing. The `worker` role is a subagent on `spore/auto`; `worker` stays only as a chat `kind`, in
-  `PI_SPORE_CHAT_KIND`, and in the routes. An agent is one chat: one row in `agents_agents` with a `kind` (`worker` or
-  `side`), an `active` flag, a `title`, `forked_from` (the orchestrator chat a side chat copies), and a nullable
+  `PI_SPORE_CHAT_KIND`, and in the routes. An agent is one chat: one row in `agents_agents` with a `kind` (`worker`,
+  `side`, or `stage`), an `active` flag, a `title`, `forked_from` (the orchestrator chat a side chat copies), and a nullable
   `model` (`provider/id`).
   - The model of a new chat (ADR 0120): `AgentsKey.activeWorker(workspaceId, { model? })`, `POST /api/agents`, and an
     orchestrator chat from `POST /api/agents/chats` take an optional `model`, stored in `agents_agents.model`. On the
@@ -84,6 +84,18 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     it, and spore-bridge gives them their own rules.
   - Title: the first user message, cut to 60 characters, set on the first prompt. Chats from before titles take it
     from their history when first read; side chats never take it from the copied history. The user can rename.
+- **Stage agents** (R6, [ADR 0140](decisions/0140-pipeline-stage-agents.md)). A pipeline runs each stage on its own
+  agent: kind `stage`, with a role (`worker`, `reviewer`, or `adversarial-reviewer`), a title (`implement`,
+  `Review 1`, ...), and a fixed model. They show as chat tabs after side chats.
+  - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
+    pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
+    `subagents.agentOverrides.<role>`; `modelsUsed(agentId)` lists the physical models Pi recorded on the agent's
+    assistant messages.
+  - The thinking level comes from the role default. Env adds `PI_SPORE_CHAT_KIND=stage` and `PI_SPORE_STAGE_ROLE`.
+  - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,request_human_input,artifacts_list,
+    artifacts_read,report`, `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
+  - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
+    picker), because the pipeline judges a reviewer by the model it ran on (R4.4).
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
   CLI with `pi --session <path>`.
 - Extension dialogs (`extension_ui_request`) become pending prompts on the chat and on Home. The answer goes back as
@@ -109,10 +121,18 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
     never from the request. A read-only side chat may list and read; a write answers 403 `read_only_chat`.
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
-    chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033). The orchestrator rules say to start
+    chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033). Stage agents get stage worker or stage
+    reviewer rules: end every turn with `report`, and record fail-first proofs. The orchestrator rules say to start
     every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120).
-  - Not built yet: `ask_coordinator` (inside a lane), `report` (the structured stage result), and the coordinator's
-    `start_lane`, `answer_lane`, `merge_lane`.
+  - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
+    `terminate: true` through `POST /api/bridge/reports` (open to read-only reviewers). Reviewers give a verdict
+    (`approve`, `revise`) and findings (`blocking`, `important`, `minor`); the worker lists each new test with the
+    artifact path of its failing run. For a reviewer's REVISE with findings but none blocking, the tool first asks
+    the Jev classifier (`router.classifier`, through `ctx.modelRegistry.classify`) whether another round is worth
+    it, and adds `earlyStop: { stop, probability }` (stop at P >= 0.7), or `{ stop: false, error }` when the
+    classifier fails (ADR 0140).
+  - Not built yet: `ask_coordinator` (inside a lane), and the coordinator's `start_lane`, `answer_lane`,
+    `merge_lane`.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
   Restarting it with `--session` restores the conversation.
 - Spike Q1 ([notes](spikes/q1-rpc-agents.md)) confirmed the full setup loads in RPC mode. Rules from it:
@@ -244,9 +264,9 @@ export interface ServerHost {
 | Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`), kind (worker, side), active, closed, closed at, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, coordinator agent, integration branch, spec artifact, state |
 | Lane | A workspace inside a run | id, run, workspace, wave, depends on, brief artifact, state |
-| Pipeline | A declared stage list (file) | id, source (user or project), stages |
-| PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, current stage, state |
-| Stage | One stage execution | id, pipeline run, name, round, agent, verdict, findings |
+| Pipeline | A declared stage list (file) | id, source (user, project, or built-in), stages |
+| PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
+| Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer) |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
@@ -263,7 +283,7 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
   no native module to build. It supports FTS5 for the v2 search.
 - A lock file next to it. A second server refuses to start.
 - Each module owns its tables and ships numbered migrations.
-- **Jobs.** PR watching and deliveries are jobs today; pipeline stages and lane starts will be. Core owns the
+- **Jobs.** PR watching, deliveries, and pipeline stages are jobs; lane starts will be. Core owns the
   runner (`host.jobs`, `packages/server-core/src/jobs.ts`) and its table `core_jobs`:
   - A module defines a kind (`<module id>.<name>`) as a list of named steps during setup, and starts jobs with
     `jobs.start(kind, subject, { key, after })`. Start is a plain insert, so it joins the caller's transaction; the
@@ -275,13 +295,14 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
   - Jobs with the same kind and key run one at a time, oldest first; a waiting or interrupted one blocks the later
     ones, so deliveries keep their order. `jobs.wake(kind, key)` makes waiting jobs due again; a wake during a
     running step applies when it settles. A step that throws makes its job `waiting` with the error; waiting jobs
-    run again on a wake, a retry, and a server start.
+    run again on a wake, a retry, and a server start. `jobs.retry(id)` does the same for one job; a module can retry
+    only jobs of its own kinds.
   - After every module's setup, the runner resumes running and waiting jobs on the step they were on, so a
     committed step never runs again. A delayed step keeps its due time. Jobs of a kind no enabled module defines
     are left as they are.
   - A step marked `agentTurn` that was cut off is not run again: its job becomes `interrupted` and shows on Home
-    with Retry and Cancel. No step waits on an agent turn yet. Asking the agent process to continue its session
-    instead comes with pipeline stages.
+    with Retry and Cancel. Pipeline stages do not use it: their `await` step waits for the turn's report and, after a
+    restart, asks the agent once to continue (section 8).
   - `GET /api/jobs?state=` lists jobs (default: not ended), `POST /api/jobs/:id/retry` runs an interrupted or
     waiting job's step now, `POST /api/jobs/:id/cancel` ends one. A wrong state is 409.
 - **Deliveries.** A question, answer, or lane result to an agent is a row in `agents_deliveries`, written through
@@ -356,10 +377,16 @@ interface ChangeOps {
 
 ## 8. Pipelines
 
-See [ADR 0006](decisions/0006-declared-pipelines.md).
+See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
+[ADR 0016](decisions/0016-fail-first-proof.md), and [ADR 0140](decisions/0140-pipeline-stage-agents.md).
+Requirements R6, R4.4, R4.9.
 
-Pipeline files are TOML (one parser for all config). `~/.pi-spore/pipelines/<id>.toml` and
-`<project>/.pi-spore/pipelines/<id>.toml`. A project file with the same id wins.
+The `pipelines` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`,
+`actions`) runs declared pipelines on a workspace. A run needs no coordinator run (R6.8).
+
+Pipeline files are TOML (`smol-toml`, as config.toml): `~/.pi-spore/pipelines/<id>.toml` (source `user`) and
+`<project>/.pi-spore/pipelines/<id>.toml` (source `project`). A project file with the same id wins. The file's `id`
+must equal its file name. A built-in `default` is used when no file has id `default`:
 
 ```toml
 id = "default"
@@ -367,32 +394,84 @@ id = "default"
 [[stage]]
 name = "implement"
 role = "worker"
-tier = "route"            # use the router; "heavy" | "medium" | "light" pick a role tier
+tier = "route"            # spore/auto (R4.9)
 
 [[stage]]
 name = "review"
 role = "reviewer"
-fresh = true              # new read-only agent each round
-rounds = 2                # hard limit of review → worker rounds
-early_stop = "jev"        # Jev may stop early when only minor findings remain
-min_strength_over = "implement"   # must be stronger than the model that implemented
+rounds = 2                # the most reviewer runs; a fresh read-only agent each round
+early_stop = "jev"        # Jev may end the review early; it never adds a round
+min_strength_over = "implement"   # the reviewer's tier must be above every model the worker used
 
 [[stage]]
 name = "adversarial"
 role = "adversarial-reviewer"
-fix_passes = 1
+rounds = 1
+fix_passes = 1            # a REVISE on the last round gets one fix, with no review after it
 
 [[stage]]
 name = "gates"
 gates = ["check", "test"] # action names from config.toml
-fail_first = "artifact"   # reviewer-checked proof (ADR 0016)
+fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 ```
 
-- A PipelineRun stores the content hash of the file it started with. Edits apply to new runs only.
-- Each stage is a job. A review round is one step: start a fresh reviewer, send the diff and brief, wait for the
-  `report` tool, store the verdict.
-- `min_strength_over` enforces R4.4. If the implement stage ran on a local model, the review stage refuses any
-  model that is not stronger. Model strength comes from the tier list in settings (ADR 0023).
+- Checks: unknown keys, keys of the other stage kind, and bad values are 422 `bad_pipeline` naming the file. The
+  first stage, and only it, is the `worker` stage. A stage sets `model` (`provider/id`) or `tier`, or neither (the
+  role default). Only `tier = "route"` is built; other tiers are an error that says so. `model` is refused in
+  project files (R17.3). `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
+  built (R6.1); it comes from the role default.
+- `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
+  never falls back to the built-in one.
+- **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }`
+  stores the file's SHA-256, its parsed stages (an edit never changes a running run), the brief, and the asking chat
+  (the active orchestrator chat). One run per workspace is `running` or `waiting_user` (409 `pipeline_running`).
+  States: `running`, `waiting_user`, `passed`, `failed`, `stopped`.
+- **Stage jobs.** Each stage is a `pipelines.stage` job keyed by the workspace. Steps: `advance` (start the next
+  turn), `await` (wait for its report), `decide` (apply the verdict), `gate`, and `finish` (start the next stage's
+  job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
+  together. Prompts name the turn on a `Turn: <id>` line, and the brief is the workspace artifact
+  `pipelines/<run>/brief.md`.
+- **Reports.** The bridge passes `report` calls to `PipelinesKey.report`. Only the turn's agent may report (403
+  `not_your_turn`), once per turn (a repeat returns the stored turn; an older turn is 409 `turn_closed`). Reviewers
+  must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
+  later report never drops a test.
+- **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
+  one and tells the agent once to continue and call `report`. There are no other automatic reminders.
+- **Review rounds** (R6.3, R6.4). Round r starts a fresh reviewer with the brief, the manifest with proof paths, and
+  a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
+  from the provider's `changes`). APPROVE ends the stage. REVISE sends the findings to the same worker as a fix
+  turn, then round r + 1. Jev ends the stage after that fix instead when the stage has `early_stop = "jev"`, the
+  report's `earlyStop.stop` is true, and no finding is blocking. A REVISE on the last round gets one last fix with
+  `fix_passes = 1`; otherwise the run is `waiting_user` with a `pipeline-round-limit` approval on Home for the asking
+  chat. Its `decided` hook, in the decision's transaction, moves the run on (approve) or stops it (decline).
+- **min_strength_over** (R4.4, ADR 0023). Before a reviewer starts, its model (stage `model`, `spore/auto` for
+  `route`, else the role default) must have a tier strictly above every model in `modelsUsed` of the worker. A
+  missing model or tier, or a weaker model, throws: the job waits with the error, shown on the run as `blocked`,
+  and Retry checks again after the user fixes the settings. When the report comes, the reviewer's own `modelsUsed`
+  is checked the same way; a failure ends the run `failed`.
+- **Gates** (R6.5, ADR 0016). With `fail_first = "artifact"`, each test in the manifest needs a non-empty proof
+  artifact, or the run fails with `missing fail-first proof for <test>` before any action runs. Then each gate
+  action runs once through `ActionsKey.start(..., "pipeline", { key })` with the key `<run>:<stage>:<action>:<attempt>`,
+  so a step that runs again gets the same action run back. A run a restart cut off starts once more under the next
+  attempt. A failure ends the run `failed` with the last 4 KiB of its log. The failing tests are never run again.
+
+| Route | Does |
+|---|---|
+| `GET /api/pipelines/workspaces/:id` | `{ pipelines }` |
+| `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }` | Starts a run (201). |
+| `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
+| `GET /api/pipelines/runs/:id` | `{ run }` |
+| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). |
+| `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
+
+- Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.
+- Web: a Pipeline tab (after PR) with a start form when no run is active, and the runs: state, current stage,
+  message, `blocked` with Retry, Cancel, and each stage's turns with links to the agents' chats, verdicts, findings
+  by severity, tests with proofs, and Jev's answer. A Details panel shows the latest run and its open findings.
+- CLI: `pi-spore pipeline list <workspace>`, `pipeline start <workspace> <pipeline> (--brief <text> | --brief-file
+  <path>)`, `pipeline runs <workspace>`, `pipeline show <run>`, `pipeline cancel <run>`, `pipeline retry <run>`.
+- Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
+  card when a run passes, and a tool for the orchestrator to start a run.
 
 ## 9. Runs and lanes
 
@@ -464,8 +543,8 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   numbers counts as having room; the reason says "usage unknown". If the spill plan is full too, the route is `wait`:
   the request ends with an error that names the first reset, and no state is stored, so the next message routes
   again.
-- Not built yet: the "switch to local implementer?" Approval for roles pinned to a cloud model (Home approvals do not
-  exist yet), and pipeline stages (`tier = "route"` for `implement`, R4.9).
+- Not built yet: the "switch to local implementer?" Approval for roles pinned to a cloud model. Pipelines use the
+  router through `tier = "route"` (section 8, R4.9).
 
 ### Router settings
 
@@ -584,7 +663,7 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   but not focused, each new item shows a notification. Items already there when the page loads do not.
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
   subject as JSON, state `open`, `approved`, or `declined`, outcome, times). The module that owns a gate registers
-  its kind through `ApprovalsKey.register({ kind, subject, approve })` and files approvals with
+  its kind through `ApprovalsKey.register({ kind, subject, approve, decided? })` and files approvals with
   `ApprovalsKey.file(caller, ...)`; the kind's TypeBox schema checks the subject both times. Open approvals are Home
   items (`kind: "approval"`); an agent with an open approval is not also shown as finished.
   - `GET /api/attention/approvals?state=` lists them, newest first; `GET /api/attention/approvals/:id` reads one.
@@ -594,6 +673,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     `approval_deciding`; a decided one is 409 `approval_decided`; a kind no enabled module handles is 409
     `approval_kind_unknown`.
   - `POST /api/attention/approvals/:id/decline` `{ note? }` stores the decline and delivers it with the note.
+  - A kind's optional `decided(subject, approval, approved)` runs inside the transaction that stores either
+    decision; a throw rolls it back and leaves the approval open. Pipelines use it for `pipeline-round-limit`.
   - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
@@ -976,6 +1057,9 @@ See [ADR 0027](decisions/0027-actions.md). The `actions` module reads `[actions.
 - Output goes to `~/.pi-spore/logs/actions/<workspace id>/<run id>.log`. Run records (status, exit code, times) are
   in the `actions_runs` table.
 - Run states: `queued`, `running`, `succeeded`, `failed`, `cancelled`, `interrupted` (the server stopped).
+- Triggers: `user`, `agent`, `create`, `archive`, `pipeline`. `ActionsKey.start(workspace, name, trigger, { key })`
+  with a key the workspace used before returns that run and starts nothing, so a pipeline gate never runs a check
+  twice.
 
 API under `/api/actions`:
 
@@ -1077,6 +1161,7 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   ones refuse a read-only side chat with 403 `read_only_chat`.
 - CLI for approvals: `pi-spore approvals list [--all]`, `pi-spore approvals approve <id>`, `pi-spore approvals
   decline <id> [--note text]`.
+- `POST /api/bridge/reports` takes a stage agent's `report` (section 8), read-only callers included.
 - CLI for jobs: `pi-spore jobs [--all]` (id, kind, state, step, error), `pi-spore jobs retry <id>`, `pi-spore jobs
   cancel <id>`.
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.

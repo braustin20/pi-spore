@@ -7,6 +7,7 @@ import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule, INBOX_TOPIC } from "@pi-spore/mod-attention/server";
 import { cardBrief, kanbanModule } from "@pi-spore/mod-kanban/server";
+import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
@@ -66,6 +67,7 @@ async function start(
       attentionModule,
       kanbanModule,
       artifactsModule,
+      pipelinesModule,
       bridgeModule,
     ],
     {

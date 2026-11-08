@@ -4,8 +4,17 @@ import type { ActionLog, ActionRun, ActionTrigger, ActionView } from "@pi-spore/
 /** Project actions for other modules, such as pipeline gates and the bridge's `check` and `run_action`. */
 export interface Actions {
   list(workspaceId: string): Promise<ActionView[]>;
-  /** Starts a run. Throws ApiError 404 for an unknown action. Exclusive runs may start queued. */
-  start(workspaceId: string, name: string, trigger: ActionTrigger): Promise<ActionRun>;
+  /**
+   * Starts a run. Throws ApiError 404 for an unknown action. Exclusive runs may start queued. With a `key` that
+   * this workspace already used, starts nothing and returns the run stored under it, whatever its status. A caller
+   * stores the key before it waits, so a restart never runs the same check twice.
+   */
+  start(
+    workspaceId: string,
+    name: string,
+    trigger: ActionTrigger,
+    options?: { key?: string },
+  ): Promise<ActionRun>;
   /** Resolves when the run has ended. */
   wait(runId: string): Promise<ActionRun>;
   /** Throws ApiError 404 for an unknown run. */

@@ -6,6 +6,8 @@ import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { removeInside } from "@pi-spore/module-api/node";
 import {
   type Agent,
+  type AgentRole,
+  type ChatKind,
   CreateAgentRequest,
   CreateChatRequest,
   DialogAnswer,
@@ -78,8 +80,8 @@ const MIGRATIONS = [
 interface Row {
   id: string;
   workspace_id: string;
-  role: "orchestrator";
-  kind: "worker" | "side";
+  role: AgentRole;
+  kind: ChatKind;
   active: number;
   title: string | null;
   forked_from: string | null;
@@ -173,9 +175,10 @@ export function createAgentsModule(
           const extra: Record<string, string> = {
             PI_SPORE_AGENT_ID: agent.id,
             PI_SPORE_WORKSPACE_ID: workspace.id,
-            // spore-bridge gives side chats their own rules (ADR 0033).
+            // spore-bridge gives side chats and stage agents their own rules (ADR 0033, R6).
             PI_SPORE_CHAT_KIND: agent.kind,
           };
+          if (agent.kind === "stage") extra.PI_SPORE_STAGE_ROLE = agent.role;
           // Unity worktrees tell unity-mcp which editor is theirs (ADR 0011).
           const project = await projects.get(workspace.projectId);
           if (project.traits.some((trait) => trait.id === "unity"))
@@ -285,12 +288,13 @@ export function createAgentsModule(
       const insert = (row: Row): Agent => {
         host.store.run(
           `INSERT INTO agents_agents (id, workspace_id, role, kind, active, title, forked_from, session_file, created_at, model)
-           VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
+           VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?, ?)`,
           row.id,
           row.workspace_id,
           row.role,
           row.kind,
           row.active,
+          row.title,
           row.forked_from,
           row.created_at,
           row.model,
@@ -306,13 +310,17 @@ export function createAgentsModule(
         kind: Row["kind"],
         forkedFrom: string | null,
         model: string | null,
+        { role, title }: { role: AgentRole; title: string | null } = {
+          role: "orchestrator",
+          title: null,
+        },
       ): Row => ({
         id: host.newId(),
         workspace_id: workspaceId,
-        role: "orchestrator",
+        role,
         kind,
         active: 1,
-        title: null,
+        title,
         forked_from: forkedFrom,
         session_file: null,
         created_at: host.now(),
@@ -346,6 +354,17 @@ export function createAgentsModule(
           agents.view(agentId);
           queue.add(agentId, message);
         },
+        createStage: (workspaceId, stage) => {
+          const workspace = workspaces.get(workspaceId);
+          return insert(
+            newRow(workspace.id, "stage", null, stage.model ?? null, {
+              role: stage.role,
+              title: stage.title,
+            }),
+          );
+        },
+        roleDefaults: (role) => agents.roleDefaults(role),
+        modelsUsed: (agentId) => agents.modelsUsed(agentId),
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),

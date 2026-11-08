@@ -16,15 +16,16 @@ export function chatTitle(message: string): string {
 }
 
 /**
- * The order the chat page lists a workspace's chats in: the active worker chat, then side chats, then older worker
- * chats. Newest first within each group.
+ * The order the chat page lists a workspace's chats in: the active worker chat, then side chats, then stage chats,
+ * then older worker chats. Newest first within each group.
  */
 export function orderChats<T extends Pick<Agent, "kind" | "active" | "createdAt">>(
   chats: readonly T[],
 ): T[] {
   const rank = (chat: T) => {
     if (chat.kind === "side") return 1;
-    return chat.active ? 0 : 2;
+    if (chat.kind === "stage") return 2;
+    return chat.active ? 0 : 3;
   };
   return [...chats].sort((a, b) => rank(a) - rank(b) || b.createdAt - a.createdAt);
 }
@@ -43,14 +44,28 @@ export const AgentStatus = Type.Union([
 ]);
 export type AgentStatus = Static<typeof AgentStatus>;
 
-export const AgentRole = Type.Literal("orchestrator");
+/** The roles of a review pipeline's stage agents (R6, ADR 0006). */
+export const StageRole = Type.Union([
+  Type.Literal("worker"),
+  Type.Literal("reviewer"),
+  Type.Literal("adversarial-reviewer"),
+]);
+export type StageRole = Static<typeof StageRole>;
+
+/** `orchestrator`: a workspace chat. The others are the stage roles of a pipeline's agents. */
+export const AgentRole = Type.Union([Type.Literal("orchestrator"), StageRole]);
 export type AgentRole = Static<typeof AgentRole>;
 
 /**
  * A workspace's chats (ADR 0030). `worker`: the chat that writes; only the workspace's active worker chat can run.
- * `side`: a read-only chat next to it, with read-only tools only.
+ * `side`: a read-only chat next to it, with read-only tools only. `stage`: an agent of a review pipeline stage (R6);
+ * its role says what it may do.
  */
-export const ChatKind = Type.Union([Type.Literal("worker"), Type.Literal("side")]);
+export const ChatKind = Type.Union([
+  Type.Literal("worker"),
+  Type.Literal("side"),
+  Type.Literal("stage"),
+]);
 export type ChatKind = Static<typeof ChatKind>;
 
 /** A model as `provider/id`: a provider without a slash or space, then an id without a space (ADR 0120). */
@@ -186,7 +201,7 @@ export type AgentList = Static<typeof AgentList>;
 export const CreateAgentRequest = Type.Object(
   {
     workspaceId: Type.String({ minLength: 1 }),
-    role: Type.Optional(AgentRole),
+    role: Type.Optional(Type.Literal("orchestrator")),
     /** The model of the new chat. An existing active chat keeps its own. */
     model: Type.Optional(ModelRef),
   },

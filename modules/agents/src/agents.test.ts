@@ -20,6 +20,7 @@ import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import type { Agents } from "./contract.js";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
@@ -1297,5 +1298,213 @@ describe("deliveries on the job runner", () => {
       "user: second",
       "assistant: echo: second",
     ]);
+  });
+});
+
+describe("stage agents (R6)", () => {
+  let api: Agents;
+  const probe: ServerModule = {
+    id: "stage-probe",
+    requires: ["agents"],
+    core: false,
+    setup(host) {
+      api = host.use(AgentsKey);
+    },
+  };
+  const setupStages = () =>
+    setup(
+      {
+        roleDefaults: async (role) => ({
+          provider: "fake",
+          modelId: "fake-1",
+          thinking: role === "reviewer" ? "low" : "high",
+        }),
+      },
+      {},
+      {},
+      [probe],
+    );
+  const replied = (agentId: string, count: number) =>
+    until(() => statuses(agentId).filter((s) => s === "idle").length >= count);
+  /** Creates the stage and queues its prompt in one transaction, as a pipeline does. */
+  const start = (
+    workspaceId: string,
+    stage: Parameters<Agents["createStage"]>[1],
+    message = "tools",
+  ) =>
+    server.store.transaction(() => {
+      const agent = api.createStage(workspaceId, stage);
+      api.deliver(agent.id, message);
+      return agent;
+    });
+
+  it("starts a reviewer through its delivery with read-only tools, its model, and a read-only token", async () => {
+    await setupStages();
+    const { agentId: worker, workspaceId } = await makeAgent();
+    await json(await prompt(worker, "one"));
+    await until(() => statuses(worker).includes("idle"));
+
+    const stage = start(workspaceId, {
+      role: "reviewer",
+      title: "Review 1",
+      model: "fake/other-1",
+    });
+    expect(stage).toMatchObject({
+      kind: "stage",
+      role: "reviewer",
+      active: true,
+      title: "Review 1",
+    });
+    await replied(stage.id, 1);
+
+    // The stage runs next to the live worker chat.
+    const launch = launches()[1];
+    expect(launch?.argv).toEqual([
+      "--mode",
+      "rpc",
+      "--no-extensions",
+      "--session-dir",
+      join(server.paths.sessions, workspaceId),
+      "--provider",
+      "fake",
+      "--model",
+      "other-1",
+      "--thinking",
+      "low",
+      "--tools",
+      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report",
+      "--exclude-tools",
+      "mcp__*",
+    ]);
+    expect(launch?.env).toMatchObject({
+      PI_SPORE_CHAT_KIND: "stage",
+      PI_SPORE_STAGE_ROLE: "reviewer",
+    });
+    expect(server.agentTokens.find(launch?.env.PI_SPORE_TOKEN)).toEqual({
+      agentId: stage.id,
+      workspaceId,
+      readOnly: true,
+    });
+    expect(agentsModule.manager().liveCount()).toBe(2);
+  });
+
+  it("gives a stage worker Pi's normal tools and a writable token, with its role's thinking level", async () => {
+    await setupStages();
+    const { workspaceId } = await makeAgent();
+    const stage = start(workspaceId, { role: "worker", title: "Implement" });
+    await replied(stage.id, 1);
+
+    const launch = launches()[0];
+    expect(launch?.argv).not.toContain("--tools");
+    expect(launch?.argv).not.toContain("--exclude-tools");
+    expect(launch?.argv).toEqual(expect.arrayContaining(["--thinking", "high"]));
+    expect(launch?.env).toMatchObject({
+      PI_SPORE_CHAT_KIND: "stage",
+      PI_SPORE_STAGE_ROLE: "worker",
+    });
+    expect(server.agentTokens.find(launch?.env.PI_SPORE_TOKEN)).toEqual({
+      agentId: stage.id,
+      workspaceId,
+    });
+  });
+
+  it("runs an adversarial reviewer read-only too", async () => {
+    await setupStages();
+    const { workspaceId } = await makeAgent();
+    const stage = start(workspaceId, { role: "adversarial-reviewer", title: "Attack" });
+    await replied(stage.id, 1);
+    const launch = launches()[0];
+    expect(launch?.argv).toEqual(expect.arrayContaining(["--exclude-tools", "mcp__*"]));
+    expect(server.agentTokens.find(launch?.env.PI_SPORE_TOKEN)).toMatchObject({ readOnly: true });
+  });
+
+  it("starts no process until the first delivery, and none when the transaction rolls back", async () => {
+    await setupStages();
+    const { workspaceId } = await makeAgent();
+    const stage = api.createStage(workspaceId, { role: "reviewer", title: "Quiet" });
+    expect(stage.status).toBe("stopped");
+    expect(agentsModule.manager().liveCount()).toBe(0);
+    expect(existsSync(record)).toBe(false);
+
+    expect(() =>
+      server.store.transaction(() => {
+        api.deliver(stage.id, "tools");
+        throw new Error("roll back");
+      }),
+    ).toThrow("roll back");
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(existsSync(record)).toBe(false);
+  });
+
+  it("refuses a stage for an unknown workspace with 404", async () => {
+    await setupStages();
+    expect(() => api.createStage("nope", { role: "reviewer", title: "x" })).toThrow(
+      expect.objectContaining({ status: 404 }),
+    );
+  });
+
+  it("leaves the workspace's chats alone: one active worker chat stays, and the stage is listed after side chats", async () => {
+    await setupStages();
+    const { agentId: worker, workspaceId } = await makeAgent();
+    const stage = api.createStage(workspaceId, { role: "reviewer", title: "R" });
+    const { agent: side } = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents/chats", { workspaceId, kind: "side" }),
+      201,
+    );
+    const { agent: fresh } = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
+      201,
+    );
+    const { agents } = await json<{ agents: Agent[] }>(
+      await server.request("GET", `/api/agents?workspaceId=${workspaceId}`),
+    );
+    expect(agents.map((agent) => agent.id)).toEqual([fresh.id, side.id, stage.id, worker]);
+    expect(agents.find((agent) => agent.id === stage.id)?.active).toBe(true);
+  });
+
+  it("answers 409 stage_model_fixed when the model of a stage changes", async () => {
+    await setupStages();
+    const { workspaceId } = await makeAgent();
+    const stage = api.createStage(workspaceId, { role: "reviewer", title: "R", model: "fake/a-1" });
+    const response = await server.request("POST", `/api/agents/${stage.id}/model`, {
+      provider: "fake",
+      modelId: "b-1",
+    });
+    expect(response.status).toBe(409);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "stage_model_fixed",
+    );
+    expect(existsSync(record)).toBe(false);
+  });
+
+  it("lists the distinct models Pi recorded, in first-seen order, and none before a session", async () => {
+    await setupStages();
+    const { agentId, workspaceId } = await makeAgent();
+    expect(await api.modelsUsed(agentId)).toEqual([]);
+    await json(await prompt(agentId, "one"));
+    await replied(agentId, 1);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/model`, {
+        provider: "other",
+        modelId: "b-2",
+      }),
+    );
+    await json(await prompt(agentId, "two"));
+    await replied(agentId, 2);
+    await json(await prompt(agentId, "three"));
+    await replied(agentId, 3);
+    expect(await api.modelsUsed(agentId)).toEqual(["fake/fake-1", "other/b-2"]);
+
+    const stage = api.createStage(workspaceId, { role: "reviewer", title: "R" });
+    expect(await api.modelsUsed(stage.id)).toEqual([]);
+  });
+
+  it("exposes the role defaults", async () => {
+    await setupStages();
+    expect(await api.roleDefaults("reviewer")).toEqual({
+      provider: "fake",
+      modelId: "fake-1",
+      thinking: "low",
+    });
   });
 });

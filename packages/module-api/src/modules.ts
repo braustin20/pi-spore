@@ -158,6 +158,8 @@ export interface JobRunner {
   wake(kind: string, key: string): void;
   /** Ends a job that has not ended. A step already running finishes, but writes nothing. */
   cancel(id: string): void;
+  /** Runs an `interrupted` or `waiting` job's step now. A module can retry only jobs of its own kinds. */
+  retry(id: string): void;
   list(filter?: { states?: readonly JobState[]; kind?: string; key?: string }): JobView[];
   /** Called after a job changes state or step. It is not called when a job starts. */
   onChange(listener: (job: JobView) => void): void;

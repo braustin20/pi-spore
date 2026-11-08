@@ -1,5 +1,6 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { Agent, AgentDialog } from "@pi-spore/shared";
+import type { Agent, AgentDialog, StageRole } from "@pi-spore/shared";
+import type { RoleDefaults } from "./launch.js";
 
 /** What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers. */
 export type AgentChange = "status" | "dialog" | "waiting" | "chat" | "helpers";
@@ -31,6 +32,22 @@ export interface Agents {
    * call; an existing chat keeps its own (ADR 0120).
    */
   activeWorker(workspaceId: string, options?: { model?: string }): Promise<Agent>;
+  /**
+   * Creates a pipeline stage agent (R6): kind `stage`, active, with the given role, title, and model (`provider/id`).
+   * It starts no process. A caller runs it in `store.transaction` together with `deliver`, so the agent starts only
+   * through its delivery after the commit. Throws a 404 ApiError for an unknown workspace.
+   */
+  createStage(
+    workspaceId: string,
+    stage: { role: StageRole; title: string; model?: string },
+  ): Agent;
+  /** The model and thinking level a role gets from the user's pi-subagents settings (ADR 0013). */
+  roleDefaults(role: string): Promise<RoleDefaults>;
+  /**
+   * The distinct physical models (`provider/id`) Pi recorded on the agent's assistant messages, in the order they
+   * first appear. Empty when the agent has no session yet.
+   */
+  modelsUsed(agentId: string): Promise<string[]>;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
   /** Every agent, for Home. */

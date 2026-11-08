@@ -2,6 +2,7 @@ import { ActionsKey } from "@pi-spore/mod-actions/server";
 import { type ArtifactOwner, ArtifactsKey } from "@pi-spore/mod-artifacts/server";
 import { QuestionsKey } from "@pi-spore/mod-attention/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
+import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type BridgeCaller, bridgeCaller, type ServerModule } from "@pi-spore/module-api";
 import {
@@ -19,6 +20,7 @@ import {
   type CardColumn,
   FileQuestionRequest,
   parseJsonBody,
+  StageReport,
   StartBridgeRunRequest,
 } from "@pi-spore/shared";
 
@@ -44,7 +46,7 @@ export function tail(text: string): { text: string; truncated: boolean } {
  */
 export const bridgeModule: ServerModule = {
   id: "bridge",
-  requires: ["workspaces", "attention", "actions", "kanban", "artifacts"],
+  requires: ["workspaces", "attention", "actions", "kanban", "artifacts", "pipelines"],
   core: false,
   setup(host) {
     const workspaces = host.use(WorkspacesKey);
@@ -52,6 +54,7 @@ export const bridgeModule: ServerModule = {
     const actions = host.use(ActionsKey);
     const cards = host.use(CardsKey);
     const artifacts = host.use(ArtifactsKey);
+    const pipelines = host.use(PipelinesKey);
 
     /** A run of the caller's workspace. Other workspaces' runs look like they do not exist. */
     const ownRun = (caller: BridgeCaller, id: string): ActionRun => {
@@ -194,6 +197,13 @@ export const bridgeModule: ServerModule = {
       const caller = bridgeCaller(c);
       const request = parseJsonBody(FileQuestionRequest, await c.req.text(), "question");
       return c.json({ question: questions.file(caller, request) }, 201);
+    });
+
+    // Reviewers are read-only and report too, so this route does not refuse read-only callers.
+    host.routes.post("/reports", async (c) => {
+      const caller = bridgeCaller(c);
+      const request = parseJsonBody(StageReport, await c.req.text(), "report");
+      return c.json(pipelines.report(caller, request));
     });
 
     host.routes.post("/runs", async (c) => {

@@ -1,4 +1,5 @@
 import { dirname, resolve } from "node:path";
+import type { BridgeEnv, StageRole } from "./client.js";
 
 /** The prompt section name. Pi wraps it in `<pi_spore_rules>` tags. */
 export const RULES_SECTION = "pi_spore_rules";
@@ -67,9 +68,46 @@ files still apply.
   orchestrator chat.
 - Your history may start with a copy of the orchestrator's conversation. Tools used there may be missing here.`;
 
+/** The rules of the implement worker of a review pipeline (R6). */
+export const STAGE_WORKER_RULES = `You are the implement worker of a pi-spore review pipeline, in one workspace of pi-spore, a local agent workbench.
+The user's global AGENTS.md is left out on purpose; these rules take its place. Project AGENTS.md files still apply.
+
+- Each prompt from the pipeline names a turn id. End every turn by calling \`report\` with that turn id. The pipeline
+  waits for it.
+- Write the code the brief asks for, in this workspace's folder. Do not start other agents.
+- Fail-first proof: before you make a new test pass, run it and see it fail. Save that failing run with
+  \`artifacts_write\` in workspace scope, and list the test with the artifact path in the \`tests\` of \`report\`. List
+  every new test in every report.
+- When the pipeline sends review findings, fix them, then call \`report\` with the new turn id.
+- Run \`check\` before you report. Never merge, push, or open a pull request.`;
+
+/** The rules of both read-only reviewer roles of a review pipeline (R6). The read-only tools enforce them. */
+export const STAGE_REVIEWER_RULES = `You are a read-only reviewer in a pi-spore review pipeline, in one workspace of pi-spore, a local agent workbench.
+The user's global AGENTS.md is left out on purpose; these rules take its place. Project AGENTS.md files still apply.
+
+- You can read and search files and artifacts. You cannot change files, run commands, or start agents; those tools
+  are not there.
+- Read the brief, the diff, and the test list your prompt names. Check each fail-first proof artifact: it must show
+  the new test failing for the right reason. A new test without a proof is a blocking finding.
+- End your turn by calling \`report\` with the turn id, a verdict (\`approve\` or \`revise\`), and findings marked
+  \`blocking\`, \`important\`, or \`minor\`.`;
+
+/** The rules of a stage agent by its role. */
+const stageRules = (role: StageRole): string =>
+  role === "worker" ? STAGE_WORKER_RULES : STAGE_REVIEWER_RULES;
+
 export interface PromptOptions {
   contextFiles: { path: string; content: string }[];
   sections: Record<string, string>;
+}
+
+function rulesFor({ chatKind, stageRole }: Pick<BridgeEnv, "chatKind" | "stageRole">): string {
+  if (chatKind === "side") return SIDE_RULES;
+  if (chatKind === "stage") {
+    if (!stageRole) throw new Error("spore-bridge: a stage agent has no stage role");
+    return stageRules(stageRole);
+  }
+  return RULES;
 }
 
 /**
@@ -79,11 +117,11 @@ export interface PromptOptions {
 export function applyRules(
   options: PromptOptions,
   agentDir: string,
-  chatKind: "worker" | "side" = "worker",
+  chat: Pick<BridgeEnv, "chatKind" | "stageRole"> = { chatKind: "worker" },
 ): void {
   const global = resolve(agentDir);
   options.contextFiles = options.contextFiles.filter(
     (file) => dirname(resolve(file.path)) !== global,
   );
-  options.sections[RULES_SECTION] = chatKind === "side" ? SIDE_RULES : RULES;
+  options.sections[RULES_SECTION] = rulesFor(chat);
 }

@@ -1,7 +1,14 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import type { JobStep, JobTimer, JobView, ServerModule, Store } from "@pi-spore/module-api";
+import type {
+  JobRunner,
+  JobStep,
+  JobTimer,
+  JobView,
+  ServerModule,
+  Store,
+} from "@pi-spore/module-api";
 import type { Job, JobList } from "@pi-spore/shared";
 import { afterEach, describe, expect, expectTypeOf, it } from "vitest";
 import { createTestServer, type TestServer } from "./testing.js";
@@ -241,6 +248,40 @@ describe("a restart", () => {
     await timerTwo.live()[0]?.run();
     expect(log).toEqual(["late"]);
     expect(job(second, id).state).toBe("done");
+  });
+});
+
+describe("a module's job runner", () => {
+  it("retries a job of its own kind and refuses a job of another module", async () => {
+    let runner: JobRunner | undefined;
+    const failing = (name: string) => [
+      {
+        name: "only",
+        async run(): Promise<never> {
+          throw new Error(`${name} failed`);
+        },
+      },
+    ];
+    const server = await open([
+      testModule((host) => {
+        runner = host.jobs;
+        host.jobs.define("t.own", failing("own"));
+      }),
+    ]);
+    server.services.jobs.define("other.job", failing("other"));
+    const own = server.services.jobs.start("t.own", {});
+    const other = server.services.jobs.start("other.job", {});
+    await ticks();
+    const attempts = (id: string) => job(server, id).attempts;
+    const before = { own: attempts(own), other: attempts(other) };
+
+    runner?.retry(own);
+    await ticks();
+    expect(() => runner?.retry(other)).toThrow('not one of "t."');
+    await ticks();
+
+    expect(attempts(own)).toBe(before.own + 1);
+    expect(attempts(other)).toBe(before.other);
   });
 });
 

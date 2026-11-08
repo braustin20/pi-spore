@@ -20,8 +20,15 @@ let server: TestServer;
 let scratch: string;
 let agents: ReturnType<typeof createAgentsModule>;
 let approvals: Approvals;
-/** What the test gate was asked to carry out; `fail` makes it throw. */
-let gate: { approved: unknown[]; fail: boolean; release?: () => void; hold?: Promise<void> };
+/** What the test gate was asked to carry out; `fail` makes it throw. `decided` lists its decided() calls. */
+let gate: {
+  approved: unknown[];
+  decided: { subject: unknown; state: string; approved: boolean }[];
+  fail: boolean;
+  failDecided: boolean;
+  release?: () => void;
+  hold?: Promise<void>;
+};
 
 /** Another module with its own gate, as a model upgrade or "close Unity?" would register one (ADR 0100). */
 const gateModule: ServerModule = {
@@ -38,6 +45,10 @@ const gateModule: ServerModule = {
         if (gate.fail) throw new ApiError(409, "gate_failed", "The gate could not go on");
         gate.approved.push(subject);
         return `Switched to ${subject.model}.`;
+      },
+      decided: (subject, approval, approved) => {
+        if (gate.failDecided) throw new ApiError(409, "decided_failed", "The run is gone");
+        gate.decided.push({ subject, state: approval.state, approved });
       },
     });
   },
@@ -62,7 +73,7 @@ beforeEach(async () => {
     attentionModule,
     gateModule,
   ]);
-  gate = { approved: [], fail: false };
+  gate = { approved: [], decided: [], fail: false, failDecided: false };
 });
 afterEach(async () => {
   await agents.manager().stopAll();
@@ -321,6 +332,51 @@ describe("approvals (ADR 0100)", () => {
     await until(async () => (await inbox()).items.every((item) => item.kind !== "approval"));
     const decline = await server.request("POST", `/api/attention/approvals/${approval.id}/decline`);
     expect(decline.status).toBe(409);
+  });
+
+  it("runs decided with the decided approval on approve and on decline", async () => {
+    const { agentId, workspaceId } = await makeAgent("gates");
+    const approved = file(agentId, workspaceId);
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approved.id}/approve`, {
+        subject: { model: "bigger" },
+      }),
+    );
+    const declined = file(agentId, workspaceId, "other");
+    await json(await server.request("POST", `/api/attention/approvals/${declined.id}/decline`, {}));
+
+    expect(gate.decided).toEqual([
+      { subject: { model: "bigger" }, state: "approved", approved: true },
+      { subject: { model: "other" }, state: "declined", approved: false },
+    ]);
+  });
+
+  it("keeps the approval open when decided throws", async () => {
+    const { agentId, workspaceId } = await makeAgent("gates");
+    const approval = file(agentId, workspaceId);
+    gate.failDecided = true;
+
+    const approve = await server.request("POST", `/api/attention/approvals/${approval.id}/approve`);
+    expect(approve.status).toBe(409);
+    expect(await approve.json()).toMatchObject({ error: { code: "decided_failed" } });
+    const decline = await server.request(
+      "POST",
+      `/api/attention/approvals/${approval.id}/decline`,
+      {},
+    );
+    expect(decline.status).toBe(409);
+    expect(await decline.json()).toMatchObject({ error: { code: "decided_failed" } });
+
+    const stored = await json<{ approval: Approval }>(
+      await server.request("GET", `/api/attention/approvals/${approval.id}`),
+    );
+    expect(stored.approval).toMatchObject({ state: "open" });
+    expect(stored.approval.decidedAt).toBeUndefined();
+    expect(gate.decided).toEqual([]);
+
+    gate.failDecided = false;
+    await json(await server.request("POST", `/api/attention/approvals/${approval.id}/decline`, {}));
+    expect(gate.decided).toMatchObject([{ approved: false }]);
   });
 });
 

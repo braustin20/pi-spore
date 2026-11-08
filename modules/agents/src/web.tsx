@@ -303,27 +303,29 @@ function ChatView({
 
   const controls = (
     <>
-      <Select
-        value={currentModel}
-        onFocus={loadModels}
-        onChange={(event) => {
-          const [provider, ...rest] = event.target.value.split("/");
-          void call("POST", "model", { provider, modelId: rest.join("/") });
-        }}
-        disabled={!active}
-        className="w-48 min-w-0 xl:w-96"
-        aria-label="Model for the next message"
-        title="Model for the next message"
-      >
-        {!currentModel && <option value="">Model</option>}
-        {modelOptions.map((model) => (
-          <option key={modelKey(model)} value={modelKey(model)}>
-            {`${model.name ?? model.id} (${model.provider})${
-              routedTo && modelKey(model) === currentModel ? ` → ${routedTo.id}` : ""
-            }`}
-          </option>
-        ))}
-      </Select>
+      {agent?.kind !== "stage" && (
+        <Select
+          value={currentModel}
+          onFocus={loadModels}
+          onChange={(event) => {
+            const [provider, ...rest] = event.target.value.split("/");
+            void call("POST", "model", { provider, modelId: rest.join("/") });
+          }}
+          disabled={!active}
+          className="w-48 min-w-0 xl:w-96"
+          aria-label="Model for the next message"
+          title="Model for the next message"
+        >
+          {!currentModel && <option value="">Model</option>}
+          {modelOptions.map((model) => (
+            <option key={modelKey(model)} value={modelKey(model)}>
+              {`${model.name ?? model.id} (${model.provider})${
+                routedTo && modelKey(model) === currentModel ? ` → ${routedTo.id}` : ""
+              }`}
+            </option>
+          ))}
+        </Select>
+      )}
       <Select
         value={state.thinkingLevel ?? ""}
         onFocus={loadModels}

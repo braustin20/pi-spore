@@ -15,6 +15,7 @@ import {
   type Run,
   RunAnswer,
 } from "./client.js";
+import { registerReportTool } from "./report.js";
 import { applyRules } from "./rules.js";
 
 /** How long one wait for a run may hold a request; the server caps it at 30 s. */
@@ -88,7 +89,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
 
   // ADR 0031: pi-spore's rules replace the user's global AGENTS.md in agents.
   pi.on("before_agent_start", (event) => {
-    applyRules(event.systemPromptOptions, getAgentDir(), env.chatKind);
+    applyRules(event.systemPromptOptions, getAgentDir(), env);
   });
 
   pi.registerTool({
@@ -143,6 +144,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
   // so the card tools and artifacts_write stay off there.
   registerCardTools(pi, client);
   registerArtifactTools(pi, client);
+  registerReportTool(pi, client, env);
 
   pi.registerTool({
     name: "check",

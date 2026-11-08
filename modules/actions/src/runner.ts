@@ -34,6 +34,8 @@ export const MIGRATIONS = [
     ended_at INTEGER
   )`,
   "CREATE INDEX actions_runs_by_workspace ON actions_runs (workspace_id, created_at)",
+  "ALTER TABLE actions_runs ADD COLUMN key TEXT",
+  "CREATE UNIQUE INDEX actions_runs_by_key ON actions_runs (workspace_id, key) WHERE key IS NOT NULL",
 ];
 
 interface Row {
@@ -177,12 +179,23 @@ export class ActionRunner {
       .map(toRun);
   }
 
+  /** The run stored under `key` for the workspace, if any. */
+  byKey(workspaceId: string, key: string): ActionRun | undefined {
+    const row = this.options.store.get<Row>(
+      "SELECT * FROM actions_runs WHERE workspace_id = ? AND key = ?",
+      workspaceId,
+      key,
+    );
+    return row && toRun(row);
+  }
+
   /** Starts a run, or queues it behind an exclusive run in the same folder. Returns at once. */
   start(
     workspace: Workspace,
     action: ActionView,
     trigger: ActionTrigger,
     env: Record<string, string>,
+    key?: string,
   ): { run: ActionRun; done: Promise<ActionRun> } {
     const id = this.options.newId();
     const logPath = join(this.options.logsDir, workspace.id, `${id}.log`);
@@ -201,14 +214,15 @@ export class ActionRunner {
     };
     this.live.set(id, live);
     this.options.store.run(
-      `INSERT INTO actions_runs (id, workspace_id, action, trigger, status, log_path, created_at)
-       VALUES (?, ?, ?, ?, 'queued', ?, ?)`,
+      `INSERT INTO actions_runs (id, workspace_id, action, trigger, status, log_path, created_at, key)
+       VALUES (?, ?, ?, ?, 'queued', ?, ?, ?)`,
       id,
       workspace.id,
       action.name,
       trigger,
       logPath,
       this.options.now(),
+      key ?? null,
     );
     mkdirSync(dirname(logPath), { recursive: true });
     closeSync(openSync(logPath, "a"));

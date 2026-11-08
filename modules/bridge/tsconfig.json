@@ -32,6 +32,9 @@
       "path": "../kanban"
     },
     {
+      "path": "../pipelines"
+    },
+    {
       "path": "../agents"
     },
     {

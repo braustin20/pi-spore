@@ -5,6 +5,7 @@ import {
   type Agent,
   type AgentDialog,
   type AgentModel,
+  type AgentRole,
   type AgentStatus,
   applyPiEvent,
   type ChatKind,
@@ -27,14 +28,20 @@ import {
 } from "./child-runs.js";
 import type { AgentAttention, AgentChange } from "./contract.js";
 import { ChatImages } from "./images.js";
-import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS, withModel } from "./launch.js";
+import {
+  modelArgs,
+  type RoleDefaults,
+  SIDE_CHAT_TOOLS,
+  STAGE_REVIEWER_TOOLS,
+  withModel,
+} from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
 import { readTranscript } from "./transcript.js";
 
 export interface AgentRecord {
   id: string;
   workspaceId: string;
-  role: "orchestrator";
+  role: AgentRole;
   kind: ChatKind;
   /** The workspace's active worker chat, or a side chat: the chat can run (ADR 0030). */
   active: boolean;
@@ -135,6 +142,20 @@ interface Live {
   /** Waiting `/subagents-inspect-rpc` requests, by request id. */
   inspects: Map<string, (result: InspectResult) => void>;
 }
+
+/**
+ * Whether the agent's bridge token is read-only and its tools are an allowlist. Side chats are; so are the reviewer
+ * stage roles. The pipeline checks their work, so they must not change files or run commands (R6).
+ */
+const isReadOnly = ({ kind, role }: AgentRecord): boolean =>
+  kind === "side" || (kind === "stage" && role !== "worker");
+
+/** The tool arguments of an agent: a stage worker and a workspace chat get Pi's normal tools. */
+const toolArgs = (record: AgentRecord): readonly string[] => {
+  if (record.kind === "side") return SIDE_CHAT_TOOLS;
+  if (record.kind === "stage" && record.role !== "worker") return STAGE_REVIEWER_TOOLS;
+  return [];
+};
 
 /** How long a transcript request waits for pi-subagents' reply. */
 const INSPECT_TIMEOUT_MS = 10_000;
@@ -368,8 +389,41 @@ export class AgentManager {
     if (live.process?.alive) await live.process.request("abort", {}, 30_000);
   }
 
+  roleDefaults(role: string): Promise<RoleDefaults> {
+    return this.options.roleDefaults(role);
+  }
+
+  /**
+   * The physical models Pi recorded on the agent's assistant messages (a virtual model such as `spore/auto` answers
+   * through another one, ADR 0009), in first-seen order. The session file is the record, so this works for a stopped
+   * agent too.
+   */
+  async modelsUsed(id: string): Promise<string[]> {
+    const { sessionFile } = this.get(id).record;
+    if (!sessionFile) return [];
+    const used = new Set<string>();
+    for (const message of (await readTranscript(sessionFile)).messages) {
+      if (
+        message.role === "assistant" &&
+        typeof message.provider === "string" &&
+        typeof message.model === "string"
+      ) {
+        used.add(`${message.provider}/${message.model}`);
+      }
+    }
+    return [...used];
+  }
+
   async setModel(id: string, provider: string, modelId: string): Promise<AgentModel | undefined> {
     const live = this.get(id);
+    // The pipeline judges a stage by the model it ran on (R4.4), so the model is fixed at creation.
+    if (live.record.kind === "stage") {
+      throw new ApiError(
+        409,
+        "stage_model_fixed",
+        "A pipeline stage keeps the model it started with",
+      );
+    }
     const model = asModel(
       await (await this.ensureRunning(live)).request("set_model", { provider, modelId }),
     );
@@ -745,7 +799,7 @@ export class AgentManager {
     const token = this.options.tokens.issue({
       agentId: record.id,
       workspaceId: workspace.id,
-      ...(record.kind === "side" ? { readOnly: true } : {}),
+      ...(isReadOnly(record) ? { readOnly: true } : {}),
     });
     const env = {
       ...(await this.options.env(record, workspace)),
@@ -808,11 +862,11 @@ export class AgentManager {
 
   /**
    * `--session` to resume, after checking its folder exists (Pi hangs otherwise, spike Q1); `--fork` for the first
-   * start of a side chat with its worker's context; or a new session. Side chats always get read-only tools.
+   * start of a side chat with its worker's context; or a new session. Side chats and reviewer stages always get
+   * read-only tools.
    */
   private async sessionArgs(live: Live, workspace: Workspace): Promise<string[]> {
-    const tools = live.record.kind === "side" ? SIDE_CHAT_TOOLS : [];
-    return [...(await this.sessionFileArgs(live, workspace)), ...tools];
+    return [...(await this.sessionFileArgs(live, workspace)), ...toolArgs(live.record)];
   }
 
   private async sessionFileArgs(live: Live, workspace: Workspace): Promise<string[]> {

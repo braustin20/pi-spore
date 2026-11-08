@@ -14,6 +14,17 @@
 //   "helper-bad"   sets the widget to a payload of an unknown version
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
+// Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
+//   { "worker": [...], "reviewer": [...], "adversarial-reviewer": [...] }
+// Each prompt takes the next entry for the agent's PI_SPORE_STAGE_ROLE. A cursor file `<file>.<role>.cursor` keeps the
+// position, so a new process (a fresh reviewer, or after a restart) continues the script. An entry is
+//   "hang"    replies with plain text and sends no report
+//   {...}     a report: the fake first writes an assistant message with a tool call, as Pi does before a tool runs, so
+//             the session already records the model. An entry field `model: "<provider>/<id>"` switches the model
+//             first, as `set_model` does; the field is not sent. The fake reads the turn id from the prompt line `Turn: <id>`, POSTs { ...entry, turn } to /api/bridge/reports with its token and a receipt, and ends
+//             the turn. The reply says the server's answer.
+// A script with no entry left writes an error to stderr and replies with text.
+// A prompt sent while streaming with streamingBehavior "followUp" runs after the current run ends, as in Pi.
 // Images given with a prompt go into the user message after its text, as Pi does; the reply counts them. A queued
 // message with images shows as "<text> [<n> images]" in queue_update.
 // `--fork <file>` copies that session into a new one in `--session-dir`, with `parentSession` in the header, and
@@ -111,6 +122,7 @@ let model = {
 let thinkingLevel = arg("--thinking") ?? "medium";
 let streaming = false;
 let abortRun = null;
+const followUps = [];
 // Real time, like Pi: a resumed session must not reuse the first process's message timestamps.
 let clock = Date.now();
 const dialogs = new Map();
@@ -207,20 +219,24 @@ const badImages = (images) =>
         typeof image.mimeType !== "string",
     ));
 
-async function screenshot() {
-  const timestamp = ++clock;
-  const call = { type: "toolCall", id: "call-shot", name: "screenshot", arguments: {} };
+/** The assistant message that holds a tool call, written before the tool runs. */
+function toolCallMessage(call) {
   const assistant = {
     role: "assistant",
     content: [call],
     provider: model.provider,
     model: model.id,
     stopReason: "toolUse",
-    timestamp,
+    timestamp: ++clock,
   };
   write({ type: "message_start", message: assistant });
   write({ type: "message_end", message: assistant });
   appendMessage(assistant);
+}
+
+async function screenshot() {
+  const call = { type: "toolCall", id: "call-shot", name: "screenshot", arguments: {} };
+  toolCallMessage(call);
   write({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: {} });
   const content = [
     { type: "text", text: "Captured" },
@@ -267,6 +283,62 @@ async function ask(question, toolCallId) {
   }
 }
 
+/** The next scripted answer for this stage agent's role; see the header. */
+async function scripted(text) {
+  const file = process.env.FAKE_PI_SCRIPT;
+  const role = process.env.PI_SPORE_STAGE_ROLE;
+  const script = parseJson(readFileSync(file, "utf8"), file);
+  if (script.parseError) {
+    process.stderr.write(`${script.parseError}\n`);
+    return "script is not valid JSON";
+  }
+  const cursorFile = `${file}.${role}.cursor`;
+  let position = 0;
+  try {
+    position = Number(readFileSync(cursorFile, "utf8"));
+  } catch (error) {
+    if (error.code !== "ENOENT") throw error;
+  }
+  const entry = script[role]?.[position];
+  if (entry === undefined) {
+    process.stderr.write(`fake-pi: the script has no entry ${position} for ${role}\n`);
+    return `script exhausted for ${role}`;
+  }
+  writeFileSync(cursorFile, String(position + 1));
+  if (entry === "hang") return `waiting (${role} ${position})`;
+  const turn = /^Turn: (\S+)$/m.exec(text)?.[1];
+  if (!turn) return "no turn id in the prompt";
+  const { model: switchTo, ...fields } = entry;
+  if (switchTo) {
+    const slash = switchTo.indexOf("/");
+    model = { ...model, provider: switchTo.slice(0, slash), id: switchTo.slice(slash + 1) };
+    appendEntry({ type: "model_change", provider: model.provider, modelId: model.id });
+  }
+  toolCallMessage({
+    type: "toolCall",
+    id: `call-report-${position}`,
+    name: "report",
+    arguments: {},
+  });
+  try {
+    const response = await fetch(`${process.env.PI_SPORE_URL}/api/bridge/reports`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.PI_SPORE_TOKEN}`,
+        "content-type": "application/json",
+        "idempotency-key": `report_${role}_${position}`,
+      },
+      body: JSON.stringify({ ...fields, turn }),
+    });
+    const body = await response.json();
+    return response.ok
+      ? `reported: ${turn}`
+      : `report failed: ${response.status} ${body.error?.code}`;
+  } catch (error) {
+    return `report failed: ${error.message}`;
+  }
+}
+
 async function run(text, images = []) {
   streaming = true;
   let aborted = false;
@@ -290,6 +362,8 @@ async function run(text, images = []) {
   }
   if (text === "tools") reply = `tools: ${arg("--tools") ?? "read,bash,edit,write"}`;
   if (text.startsWith("ask:")) reply = await ask(text.slice(4), `toolu_${entryCount}`);
+  if (process.env.FAKE_PI_SCRIPT && process.env.PI_SPORE_CHAT_KIND === "stage")
+    reply = await scripted(text);
   if (text === "/dialog") {
     const answer = await new Promise((resolve) => {
       dialogs.set("dlg-1", resolve);
@@ -333,6 +407,15 @@ async function run(text, images = []) {
   abortRun = null;
   write({ type: "agent_end", messages: [] });
   write({ type: "agent_settled", aborted });
+  const next = followUps.shift();
+  if (next) {
+    write({
+      type: "queue_update",
+      steering: [],
+      followUp: followUps.map((queued) => queued.label),
+    });
+    void run(next.message, next.images);
+  }
 }
 
 const handle = (command) => {
@@ -376,10 +459,12 @@ const handle = (command) => {
         const queued = command.images
           ? `${command.message} [${command.images.length} images]`
           : command.message;
+        if (command.streamingBehavior === "followUp")
+          followUps.push({ message: command.message, images: command.images, label: queued });
         write({
           type: "queue_update",
           steering: command.streamingBehavior === "steer" ? [queued] : [],
-          followUp: command.streamingBehavior === "followUp" ? [queued] : [],
+          followUp: followUps.map((entry) => entry.label),
         });
         return respond(id, type, { disposition: "queued" });
       }

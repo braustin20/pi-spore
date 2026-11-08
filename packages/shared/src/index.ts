@@ -35,6 +35,7 @@ export {
   RenameChatRequest,
   SetModelRequest,
   SetThinkingRequest,
+  StageRole,
   ThinkingLevel,
 } from "./agents.js";
 export {
@@ -123,6 +124,23 @@ export {
   StartCardResponse,
   UpdateCardRequest,
 } from "./kanban.js";
+export {
+  PIPELINE_ID_PATTERN,
+  PipelineEvent,
+  PipelineFile,
+  PipelineList,
+  PipelineRun,
+  PipelineRunList,
+  PipelineRunState,
+  PipelineSource,
+  PipelineStage,
+  PipelineTurn,
+  PipelineTurnKind,
+  PipelineView,
+  StageReport,
+  StartPipelineRequest,
+  TestProof,
+} from "./pipelines.js";
 export {
   AddProjectRequest,
   GlobalSettingsView,

@@ -12,6 +12,9 @@
       "./src/index.ts"
     ]
   },
+  "dependencies": {
+    "@pi-spore/router": "0.0.0"
+  },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
     "typebox": "*"
