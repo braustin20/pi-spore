@@ -91,7 +91,9 @@ const PI_DOWN = () => join(scratch, "pi-down");
 /** The fake GitHub's state file: every `gh` call is recorded in it. */
 const ghState = () => join(scratch, "gh.json");
 
-async function start(options: { home?: string; firstId?: number; record?: boolean } = {}) {
+async function start(
+  options: { home?: string; firstId?: number; record?: boolean; withoutGithubPr?: boolean } = {},
+) {
   const script = join(scratch, "script.json");
   if (!existsSync(ghState())) writeFileSync(ghState(), JSON.stringify({ prs: [] }));
   writeFileSync(script, JSON.stringify({ worker: ["hang", "hang", "hang"] }));
@@ -123,7 +125,13 @@ async function start(options: { home?: string; firstId?: number; record?: boolea
       attentionModule,
       artifactsModule,
       kanbanModule,
-      createGithubPrModule({ gh: { command: process.execPath, args: [FAKE_GH, ghState()] } }),
+      ...(options.withoutGithubPr
+        ? []
+        : [
+            createGithubPrModule({
+              gh: { command: process.execPath, args: [FAKE_GH, ghState()] },
+            }),
+          ]),
       pipelinesModule,
       runsModule,
       bridgeModule,
@@ -1097,8 +1105,8 @@ describe("the run PR (ADR 0100, ADR 0130)", () => {
     server.request("POST", `/api/attention/approvals/${id}/${action}`, body);
 
   /** A run whose only lane is merged with green gates, in a project that has a bare `origin` for the push. */
-  async function mergedRun(name: string) {
-    const server = await start();
+  async function mergedRun(name: string, options: { withoutGithubPr?: boolean } = {}) {
+    const server = await start(options);
     const { projectId, folder } = await project(server, name, GREEN);
     const origin = join(scratch, `${name}-origin.git`);
     git(scratch, "init", "-q", "--bare", origin);
@@ -1160,6 +1168,17 @@ describe("the run PR (ADR 0100, ADR 0130)", () => {
     const outcome = await deliveredWith(server, run.coordinatorAgentId, "Opened PR #1");
     expect(outcome).toContain(`from ${run.line} into main`);
     expect(outcome).toContain("never turns on auto-merge");
+  });
+
+  it("answers 409 pr_not_supported on approve without the github-pr module, and the approval stays open", async () => {
+    const { server, coordinator } = await mergedRun("pr-no-module", { withoutGithubPr: true });
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "" });
+
+    const response = await decide(server, filed.id, "approve", {});
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "pr_not_supported" } });
+    expect((await openApprovals(server)).map((approval) => approval.id)).toEqual([filed.id]);
   });
 
   it("refuses a second request while one is open with 409 run_pr_asked", async () => {

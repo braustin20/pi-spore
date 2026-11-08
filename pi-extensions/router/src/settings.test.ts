@@ -35,6 +35,8 @@ describe("loadSettings", () => {
   it("rejects a wrong value and an unknown router key, naming the file", async () => {
     writeFileSync(join(home, "settings.json"), JSON.stringify({ router: { threshold: 2 } }));
     await expect(loadSettings(home)).rejects.toThrow(/settings\.json: \/router\/threshold/);
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ router: { explore: 1.5 } }));
+    await expect(loadSettings(home)).rejects.toThrow(/settings\.json: \/router\/explore/);
     writeFileSync(join(home, "settings.json"), JSON.stringify({ router: { thresold: 0.5 } }));
     await expect(loadSettings(home)).rejects.toThrow(/settings\.json/);
     writeFileSync(join(home, "settings.json"), "{ nope");

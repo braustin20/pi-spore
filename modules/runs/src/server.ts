@@ -2,7 +2,6 @@ import { ActionsKey } from "@pi-spore/mod-actions/server";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { ArtifactsKey } from "@pi-spore/mod-artifacts/server";
 import { ApprovalsKey } from "@pi-spore/mod-attention/server";
-import { PullRequestsKey } from "@pi-spore/mod-github-pr/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
@@ -299,16 +298,7 @@ const handoverMessage = (
 
 export const runsModule: ServerModule = {
   id: "runs",
-  requires: [
-    "projects",
-    "workspaces",
-    "agents",
-    "artifacts",
-    "attention",
-    "actions",
-    "pipelines",
-    "github-pr",
-  ],
+  requires: ["projects", "workspaces", "agents", "artifacts", "attention", "actions", "pipelines"],
   core: false,
   setup(host) {
     host.store.migrate("runs", MIGRATIONS);
@@ -319,7 +309,7 @@ export const runsModule: ServerModule = {
     const approvals = host.use(ApprovalsKey);
     const pipelines = host.use(PipelinesKey);
     const actions = host.use(ActionsKey);
-    const pullRequests = host.use(PullRequestsKey);
+    let openPr: Parameters<Runs["setPrOpener"]>[0] | undefined;
 
     const loadRun = (id: string) =>
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE id = ?", id);
@@ -408,7 +398,10 @@ export const runsModule: ServerModule = {
       return { project, integrate };
     };
 
-    const createRun = async (request: CreateRunRequest): Promise<Run> => {
+    const createRun = async (
+      request: CreateRunRequest,
+      { model }: { model?: string } = {},
+    ): Promise<Run> => {
       const { project, integrate } = await integrateOf(request.projectId);
       const base = request.base ?? (await projects.vcsFor(project).lines?.list(project))?.current;
       if (!base) {
@@ -428,7 +421,10 @@ export const runsModule: ServerModule = {
         line,
         base,
       });
-      const coordinator = await agents.activeWorker(workspace.id);
+      const coordinator = await agents.activeWorker(
+        workspace.id,
+        model === undefined ? {} : { model },
+      );
       host.store.run(
         `INSERT INTO runs_runs (id, project_id, workspace_id, line, base, gates, coordinator_agent_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -694,7 +690,14 @@ export const runsModule: ServerModule = {
         if (run.state === "cancelled") {
           throw new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`);
         }
-        const pr = await pullRequests.open(run.workspace_id, {
+        if (!openPr) {
+          throw new ApiError(
+            409,
+            "pr_not_supported",
+            "No module opens pull requests: enable the github-pr module",
+          );
+        }
+        const pr = await openPr(run.workspace_id, {
           title: subject.title,
           body: subject.body,
           base: run.base,
@@ -1119,6 +1122,7 @@ export const runsModule: ServerModule = {
     };
 
     const api: Runs = {
+      create: createRun,
       startLane,
       reviseLane,
       mergeLane,
@@ -1132,6 +1136,10 @@ export const runsModule: ServerModule = {
       runOf: (workspaceId) => {
         const run = runByWorkspace(workspaceId);
         return run ? viewOf(run) : undefined;
+      },
+      setPrOpener: (open) => {
+        if (openPr) throw new Error("The runs module already has a PR opener");
+        openPr = open;
       },
     };
     host.provide(RunsKey, api);

@@ -22,6 +22,9 @@
       "path": "../../pi-extensions/router"
     },
     {
+      "path": "../pipelines"
+    },
+    {
       "path": "../projects"
     },
     {

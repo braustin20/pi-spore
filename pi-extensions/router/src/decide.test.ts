@@ -35,6 +35,47 @@ describe("decide", () => {
     expect(decision.reasons).toContain("explicit: explicit 0.69 < 0.7");
   });
 
+  describe("explore (ADR 0144)", () => {
+    const hard = { ...good, straightforward: 0.41 };
+
+    it("sends the task local when straightforward is the only blocker, and says so", () => {
+      const decision = decide(input({ jev: hard, explore: true }));
+      expect(decision).toMatchObject({ route: "local", model: STRATA, explore: true });
+      expect(decision.reasons).toContain("straightforward: straightforward 0.41 < 0.7");
+    });
+
+    it("goes to the cloud model when the explore draw missed", () => {
+      const decision = decide(input({ jev: hard, explore: false }));
+      expect(decision).toMatchObject({ route: "cloud", model: SONNET });
+      expect(decision.explore).toBeUndefined();
+    });
+
+    it("never explores a visual task, even when straightforward also fails", () => {
+      expect(decide(input({ jev: { ...hard, visual: 0.2 }, explore: true })).route).toBe("cloud");
+    });
+
+    it("never explores a task whose only failing answer is visual", () => {
+      expect(decide(input({ jev: { ...good, visual: 0.2 }, explore: true })).route).toBe("cloud");
+    });
+
+    it("never explores a task over the local budget", () => {
+      expect(decide(input({ jev: hard, estimate: 70_000, explore: true })).route).toBe("cloud");
+    });
+
+    it("never explores when another question fails besides straightforward", () => {
+      expect(decide(input({ jev: { ...hard, bounded: 0.3 }, explore: true })).route).toBe("cloud");
+    });
+
+    it("never explores after a classifier error or with no local target", () => {
+      expect(decide(input({ jev: { error: "Classifier failed" }, explore: true })).route).toBe(
+        "cloud",
+      );
+      expect(
+        decide(input({ local: { missing: "no local target" }, jev: hard, explore: true })).route,
+      ).toBe("cloud");
+    });
+  });
+
   it("goes to the cloud model when the estimate is over the local budget, without needing Jev", () => {
     const decision = decide(input({ estimate: 70_000 }));
     expect(decision.route).toBe("cloud");

@@ -549,13 +549,54 @@ describe("pi-spore card start", () => {
     expect(await run(["card", "start", "C1"], deps)).toBe(2);
     expect(await run(["card", "start", "C1", "--new", "--workspace", "W1"], deps)).toBe(2);
     expect(await run(["card", "start", "C1", "--workspace", "W1", "--mode", "new"], deps)).toBe(2);
-    expect(err[0]).toContain("either --new or --workspace");
+    expect(err[0]).toContain("one of --new, --workspace <id>, or --run");
     expect(sent).toEqual([]);
 
     expect(
       await run(["card", "start", "C1", "--new", "--mode", "in-place", "--blocked-ok"], deps),
     ).toBe(0);
     expect(sent[0]?.body).toEqual({ isolation: "in-place", confirmBlocked: true });
+  });
+
+  it("starts a card as a new run, and refuses a run mixed with other targets or options", async () => {
+    const run1 = {
+      id: "R1",
+      projectId: "P1",
+      workspaceId: "W1",
+      line: "spore/fix-ui-abc123",
+      base: "develop",
+      gates: [],
+      state: "running",
+      coordinatorAgentId: "A1",
+      createdAt: 2,
+      lanes: [],
+      questions: [],
+    };
+    const { deps, out, err, sent } = fakeDeps((key) =>
+      key.startsWith("GET /api/projects")
+        ? Response.json({ projects: [project] })
+        : Response.json({ ...started, run: run1 }, { status: 201 }),
+    );
+    for (const bad of [
+      ["--run", "--new"],
+      ["--run", "--workspace", "W1"],
+      ["--run", "--mode", "new"],
+      ["--run", "--line", "feature"],
+    ]) {
+      expect(await run(["card", "start", "C1", ...bad], deps)).toBe(2);
+    }
+    expect(err[0]).toContain("one of --new, --workspace <id>, or --run");
+    expect(err[3]).toContain("--run takes --base only");
+    expect(sent).toEqual([]);
+
+    expect(
+      await run(["card", "start", "C1", "--run", "--base", "develop", "--blocked-ok"], deps),
+    ).toBe(0);
+    expect(sent[0]?.body).toEqual({ run: true, base: "develop", confirmBlocked: true });
+    expect(out.slice(1)).toEqual([
+      "In run R1 (W1  active   Fix UI  spore/fix-ui-abc123  /home/me/.pi-spore/worktrees/game/fix-ui-abc123)",
+      "Brief sent to coordinator chat A1",
+    ]);
   });
 });
 
@@ -1076,6 +1117,71 @@ describe("pi-spore run", () => {
     expect(await run(["run", "show"], deps)).toBe(2);
     expect(await run(["run", "cancel"], deps)).toBe(2);
     expect(await run(["run", "start", "game", "x", "--gate"], deps)).toBe(2);
+    expect(err.at(-1)).toContain("Usage: pi-spore");
+    expect(sent).toEqual([]);
+  });
+});
+
+describe("pi-spore usage calibration", () => {
+  const emptyBuckets = Array.from({ length: 10 }, (_, index) => ({
+    from: index / 10,
+    to: (index + 1) / 10,
+    answers: 0,
+    localOutcomes: 0,
+    passed: 0,
+    enough: false,
+  }));
+  const report = {
+    threshold: 0.7,
+    minSample: 20,
+    decisions: 34,
+    outcomes: 30,
+    buckets: {
+      bounded: emptyBuckets,
+      explicit: emptyBuckets,
+      visual: emptyBuckets,
+      straightforward: emptyBuckets.map((bucket, index) =>
+        index === 0 ? { ...bucket, answers: 3 } : bucket,
+      ),
+    },
+    bars: [
+      { bar: 0.1, decisions: 34, wouldGoLocal: 34, localOutcomes: 30, passed: 23, enough: true },
+      { bar: 0.9, decisions: 34, wouldGoLocal: 3, localOutcomes: 0, passed: 0, enough: false },
+    ],
+    skipped: 0,
+  };
+
+  it("prints the summary, each bar with its sample size, and too little data", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json(report));
+    expect(await run(["usage", "calibration"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/usage/calibration");
+    expect(out.slice(0, 5)).toEqual([
+      "Bar now 0.7. 34 decisions with Jev answers, 30 local outcomes.",
+      "Suggested bar: none (no bar has 20 local outcomes with 90% passed)",
+      "bar  would go local   passed",
+      "0.1  34/34 (100%)     23/30 (77%)",
+      "0.9  3/34 (9%)        0/0  too little data",
+    ]);
+    expect(out).toContain("straightforward");
+    expect(out).toContain("  0.0-0.1  answers 3   passed 0/0  too little data");
+  });
+
+  it("names the suggested bar when there is one", async () => {
+    const { deps, out } = fakeDeps(() => Response.json({ ...report, suggestedBar: 0.3 }));
+    expect(await run(["usage", "calibration"], deps)).toBe(0);
+    expect(out[1]).toBe("Suggested bar: 0.3");
+  });
+
+  it("prints the body with --json", async () => {
+    const { deps, out } = fakeDeps(() => Response.json(report));
+    expect(await run(["usage", "calibration", "--json"], deps)).toBe(0);
+    expect(JSON.parse(out.join("\n"))).toEqual(report);
+  });
+
+  it("exits 2 on an unknown usage subcommand", async () => {
+    const { deps, err, sent } = fakeDeps(healthy);
+    expect(await run(["usage", "tokens"], deps)).toBe(2);
+    expect(await run(["usage"], deps)).toBe(2);
     expect(err.at(-1)).toContain("Usage: pi-spore");
     expect(sent).toEqual([]);
   });

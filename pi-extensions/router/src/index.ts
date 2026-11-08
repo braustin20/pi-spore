@@ -46,6 +46,7 @@ export default function sporeRouter(pi: ExtensionAPI) {
     home: sporeHome(),
     env: process.env,
     now: Date.now,
+    random: Math.random,
     sleep: async (ms, signal) => {
       await delay(ms, undefined, signal ? { signal } : {});
     },

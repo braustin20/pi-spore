@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
+import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule, type StepOutcome } from "@pi-spore/module-api";
 import {
@@ -110,7 +111,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
   const discoverInterval = options.discoverIntervalMs ?? 5 * 60_000;
   return {
     id: "github-pr",
-    requires: ["projects", "workspaces", "agents", "kanban"],
+    requires: ["projects", "workspaces", "agents", "kanban", "runs"],
     core: false,
     setup(host) {
       host.store.migrate("github-pr", MIGRATIONS);
@@ -591,6 +592,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       };
 
       host.provide(PullRequestsKey, { open: openPullRequest });
+      host.use(RunsKey).setPrOpener(openPullRequest);
 
       host.events.onSubscribe(PR_TOPIC, async (topic) => {
         const event: PrEvent = {

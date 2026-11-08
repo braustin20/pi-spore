@@ -20,7 +20,6 @@
     "@pi-spore/mod-agents": "0.0.0",
     "@pi-spore/mod-artifacts": "0.0.0",
     "@pi-spore/mod-attention": "0.0.0",
-    "@pi-spore/mod-github-pr": "0.0.0",
     "@pi-spore/mod-pipelines": "0.0.0",
     "@pi-spore/mod-projects": "0.0.0",
     "@pi-spore/mod-workspaces": "0.0.0",

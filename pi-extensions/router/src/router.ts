@@ -43,6 +43,8 @@ export interface RouterDeps {
   home: string;
   env: Readonly<Record<string, string | undefined>>;
   now(): number;
+  /** A draw in [0, 1) for `router.explore`. */
+  random(): number;
   sleep(ms: number, signal?: AbortSignal): Promise<void>;
   /** The lock files; throws when they cannot exist (no `XDG_RUNTIME_DIR`). */
   locks(): LocalLocks;
@@ -215,6 +217,9 @@ export class Router {
       ...(estimate ? { estimate: estimate.total } : {}),
       ...(jev ? { jev } : {}),
       plans,
+      // Only a worker stage explores: a stronger reviewer checks its work (ADR 0144).
+      explore:
+        this.deps.env.PI_SPORE_STAGE_ROLE === "worker" && this.deps.random() < settings.explore,
     });
     if (decision.route === "local" && target) {
       try {
@@ -245,6 +250,7 @@ export class Router {
       ...(jev ? { jev } : {}),
       threshold: decision.threshold,
       pressure: decision.pressure,
+      ...(decision.explore ? { explore: true } : {}),
       usage: Object.values(plans).flatMap((plan) => plan.notes),
       ...(decision.resetsAt !== undefined ? { resetsAt: decision.resetsAt } : {}),
     });

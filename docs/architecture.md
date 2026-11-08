@@ -119,9 +119,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Card tools (ADR 0100), limited to cards of the agent's project: `kanban_list_cards` `{ label?, column? }` (also
     lists the project's active workspaces), `kanban_add_card` and `kanban_update_card` (title, body, column, labels,
     due day, `blockedBy` card ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
-    base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
+    base? | run?, base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
-    `new` unless another is given.
+    `new` unless another is given; `run: true` asks for a new run.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
     `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
@@ -280,7 +280,8 @@ export interface ServerHost {
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, pipeline gates; later close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
-| RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
+| RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, explore, session, agent, workspace |
+| Outcome | How a pipeline run with a worker ended (`usage_outcomes`, ADR 0144) | run, workspace, worker agent, state, verdict of the first reviewer stage, review rounds, fix passes, ended at |
 | UsageSnapshot | Latest plan window numbers (a file per plan, `usage/<plan>.json`) | plan, window (5h, 7d), utilization, resets at, seen at, source |
 | Job | A durable unit of background work (`core_jobs`) | id, kind, key, subject, state (running, waiting, interrupted, done, cancelled), step, checkpoint, run at, started at, attempts, error |
 
@@ -502,7 +503,8 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 - Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, askingAgentId?, workerModel? })` does what
   the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`), so
   that run never asks about the local implementer.
-  `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it.
+  `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
+  uses it to record outcomes (section 11a).
 - Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
   card when a run passes, and a tool for the orchestrator to start a run.
 
@@ -513,7 +515,7 @@ See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-qu
 [ADR 0150](decisions/0150-run-worktree-and-green-merges.md), and [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md). Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
-`pipelines`, `github-pr`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
+`pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
 
 - **Start.** `POST /api/runs` `{ projectId, name, base?, gates? }` needs a provider with `integrate` (else 422
   `not_supported`). `base` defaults to the main copy's current line; `gates` to `check` and `test`. It creates
@@ -565,8 +567,9 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   every lane `merged` or `declined` and one `merged` (409 `run_not_finished` with the reason), no open request (409
   `run_pr_asked`), and a run that is not `finished` (409 `run_finished`). It files a `run-pr` approval with the
   title, body, base, and head (the run line), and the tool ends the turn. On approve, where the user may edit the
-  title and body only (422 `approval_run_changed`), the runs module opens the PR through the github-pr module's
-  `PullRequestsKey.open`, the same path as the PR tab's publish, and the run becomes `finished`. The outcome or the
+  title and body only (422 `approval_run_changed`), the runs module opens the PR through the opener the github-pr
+  module sets with `RunsKey.setPrOpener`, the same path as the PR tab's publish, and the run becomes `finished`.
+  Without that module the approve is 409 `pr_not_supported` and the approval stays open. The outcome or the
   decline note goes to the coordinator, as for every approval. No agent runs `gh`; nothing merges the PR but a
   human.
 - **Questions** (R7.5, R7.6, ADR 0008). `ask_coordinator` from a lane agent inserts a `runs_questions` row and
@@ -577,8 +580,9 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 - Bridge routes: `POST /api/bridge/lanes`, `/lanes/revise`, `/lanes/merge`, `/coordinator/answers`, `/coordinator/pr` (not for
   read-only callers), and `/coordinator/questions` (lane reviewers too). The runs module checks who may call each.
 - Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`,
-  `POST /api/runs/:id/cancel`. Topic
-  `runs:list` sends `{ type: "runs", runs }` on subscribe and after every change.
+  `POST /api/runs/:id/cancel`. `RunsKey.create` does the same as `POST /api/runs` for other modules, with an
+  optional coordinator model; kanban starts runs from cards with it (section 12). Topic `runs:list` sends
+  `{ type: "runs", runs }` on subscribe and after every change.
 - Web: a Runs page (`#/runs`, rail icon) with a start form and every run's state and lanes by wave, and a run panel
   on a run workspace (the same card) or a lane workspace (a link to its run). A running run's card has Cancel, with
   a confirm that names what stops. Home shows a `run-pr` approval with the head and base and an editable title and
@@ -589,7 +593,8 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 ## 10. Model routing
 
 See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local-model-queue.md),
-[ADR 0023](decisions/0023-model-tiers.md), and [ADR 0024](decisions/0024-routing-thresholds.md).
+[ADR 0023](decisions/0023-model-tiers.md), [ADR 0024](decisions/0024-routing-thresholds.md), and
+[ADR 0144](decisions/0144-routing-calibration.md).
 
 - `pi-extensions/router/` (package `@pi-spore/router`) registers the virtual model `spore/auto` with
   `pi.registerVirtualModel`. pi-spore agents load it with one more `-e` (section 2). Plain `pi` loads it with
@@ -604,7 +609,10 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   4. Go local only if every "good" answer is at least the threshold (0.7, or 0.55 under usage pressure; the visual
      question always needs 0.7). Otherwise use the cloud model: `router.cloud`, else the pi-subagents `worker`
      model from Pi's settings. If that model is `spore/auto`, the router throws an error that names `router.cloud`
-     and `settings.json`. It does not fall back (ADR 0120).
+     and `settings.json`. It does not fall back (ADR 0120). Explore (ADR 0144): when "straightforward" is the only blocker, the session is a pipeline worker stage
+     (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), and a random draw is below `router.explore`,
+     the task goes local anyway. The reasons say `explore`, and the record has `explore: true`. Over-budget, visual,
+     and classifier-error tasks never explore.
   5. If the cloud model's plan is full, spill (below).
   6. Store the choice as router state on the session branch. Later requests stay on it, to keep the prompt cache.
      Requests outside the agent loop (`direct`, such as compaction) go to the model that answered last.
@@ -614,7 +622,7 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   model, pins the session there, records `kind: "error"` with the message, and shows a warning.
 - Every decision is appended to `~/.pi-spore/usage/routing.jsonl`: time, kind (`initial`, `escalation`, `error`),
   route (`local`, `cloud`, `spill`, `wait`), model, reasons, Jev's good-answer probabilities, the estimate and budget,
-  the threshold, the plan windows it saw, and the session id, file, and folder. Inside pi-spore it also has the agent
+  the threshold, `explore`, the plan windows it saw, and the session id, file, and folder. Inside pi-spore it also has the agent
   and workspace ids. The chat shows each decision as a notice, which is live only. A new `info` notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. The model picker names the model
   that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical model Pi records on each
   assistant message, so it survives reloads and reconnects. The router state on the session holds the route and
@@ -663,6 +671,7 @@ records and routes to cloud.
         "concurrency": 1, "healthUrl": "http://127.0.0.1:8080/health" }
     ],
     "threshold": 0.7,
+    "explore": 0,
     "pressureThreshold": 0.55,
     "pressure": { "weekly": 0.75, "fiveHour": 1 },
     "usageMaxAgeMinutes": 60,
@@ -675,6 +684,8 @@ records and routes to cloud.
 
 - `cloud` has no built-in default: unset means the pi-subagents `worker` model. `cloud` must not be `spore/auto`
   (ADR 0120); set it when `worker` is `spore/auto`.
+- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes `threshold`; the
+  calibration report (section 11a) only suggests a value.
 - `plans` maps a provider to the subscription plan it draws on. `tiers` entries are added to the built-in tier list
   (ADR 0023).
 
@@ -699,8 +710,11 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   and the router ignores them (R18.5).
 - v1 is passive only (ADR 0022). Active polling of the plans' usage endpoints is a v2 option. It would also
   count use from Claude Code and the Codex CLI, which the tap cannot see.
-- The `usage` module (`modules/usage/`, not core, requires `projects` and `workspaces`) owns no tables. It reads the
-  router's files on each request through `@pi-spore/router`, so file formats have one definition:
+- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, and `pipelines`) reads the
+  router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
+  table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
+  the verdict of the last review of its first reviewer stage, its review rounds, and its fix passes. Retention
+  deletes rows with the same cutoff as `routing.jsonl`.
   - `GET /api/usage/plans`: each plan's windows with age and staleness, warnings, the thresholds, and plan files that
     did not read. A warning is a fresh window that is full, a weekly window above `router.pressure.weekly`, or a
     5-hour window at or above `router.pressure.fiveHour` (R18.4).
@@ -711,10 +725,17 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     once.
   - `GET /api/usage/routing?limit=<1-500>`: the newest routing decisions (default 50), and how many lines did not
     parse.
+  - `GET /api/usage/calibration`: the routing calibration report (ADR 0144). It joins each outcome to the newest
+    `initial` decision of its worker agent before the run ended. A `local` decision passed when the verdict is
+    `approve` and no `escalation` record has its session id. The report has Jev's answers per question in ten
+    buckets (answers, local outcomes, passed), and for bars 0.1 to 0.9 how many decisions would have gone local and
+    how many of those passed. A share under 20 local outcomes has `enough: false`. `suggestedBar` is the lowest bar
+    with 20 local outcomes and 90% passed. It is only a suggestion.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
-  warnings at the top; the token table; and the routing decisions with their reasons. It loads on open and on
-  Refresh.
+  warnings at the top; the token table; the routing decisions with their reasons; and the routing calibration (the
+  bars table with "now" and "suggested" chips, and the buckets). It loads on open and on Refresh.
+- CLI: `pi-spore usage calibration [--json]` prints the same report.
 - Not built yet: token use per role (every agent is a worker today), scanning `~/.pi/agent/sessions/` for plain `pi`
   work, and a warning on Home (Home has no module slots yet).
 
@@ -779,7 +800,7 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     `pipeline-local-implementer`; runs for `lane-model` and `run-pr`.
   - Kinds now: `card-start` (kanban), `lane-model` and `run-pr` (runs, section 9), `pipeline-round-limit` and
     `pipeline-local-implementer` (pipelines). A `run-pr` subject is `{ runId, title, body, base, head }`; approve
-    may change the title and body, and opens the run's PR through `PullRequestsKey` (section 11e).
+    may change the title and body, and opens the run's PR through the opener the github-pr module sets (section 11e).
   - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
@@ -874,7 +895,7 @@ counts, then its hunks in unified form.
 
 See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
 
-- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `kanban`) talks to GitHub only
+- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `kanban`, `runs`) talks to GitHub only
   through `gh`, run with `execFile`, `GH_PROMPT_DISABLED=1`, and `--json` where gh has it. Output is checked with
   TypeBox; a value it does not know (a new check conclusion) is a 422 `gh_failed`, not a guess.
 - The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
@@ -886,7 +907,9 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
   starts with the workspace name as title, the card's body as body, and the workspace's base. A base like
   `origin/main` loses its remote name.
 - `PullRequestsKey.open(workspaceId, { title, body, base, draft? })` gives other modules the same path as Publish,
-  with the same errors. The runs module uses it when the user approves a `run-pr` approval (section 9).
+  with the same errors. The module also sets the same function as the runs module's PR opener with `RunsKey.setPrOpener`, so the runs
+  module opens a run's PR when the user approves a `run-pr` approval (section 9) and does not depend on this module
+  (kanban requires runs, and this module requires kanban).
 - A PR opened outside pi-spore for the workspace's branch (an agent's `gh pr create`) is found and shown, with the
   watch off. `gh pr view <branch>` looks at open, merged, and closed PRs: the newest open one, else the newest.
   pi-spore looks:
@@ -1022,7 +1045,8 @@ See [ADR 0011](decisions/0011-unity-support.md).
 See [ADR 0012](decisions/0012-kanban.md) and [ADR 0040](decisions/0040-card-moves-on-workspace-state.md). Requirements
 R11.
 
-- The `kanban` module (`modules/kanban/`, not core, requires `projects`, `workspaces`, `agents`, and `attention`)
+- The `kanban` module (`modules/kanban/`, not core, requires `projects`, `workspaces`, `agents`, `attention`, and
+  `runs`)
   owns three tables: `kanban_cards` (title, Markdown body, project, labels, due day, column, position, the workspace
   started from it, the agent that created it and the one that changed it last, and an optional `model`, `provider/id`
   checked with a TypeBox pattern, for the chat that work from the card starts, ADR 0120),
@@ -1047,8 +1071,14 @@ R11.
   brief as a follow-up after its current run. A card with an open workspace answers 409 `card_has_workspace`. A
   blocked card answers 409 `card_blocked` unless the request carries `confirmBlocked: true`; the board asks the user
   first.
+- A card also starts a new run (R7): `POST /api/kanban/cards/:id/start` `{ run: true, base?, projectId?, model?,
+  confirmBlocked? }` creates it through `RunsKey.create` (section 9), named after the card (cut to 120 characters).
+  The card links to the run workspace and moves to In progress with reason `run-started`, and its brief goes to the
+  coordinator chat, in one transaction. A project without `integrate` answers 422 `not_supported` and the card stays
+  where it was. Because the card links to the run workspace, it follows the run through that workspace: a PR on it
+  → Review, its archive → Done. Runs have no archive of their own.
 - The model of the new chat (ADR 0120): the request's `model`, else the card's, else `agentOverrides.orchestrator`.
-  It goes to `AgentsKey.activeWorker`. In an existing workspace the chat keeps its model, so a `model` in the request
+  It goes to `AgentsKey.activeWorker`, or for a run to the coordinator through `RunsKey.create`. In an existing workspace the chat keeps its model, so a `model` in the request
   answers 400 `model_needs_new_workspace`; the card's model is then unused.
 - Agents (ADR 0100) reach cards through `CardsKey` from the bridge module: cards of their own project only, with
   `createdBy` and `changedBy` set to the agent and its workspace. A change or move by the user clears `changedBy`.
@@ -1057,13 +1087,12 @@ R11.
   target and model the user chose (a changed subject is checked with the same schema), and tells the asking agent
   where it started.
 - Automatic moves happen only on a state change, so a manual move stays until the next one:
-  - workspace started from the card → In progress;
+  - workspace or run started from the card → In progress;
   - workspace archived → Done (any archive; the user moves the card back if the work was dropped). The module
     listens with `WorkspacesKey.afterStateChange`.
   - Later modules move cards through `CardsKey.workChanged(workspaceId, column, reason)`: pipeline passed or PR
     open → Review, PR merged → Done. `github-pr` finds a workspace's PR by itself (section 11e), also one an agent
     opened with `gh`, so the card reaches Review and Done without the publish form.
-- Runs are not built yet, so a card starts only workspaces.
 
 API under `/api/kanban`:
 
@@ -1075,15 +1104,15 @@ API under `/api/kanban`:
 | `PATCH /cards/:id` | Changes the fields given; `null` clears project, due, or model. `blockedBy` replaces the list. |
 | `POST /cards/:id/move` `{ column, index? }` | Moves or reorders. Without `index`, the card goes to the end. |
 | `DELETE /cards/:id` | Deletes the card, its links both ways, and its history. |
-| `POST /cards/:id/start` `{ …, model? }` | Starts work from the card in a new or an existing workspace (above). |
+| `POST /cards/:id/start` `{ …, model? }` | Starts work from the card in a new or an existing workspace, or a new run (above). |
 
 - Topic `kanban:board` sends every card on subscribe and after every change.
 - The Board page (`#/board`, `#/board/<card id>`, rail icon) shows the columns with a project and a label filter.
   Cards move by drag and drop, or with the move buttons on each card (keyboard). Selecting a card opens it on the
   right: edit, move, delete, blockers, history, and "Start a workspace" with the workspaces module's create form
   (`WorkspaceViewKey.CreateForm`). The workspace view has a Card panel for the workspace's card.
-- The Work section offers "Start in a new workspace" (the create form) and "Start in an existing workspace" (the
-  project's active workspaces). Cards made or changed by an agent show an agent chip, and the card panel names the
+- The Work section offers "Start in a new workspace" (the create form), "Start in an existing workspace" (the
+  project's active workspaces), and "Start a run" (a base line, a model, and a git project when the card has none). Cards made or changed by an agent show an agent chip, and the card panel names the
   agent's workspace with a link to its chat. Home shows a `card-start` approval with the card, whether it is
   blocked, the reason, and a target picker.
 - A Model dropdown (ADR 0120) sits in the "new workspace" form (through `CreateForm`'s `children`), in the card
@@ -1096,8 +1125,8 @@ API under `/api/kanban`:
   with a changed model sends the changed subject.
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
-  --new [--mode m] [--line b] [--base b] | --workspace <id> [--blocked-ok]`.
-- Not built yet: runs from cards, custom columns, and overdue cards on Home (the attention module has no way for
+  --new [--mode m] [--line b] [--base b] | --workspace <id> | --run [--base b] [--blocked-ok]`.
+- Not built yet: custom columns, and overdue cards on Home (the attention module has no way for
   other modules to add items yet).
 
 ## 13. Settings
@@ -1243,7 +1272,8 @@ With `retention.days = N` (N > 0), it deletes data older than N days:
 - a closed chat, counted from `closed_at`: its session file, deliveries, questions, approvals, and row. The server
   forgets it too, so its id answers 404. A closed chat stays while an open fork of it has not started.
 - action runs that ended before the limit, in any workspace, with their logs;
-- lines of `usage/routing.jsonl` with an older `at` (unreadable lines stay);
+- lines of `usage/routing.jsonl` with an older `at` (unreadable lines stay), and `usage_outcomes` rows that ended
+  before the limit;
 - stored API responses (`core_idempotency`);
 - jobs that ended (`done`, `cancelled`) before the limit (`core_jobs`).
 

@@ -26,6 +26,6 @@ run's PR by hand from the PR tab.
 
 ## Consequences
 
-- The runs module requires the github-pr module.
+- The github-pr module sets the runs module's PR opener, so runs does not depend on it (kanban requires runs).
 - A run has a state: `running`, `cancelled`, or `finished`.
 - Approvals a lane's pipeline filed before a handover still answer the old chat.

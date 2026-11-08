@@ -3,9 +3,11 @@ import type {
   AnswerLaneRequest,
   Approval,
   AskCoordinatorRequest,
+  CreateRunRequest,
   Lane,
   MergeLaneRequest,
   OpenRunPrRequest,
+  PullRequest,
   ReviseLaneRequest,
   Run,
   RunQuestion,
@@ -17,6 +19,8 @@ import type {
  * a run workspace.
  */
 export interface Runs {
+  /** Creates a run, the same as POST /api/runs. The model is the coordinator chat's. */
+  create(request: CreateRunRequest, options?: { model?: string }): Promise<Run>;
   /**
    * Adds a lane to the caller's run. 404 when the brief artifact does not exist; 400 when a `dependsOn` id is not a
    * lane of the run. A model above the worker role default's tier files a `lane-model` approval and the lane waits in
@@ -57,6 +61,16 @@ export interface Runs {
   laneOf(workspaceId: string): { runId: string; laneId: string } | undefined;
   /** The run whose workspace this is. */
   runOf(workspaceId: string): Run | undefined;
+  /**
+   * Sets how a run's PR opens when the user approves a `run-pr` approval. The github-pr module sets it, so runs
+   * does not depend on it (kanban requires runs, and github-pr requires kanban). At most one opener.
+   */
+  setPrOpener(
+    open: (
+      workspaceId: string,
+      request: { title: string; body: string; base: string },
+    ) => Promise<PullRequest>,
+  ): void;
 }
 
 export const RunsKey = defineInterface<Runs>("runs", "runs");

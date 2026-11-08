@@ -40,6 +40,18 @@
       "path": "../attention"
     },
     {
+      "path": "../actions"
+    },
+    {
+      "path": "../artifacts"
+    },
+    {
+      "path": "../pipelines"
+    },
+    {
+      "path": "../runs"
+    },
+    {
       "path": "../../packages/server-core"
     }
   ]

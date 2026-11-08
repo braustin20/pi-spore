@@ -30,3 +30,8 @@ export function windowTitle(name: string): string {
   if (name === "7d") return "Weekly";
   return name;
 }
+
+/** "23 of 30 (77%)": the sample size sits next to the share. */
+export function formatShare(count: number, total: number): string {
+  return `${count} of ${total}${total > 0 ? ` (${Math.round((count / total) * 100)}%)` : ""}`;
+}

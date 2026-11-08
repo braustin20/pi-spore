@@ -11,6 +11,7 @@ import {
   Approval as ApprovalSchema,
   ArchiveWorkspaceResponse,
   CARD_COLUMNS,
+  CalibrationResponse,
   type Card,
   type CardColumn,
   CardList,
@@ -89,9 +90,11 @@ Commands:
   card rm <card>
   card start <card> --new [--mode new|existing|in-place] [--line <branch>] [--base <branch>]
   card start <card> --workspace <workspace>
-                                           Start work from a card in a new workspace or an active one of
-                                           its project; the brief goes to its worker chat. Add
-                                           --blocked-ok to start a blocked card
+  card start <card> --run [--base <branch>]
+                                           Start work from a card in a new workspace, an active one of
+                                           its project, or a new run; the brief goes to the worker chat
+                                           or the run's coordinator chat. Add --blocked-ok to start a
+                                           blocked card
   approvals list [--all]                   Open approvals agents asked for; --all includes decided ones
   approvals approve <approval>
   approvals decline <approval> [--note <text>]
@@ -112,6 +115,8 @@ Commands:
   run show <run>                           A run's state, and its lanes by wave with state and workspace
   run cancel <run>                         Stop the run: its coordinator, pipelines, agents, and merge.
                                            Nothing is deleted
+  usage calibration                        Routing calibration (ADR 0144): how Jev's answers spread, how
+                                           local runs turned out, and a suggested bar. Never changes it
   pr status <workspace>                    Show the workspace's PR, its checks, and the watch
   pr open <workspace> [--title <t>] [--body <b>] [--base <branch>] [--draft]
                                            Push the branch and open a PR on GitHub (outward-facing)
@@ -593,22 +598,27 @@ async function cardCommand(api: Api, deps: CliDeps, args: string[], json: boolea
     const { positional, options, on } = parseArgs(
       rest,
       ["workspace", "mode", "line", "base"],
-      ["new", "blocked-ok"],
+      ["new", "run", "blocked-ok"],
     );
     if (positional.length !== 1) throw usageError("card start takes one card id");
-    if (on.has("new") === (options.workspace !== undefined))
-      throw usageError("card start needs either --new or --workspace <id>");
+    const targets = [on.has("new"), on.has("run"), options.workspace !== undefined];
+    if (targets.filter(Boolean).length !== 1)
+      throw usageError("card start needs one of --new, --workspace <id>, or --run");
     if (options.workspace && (options.mode || options.line || options.base))
       throw usageError("--mode, --line, and --base go with --new only");
+    if (on.has("run") && (options.mode || options.line))
+      throw usageError("--run takes --base only");
     const mode = (options.mode ?? "new") as Isolation;
     if (!MODES.includes(mode)) throw usageError(`--mode must be one of ${MODES.join(", ")}`);
     const request = options.workspace
       ? { workspaceId: options.workspace }
-      : {
-          isolation: mode,
-          ...(options.line ? { line: options.line } : {}),
-          ...(options.base ? { base: options.base } : {}),
-        };
+      : on.has("run")
+        ? { run: true, ...(options.base ? { base: options.base } : {}) }
+        : {
+            isolation: mode,
+            ...(options.line ? { line: options.line } : {}),
+            ...(options.base ? { base: options.base } : {}),
+          };
     const result = await api.call(
       "POST",
       `kanban/cards/${positional[0]}/start`,
@@ -621,8 +631,12 @@ async function cardCommand(api: Api, deps: CliDeps, args: string[], json: boolea
     if (json) return deps.out(JSON.stringify(result));
     for (const warning of result.created?.warnings ?? []) deps.err(`warning: ${warning}`);
     deps.out(`Started ${cardLine(result.card, await projects())}`);
-    deps.out(`In ${workspaceLine(result.workspace)}`);
-    deps.out(`Brief sent to chat ${result.chatId}`);
+    deps.out(
+      result.run
+        ? `In run ${result.run.id} (${workspaceLine(result.workspace)})`
+        : `In ${workspaceLine(result.workspace)}`,
+    );
+    deps.out(`Brief sent to ${result.run ? "coordinator " : ""}chat ${result.chatId}`);
     return reportSteps(deps, result.created?.steps ?? [], json);
   }
   throw usageError(`Unknown command: card ${args.join(" ")}`);
@@ -801,6 +815,42 @@ async function pipelineCommand(
   throw usageError(`Unknown command: pipeline ${args.join(" ")}`);
 }
 
+/** "23/30 (77%)": the sample size sits next to the share. */
+const share = (count: number, total: number) =>
+  `${count}/${total}${total > 0 ? ` (${Math.round((count / total) * 100)}%)` : ""}`;
+
+const TOO_LITTLE = "  too little data";
+
+async function usageCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  if (args.length !== 1 || args[0] !== "calibration")
+    throw usageError(`Unknown command: usage ${args.join(" ")}`);
+  const report = await api.call("GET", "usage/calibration", CalibrationResponse);
+  if (json) return deps.out(JSON.stringify(report));
+  deps.out(
+    `Bar now ${report.threshold}. ${report.decisions} decisions with Jev answers, ${report.outcomes} local outcomes.`,
+  );
+  deps.out(
+    report.suggestedBar === undefined
+      ? `Suggested bar: none (no bar has ${report.minSample} local outcomes with 90% passed)`
+      : `Suggested bar: ${report.suggestedBar}`,
+  );
+  deps.out(`${"bar".padEnd(5)}${"would go local".padEnd(17)}passed`);
+  for (const bar of report.bars) {
+    const passed = `${share(bar.passed, bar.localOutcomes)}${bar.enough ? "" : TOO_LITTLE}`;
+    deps.out(
+      `${String(bar.bar).padEnd(5)}${share(bar.wouldGoLocal, bar.decisions).padEnd(17)}${passed}`,
+    );
+  }
+  for (const [question, buckets] of Object.entries(report.buckets)) {
+    deps.out(question);
+    for (const bucket of buckets) {
+      const range = `${bucket.from.toFixed(1)}-${bucket.to.toFixed(1)}`;
+      const passed = `${share(bucket.passed, bucket.localOutcomes)}${bucket.enough ? "" : TOO_LITTLE}`;
+      deps.out(`  ${range}  ${`answers ${bucket.answers}`.padEnd(12)}passed ${passed}`);
+    }
+  }
+}
+
 const CoordinatedRunBody = Type.Object({ run: RunSchema });
 
 function laneLines(run: Run): string[] {
@@ -963,6 +1013,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "jobs") await jobsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pipeline") await pipelineCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "usage") await usageCommand(new Api(deps, base), deps, rest, json);
     else if (command === "run") await runCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pr") await prCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
