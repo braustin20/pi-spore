@@ -106,6 +106,10 @@ export interface ServerHost extends ModuleInterfaces {
   /** The server's own base URL, such as `http://127.0.0.1:7420`, for agent processes. */
   readonly url: string;
   readonly agentTokens: AgentTokens;
+  /** Runs after every module's setup, before the server listens. A throw is logged and does not stop startup. */
+  onStarted(listener: () => Promise<void> | void): void;
+  /** Deletes stored API responses (idempotency records) created before `before`, a time in ms. Returns the count. */
+  pruneResponses(before: number): number;
 }
 
 export interface ServerModule extends ModuleManifest {

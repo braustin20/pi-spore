@@ -17,9 +17,11 @@ import {
 } from "@pi-spore/shared";
 import {
   type CopyCreatedListener,
+  type DeleteListener,
   type LeaveListener,
   type RemoveCopyListener,
   type ResumeListener,
+  type RetentionListener,
   type StateChangeListener,
   type Workspaces,
   WorkspacesKey,
@@ -43,7 +45,11 @@ const MIGRATIONS = [
   )`,
   "CREATE INDEX workspaces_by_project ON workspaces_workspaces (project_id, state)",
   "ALTER TABLE workspaces_workspaces ADD COLUMN base TEXT",
+  "ALTER TABLE workspaces_workspaces ADD COLUMN archived_at INTEGER",
+  "UPDATE workspaces_workspaces SET archived_at = updated_at WHERE state = 'archived'",
 ];
+
+const DAY_MS = 86_400_000;
 
 interface Row {
   id: string;
@@ -57,6 +63,7 @@ interface Row {
   state: WorkspaceState;
   created_at: number;
   updated_at: number;
+  archived_at: number | null;
 }
 
 const toWorkspace = (row: Row): Workspace => ({
@@ -195,6 +202,7 @@ export const workspacesModule: ServerModule = {
         state: "active",
         created_at: now,
         updated_at: now,
+        archived_at: null,
       };
       host.store.run(
         `INSERT INTO workspaces_workspaces
@@ -236,6 +244,8 @@ export const workspacesModule: ServerModule = {
     const removeListeners: RemoveCopyListener[] = [];
     const resumeListeners: ResumeListener[] = [];
     const stateListeners: StateChangeListener[] = [];
+    const retentionListeners: RetentionListener[] = [];
+    const deleteListeners: DeleteListener[] = [];
     const workspaces: Workspaces = {
       get: (id) => toWorkspace(load(id)),
       list: (filter = {}) => listRows(filter).map(toWorkspace),
@@ -255,6 +265,12 @@ export const workspacesModule: ServerModule = {
       afterStateChange: (listener) => {
         stateListeners.push(listener);
       },
+      onRetention: (listener) => {
+        retentionListeners.push(listener);
+      },
+      beforeDeleteWorkspace: (listener) => {
+        deleteListeners.push(listener);
+      },
     };
     host.provide(WorkspacesKey, workspaces);
 
@@ -264,13 +280,15 @@ export const workspacesModule: ServerModule = {
 
     const setState = (row: Row, state: WorkspaceState): Workspace => {
       const now = host.now();
+      const archivedAt = state === "archived" ? now : null;
       host.store.run(
-        "UPDATE workspaces_workspaces SET state = ?, updated_at = ? WHERE id = ?",
+        "UPDATE workspaces_workspaces SET state = ?, updated_at = ?, archived_at = ? WHERE id = ?",
         state,
         now,
+        archivedAt,
         row.id,
       );
-      const workspace = toWorkspace({ ...row, state, updated_at: now });
+      const workspace = toWorkspace({ ...row, state, updated_at: now, archived_at: archivedAt });
       publish(workspace);
       for (const listener of stateListeners) {
         try {
@@ -285,6 +303,53 @@ export const workspacesModule: ServerModule = {
       }
       return workspace;
     };
+
+    const logFailure = (message: string, fields: Record<string, unknown>, error: unknown) =>
+      host.log.error(message, { ...fields, error: String(error) });
+
+    let sweeping = false;
+    const sweep = async (): Promise<void> => {
+      if (sweeping) return;
+      sweeping = true;
+      try {
+        const days = (await projects.globalSettings()).retentionDays.value;
+        if (days === 0) return;
+        const cutoff = host.now() - days * DAY_MS;
+        for (const listener of retentionListeners) {
+          await listener(cutoff).catch((error: unknown) =>
+            logFailure("A retention listener failed", {}, error),
+          );
+        }
+        const responses = host.pruneResponses(cutoff);
+        if (responses > 0)
+          host.log.info("Retention deleted stored responses", { count: responses });
+        const old = host.store.all<Row>(
+          "SELECT * FROM workspaces_workspaces WHERE state = 'archived' AND archived_at < ?",
+          cutoff,
+        );
+        let deleted = 0;
+        for (const row of old) {
+          let failed = false;
+          for (const listener of deleteListeners) {
+            await listener(toWorkspace(row)).catch((error: unknown) => {
+              failed = true;
+              logFailure("A workspace delete listener failed", { workspace: row.id }, error);
+            });
+          }
+          if (failed) continue;
+          host.store.run("DELETE FROM workspaces_workspaces WHERE id = ?", row.id);
+          host.events.publish("workspaces:list", { type: "removed", id: row.id });
+          deleted++;
+        }
+        if (deleted > 0) host.log.info("Retention deleted archived workspaces", { count: deleted });
+      } catch (error) {
+        host.log.error("Retention sweep failed", { error: String(error) });
+      } finally {
+        sweeping = false;
+      }
+    };
+    host.onStarted(sweep);
+    setInterval(() => void sweep(), DAY_MS).unref();
 
     host.events.onSubscribe("workspaces:list", () => [
       { type: "snapshot", workspaces: listRows({}).map(toWorkspace) },

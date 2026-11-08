@@ -44,6 +44,10 @@ export async function setupModules(
   const ordered = resolveModules(registry, disabled);
   const broker = createInterfaceBroker();
   const result: SetUpModule[] = [];
+  const startedListeners: (() => Promise<void> | void)[] = [];
+  // Core owns core_idempotency, so modules prune it through the host and never query it.
+  const pruneResponses = (before: number): number =>
+    services.store.run("DELETE FROM core_idempotency WHERE created_at < ?", before).changes;
   for (const module of ordered) {
     const routes = new Hono();
     await module.setup({
@@ -51,8 +55,19 @@ export async function setupModules(
       ...services,
       routes,
       sockets: services.sockets.forModule(module.id),
+      onStarted: (listener) => {
+        startedListeners.push(listener);
+      },
+      pruneResponses,
     });
     result.push({ id: module.id, routes });
+  }
+  for (const listener of startedListeners) {
+    try {
+      await listener();
+    } catch (error) {
+      services.log.error("A start listener failed", { error: String(error) });
+    }
   }
   return result;
 }

@@ -48,12 +48,14 @@ export function ago(time: number, now: number): string {
 const ListEvent = Type.Union([
   Type.Object({ type: Type.Literal("snapshot"), workspaces: Type.Array(Workspace) }),
   Type.Object({ type: Type.Literal("workspace"), workspace: Workspace }),
+  Type.Object({ type: Type.Literal("removed"), id: Type.String() }),
 ]);
 
-/** Applies one `workspaces:list` event. Workspaces are never deleted, so there is no removal event. */
+/** Applies one `workspaces:list` event. A `removed` event means retention deleted the workspace. */
 export function reduceWorkspaceList(workspaces: Workspace[], raw: unknown): Workspace[] {
   const event = parse(ListEvent, raw, "workspace list event");
   if (event.type === "snapshot") return event.workspaces;
+  if (event.type === "removed") return workspaces.filter((existing) => existing.id !== event.id);
   const { workspace } = event;
   if (!workspaces.some((existing) => existing.id === workspace.id))
     return [workspace, ...workspaces];

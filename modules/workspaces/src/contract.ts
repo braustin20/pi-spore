@@ -34,6 +34,19 @@ export type ResumeListener = (workspace: Workspace) => void;
  */
 export type StateChangeListener = (workspace: Workspace, previous: WorkspaceState) => void;
 
+/**
+ * Runs in each retention sweep, with the cutoff time in ms. A module deletes its own data older than the cutoff that
+ * is not tied to an archived workspace. A throw is logged and the other listeners still run.
+ */
+export type RetentionListener = (cutoff: number) => Promise<void>;
+
+/**
+ * Runs before an archived workspace past the retention limit is deleted. A module deletes what it holds for that
+ * workspace. It must be safe to run again: a throw is logged, the workspace keeps its row, and the next sweep tries
+ * again.
+ */
+export type DeleteListener = (workspace: Workspace) => Promise<void>;
+
 export interface Workspaces {
   /** Throws ApiError 404 if there is no such workspace. */
   get(id: string): Workspace;
@@ -45,6 +58,8 @@ export interface Workspaces {
   beforeRemoveCopy(listener: RemoveCopyListener): void;
   afterResume(listener: ResumeListener): void;
   afterStateChange(listener: StateChangeListener): void;
+  onRetention(listener: RetentionListener): void;
+  beforeDeleteWorkspace(listener: DeleteListener): void;
 }
 
 export const WorkspacesKey = defineInterface<Workspaces>("workspaces", "workspaces");
