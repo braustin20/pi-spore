@@ -344,7 +344,10 @@ export const runsModule: ServerModule = {
       return { project, integrate };
     };
 
-    const createRun = async (request: CreateRunRequest): Promise<Run> => {
+    const createRun = async (
+      request: CreateRunRequest,
+      { model }: { model?: string } = {},
+    ): Promise<Run> => {
       const { project, integrate } = await integrateOf(request.projectId);
       const base = request.base ?? (await projects.vcsFor(project).lines?.list(project))?.current;
       if (!base) {
@@ -364,7 +367,10 @@ export const runsModule: ServerModule = {
         line,
         base,
       });
-      const coordinator = await agents.activeWorker(workspace.id);
+      const coordinator = await agents.activeWorker(
+        workspace.id,
+        model === undefined ? {} : { model },
+      );
       host.store.run(
         `INSERT INTO runs_runs (id, project_id, workspace_id, line, base, gates, coordinator_agent_id, created_at)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -873,6 +879,7 @@ export const runsModule: ServerModule = {
     });
 
     const api: Runs = {
+      create: createRun,
       startLane,
       reviseLane,
       mergeLane,

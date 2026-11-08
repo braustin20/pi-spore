@@ -1,10 +1,23 @@
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
+import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
+import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
@@ -18,6 +31,7 @@ import {
   CardList,
   Project,
   parse,
+  Run,
   StartCardResponse,
   Workspace,
 } from "@pi-spore/shared";
@@ -61,7 +75,11 @@ beforeEach(async () => {
     vcsFolderModule,
     workspacesModule,
     agents,
+    actionsModule,
     attentionModule,
+    artifactsModule,
+    pipelinesModule,
+    runsModule,
     kanbanModule,
     probe,
   ]);
@@ -414,6 +432,93 @@ describe("starting work from a card", () => {
         422,
       ),
     ).toBe("project_mismatch");
+  });
+});
+
+/** A git project on `main` with one commit, so it supports runs. */
+async function addGitProject(name: string): Promise<Project> {
+  const path = join(scratch, name);
+  mkdirSync(path);
+  writeFileSync(join(path, "a.txt"), "one\n");
+  for (const args of [
+    ["init", "-q", "-b", "main"],
+    ["add", "."],
+    ["commit", "-q", "-m", "base"],
+  ]) {
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: path });
+  }
+  const body = await json(await server.request("POST", "/api/projects", { path }), 201);
+  return parse(Type.Object({ project: Project }), body, "project").project;
+}
+
+const RunStart = Type.Intersect([StartCardResponse, Type.Object({ run: Run })]);
+const startRun = async (id: string, request: Record<string, unknown> = {}) =>
+  parse(
+    RunStart,
+    await json(
+      await server.request("POST", `/api/kanban/cards/${id}/start`, { run: true, ...request }),
+      201,
+    ),
+    "start",
+  );
+
+describe("starting a run from a card", () => {
+  it("creates the run, links its workspace, moves the card, and briefs the coordinator", async () => {
+    const game = await addGitProject("game");
+    const card = await addCard({ title: "Build crafting", column: "ready", projectId: game.id });
+
+    const result = await startRun(card.id);
+    const runs = (await json(await server.request("GET", `/api/runs?projectId=${game.id}`))) as {
+      runs: Run[];
+    };
+    expect(runs.runs.map((run) => run.id)).toEqual([result.run.id]);
+    expect(result.card).toMatchObject({
+      column: "in-progress",
+      workspaceId: result.run.workspaceId,
+    });
+    expect(result.workspace.id).toBe(result.run.workspaceId);
+    expect(result.chatId).toBe(result.run.coordinatorAgentId);
+    const brief = cardBrief(result.card, "The user started it here.");
+    await until(() => userMessages(result.chatId).includes(brief));
+    expect((await getCard(card.id)).history.at(-1)).toMatchObject({
+      from: "ready",
+      to: "in-progress",
+      reason: "run-started",
+    });
+  });
+
+  it("moves the card to Review on a PR and to Done when the run workspace is archived", async () => {
+    const game = await addGitProject("game");
+    const card = await addCard({ title: "Build crafting", projectId: game.id });
+    const { run, chatId } = await startRun(card.id);
+    await until(() => userMessages(chatId).some((text) => text.includes(`(card ${card.id})`)));
+
+    cards.workChanged(run.workspaceId, "review", "pr-opened");
+    expect((await getCard(card.id)).card.column).toBe("review");
+
+    await workspaceStep(run.workspaceId, "archive");
+    expect((await getCard(card.id)).card.column).toBe("done");
+  });
+
+  it("refuses a project without runs and leaves the card where it was", async () => {
+    const folder = await addProject("folder");
+    const card = await addCard({ title: "Nope", column: "ready", projectId: folder.id });
+    expect(
+      await errorCode(
+        await server.request("POST", `/api/kanban/cards/${card.id}/start`, { run: true }),
+        422,
+      ),
+    ).toBe("not_supported");
+    expect((await getCard(card.id)).card).toMatchObject({ column: "ready" });
+    expect((await getCard(card.id)).card.workspaceId).toBeUndefined();
+  });
+
+  it("starts the coordinator chat on the model of the request", async () => {
+    const game = await addGitProject("game");
+    const card = await addCard({ title: "Use mine", projectId: game.id, model: "fake/card-model" });
+    const { chatId } = await startRun(card.id, { model: "fake/start-model" });
+    await until(() => userMessages(chatId).some((text) => text.includes(`(card ${card.id})`)));
+    expect(launchModels()).toEqual(["fake/start-model high"]);
   });
 });
 

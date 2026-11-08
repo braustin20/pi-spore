@@ -1,6 +1,7 @@
 import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { ApprovalsKey } from "@pi-spore/mod-attention/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
+import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import {
@@ -19,6 +20,7 @@ import {
   CreateCardRequest,
   MoveCardRequest,
   parseJsonBody,
+  type Run,
   StartCardRequest,
   type StartCardResponse,
   UpdateCardRequest,
@@ -162,7 +164,7 @@ function checkDue(due: string): string {
 
 export const kanbanModule: ServerModule = {
   id: "kanban",
-  requires: ["projects", "workspaces", "agents", "attention"],
+  requires: ["projects", "workspaces", "agents", "attention", "runs"],
   core: false,
   setup(host) {
     host.store.migrate("kanban", MIGRATIONS);
@@ -170,6 +172,7 @@ export const kanbanModule: ServerModule = {
     const workspaces = host.use(WorkspacesKey);
     const agents = host.use(AgentsKey);
     const approvals = host.use(ApprovalsKey);
+    const runs = host.use(RunsKey);
 
     const load = (id: string): CardRow => {
       const row = host.store.get<CardRow>("SELECT * FROM kanban_cards WHERE id = ?", id);
@@ -477,9 +480,10 @@ export const kanbanModule: ServerModule = {
     };
 
     /**
-     * R11.4, ADR 0100: starts work from a card in a new workspace named after it, or in an active workspace of its
-     * project. The card links to the workspace and moves to In progress, and its brief goes to the workspace's
-     * worker chat in the same transaction. `origin` says who started it, for the brief.
+     * R11.4, ADR 0100: starts work from a card in a new workspace named after it, in an active workspace of its
+     * project, or in a new run. The card links to the workspace and moves to In progress, and its brief goes to the
+     * workspace's worker chat, or the run's coordinator chat, in the same transaction. `origin` says who started it,
+     * for the brief.
      */
     const startCard = async (
       id: string,
@@ -519,8 +523,20 @@ export const kanbanModule: ServerModule = {
         );
       }
       let created: StartCardResponse["created"];
+      let run: Run | undefined;
       let workspace: Workspace;
-      if (target.kind === "new") {
+      const model = options.model ?? row.model ?? undefined;
+      if (target.kind === "run") {
+        run = await runs.create(
+          {
+            projectId,
+            name: row.title.slice(0, 120),
+            ...(target.base ? { base: target.base } : {}),
+          },
+          model === undefined ? {} : { model },
+        );
+        workspace = workspaces.get(run.workspaceId);
+      } else if (target.kind === "new") {
         created = await workspaces.create({
           projectId,
           name: row.title,
@@ -530,8 +546,9 @@ export const kanbanModule: ServerModule = {
         });
         workspace = created.workspace;
       } else workspace = existing as Workspace;
-      const model = options.model ?? row.model ?? undefined;
-      const chat = await agents.activeWorker(workspace.id, model === undefined ? {} : { model });
+      const chatId =
+        run?.coordinatorAgentId ??
+        (await agents.activeWorker(workspace.id, model === undefined ? {} : { model })).id;
       host.store.transaction(() => {
         host.store.run(
           "UPDATE kanban_cards SET workspace_id = ?, project_id = ?, updated_at = ? WHERE id = ?",
@@ -540,15 +557,16 @@ export const kanbanModule: ServerModule = {
           host.now(),
           row.id,
         );
-        move(load(row.id), "in-progress", undefined, "workspace-started");
-        agents.deliver(chat.id, cardBrief(toCard(load(row.id)), options.origin));
+        move(load(row.id), "in-progress", undefined, run ? "run-started" : "workspace-started");
+        agents.deliver(chatId, cardBrief(toCard(load(row.id)), options.origin));
       });
       publish();
       return {
         card: toCard(load(row.id)),
         workspace,
         ...(created ? { created } : {}),
-        chatId: chat.id,
+        ...(run ? { run } : {}),
+        chatId,
       };
     };
 
@@ -571,6 +589,9 @@ export const kanbanModule: ServerModule = {
           ...(subject.model === undefined ? {} : { model: subject.model }),
           origin: `The user approved starting it here, as an agent asked. The agent's reason: ${approval.reason}`,
         });
+        if (result.run) {
+          return `Card "${result.card.title}" (${result.card.id}) started the new run "${result.workspace.name}" (run ${result.run.id}, workspace ${result.workspace.id}). Its brief went to the run's coordinator chat (${result.chatId}).`;
+        }
         return `Card "${result.card.title}" (${result.card.id}) started in ${
           result.created ? "the new" : "the existing"
         } workspace "${result.workspace.name}" (${result.workspace.id}). Its brief went to that workspace's worker chat (${result.chatId}).`;
@@ -578,9 +599,11 @@ export const kanbanModule: ServerModule = {
     });
 
     const describeTarget = (target: CardStartTarget): string =>
-      target.kind === "new"
-        ? `a new workspace (${target.isolation === "new" ? "new worktree or copy" : target.isolation})`
-        : `the workspace "${workspaces.get(target.workspaceId).name}"`;
+      target.kind === "run"
+        ? "a new run"
+        : target.kind === "new"
+          ? `a new workspace (${target.isolation === "new" ? "new worktree or copy" : target.isolation})`
+          : `the workspace "${workspaces.get(target.workspaceId).name}"`;
 
     host.provide(CardsKey, {
       forWorkspace: (workspaceId) => listCards({ workspaceId }),
@@ -716,12 +739,14 @@ export const kanbanModule: ServerModule = {
       const target: CardStartTarget =
         "workspaceId" in request
           ? { kind: "existing", workspaceId: request.workspaceId }
-          : {
-              kind: "new",
-              isolation: request.isolation,
-              ...(request.line ? { line: request.line } : {}),
-              ...(request.base ? { base: request.base } : {}),
-            };
+          : "run" in request
+            ? { kind: "run", ...(request.base ? { base: request.base } : {}) }
+            : {
+                kind: "new",
+                isolation: request.isolation,
+                ...(request.line ? { line: request.line } : {}),
+                ...(request.base ? { base: request.base } : {}),
+              };
       const body = await startCard(c.req.param("id"), target, {
         ...("projectId" in request && request.projectId ? { projectId: request.projectId } : {}),
         ...(request.confirmBlocked ? { confirmBlocked: true } : {}),

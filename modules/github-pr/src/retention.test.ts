@@ -2,10 +2,14 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { actionsModule } from "@pi-spore/mod-actions/server";
 import { createAgentsModule } from "@pi-spore/mod-agents/server";
+import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
+import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
@@ -55,6 +59,10 @@ async function start(startAt: number, firstId = 0): Promise<TestServer> {
       workspacesModule,
       agents,
       attentionModule,
+      actionsModule,
+      artifactsModule,
+      pipelinesModule,
+      runsModule,
       kanbanModule,
       createGithubPrModule({ gh: { command: process.execPath, args: ["unused"] } }),
     ],

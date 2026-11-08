@@ -1138,6 +1138,7 @@ function targetText(target: CardStartTarget, workspaces: readonly Workspace[]): 
     const name = workspaces.find((workspace) => workspace.id === target.workspaceId)?.name;
     return `the workspace "${name ?? target.workspaceId}"`;
   }
+  if (target.kind === "run") return "a new run";
   const how =
     target.isolation === "new"
       ? "a new worktree or copy"

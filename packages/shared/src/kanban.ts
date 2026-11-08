@@ -1,5 +1,6 @@
 import Type, { type Static } from "typebox";
 import { ModelRef } from "./agents.js";
+import { Run } from "./runs.js";
 import { CreateWorkspaceResponse, Isolation, Workspace, WorkspaceState } from "./workspaces.js";
 
 /** The fixed board columns (R11.2, ADR 0012). */
@@ -161,7 +162,7 @@ export const MoveCardRequest = Type.Object(
 );
 export type MoveCardRequest = Static<typeof MoveCardRequest>;
 
-/** Where work from a card starts (ADR 0100): a new workspace, or an active workspace of the card's project. */
+/** Where work from a card starts (ADR 0100): a new workspace, an active workspace of the card's project, or a new run. */
 export const CardStartTarget = Type.Union([
   Type.Object(
     {
@@ -174,6 +175,10 @@ export const CardStartTarget = Type.Union([
   ),
   Type.Object(
     { kind: Type.Literal("existing"), workspaceId: Type.String({ minLength: 1 }) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { kind: Type.Literal("run"), base: Type.Optional(Type.String({ minLength: 1 })) },
     { additionalProperties: false },
   ),
 ]);
@@ -208,6 +213,19 @@ export const StartCardRequest = Type.Union([
     },
     { additionalProperties: false },
   ),
+  Type.Object(
+    {
+      projectId: Type.Optional(Type.String({ minLength: 1 })),
+      /** A new run named after the card; its brief goes to the run's coordinator chat. */
+      run: Type.Literal(true),
+      /** The line the run starts from. Default: the project's current line. */
+      base: Type.Optional(Type.String({ minLength: 1 })),
+      /** The model of the coordinator chat. Default: the card's model. */
+      model: Type.Optional(ModelRef),
+      confirmBlocked: Type.Optional(Type.Boolean()),
+    },
+    { additionalProperties: false },
+  ),
 ]);
 export type StartCardRequest = Static<typeof StartCardRequest>;
 
@@ -216,7 +234,9 @@ export const StartCardResponse = Type.Object({
   workspace: Workspace,
   /** Only for a new workspace. */
   created: Type.Optional(CreateWorkspaceResponse),
-  /** The worker chat that got the card's brief. */
+  /** Only for a new run. */
+  run: Type.Optional(Run),
+  /** The worker chat, or the run's coordinator chat, that got the card's brief. */
   chatId: Type.String(),
 });
 export type StartCardResponse = Static<typeof StartCardResponse>;

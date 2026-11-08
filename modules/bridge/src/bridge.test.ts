@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -907,6 +908,56 @@ describe("starting a card by an agent (ADR 0100)", () => {
     const again = await server.request("POST", `/api/attention/approvals/${approval.id}/approve`);
     expect(again.status).toBe(409);
     expect(await again.json()).toMatchObject({ error: { code: "approval_decided" } });
+  });
+
+  it("starts a run on approve and links the card to it", async () => {
+    const server = await start();
+    const folder = join(scratch, "planner");
+    mkdirSync(folder);
+    writeFileSync(join(folder, "a.txt"), "one\n");
+    const git = (...args: string[]) =>
+      execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: folder });
+    git("init", "-q", "-b", "main");
+    git("add", ".");
+    git("commit", "-q", "-m", "base");
+    const asker = await workspace(server, "planner");
+    const call = asAgent(server, asker.agentId, asker.workspaceId);
+    const { card: first } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 1", body: "Build the base." }),
+      201,
+    );
+
+    const { approval } = await fileStart(call, first.id, { kind: "run" });
+    expect(approval.title).toBe('Start card "Phase 1" in a new run');
+    const projectId = (
+      await json<{ workspace: { projectId: string } }>(
+        await server.request("GET", `/api/workspaces/${asker.workspaceId}`),
+      )
+    ).workspace.projectId;
+    const listRuns = async () =>
+      (
+        await json<{ runs: { id: string; workspaceId: string; coordinatorAgentId: string }[] }>(
+          await server.request("GET", `/api/runs?projectId=${projectId}`),
+        )
+      ).runs;
+    expect(await listRuns()).toEqual([]);
+    const before = await json<{ card: Card }>(
+      await server.request("GET", `/api/kanban/cards/${first.id}`),
+    );
+    expect(before.card.column).toBe("backlog");
+
+    await json(await server.request("POST", `/api/attention/approvals/${approval.id}/approve`));
+    const [run] = await listRuns();
+    if (!run) throw new Error("The approval started no run");
+    const { card } = await json<{ card: Card }>(
+      await server.request("GET", `/api/kanban/cards/${first.id}`),
+    );
+    expect(card).toMatchObject({ column: "in-progress", workspaceId: run.workspaceId });
+    const brief = cardBrief(
+      card,
+      "The user approved starting it here, as an agent asked. The agent's reason: Phase 1 is next",
+    );
+    await until(() => said(server, run.coordinatorAgentId).includes(`user: ${brief}`));
   });
 
   it("refuses a changed card on approve and keeps the approval open", async () => {
