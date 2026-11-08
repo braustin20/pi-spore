@@ -28,7 +28,7 @@ import {
   type TestProof,
 } from "@pi-spore/shared";
 import Type, { type Static } from "typebox";
-import { type Pipelines, PipelinesKey } from "./contract.js";
+import { type Pipelines, PipelinesKey, type StartRunRequest } from "./contract.js";
 import { NO_DIFF, renderDiff } from "./diff.js";
 import { loadPipelines, ROUTE_MODEL } from "./files.js";
 
@@ -75,6 +75,8 @@ const MIGRATIONS = [
   "CREATE INDEX pipelines_turns_by_run ON pipelines_turns (run_id, created_at)",
   // The round-limit approval a run waits on (slice 5).
   "ALTER TABLE pipelines_runs ADD COLUMN approval_id TEXT",
+  // The model of the worker stage for this run only (`start`'s `workerModel`).
+  "ALTER TABLE pipelines_runs ADD COLUMN worker_model TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -102,6 +104,7 @@ interface RunRow {
   message: string | null;
   tests: string;
   approval_id: string | null;
+  worker_model: string | null;
   created_at: number;
   ended_at: number | null;
 }
@@ -334,6 +337,8 @@ export const pipelinesModule: ServerModule = {
       }
     };
 
+    const endListeners: ((run: PipelineRun) => void)[] = [];
+    // Every caller is inside a transaction (a job commit, `decided`, or cancel), so a listener's throw undoes the end.
     const endRun = (runId: string, state: "passed" | "failed" | "stopped", message?: string) => {
       host.store.run(
         "UPDATE pipelines_runs SET state = ?, message = ?, ended_at = ? WHERE id = ?",
@@ -342,6 +347,8 @@ export const pipelinesModule: ServerModule = {
         host.now(),
         runId,
       );
+      const ended = viewOf(requireRun(runId));
+      for (const listener of endListeners) listener(ended);
     };
 
     /** The run this step belongs to, or undefined when the run was stopped or has moved on: the job just ends. */
@@ -404,7 +411,7 @@ export const pipelinesModule: ServerModule = {
     ): Promise<StepOutcome<StageCheckpoint>> => {
       const briefPath = `pipelines/${run.id}/brief.md`;
       await artifacts.write({ scope: "workspace", id: run.workspace_id }, briefPath, run.brief);
-      const model = modelOf(stage);
+      const model = run.worker_model ?? modelOf(stage);
       return {
         checkpoint: { boot: bootId },
         commit: () => {
@@ -796,9 +803,6 @@ export const pipelinesModule: ServerModule = {
       publish(requireRun(turn.run_id).workspace_id);
       return { turn: turnToView(turn) };
     };
-    const api: Pipelines = { report };
-    host.provide(PipelinesKey, api);
-
     approvals.register({
       kind: ROUND_LIMIT,
       subject: RoundLimitSubject,
@@ -826,17 +830,8 @@ export const pipelinesModule: ServerModule = {
       return loadPipelines(userDir, join(project.path, ".pi-spore", "pipelines"));
     };
 
-    host.routes.get("/workspaces/:id", async (c) =>
-      c.json({ pipelines: await entriesOf(c.req.param("id")) }),
-    );
-
-    host.routes.get("/workspaces/:id/runs", (c) =>
-      c.json({ runs: runsOf(workspaces.get(c.req.param("id")).id) }),
-    );
-
-    host.routes.post("/workspaces/:id/runs", async (c) => {
-      const request = parseJsonBody(StartPipelineRequest, await c.req.text(), "pipeline request");
-      const workspace = workspaces.get(c.req.param("id"));
+    const start = async (workspaceId: string, request: StartRunRequest): Promise<PipelineRun> => {
+      const workspace = workspaces.get(workspaceId);
       if (workspace.state !== "active") {
         throw new ApiError(
           409,
@@ -849,14 +844,14 @@ export const pipelinesModule: ServerModule = {
       if (!entry)
         throw new ApiError(404, "pipeline_not_found", `No pipeline "${request.pipeline}"`);
       if ("error" in entry) throw new ApiError(422, "bad_pipeline", entry.error);
-      const asking = await agents.activeWorker(workspace.id);
+      const askingAgentId = request.askingAgentId ?? (await agents.activeWorker(workspace.id)).id;
       const runId = host.store.transaction(() => {
         requireNoActiveRun(workspace.id);
         const id = host.newId();
         host.store.run(
           `INSERT INTO pipelines_runs (id, workspace_id, pipeline_id, source, path, hash, stages, brief,
-             asking_agent_id, state, stage_index, tests, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, '[]', ?)`,
+             asking_agent_id, worker_model, state, stage_index, tests, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, '[]', ?)`,
           id,
           workspace.id,
           entry.id,
@@ -865,14 +860,37 @@ export const pipelinesModule: ServerModule = {
           entry.hash,
           JSON.stringify(entry.stages),
           request.brief,
-          asking.id,
+          askingAgentId,
+          request.workerModel ?? null,
           host.now(),
         );
         host.jobs.start(STAGE_JOB, { runId: id, stageIndex: 0 }, { key: workspace.id });
         return id;
       });
       publish(workspace.id);
-      return c.json({ run: viewOf(requireRun(runId)) }, 201);
+      return viewOf(requireRun(runId));
+    };
+
+    const api: Pipelines = {
+      report,
+      start,
+      afterRunEnded: (listener) => {
+        endListeners.push(listener);
+      },
+    };
+    host.provide(PipelinesKey, api);
+
+    host.routes.get("/workspaces/:id", async (c) =>
+      c.json({ pipelines: await entriesOf(c.req.param("id")) }),
+    );
+
+    host.routes.get("/workspaces/:id/runs", (c) =>
+      c.json({ runs: runsOf(workspaces.get(c.req.param("id")).id) }),
+    );
+
+    host.routes.post("/workspaces/:id/runs", async (c) => {
+      const request = parseJsonBody(StartPipelineRequest, await c.req.text(), "pipeline request");
+      return c.json({ run: await start(c.req.param("id"), request) }, 201);
     });
 
     host.routes.get("/runs/:id", (c) => c.json({ run: viewOf(requireRun(c.req.param("id"))) }));

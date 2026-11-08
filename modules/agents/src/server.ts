@@ -19,7 +19,7 @@ import {
   SetThinkingRequest,
   type Workspace,
 } from "@pi-spore/shared";
-import { type AgentChange, type Agents, AgentsKey } from "./contract.js";
+import { type AgentChange, type Agents, AgentsKey, type LaunchHook } from "./contract.js";
 import {
   DELIVERIES_JOB_MIGRATION,
   DELIVERIES_MIGRATION,
@@ -159,6 +159,7 @@ export function createAgentsModule(
       const exclude = options.excludeExtensions ?? ["npm:pi-lens"];
       const listeners: ((agentId: string, change: AgentChange) => void)[] = [];
       const chatDeleteListeners: ((agentId: string) => void)[] = [];
+      const launchHooks: LaunchHook[] = [];
 
       const resourceArgs =
         options.resourceArgs ??
@@ -184,6 +185,19 @@ export function createAgentsModule(
           if (project.traits.some((trait) => trait.id === "unity"))
             extra.PI_SPORE_UNITY_PROJECT = workspace.path;
           return agentEnv(options.baseEnv ?? process.env, extra);
+        },
+        launchContext: (agent, workspace) => {
+          const merged: { env: Record<string, string>; tools?: readonly string[] } = { env: {} };
+          for (const hook of launchHooks) {
+            const context = hook(agent, workspace);
+            Object.assign(merged.env, context?.env);
+            if (!context?.tools) continue;
+            if (merged.tools) {
+              throw new Error(`Two launch hooks give tools for agent ${agent.id}`);
+            }
+            merged.tools = context.tools;
+          }
+          return merged;
         },
         url: host.url,
         tokens: host.agentTokens,
@@ -374,6 +388,9 @@ export function createAgentsModule(
         },
         beforeDeleteChat: (listener) => {
           chatDeleteListeners.push(listener);
+        },
+        addLaunchContext: (hook) => {
+          launchHooks.push(hook);
         },
       };
       host.provide(AgentsKey, api);

@@ -17,12 +17,12 @@ import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
-import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
+import { type Pipelines, PipelinesKey, pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
-import type { JobView } from "@pi-spore/module-api";
+import type { JobView, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type {
   ActionRun,
@@ -63,7 +63,12 @@ function scriptEnv(script: Record<string, unknown[]>) {
 
 /** A server with every module a pipeline run needs, the fake Pi, and a real HTTP port for it to call. */
 async function start(
-  options: { home?: string; firstId?: number; env?: Record<string, string> } = {},
+  options: {
+    home?: string;
+    firstId?: number;
+    env?: Record<string, string>;
+    extraModules?: readonly ServerModule[];
+  } = {},
 ) {
   const agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
@@ -86,6 +91,7 @@ async function start(
       artifactsModule,
       pipelinesModule,
       bridgeModule,
+      ...(options.extraModules ?? []),
     ],
     {
       listen: true,
@@ -1139,5 +1145,93 @@ fail_first = "artifact"
 
     expect(ran()).toEqual(["check", "test"]);
     expect(await actionRuns(server, workspaceId)).toHaveLength(2);
+  });
+});
+
+describe("the pipelines interface (start, afterRunEnded)", () => {
+  /** A module that starts runs through `PipelinesKey` and records every run that ends. */
+  function probe() {
+    const ended: PipelineRun[] = [];
+    let pipelines: Pipelines | undefined;
+    const module: ServerModule = {
+      id: "runs-probe",
+      requires: ["pipelines"],
+      core: false,
+      setup(host) {
+        pipelines = host.use(PipelinesKey);
+        pipelines.afterRunEnded((run) => ended.push(run));
+      },
+    };
+    const startThrough = (...args: Parameters<Pipelines["start"]>) => {
+      if (!pipelines) throw new Error("The probe module is not set up");
+      return pipelines.start(...args);
+    };
+    return { module, ended, startThrough };
+  }
+
+  const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
+    until(async () => (await getRun(server, runId)).state === state);
+
+  it("starts a run that passes, and the listener sees it end once", async () => {
+    const { module, ended, startThrough } = probe();
+    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const { workspaceId, agentId } = await workspace(server, "keystart");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const run = await startThrough(workspaceId, { pipeline: "p", brief: "Build the thing" });
+    await untilState(server, run.id, "passed");
+
+    expect(run).toMatchObject({ state: "running", askingAgentId: agentId });
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({ id: run.id, state: "passed", endedAt: expect.any(Number) });
+  });
+
+  it("reports a failed gate stage to the listener with its message", async () => {
+    const { module, ended, startThrough } = probe();
+    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const { workspaceId } = await workspace(server, "keyfail");
+    userPipeline(
+      server.paths.root,
+      "p",
+      `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check"]\nfail_first = "artifact"\n`,
+    );
+
+    const run = await startThrough(workspaceId, { pipeline: "p", brief: "Build the thing" });
+    await untilState(server, run.id, "failed");
+
+    expect(ended).toHaveLength(1);
+    expect(ended[0]).toMatchObject({
+      id: run.id,
+      state: "failed",
+      message: "missing fail-first proof for adds (proofs/adds.md)",
+    });
+  });
+
+  it("runs the worker stage on the workerModel for this run only", async () => {
+    const { module, startThrough } = probe();
+    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const { workspaceId } = await workspace(server, "keymodel");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const run = await startThrough(workspaceId, {
+      pipeline: "p",
+      brief: "Build the thing",
+      workerModel: "fake/other-1",
+    });
+    await untilState(server, run.id, "passed");
+
+    const { workerAgentId } = await getRun(server, run.id);
+    const launched = readFileSync(join(scratch, "record.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
+      .find((entry) => entry.env.PI_SPORE_AGENT_ID === workerAgentId);
+    const { argv } = launched as { argv: string[] };
+    expect(argv.slice(argv.indexOf("--provider"), argv.indexOf("--provider") + 4)).toEqual([
+      "--provider",
+      "fake",
+      "--model",
+      "other-1",
+    ]);
   });
 });
