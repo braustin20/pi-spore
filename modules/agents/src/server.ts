@@ -159,6 +159,7 @@ export function createAgentsModule(
       const exclude = options.excludeExtensions ?? ["npm:pi-lens"];
       const listeners: ((agentId: string, change: AgentChange) => void)[] = [];
       const chatDeleteListeners: ((agentId: string) => void)[] = [];
+      const workerChangeListeners: ((agent: Agent) => void)[] = [];
       const launchHooks: LaunchHook[] = [];
 
       const resourceArgs =
@@ -319,6 +320,20 @@ export function createAgentsModule(
         return agent;
       };
 
+      /** The chat change already happened, so a listener that throws is logged and does not fail the route. */
+      const workerChanged = (agent: Agent) => {
+        for (const listener of workerChangeListeners) {
+          try {
+            listener(agent);
+          } catch (error) {
+            host.log.error("An afterWorkerChange listener failed", {
+              agent: agent.id,
+              error: String(error),
+            });
+          }
+        }
+      };
+
       const newRow = (
         workspaceId: string,
         kind: Row["kind"],
@@ -356,10 +371,9 @@ export function createAgentsModule(
           const existing = activeWorker(workspace.id);
           if (existing) return { agent: agents.view(existing.id), created: false };
           requireNotArchived(workspace);
-          return {
-            agent: insert(newRow(workspace.id, "worker", null, model ?? null)),
-            created: true,
-          };
+          const agent = insert(newRow(workspace.id, "worker", null, model ?? null));
+          workerChanged(agent);
+          return { agent, created: true };
         });
       };
 
@@ -382,9 +396,25 @@ export function createAgentsModule(
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),
+        inWorkspace: (workspaceId) =>
+          host.store
+            .all<Row>(
+              "SELECT * FROM agents_agents WHERE workspace_id = ? ORDER BY created_at, id",
+              workspaceId,
+            )
+            .map((row) => agents.view(row.id)),
+        stop: async (agentId) => {
+          agents.view(agentId);
+          await agents.stop(agentId);
+        },
+        dropDeliveries: (agentId) => queue.drop(agentId),
+        moveDeliveries: (fromAgentId, toAgentId) => queue.move(fromAgentId, toAgentId),
         attention: () => agents.attention(),
         onChange: (listener) => {
           listeners.push(listener);
+        },
+        afterWorkerChange: (listener) => {
+          workerChangeListeners.push(listener);
         },
         beforeDeleteChat: (listener) => {
           chatDeleteListeners.push(listener);
@@ -512,10 +542,9 @@ export function createAgentsModule(
         return inOrder(workspace.id, async () => {
           if (request.kind === "worker") {
             await retireWorker(workspace.id);
-            return c.json(
-              { agent: insert(newRow(workspace.id, "worker", null, request.model ?? null)) },
-              201,
-            );
+            const agent = insert(newRow(workspace.id, "worker", null, request.model ?? null));
+            workerChanged(agent);
+            return c.json({ agent }, 201);
           }
           let forkedFrom: string | null = null;
           if (request.fork) {
@@ -552,6 +581,7 @@ export function createAgentsModule(
             await agents.setActive(target.id, true);
             // Answers that came while it was inactive.
             host.jobs.wake(DELIVERY_JOB, target.id);
+            workerChanged(agents.view(target.id));
           }
           return c.json({ agent: agents.view(target.id) });
         });

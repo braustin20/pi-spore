@@ -15,16 +15,20 @@ import {
 import { loadSettings, TIERS, tierOf } from "@pi-spore/router";
 import {
   type AnswerLaneRequest,
+  type Approval,
   type AskCoordinatorRequest,
   CreateRunRequest,
   type Lane,
   type LaneState,
   type MergeLaneRequest,
+  type OpenRunPrRequest,
   parseJsonBody,
   type ReviseLaneRequest,
   type Run,
   type RunEvent,
+  RunPrSubject,
   type RunQuestion,
+  type RunState,
   type StartLaneRequest,
   slugify,
 } from "@pi-spore/shared";
@@ -47,6 +51,7 @@ export const COORDINATOR_TOOLS: readonly string[] = [
   "revise_lane",
   "merge_lane",
   "answer_lane",
+  "open_run_pr",
 ];
 
 const MIGRATIONS = [
@@ -90,6 +95,8 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL,
     answered_at INTEGER
   )`,
+  "ALTER TABLE runs_runs ADD COLUMN state TEXT NOT NULL DEFAULT 'running'",
+  "ALTER TABLE runs_runs ADD COLUMN pr_approval_id TEXT",
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -100,7 +107,9 @@ interface RunRow {
   line: string;
   base: string;
   gates: string;
+  state: RunState;
   coordinator_agent_id: string;
+  pr_approval_id: string | null;
   created_at: number;
 }
 
@@ -145,6 +154,8 @@ interface LaneSubject {
 /** The job kind of a lane merge, keyed by the run id so the merges of one run go one at a time, in order. */
 const MERGE_JOB = "runs.merge";
 
+const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
+
 /** `gate` and `attempt` are the place in the run's gates; `failure` is the first gate that failed, for `finish`. */
 interface MergeCheckpoint {
   gate: number;
@@ -159,6 +170,9 @@ const LOG_TAIL_CHARS = 4096;
 const LANE_MODEL = "lane-model";
 const LaneModelSubject = Type.Object({ laneId: Type.String() }, { additionalProperties: false });
 type LaneModelSubject = Static<typeof LaneModelSubject>;
+
+/** The approval kind filed when the coordinator asks to open the run's PR (ADR 0100, ADR 0130). */
+const RUN_PR = "run-pr";
 
 const DEFAULT_GATES = ["check", "test"];
 const DEFAULT_PIPELINE = "default";
@@ -200,6 +214,7 @@ const runToView = (
   line: row.line,
   base: row.base,
   gates: JSON.parse(row.gates) as string[],
+  state: row.state,
   coordinatorAgentId: row.coordinator_agent_id,
   createdAt: row.created_at,
   lanes: lanes.map(laneToView),
@@ -248,6 +263,39 @@ const gateFailedMessage = (
     "You can call revise_lane with a new brief to fix it.",
   ].join("\n");
 
+/** What the lane diff artifact is called once a lane has passed; `report` and `merge` write it. */
+const laneDiffPath = (runId: string, laneId: string) => `runs/${runId}/lanes/${laneId}.diff`;
+
+const HAS_LANE_DIFF: readonly LaneState[] = ["passed", "merging", "merged"];
+
+const handoverMessage = (
+  run: RunRow,
+  runName: string,
+  lanes: readonly LaneRow[],
+  questions: readonly (QuestionRow & { laneName: string })[],
+) =>
+  [
+    `The user started a new chat. This chat is now the coordinator of the run "${runName}" (${run.id}).`,
+    `The run line is ${run.line}. Its base is ${run.base}.`,
+    lanes.length === 0 ? "The run has no lanes yet." : "The lanes:",
+    ...lanes.map(
+      (lane) =>
+        `- "${lane.name}" (${lane.id}), wave ${lane.wave}, ${lane.state}, brief ${lane.brief}${
+          HAS_LANE_DIFF.includes(lane.state) ? `, diff ${laneDiffPath(run.id, lane.id)}` : ""
+        }`,
+    ),
+    ...(questions.length === 0
+      ? ["No lane question is open."]
+      : [
+          "Open lane questions. Answer each with answer_lane:",
+          ...questions.map(
+            (question) =>
+              `- ${question.id}: lane "${question.laneName}" asks: ${question.question}`,
+          ),
+        ]),
+    "Messages for the old chat follow.",
+  ].join("\n");
+
 export const runsModule: ServerModule = {
   id: "runs",
   requires: ["projects", "workspaces", "agents", "artifacts", "attention", "actions", "pipelines"],
@@ -261,6 +309,7 @@ export const runsModule: ServerModule = {
     const approvals = host.use(ApprovalsKey);
     const pipelines = host.use(PipelinesKey);
     const actions = host.use(ActionsKey);
+    let openPr: Parameters<Runs["setPrOpener"]>[0] | undefined;
 
     const loadRun = (id: string) =>
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE id = ?", id);
@@ -269,6 +318,8 @@ export const runsModule: ServerModule = {
       if (!run) throw new ApiError(404, "run_not_found", `No run ${id}`);
       return run;
     };
+    // A job step's commit reads it again: the user may have started a new coordinator chat during the step's async work.
+    const coordinatorOf = (runId: string) => requireRun(runId).coordinator_agent_id;
     const runByWorkspace = (workspaceId: string) =>
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE workspace_id = ?", workspaceId);
     const loadLane = (id: string) =>
@@ -318,6 +369,9 @@ export const runsModule: ServerModule = {
           "not_coordinator",
           `Workspace ${caller.workspaceId} is not a run workspace`,
         );
+      }
+      if (run.state === "cancelled") {
+        throw new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`);
       }
       return run;
     };
@@ -572,6 +626,97 @@ export const runsModule: ServerModule = {
       return answered;
     };
 
+    const requestPr = (caller: BridgeCaller, request: OpenRunPrRequest): Approval => {
+      const run = runOfCaller(caller);
+      if (run.state === "finished") {
+        throw new ApiError(409, "run_finished", `The PR of run ${run.id} is open`);
+      }
+      const lanes = lanesOf(run.id);
+      const open = lanes.find((lane) => lane.state !== "merged" && lane.state !== "declined");
+      if (open || !lanes.some((lane) => lane.state === "merged")) {
+        throw new ApiError(
+          409,
+          "run_not_finished",
+          open
+            ? `Lane "${open.name}" (${open.id}) is ${open.state}; every lane must be merged or declined`
+            : "No lane is merged yet",
+        );
+      }
+      if (run.pr_approval_id) {
+        throw new ApiError(
+          409,
+          "run_pr_asked",
+          `Approval ${run.pr_approval_id} already asks the user to open the PR of run ${run.id}`,
+        );
+      }
+      const approval = host.store.transaction(() => {
+        const filed = approvals.file(caller, {
+          kind: RUN_PR,
+          title: `Open the PR of run "${workspaces.get(run.workspace_id).name}"`,
+          reason:
+            "Opening a PR sends the run's branch and this text to GitHub. pi-spore never merges it; a human does (ADR 0130).",
+          subject: {
+            runId: run.id,
+            title: request.title,
+            body: request.body,
+            base: run.base,
+            head: run.line,
+          } satisfies RunPrSubject,
+        });
+        host.store.run("UPDATE runs_runs SET pr_approval_id = ? WHERE id = ?", filed.id, run.id);
+        return filed;
+      });
+      publish();
+      return approval;
+    };
+
+    approvals.register({
+      kind: RUN_PR,
+      subject: RunPrSubject,
+      approve: async (subject, approval) => {
+        const filed = approval.subject as RunPrSubject;
+        if (
+          subject.runId !== filed.runId ||
+          subject.base !== filed.base ||
+          subject.head !== filed.head
+        ) {
+          throw new ApiError(
+            422,
+            "approval_run_changed",
+            "Approve can change the title and body, not the run, base, or head",
+          );
+        }
+        const run = requireRun(subject.runId);
+        if (run.state === "cancelled") {
+          throw new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`);
+        }
+        if (!openPr) {
+          throw new ApiError(
+            409,
+            "pr_not_supported",
+            "No module opens pull requests: enable the github-pr module",
+          );
+        }
+        const pr = await openPr(run.workspace_id, {
+          title: subject.title,
+          body: subject.body,
+          base: run.base,
+        });
+        return `Opened PR #${pr.number} (${pr.url}) from ${run.line} into ${run.base}. A human merges it; pi-spore never merges it and never turns on auto-merge.`;
+      },
+      decided: (subject, approval, approved) => {
+        const run = loadRun(subject.runId);
+        if (run?.pr_approval_id !== approval.id) return;
+        host.store.run(
+          approved
+            ? "UPDATE runs_runs SET pr_approval_id = NULL, state = 'finished' WHERE id = ?"
+            : "UPDATE runs_runs SET pr_approval_id = NULL WHERE id = ?",
+          run.id,
+        );
+        publishAfterCommit();
+      },
+    });
+
     approvals.register({
       kind: LANE_MODEL,
       subject: LaneModelSubject,
@@ -647,6 +792,16 @@ export const runsModule: ServerModule = {
         // A step cut off by a restart already started the run.
         if (!(error instanceof ApiError && error.code === "pipeline_running")) throw error;
       }
+      // A cancel that landed during the start found no pipeline run to stop, and its job writes nothing now.
+      if (pipelineRunId && loadLane(lane.id)?.state === "cancelled") {
+        const laneAgents = agents.inWorkspace(lane.workspace_id as string);
+        host.store.transaction(() => {
+          pipelines.stop(pipelineRunId, "Cancelled with the run");
+          for (const agent of laneAgents) agents.dropDeliveries(agent.id);
+        });
+        for (const agent of laneAgents) await agents.stop(agent.id);
+        return { next: null };
+      }
       return {
         commit: () =>
           host.store.run(
@@ -671,7 +826,7 @@ export const runsModule: ServerModule = {
       if (lane.state === "failed") {
         return {
           next: null,
-          commit: () => agents.deliver(run.coordinator_agent_id, failedMessage(lane)),
+          commit: () => agents.deliver(coordinatorOf(run.id), failedMessage(lane)),
         };
       }
       const { integrate } = await integrateOf(run.project_id);
@@ -681,11 +836,11 @@ export const runsModule: ServerModule = {
         { path: runWorkspace.path, line: run.line },
         laneWorkspace.line as string,
       );
-      const path = `runs/${run.id}/lanes/${lane.id}.diff`;
+      const path = laneDiffPath(run.id, lane.id);
       await artifacts.write({ scope: "workspace", id: run.workspace_id }, path, diff);
       return {
         next: null,
-        commit: () => agents.deliver(run.coordinator_agent_id, passedMessage(lane, path)),
+        commit: () => agents.deliver(coordinatorOf(run.id), passedMessage(lane, path)),
       };
     };
 
@@ -738,6 +893,11 @@ export const runsModule: ServerModule = {
       // A restart may have left an earlier try of this merge in progress.
       await integrate.abort(location);
       const { conflicts } = await integrate.merge(location, laneLine);
+      // A cancel that landed during the merge has already run its own abort, before this merge touched the tree.
+      if (!mergingLane(subject)) {
+        await integrate.abort(location);
+        return { next: null };
+      }
       if (conflicts.length === 0) return {};
       return {
         next: null,
@@ -747,10 +907,13 @@ export const runsModule: ServerModule = {
             `merge conflict in ${conflicts.join(", ")}`,
             lane.id,
           );
-          agents.deliver(run.coordinator_agent_id, conflictMessage(lane, run.line, conflicts));
+          agents.deliver(coordinatorOf(run.id), conflictMessage(lane, run.line, conflicts));
         },
       };
     };
+
+    /** The action run of each run's gate that is running now, so a cancel can end it. A restart interrupts it anyway. */
+    const gateActions = new Map<string, string>();
 
     /**
      * Runs the gate at the checkpoint's place on the merged tree. The key holds the job id, which is new for each
@@ -776,7 +939,8 @@ export const runsModule: ServerModule = {
       const started = await actions.start(run.workspace_id, action, "pipeline", {
         key: `${run.id}:${lane.id}:${id}:${action}:${attempt}`,
       });
-      const ended = await actions.wait(started.id);
+      gateActions.set(run.id, started.id);
+      const ended = await actions.wait(started.id).finally(() => gateActions.delete(run.id));
       if (ended.status === "interrupted") {
         return { next: "gate", checkpoint: { gate: index, attempt: attempt + 1 } };
       }
@@ -821,9 +985,14 @@ export const runsModule: ServerModule = {
               `gate ${failure.action} failed`,
               lane.id,
             );
-            agents.deliver(run.coordinator_agent_id, gateFailedMessage(lane, failure, path));
+            agents.deliver(coordinatorOf(run.id), gateFailedMessage(lane, failure, path));
           },
         };
+      }
+      // A cancel that landed during the last gate has aborted the merge; committing now would merge a cancelled lane.
+      if (!mergingLane(subject)) {
+        await integrate.abort(location);
+        return { next: null };
       }
       // After a restart the commit may already be made. Then the lane adds nothing to the run line, and a second
       // commit would fail on an empty merge.
@@ -842,12 +1011,12 @@ export const runsModule: ServerModule = {
             (other) => other.state === "merged" || other.state === "declined",
           );
           agents.deliver(
-            run.coordinator_agent_id,
+            coordinatorOf(run.id),
             [
               `Lane "${lane.name}" (${lane.id}) is merged into ${run.line}. The gates passed on the merged tree.`,
               ...(done
                 ? [
-                    "All lanes of the run are merged. Tell the user to open the one PR from this workspace's PR tab. pi-spore never merges to the base line.",
+                    "All lanes of the run are merged or declined. Call open_run_pr with a title and a body to ask the user to open the run's one PR. pi-spore never merges to the base line.",
                   ]
                 : []),
             ].join("\n"),
@@ -878,6 +1047,80 @@ export const runsModule: ServerModule = {
         : undefined;
     });
 
+    // A new or reactivated worker chat takes over the run (ADR 0030: the old chat is read-only history). A cancelled
+    // or finished run keeps its coordinator.
+    agents.afterWorkerChange((agent) => {
+      const run = runByWorkspace(agent.workspaceId);
+      if (run?.state !== "running" || run.coordinator_agent_id === agent.id) return;
+      const lanes = lanesOf(run.id);
+      const questions = openQuestionsOf(run.id).map((question) => ({
+        ...question,
+        laneName: lanes.find((lane) => lane.id === question.lane_id)?.name as string,
+      }));
+      host.store.transaction(() => {
+        host.store.run(
+          "UPDATE runs_runs SET coordinator_agent_id = ? WHERE id = ?",
+          agent.id,
+          run.id,
+        );
+        // The handover goes first, so the old chat's unsent messages follow it in order.
+        agents.deliver(
+          agent.id,
+          handoverMessage(run, workspaces.get(run.workspace_id).name, lanes, questions),
+        );
+        agents.moveDeliveries(run.coordinator_agent_id, agent.id);
+      });
+      publish();
+    });
+
+    /** Stops a run (ADR 0150). It deletes nothing and never merges, pushes, or opens a PR. */
+    const cancelRun = async (id: string): Promise<Run> => {
+      const run = requireRun(id);
+      if (run.state === "cancelled") return viewOf(run);
+      const lanes = lanesOf(id);
+      const agentIds = [
+        run.coordinator_agent_id,
+        ...lanes.flatMap((lane) =>
+          lane.workspace_id ? agents.inWorkspace(lane.workspace_id).map((agent) => agent.id) : [],
+        ),
+      ];
+      const cancelJobs = (kind: string, key: string) => {
+        for (const job of host.jobs.list({ kind, key, states: NOT_ENDED }))
+          host.jobs.cancel(job.id);
+      };
+      host.store.transaction(() => {
+        host.store.run("UPDATE runs_runs SET state = 'cancelled' WHERE id = ?", id);
+        for (const lane of lanes) {
+          if (lane.state === "merged") continue;
+          host.store.run(
+            "UPDATE runs_lanes SET state = 'cancelled', message = 'Cancelled with the run' WHERE id = ?",
+            lane.id,
+          );
+          cancelJobs(LANE_JOB, lane.id);
+        }
+        cancelJobs(MERGE_JOB, id);
+        // The lanes are cancelled first, so `afterRunEnded` finds no starting or running lane to change.
+        for (const lane of lanes) {
+          if ((lane.state !== "starting" && lane.state !== "running") || !lane.pipeline_run_id) {
+            continue;
+          }
+          try {
+            pipelines.stop(lane.pipeline_run_id, "Cancelled with the run");
+          } catch (error) {
+            if (!(error instanceof ApiError && error.code === "run_ended")) throw error;
+          }
+        }
+        for (const agentId of agentIds) agents.dropDeliveries(agentId);
+      });
+      publish();
+      const gateAction = gateActions.get(id);
+      if (gateAction) actions.cancel(gateAction);
+      for (const agentId of agentIds) await agents.stop(agentId);
+      const { integrate } = await integrateOf(run.project_id);
+      await integrate.abort({ path: workspaces.get(run.workspace_id).path, line: run.line });
+      return viewOf(requireRun(id));
+    };
+
     const api: Runs = {
       create: createRun,
       startLane,
@@ -885,6 +1128,7 @@ export const runsModule: ServerModule = {
       mergeLane,
       askCoordinator,
       answerLane,
+      requestPr,
       laneOf: (workspaceId) => {
         const lane = laneByWorkspace(workspaceId);
         return lane ? { runId: lane.run_id, laneId: lane.id } : undefined;
@@ -892,6 +1136,10 @@ export const runsModule: ServerModule = {
       runOf: (workspaceId) => {
         const run = runByWorkspace(workspaceId);
         return run ? viewOf(run) : undefined;
+      },
+      setPrOpener: (open) => {
+        if (openPr) throw new Error("The runs module already has a PR opener");
+        openPr = open;
       },
     };
     host.provide(RunsKey, api);
@@ -911,6 +1159,10 @@ export const runsModule: ServerModule = {
       const request = parseJsonBody(CreateRunRequest, await c.req.text(), "run request");
       return c.json({ run: await createRun(request) }, 201);
     });
+
+    host.routes.post("/:id/cancel", async (c) =>
+      c.json({ run: await cancelRun(c.req.param("id")) }),
+    );
 
     host.routes.get("/:id", (c) => c.json({ run: viewOf(requireRun(c.req.param("id"))) }));
   },

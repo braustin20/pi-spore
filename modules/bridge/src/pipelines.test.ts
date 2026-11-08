@@ -16,6 +16,7 @@ import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
+import { createGithubPrModule } from "@pi-spore/mod-github-pr/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { type Pipelines, PipelinesKey, pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
@@ -38,6 +39,9 @@ import { bridgeModule } from "./server.js";
 import { asAgent, chat, json, until } from "./testing.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
+const FAKE_GH = fileURLToPath(
+  new URL("../../github-pr/test-fixtures/fake-gh.mjs", import.meta.url),
+);
 const GATE_ACTION = fileURLToPath(new URL("../test-fixtures/gate-action.mjs", import.meta.url));
 
 let scratch: string;
@@ -90,6 +94,9 @@ async function start(
       attentionModule,
       kanbanModule,
       artifactsModule,
+      createGithubPrModule({
+        gh: { command: process.execPath, args: [FAKE_GH, join(scratch, "gh.json")] },
+      }),
       pipelinesModule,
       runsModule,
       bridgeModule,
@@ -1278,7 +1285,11 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
       if (!pipelines) throw new Error("The probe module is not set up");
       return pipelines.start(...args);
     };
-    return { module, ended, startThrough };
+    const stopThrough = (...args: Parameters<Pipelines["stop"]>) => {
+      if (!pipelines) throw new Error("The probe module is not set up");
+      pipelines.stop(...args);
+    };
+    return { module, ended, startThrough, stopThrough };
   }
 
   const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
@@ -1296,6 +1307,27 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
     expect(run).toMatchObject({ state: "running", askingAgentId: agentId });
     expect(ended).toHaveLength(1);
     expect(ended[0]).toMatchObject({ id: run.id, state: "passed", endedAt: expect.any(Number) });
+  });
+
+  it("stops a running run with the given message and rejects a run that ended", async () => {
+    const { module, ended, startThrough, stopThrough } = probe();
+    const server = await start({
+      env: scriptEnv({ worker: ["hang", "hang"] }),
+      extraModules: [module],
+    });
+    const { workspaceId } = await workspace(server, "keystop");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const run = await startThrough(workspaceId, { pipeline: "p", brief: "Build the thing" });
+
+    stopThrough(run.id, "Stopped by the coordinator");
+
+    expect(await getRun(server, run.id)).toMatchObject({
+      state: "stopped",
+      message: "Stopped by the coordinator",
+    });
+    expect(ended).toHaveLength(1);
+    expect(() => stopThrough(run.id, "again")).toThrow(/The run is stopped/);
+    expect(() => stopThrough("missing", "x")).toThrow(/No pipeline run missing/);
   });
 
   it("reports a failed gate stage to the listener with its message", async () => {

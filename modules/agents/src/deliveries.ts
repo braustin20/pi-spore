@@ -76,6 +76,43 @@ export class Deliveries {
     for (const row of rows) this.options.jobs.cancel(row.job_id);
   }
 
+  /** Deletes the agent's pending rows and cancels their jobs. */
+  drop(agentId: string): void {
+    this.options.store.transaction(() => {
+      for (const row of this.pendingRows(agentId)) this.options.jobs.cancel(row.job_id);
+      this.options.store.run(
+        "DELETE FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
+        agentId,
+      );
+    });
+  }
+
+  /**
+   * Gives the pending rows of one agent to another, oldest first. Each gets a new job keyed by the new agent, started
+   * after the jobs the agent already has, so the rows keep their order.
+   */
+  move(fromAgentId: string, toAgentId: string): void {
+    this.options.store.transaction(() => {
+      for (const row of this.pendingRows(fromAgentId)) {
+        this.options.jobs.cancel(row.job_id);
+        this.options.store.run(
+          "UPDATE agents_deliveries SET agent_id = ? WHERE id = ?",
+          toAgentId,
+          row.id,
+        );
+        this.startJob(row.id, toAgentId);
+      }
+      this.options.jobs.wake(DELIVERY_JOB, toAgentId);
+    });
+  }
+
+  private pendingRows(agentId: string): { id: string; job_id: string }[] {
+    return this.options.store.all<{ id: string; job_id: string }>(
+      "SELECT id, job_id FROM agents_deliveries WHERE agent_id = ? AND state = 'pending' AND job_id IS NOT NULL ORDER BY created_at, id",
+      agentId,
+    );
+  }
+
   private startJob(deliveryId: string, agentId: string): void {
     const jobId = this.options.jobs.start(DELIVERY_JOB, { deliveryId }, { key: agentId });
     this.options.store.run(

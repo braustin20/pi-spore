@@ -112,7 +112,9 @@ Commands:
                                            Start a run: a run workspace and a coordinator chat. Default
                                            gates: check and test
   run list [--project <project>]           Runs, newest first
-  run show <run>                           A run's lanes by wave, with state and workspace
+  run show <run>                           A run's state, and its lanes by wave with state and workspace
+  run cancel <run>                         Stop the run: its coordinator, pipelines, agents, and merge.
+                                           Nothing is deleted
   usage calibration                        Routing calibration (ADR 0144): how Jev's answers spread, how
                                            local runs turned out, and a suggested bar. Never changes it
   pr status <workspace>                    Show the workspace's PR, its checks, and the watch
@@ -885,18 +887,23 @@ async function runCommand(api: Api, deps: CliDeps, args: string[], json: boolean
     const { runs } = await api.call("GET", `runs?${query}`, RunList);
     if (json) return deps.out(JSON.stringify(runs));
     if (runs.length === 0) return deps.out("No runs.");
-    for (const run of runs) deps.out(`${run.id}  ${run.line}  ${run.lanes.length} lanes`);
+    for (const run of runs)
+      deps.out(`${run.id}  ${run.line}  ${run.state}  ${run.lanes.length} lanes`);
     return;
   }
   if (sub === "show" && rest.length === 1) {
     const { run } = await api.call("GET", `runs/${rest[0]}`, CoordinatedRunBody);
     if (json) return deps.out(JSON.stringify(run));
-    deps.out(`Run ${run.id}  ${run.line}  from ${run.base}`);
+    deps.out(`Run ${run.id}  ${run.line}  from ${run.base}  ${run.state}`);
     deps.out(`Workspace ${run.workspaceId}  gates: ${run.gates.join(", ")}`);
     if (run.lanes.length === 0) return deps.out("No lanes.");
     for (const line of laneLines(run)) deps.out(line);
     for (const question of run.questions) deps.out(`Open question: ${question.question}`);
     return;
+  }
+  if (sub === "cancel" && rest.length === 1) {
+    const { run } = await api.call("POST", `runs/${rest[0]}/cancel`, CoordinatedRunBody, {});
+    return deps.out(json ? JSON.stringify(run) : `Cancelled run ${run.id}  ${run.line}`);
   }
   throw usageError(`Unknown command: run ${args.join(" ")}`);
 }

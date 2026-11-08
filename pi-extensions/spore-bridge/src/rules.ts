@@ -109,8 +109,8 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
 - A merge conflict or a failed gate comes back as a message. Use revise_lane to fix it.
 - The user is often away. Ask and stop; every answer and result comes back as a new message, possibly after a
   restart. Do not poll.
-- When all lanes are merged, tell the user to open the one PR from this workspace's PR tab. pi-spore never merges
-  to the base line, and neither do you.`;
+- When every lane is merged or declined, call open_run_pr with a title and a body that sums up the run. The user
+  approves it on Home. pi-spore never merges to the base line, and neither do you; a human merges the PR.`;
 
 /** Added to the stage rules of an agent in a lane of a run (R7.5). */
 export const LANE_RULES = `You are in a lane of a run. Ask your coordinator with \`ask_coordinator\`, never the user. No lane talks to

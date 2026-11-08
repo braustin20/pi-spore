@@ -995,9 +995,27 @@ export const pipelinesModule: ServerModule = {
       return viewOf(requireRun(runId));
     };
 
+    const stop = (runId: string, message: string) => {
+      const run = requireRun(runId);
+      host.store.transaction(() => {
+        if (run.state !== "running" && run.state !== "waiting_user")
+          throw new ApiError(409, "run_ended", `The run is ${run.state}`);
+        endRun(run.id, "stopped", message);
+        for (const job of host.jobs.list({
+          kind: STAGE_JOB,
+          key: run.workspace_id,
+          states: NOT_ENDED,
+        })) {
+          if ((job.subject as StageSubject).runId === run.id) host.jobs.cancel(job.id);
+        }
+      });
+      publish(run.workspace_id);
+    };
+
     const api: Pipelines = {
       report,
       start,
+      stop,
       afterRunEnded: (listener) => {
         endListeners.push(listener);
       },
@@ -1033,19 +1051,7 @@ export const pipelinesModule: ServerModule = {
 
     host.routes.post("/runs/:id/cancel", (c) => {
       const run = requireRun(c.req.param("id"));
-      host.store.transaction(() => {
-        if (run.state !== "running" && run.state !== "waiting_user")
-          throw new ApiError(409, "run_ended", `The run is ${run.state}`);
-        endRun(run.id, "stopped", "Stopped by the user");
-        for (const job of host.jobs.list({
-          kind: STAGE_JOB,
-          key: run.workspace_id,
-          states: NOT_ENDED,
-        })) {
-          if ((job.subject as StageSubject).runId === run.id) host.jobs.cancel(job.id);
-        }
-      });
-      publish(run.workspace_id);
+      stop(run.id, "Stopped by the user");
       return c.json({ run: viewOf(requireRun(run.id)) });
     });
   },

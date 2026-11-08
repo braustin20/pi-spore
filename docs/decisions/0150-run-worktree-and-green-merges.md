@@ -30,6 +30,8 @@ wave to start from.
 
 ## Consequences
 
+- ADR 0151 adds cancel and the coordinator handover, and replaces opening the PR from the PR tab with a `run-pr`
+  approval.
 - One workspace per run. The main checkout is untouched.
 - A lane merge can take as long as its gates. Merges of one run go one at a time.
 - A wave starts only from merges whose gates passed.

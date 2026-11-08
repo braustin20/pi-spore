@@ -12,8 +12,17 @@ export const LaneState = Type.Union([
   Type.Literal("declined"),
   Type.Literal("merging"),
   Type.Literal("merged"),
+  Type.Literal("cancelled"),
 ]);
 export type LaneState = Static<typeof LaneState>;
+
+/** Where a run is. `cancelled`: the user stopped it (ADR 0150). `finished`: its PR opened. */
+export const RunState = Type.Union([
+  Type.Literal("running"),
+  Type.Literal("cancelled"),
+  Type.Literal("finished"),
+]);
+export type RunState = Static<typeof RunState>;
 
 export const Lane = Type.Object({
   id: Type.String(),
@@ -56,6 +65,7 @@ export const Run = Type.Object({
   base: Type.String(),
   /** Actions that must pass before a lane's merge is committed. */
   gates: Type.Array(Type.String()),
+  state: RunState,
   coordinatorAgentId: Type.String(),
   createdAt: Type.Integer(),
   lanes: Type.Array(Lane),
@@ -129,3 +139,25 @@ export const AnswerLaneRequest = Type.Object(
   { additionalProperties: false },
 );
 export type AnswerLaneRequest = Static<typeof AnswerLaneRequest>;
+
+export const OpenRunPrRequest = Type.Object(
+  {
+    title: Type.String({ minLength: 1, maxLength: 256 }),
+    body: Type.String({ maxLength: 65_536 }),
+  },
+  { additionalProperties: false },
+);
+export type OpenRunPrRequest = Static<typeof OpenRunPrRequest>;
+
+/** What a `run-pr` approval holds (ADR 0100). The user may edit `title` and `body` on approve, not the rest. */
+export const RunPrSubject = Type.Object(
+  {
+    runId: Type.String(),
+    title: Type.String(),
+    body: Type.String(),
+    base: Type.String(),
+    head: Type.String(),
+  },
+  { additionalProperties: false },
+);
+export type RunPrSubject = Static<typeof RunPrSubject>;

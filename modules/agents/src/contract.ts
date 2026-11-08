@@ -63,6 +63,23 @@ export interface Agents {
   modelsUsed(agentId: string): Promise<string[]>;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
+  /** Every agent (chat) of the workspace, closed ones too, oldest first. */
+  inWorkspace(workspaceId: string): Agent[];
+  /**
+   * Stops the agent's process, as `POST /api/agents/:id/stop` does. Its session file keeps the conversation. Throws a
+   * 404 ApiError for an unknown id.
+   */
+  stop(agentId: string): Promise<void>;
+  /**
+   * Deletes the agent's `pending` deliveries and cancels their jobs. It joins the caller's `store.transaction`, so
+   * the caller commits it together with its own changes.
+   */
+  dropDeliveries(agentId: string): void;
+  /**
+   * Gives the pending deliveries of `fromAgentId` to `toAgentId`, oldest first, after the rows `toAgentId` already
+   * has. It joins the caller's `store.transaction`.
+   */
+  moveDeliveries(fromAgentId: string, toAgentId: string): void;
   /** Every agent, for Home. */
   attention(): AgentAttention[];
   /**
@@ -70,6 +87,13 @@ export interface Agents {
    * changed (an older worker chat is not active, ADR 0030).
    */
   onChange(listener: (agentId: string, change: AgentChange) => void): void;
+  /**
+   * Runs after a worker chat becomes its workspace's active worker chat: a new one from `POST /api/agents/chats` or
+   * from `activeWorker`, or an older one made active by `POST /api/agents/:id/activate`. It gets the new active
+   * agent. The row is written and the old chat retired by then. It must be synchronous. A throw is logged and does
+   * not undo the chat change.
+   */
+  afterWorkerChange(listener: (agent: Agent) => void): void;
   /**
    * Runs before retention deletes a closed chat's row (ADR 0121), so a module drops what it holds for that agent. It
    * must be safe to run again: a throw is logged and the chat stays for the next sweep.

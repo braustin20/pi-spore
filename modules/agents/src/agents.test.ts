@@ -689,6 +689,26 @@ describe("agents", () => {
   });
 });
 
+/** A module that hands the tests the `Agents` interface other modules get. */
+function agentsProbe() {
+  let agents: Agents | undefined;
+  const module: ServerModule = {
+    id: "agents-probe",
+    requires: ["agents"],
+    core: false,
+    setup(host) {
+      agents = host.use(AgentsKey);
+    },
+  };
+  return {
+    module,
+    agents: () => {
+      if (!agents) throw new Error("The probe module is not set up");
+      return agents;
+    },
+  };
+}
+
 describe("chats (ADR 0030)", () => {
   const view = async (agentId: string) =>
     (await json<{ agent: Agent }>(await server.request("GET", `/api/agents/${agentId}`))).agent;
@@ -780,6 +800,84 @@ describe("chats (ADR 0030)", () => {
     );
     expect(texts(await chat(first)).slice(-2)).toEqual(["user: three", "assistant: echo: three"]);
     expect((await chats(workspaceId)).map((chat) => chat.id)).toEqual([first, second.id]);
+  });
+
+  it("tells afterWorkerChange listeners about a new worker chat and an activated one", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId: first, workspaceId } = await makeAgent();
+    const changed: Agent[] = [];
+    probe.agents().afterWorkerChange((agent) => changed.push(agent));
+
+    const { agent: second } = await json<{ agent: Agent }>(
+      await newChat(workspaceId, "worker"),
+      201,
+    );
+    expect(changed).toEqual([second]);
+
+    await json(await newChat(workspaceId, "side"), 201);
+    expect(changed).toHaveLength(1);
+
+    await json(await server.request("POST", `/api/agents/${first}/activate`));
+    expect(changed.map((agent) => agent.id)).toEqual([second.id, first]);
+    expect(changed[1]).toMatchObject({ id: first, active: true });
+  });
+
+  it("tells afterWorkerChange listeners about a worker chat that activeWorker creates", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const changed: Agent[] = [];
+    probe.agents().afterWorkerChange((agent) => changed.push(agent));
+    const { agentId, workspaceId } = await makeAgent();
+
+    expect(changed.map((agent) => agent.id)).toEqual([agentId]);
+    await probe.agents().activeWorker(workspaceId);
+    expect(changed).toHaveLength(1);
+  });
+
+  it("keeps a chat change when an afterWorkerChange listener throws", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    probe.agents().afterWorkerChange(() => {
+      throw new Error("listener broke");
+    });
+    const { agentId, workspaceId } = await makeAgent();
+
+    const { agent } = await json<{ agent: Agent }>(await newChat(workspaceId, "worker"), 201);
+    expect(agent.active).toBe(true);
+    expect(await view(agentId)).toMatchObject({ active: false });
+  });
+
+  it("lists every chat of a workspace, closed ones too, oldest first", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId: first, workspaceId } = await makeAgent();
+    const { agent: second } = await json<{ agent: Agent }>(
+      await newChat(workspaceId, "worker"),
+      201,
+    );
+    await json(await server.request("POST", `/api/agents/${first}/close`));
+    await makeAgent("other");
+
+    expect(
+      probe
+        .agents()
+        .inWorkspace(workspaceId)
+        .map((agent) => agent.id),
+    ).toEqual([first, second.id]);
+  });
+
+  it("stops an agent's process through the interface and rejects an unknown id", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "one"));
+    await replied(agentId, 2);
+    expect(agentsModule.manager().liveCount()).toBe(1);
+
+    await probe.agents().stop(agentId);
+    expect(await view(agentId)).toMatchObject({ status: "stopped" });
+    await expect(probe.agents().stop("missing")).rejects.toMatchObject({ status: 404 });
   });
 
   it("gives a side chat a copy of the worker's context and read-only tools", async () => {
@@ -1346,6 +1444,62 @@ describe("deliveries on the job runner", () => {
       "user: second",
       "assistant: echo: second",
     ]);
+  });
+
+  describe("moving and dropping a chat's pending rows", () => {
+    const pendingOf = (agentId: string) =>
+      server.store.all<{ message: string }>(
+        "SELECT message FROM agents_deliveries WHERE agent_id = ? AND state = 'pending' ORDER BY created_at, id",
+        agentId,
+      );
+
+    /** An older worker chat that has two pending rows, because only the active chat receives them. */
+    async function olderChatWithRows() {
+      const probe = agentsProbe();
+      await setup({}, {}, {}, [probe.module]);
+      const { agentId: older, workspaceId } = await makeAgent();
+      const { agent: newer } = await json<{ agent: Agent }>(
+        await server.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
+        201,
+      );
+      probe.agents().deliver(older, "first");
+      probe.agents().deliver(older, "second");
+      return { agents: probe.agents(), older, newer: newer.id };
+    }
+
+    it("moves the pending rows to another chat in order, and that chat receives them", async () => {
+      const { agents, older, newer } = await olderChatWithRows();
+      expect(pendingOf(older)).toHaveLength(2);
+
+      server.store.transaction(() => agents.moveDeliveries(older, newer));
+      await until(() => pendingOf(newer).length === 0);
+
+      expect(pendingOf(older)).toEqual([]);
+      expect(texts(await chat(newer))).toEqual([
+        "user: first",
+        "assistant: echo: first",
+        "user: second",
+        "assistant: echo: second",
+      ]);
+      expect(texts(await chat(older))).toEqual([]);
+    });
+
+    it("drops the pending rows, so nothing is sent when the chat runs again", async () => {
+      const { agents, older } = await olderChatWithRows();
+
+      server.store.transaction(() => agents.dropDeliveries(older));
+      expect(pendingOf(older)).toEqual([]);
+      expect(server.store.all("SELECT 1 FROM agents_deliveries")).toEqual([]);
+
+      const open = server.services.jobs.list({
+        kind: "agents.delivery",
+        states: ["running", "waiting", "interrupted"],
+      });
+      expect(open).toEqual([]);
+
+      await json(await server.request("POST", `/api/agents/${older}/activate`));
+      expect(texts(await chat(older))).toEqual([]);
+    });
   });
 });
 

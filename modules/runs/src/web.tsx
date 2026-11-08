@@ -1,3 +1,8 @@
+import {
+  type ApprovalViewProps,
+  type AttentionWeb,
+  AttentionWebKey,
+} from "@pi-spore/mod-attention/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
@@ -8,6 +13,8 @@ import {
   parse,
   Run,
   RunEvent,
+  RunPrSubject,
+  type RunState,
   type Workspace,
 } from "@pi-spore/shared";
 import {
@@ -25,6 +32,7 @@ import {
   SectionLabel,
   Select,
   Spinner,
+  Textarea,
   type Tone,
 } from "@pi-spore/ui";
 import { Network } from "lucide-react";
@@ -43,6 +51,13 @@ const STATES: Record<LaneState, { text: string; tone: Tone }> = {
   declined: { text: "Declined", tone: "neutral" },
   merging: { text: "Merging", tone: "run" },
   merged: { text: "Merged", tone: "ok" },
+  cancelled: { text: "Cancelled", tone: "neutral" },
+};
+
+const RUN_STATES: Record<RunState, { text: string; tone: Tone }> = {
+  running: { text: "Running", tone: "run" },
+  cancelled: { text: "Cancelled", tone: "neutral" },
+  finished: { text: "PR opened", tone: "ok" },
 };
 
 const RunBody = Type.Object({ run: Run });
@@ -87,7 +102,57 @@ function LaneRow({ lane }: { lane: Lane }) {
   );
 }
 
+function CancelRun({ run }: { run: Run }) {
+  const api = useApi();
+  const [confirming, setConfirming] = useState(false);
+  const [error, setError] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
+
+  const cancel = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.send("POST", `runs/${run.id}/cancel`, {});
+      setConfirming(false);
+    } catch (caught) {
+      setError(message(caught));
+    }
+    setBusy(false);
+  };
+
+  return (
+    <>
+      {error && <Notice tone="fail">{error}</Notice>}
+      {confirming ? (
+        <Notice tone="warn">
+          <p>
+            Cancel run {run.line}? The coordinator chat, every lane's pipeline and agents, and a
+            merge in progress stop. Unmerged lanes become cancelled. Nothing is deleted: workspaces,
+            branches, and artifacts stay.
+          </p>
+          <div className="mt-2 flex gap-2">
+            <Button variant="danger" size="sm" disabled={busy} onClick={() => void cancel()}>
+              {busy && <Spinner />}
+              Cancel run
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setConfirming(false)}>
+              Keep running
+            </Button>
+          </div>
+        </Notice>
+      ) : (
+        <div>
+          <Button variant="danger" size="sm" onClick={() => setConfirming(true)}>
+            Cancel
+          </Button>
+        </div>
+      )}
+    </>
+  );
+}
+
 function RunCard({ run }: { run: Run }) {
+  const shown = RUN_STATES[run.state];
   return (
     <section
       aria-label={`Run ${run.line}`}
@@ -97,6 +162,7 @@ function RunCard({ run }: { run: Run }) {
         <a href={`#/workspaces/${run.workspaceId}`} className="font-medium">
           {run.line}
         </a>
+        <Chip tone={shown.tone}>{shown.text}</Chip>
         <Chip mono>from {run.base}</Chip>
         <Chip mono>gates {run.gates.join(", ")}</Chip>
       </div>
@@ -117,6 +183,7 @@ function RunCard({ run }: { run: Run }) {
           asks: <span className="whitespace-pre-wrap">{question.question}</span>
         </Notice>
       ))}
+      {run.state === "running" && <CancelRun run={run} />}
     </section>
   );
 }
@@ -267,11 +334,52 @@ function RunPanel({ workspace }: { workspace: Workspace }) {
   );
 }
 
+let DeclineNote: AttentionWeb["DeclineNote"] | undefined;
+
+/** A `run-pr` approval on Home: the PR the run wants to open. Approve may change only the title and the body. */
+function RunPrView({ approval, busy, approve, decline }: ApprovalViewProps) {
+  const subject = parse(RunPrSubject, approval.subject, "run-pr approval");
+  const [title, setTitle] = useState(subject.title);
+  const [body, setBody] = useState(subject.body);
+  const [note, setNote] = useState("");
+  const Note = DeclineNote as AttentionWeb["DeclineNote"];
+  return (
+    <div className="flex flex-col gap-2.5 text-sm">
+      <p className="m-0">
+        From <code>{subject.head}</code> into <code>{subject.base}</code>
+      </p>
+      <Field label="Title">
+        <Input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={256} />
+      </Field>
+      <Field label="Description">
+        <Textarea rows={6} value={body} onChange={(event) => setBody(event.target.value)} />
+      </Field>
+      <Notice>pi-spore never merges this PR. A human does.</Notice>
+      <Note note={note} onChange={setNote} />
+      <div className="flex gap-2">
+        <Button
+          variant="primary"
+          disabled={busy || title.trim() === ""}
+          onClick={() => approve({ ...subject, title: title.trim(), body })}
+        >
+          Open PR
+        </Button>
+        <Button disabled={busy} onClick={() => decline(note.trim() || undefined)}>
+          Decline
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export const runsWeb: WebModule = {
   id: "runs",
-  requires: ["workspaces"],
+  requires: ["workspaces", "attention"],
   core: false,
   setup(host) {
+    const attention = host.use(AttentionWebKey);
+    DeclineNote = attention.DeclineNote;
+    attention.addApprovalView("run-pr", RunPrView);
     host.use(WorkspaceViewKey).addPanel({ id: "run", order: 7, component: RunPanel });
     host.addPage({
       path: "/runs",

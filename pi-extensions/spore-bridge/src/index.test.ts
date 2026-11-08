@@ -720,14 +720,14 @@ describe("spore-bridge report tool", () => {
 });
 
 describe("spore-bridge run tools", () => {
-  const RUN_TOOLS = ["start_lane", "revise_lane", "merge_lane", "answer_lane"];
+  const RUN_TOOLS = ["start_lane", "revise_lane", "merge_lane", "answer_lane", "open_run_pr"];
   const rulesOf = async (pi: ReturnType<typeof fakePi>) => {
     const options = { contextFiles: [], sections: {} as Record<string, string> };
     await pi.handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
     return options.sections[RULES_SECTION];
   };
 
-  it("gives the coordinator the four run tools, request_human_input, and the coordinator rules", async () => {
+  it("gives the coordinator the five run tools, request_human_input, and the coordinator rules", async () => {
     vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
     const pi = fakePi();
 
@@ -737,7 +737,7 @@ describe("spore-bridge run tools", () => {
     expect(await rulesOf(pi)).toBe(COORDINATOR_RULES);
     expect(COORDINATOR_RULES).toContain("never edit files or run commands");
     expect(COORDINATOR_RULES).toContain("answer_lane");
-    expect(COORDINATOR_RULES).toContain("PR tab");
+    expect(COORDINATOR_RULES).toContain("open_run_pr");
   });
 
   it("sends each run tool to its route with the tool call id as receipt, and ends no turn", async () => {
@@ -771,6 +771,24 @@ describe("spore-bridge run tools", () => {
     expect(merge.content[0]?.text).toContain("The result arrives later as a message.");
     expect(answer.content[0]?.text).toContain("question q1");
     for (const result of [start, revise, merge, answer]) expect(result.terminate).toBeUndefined();
+  });
+
+  it("posts open_run_pr to coordinator/pr with the receipt and ends the turn", async () => {
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    reply("POST /api/bridge/coordinator/pr", {
+      status: 201,
+      body: { approval: { id: "a1", title: 'Open the PR of run "api"' } },
+    });
+
+    const result = await fakePi()
+      .tool("open_run_pr")
+      .execute("t5", { title: "Ship the API", body: "Two lanes merged." });
+
+    expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
+      ["/api/bridge/coordinator/pr", "t5", { title: "Ship the API", body: "Two lanes merged." }],
+    ]);
+    expect(result.terminate).toBe(true);
+    expect(result.content[0]?.text).toContain("approval a1");
   });
 
   it("gives a lane stage agent ask_coordinator, not request_human_input, and the lane paragraph", async () => {

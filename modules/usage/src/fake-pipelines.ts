@@ -30,6 +30,7 @@ export function fakePipelines(): { module: ServerModule; end: (run: FakeRun) => 
   const implementation: Pipelines = {
     start: THROWS,
     report: THROWS,
+    stop: THROWS,
     afterRunEnded: (listener) => {
       listeners.push(listener);
     },

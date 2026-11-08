@@ -22,6 +22,12 @@ export interface Pipelines {
    */
   afterRunEnded(listener: (run: PipelineRun) => void): void;
   /**
+   * Ends a `running` or `waiting_user` run as `stopped` with the message and cancels its stage jobs, as
+   * `POST /api/pipelines/runs/:id/cancel` does. It joins the caller's `store.transaction`. Throws 404 `run_not_found`;
+   * 409 `run_ended` when the run has ended.
+   */
+  stop(runId: string, message: string): void;
+  /**
    * Records the report of a stage agent's turn and wakes the stage's job, in one transaction. A worker turn also keeps
    * the router's newest decision for its agent (R4.7). Throws 404
    * `turn_not_found`; 403 `not_your_turn` when the caller is not the turn's agent; 409 `turn_closed` for a turn that is
