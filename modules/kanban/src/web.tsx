@@ -27,6 +27,7 @@ import {
 } from "@pi-spore/shared";
 import {
   Button,
+  Checkbox,
   Chip,
   CollapsibleSection,
   EmptyState,
@@ -968,7 +969,11 @@ function BoardPage({ params }: { params: Readonly<Record<string, string>> }) {
   const api = useApi();
   const all = useBoard();
   const { projects, workspaces, error: lookupError, reload } = useLookups();
-  const [filter, setFilter] = useState<BoardFilter>({ projectId: "", label: "" });
+  const [filter, setFilter] = useState<BoardFilter>({
+    projectId: "",
+    label: "",
+    showArchived: false,
+  });
   const [error, setError] = useState<string | undefined>();
   const selectedId = params.cardId;
   const today = localDay(new Date());
@@ -1032,6 +1037,13 @@ function BoardPage({ params }: { params: Readonly<Record<string, string>> }) {
               ))}
             </Select>
           </Field>
+          {(all ?? []).some((card) => card.archivedAt !== undefined) && (
+            <Checkbox
+              label="Show archived"
+              checked={filter.showArchived}
+              onChange={(event) => setFilter({ ...filter, showArchived: event.target.checked })}
+            />
+          )}
           <Button variant="primary" asChild>
             <a href="#/board/new">
               <Plus />

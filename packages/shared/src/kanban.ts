@@ -90,6 +90,8 @@ export const Card = Type.Object({
   createdBy: Type.Optional(CardAuthor),
   /** The agent that changed it last. A change by the user clears it. */
   changedBy: Type.Optional(CardAuthor),
+  /** When retention deleted the card's workspace (ADR 0121). The board hides the card until it leaves Done. */
+  archivedAt: Type.Optional(Type.Number()),
   createdAt: Type.Integer(),
   updatedAt: Type.Integer(),
 });

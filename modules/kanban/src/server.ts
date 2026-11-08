@@ -66,6 +66,8 @@ const MIGRATIONS = [
   "ALTER TABLE kanban_cards ADD COLUMN changed_by TEXT",
   // ADR 0120: the model of the chat that work from the card starts, `provider/id`.
   "ALTER TABLE kanban_cards ADD COLUMN model TEXT",
+  // ADR 0121: set when retention deletes the card's workspace. The board hides the card until it leaves Done.
+  "ALTER TABLE kanban_cards ADD COLUMN archived_at INTEGER",
 ];
 
 /** The approval kind of `kanban_start_card` (ADR 0100). */
@@ -84,6 +86,7 @@ interface CardRow {
   workspace_id: string | null;
   created_by: string | null;
   changed_by: string | null;
+  archived_at: number | null;
   created_at: number;
   updated_at: number;
 }
@@ -217,6 +220,7 @@ export const kanbanModule: ServerModule = {
         blocked: blockedBy.some((blocker) => blocker.open),
         ...(row.created_by === null ? {} : { createdBy: readAuthor(row, row.created_by) }),
         ...(row.changed_by === null ? {} : { changedBy: readAuthor(row, row.changed_by) }),
+        ...(row.archived_at === null ? {} : { archivedAt: row.archived_at }),
         createdAt: row.created_at,
         updatedAt: row.updated_at,
       };
@@ -314,7 +318,12 @@ export const kanbanModule: ServerModule = {
         if (column !== row.column_id) {
           renumber(row.column_id);
           record(row.id, row.column_id, column, reason);
-          host.store.run("UPDATE kanban_cards SET updated_at = ? WHERE id = ?", host.now(), row.id);
+          // ADR 0121: a card the user moves has come back to the board.
+          host.store.run(
+            "UPDATE kanban_cards SET updated_at = ?, archived_at = NULL WHERE id = ?",
+            host.now(),
+            row.id,
+          );
         }
       });
     };
@@ -613,6 +622,23 @@ export const kanbanModule: ServerModule = {
       // ADR 0012: any archive counts as done. The user moves the card back if the work was dropped.
       if (workspace.state === "archived") workChanged(workspace.id, "done", "workspace-archived");
       // Blockers show the workspace's state, so the board changes either way.
+      publish();
+    });
+
+    // ADR 0121: the cards of a deleted workspace stay, archived and without the link. An archived workspace
+    // no longer blocks, so its blocker links go.
+    workspaces.beforeDeleteWorkspace(async (workspace) => {
+      host.store.transaction(() => {
+        host.store.run(
+          "UPDATE kanban_cards SET workspace_id = NULL, archived_at = ? WHERE workspace_id = ?",
+          host.now(),
+          workspace.id,
+        );
+        host.store.run(
+          "DELETE FROM kanban_links WHERE kind = 'workspace' AND target_id = ?",
+          workspace.id,
+        );
+      });
       publish();
     });
 

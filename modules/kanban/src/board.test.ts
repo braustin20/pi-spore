@@ -39,6 +39,14 @@ describe("board helpers", () => {
     expect(dueState(card("a"), "2026-11-07")).toBeUndefined();
   });
 
+  it("hides archived cards unless asked to show them", () => {
+    const cards = [card("a"), card("b", { archivedAt: 5 })];
+    const ids = (showArchived: boolean) =>
+      filterCards(cards, { projectId: "", label: "", showArchived }).map((found) => found.id);
+    expect(ids(false)).toEqual(["a"]);
+    expect(ids(true)).toEqual(["a", "b"]);
+  });
+
   it("filters by project, no project, and label", () => {
     const cards = [
       card("a", { projectId: "P1", labels: ["ui"] }),
@@ -46,7 +54,7 @@ describe("board helpers", () => {
       card("c", { labels: ["ui"] }),
     ];
     const ids = (projectId: string, label: string) =>
-      filterCards(cards, { projectId, label }).map((found) => found.id);
+      filterCards(cards, { projectId, label, showArchived: false }).map((found) => found.id);
     expect(ids("", "")).toEqual(["a", "b", "c"]);
     expect(ids("P1", "")).toEqual(["a"]);
     expect(ids("none", "")).toEqual(["c"]);

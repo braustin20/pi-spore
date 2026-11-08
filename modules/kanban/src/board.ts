@@ -18,11 +18,14 @@ export interface BoardFilter {
   projectId: string;
   /** A label, or empty for all. */
   label: string;
+  /** Show cards whose workspace retention deleted (ADR 0121). */
+  showArchived: boolean;
 }
 
 export function filterCards(cards: readonly Card[], filter: BoardFilter): Card[] {
   return cards.filter(
     (card) =>
+      (filter.showArchived || card.archivedAt === undefined) &&
       (filter.projectId === "" ||
         (filter.projectId === "none" ? !card.projectId : card.projectId === filter.projectId)) &&
       (filter.label === "" || card.labels.includes(filter.label)),
