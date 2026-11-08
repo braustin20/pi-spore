@@ -17,8 +17,10 @@ import {
   WatchRequest,
   type Workspace,
 } from "@pi-spore/shared";
+import { PullRequestsKey } from "./contract.js";
 import { type BotComment, Gh, type GhCommand, jobIdOf, tail } from "./gh.js";
 
+export * from "./contract.js";
 export type { GhCommand } from "./gh.js";
 
 /** Topic of a workspace's PR status: `github-pr:<workspace id>`. */
@@ -550,6 +552,46 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         return { workspace, push: provider.publish.push, line: workspace.line };
       };
 
+      /** The one path for the publish route and the `PullRequestsKey` interface. */
+      const openPullRequest = async (
+        workspaceId: string,
+        request: { title: string; body: string; base: string; draft?: boolean },
+      ): Promise<PullRequest> => {
+        const { workspace, push, line } = await publishable(workspaceId);
+        const existing = load(workspace.id);
+        if (existing && viewOf(existing).state === "open") {
+          throw new ApiError(
+            409,
+            "pr_exists",
+            `PR #${existing.number} is open already: ${existing.url}`,
+          );
+        }
+        const { remote } = await push({ path: workspace.path, line }, line);
+        const base = request.base.startsWith(`${remote}/`)
+          ? request.base.slice(remote.length + 1)
+          : request.base;
+        const number = await gh.create(workspace.path, {
+          line,
+          base,
+          title: request.title,
+          body: request.body,
+          draft: request.draft === true,
+        });
+        const pr = await gh.view(workspace.path, String(number));
+        if (!pr)
+          throw new ApiError(422, "gh_failed", `gh cannot find PR #${number} it just opened`);
+        if (existing) {
+          host.store.run("DELETE FROM github_pr_prs WHERE workspace_id = ?", workspace.id);
+          host.store.run("DELETE FROM github_pr_sent WHERE workspace_id = ?", workspace.id);
+        }
+        adopt(workspace, pr, true);
+        host.log.info("PR opened", { workspace: workspace.id, number });
+        await publishStatus(workspace.id);
+        return pr;
+      };
+
+      host.provide(PullRequestsKey, { open: openPullRequest });
+
       host.events.onSubscribe(PR_TOPIC, async (topic) => {
         const event: PrEvent = {
           type: "status",
@@ -646,37 +688,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
 
       host.routes.post("/workspaces/:id/publish", async (c) => {
         const request = parseJsonBody(PublishRequest, await c.req.text(), "publish request");
-        const { workspace, push, line } = await publishable(c.req.param("id"));
-        const existing = load(workspace.id);
-        if (existing && viewOf(existing).state === "open") {
-          throw new ApiError(
-            409,
-            "pr_exists",
-            `PR #${existing.number} is open already: ${existing.url}`,
-          );
-        }
-        const { remote } = await push({ path: workspace.path, line }, line);
-        const base = request.base.startsWith(`${remote}/`)
-          ? request.base.slice(remote.length + 1)
-          : request.base;
-        const number = await gh.create(workspace.path, {
-          line,
-          base,
-          title: request.title,
-          body: request.body,
-          draft: request.draft === true,
-        });
-        const pr = await gh.view(workspace.path, String(number));
-        if (!pr)
-          throw new ApiError(422, "gh_failed", `gh cannot find PR #${number} it just opened`);
-        if (existing) {
-          host.store.run("DELETE FROM github_pr_prs WHERE workspace_id = ?", workspace.id);
-          host.store.run("DELETE FROM github_pr_sent WHERE workspace_id = ?", workspace.id);
-        }
-        adopt(workspace, pr, true);
-        host.log.info("PR opened", { workspace: workspace.id, number });
-        await publishStatus(workspace.id);
-        return c.json(await status(workspace.id), 201);
+        await openPullRequest(c.req.param("id"), request);
+        return c.json(await status(c.req.param("id")), 201);
       });
 
       host.routes.post("/workspaces/:id/push", async (c) => {

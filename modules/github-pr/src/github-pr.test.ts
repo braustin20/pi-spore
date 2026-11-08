@@ -10,11 +10,11 @@ import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
-import type { JobTimer } from "@pi-spore/module-api";
+import type { JobTimer, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { CardDetail, PrStatus, Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createGithubPrModule } from "./server.js";
+import { createGithubPrModule, type PullRequests, PullRequestsKey } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 const FAKE_GH = fileURLToPath(new URL("../test-fixtures/fake-gh.mjs", import.meta.url));
@@ -23,6 +23,7 @@ let server: TestServer;
 let scratch: string;
 let agents: ReturnType<typeof createAgentsModule>;
 let ghState: string;
+let pullRequests: PullRequests;
 /** Polls the runner scheduled, run by `tick`. */
 let timers: { run: () => Promise<void>; ms: number; cancelled: boolean }[];
 
@@ -54,6 +55,16 @@ const scheduledDelays = () =>
     .filter((entry) => !entry.cancelled && !isDiscover(entry))
     .map((entry) => wholeSeconds(entry.ms));
 
+/** Keeps the interface the runs module will call. */
+const probe: ServerModule = {
+  id: "github-pr-probe",
+  requires: ["github-pr"],
+  core: false,
+  setup(host) {
+    pullRequests = host.use(PullRequestsKey);
+  },
+};
+
 async function makeServer(home?: string, startAt?: number, firstId = 1000) {
   agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
@@ -76,6 +87,7 @@ async function makeServer(home?: string, startAt?: number, firstId = 1000) {
         gh: { command: process.execPath, args: [FAKE_GH, ghState] },
         discoverIntervalMs: DISCOVER_MS,
       }),
+      probe,
     ],
     { timer, ...(home ? { home, firstId } : {}), ...(startAt ? { startAt } : {}) },
   );
@@ -337,6 +349,26 @@ describe("publish", () => {
       },
     );
     expect(again.status).toBe(409);
+    expectOnlyAllowedCalls();
+  });
+
+  it("opens a PR for another module through the interface", async () => {
+    const { workspace } = await setUp();
+    const pr = await pullRequests.open(workspace.id, {
+      title: "Ship the jump",
+      body: "Fixed.",
+      base: "main",
+    });
+    expect(pr).toMatchObject({
+      number: 1,
+      title: "Ship the jump",
+      state: "open",
+      line: workspace.line,
+      base: "main",
+    });
+    expect(readGh().calls.filter((call) => call[0] === "pr" && call[1] === "create")).toHaveLength(
+      1,
+    );
     expectOnlyAllowedCalls();
   });
 
