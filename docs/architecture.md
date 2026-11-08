@@ -119,9 +119,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Card tools (ADR 0100), limited to cards of the agent's project: `kanban_list_cards` `{ label?, column? }` (also
     lists the project's active workspaces), `kanban_add_card` and `kanban_update_card` (title, body, column, labels,
     due day, `blockedBy` card ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
-    base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
+    base? | run?, base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
-    `new` unless another is given.
+    `new` unless another is given; `run: true` asks for a new run.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
     `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
@@ -553,8 +553,9 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   refuses `request_human_input` from a lane with 409 `ask_coordinator`. There is no lane-to-lane route.
 - Bridge routes: `POST /api/bridge/lanes`, `/lanes/revise`, `/lanes/merge`, `/coordinator/answers` (not for
   read-only callers), and `/coordinator/questions` (lane reviewers too). The runs module checks who may call each.
-- Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`. Topic
-  `runs:list` sends `{ type: "runs", runs }` on subscribe and after every change.
+- Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`.
+  `RunsKey.create` does the same as `POST /api/runs` for other modules, with an optional coordinator model; kanban
+  starts runs from cards with it (section 12). Topic `runs:list` sends `{ type: "runs", runs }` on subscribe and after every change.
 - Web: a Runs page (`#/runs`, rail icon) with a start form and every run's lanes by wave, and a run panel on a run
   workspace (the same card) or a lane workspace (a link to its run).
 - CLI: `pi-spore run start <project> <name> [--base <line>] [--gate <action>]...`, `run list [--project <id>]`,
@@ -993,7 +994,8 @@ See [ADR 0011](decisions/0011-unity-support.md).
 See [ADR 0012](decisions/0012-kanban.md) and [ADR 0040](decisions/0040-card-moves-on-workspace-state.md). Requirements
 R11.
 
-- The `kanban` module (`modules/kanban/`, not core, requires `projects`, `workspaces`, `agents`, and `attention`)
+- The `kanban` module (`modules/kanban/`, not core, requires `projects`, `workspaces`, `agents`, `attention`, and
+  `runs`)
   owns three tables: `kanban_cards` (title, Markdown body, project, labels, due day, column, position, the workspace
   started from it, the agent that created it and the one that changed it last, and an optional `model`, `provider/id`
   checked with a TypeBox pattern, for the chat that work from the card starts, ADR 0120),
@@ -1018,8 +1020,14 @@ R11.
   brief as a follow-up after its current run. A card with an open workspace answers 409 `card_has_workspace`. A
   blocked card answers 409 `card_blocked` unless the request carries `confirmBlocked: true`; the board asks the user
   first.
+- A card also starts a new run (R7): `POST /api/kanban/cards/:id/start` `{ run: true, base?, projectId?, model?,
+  confirmBlocked? }` creates it through `RunsKey.create` (section 9), named after the card (cut to 120 characters).
+  The card links to the run workspace and moves to In progress with reason `run-started`, and its brief goes to the
+  coordinator chat, in one transaction. A project without `integrate` answers 422 `not_supported` and the card stays
+  where it was. Because the card links to the run workspace, it follows the run through that workspace: a PR on it
+  → Review, its archive → Done. Runs have no archive of their own.
 - The model of the new chat (ADR 0120): the request's `model`, else the card's, else `agentOverrides.orchestrator`.
-  It goes to `AgentsKey.activeWorker`. In an existing workspace the chat keeps its model, so a `model` in the request
+  It goes to `AgentsKey.activeWorker`, or for a run to the coordinator through `RunsKey.create`. In an existing workspace the chat keeps its model, so a `model` in the request
   answers 400 `model_needs_new_workspace`; the card's model is then unused.
 - Agents (ADR 0100) reach cards through `CardsKey` from the bridge module: cards of their own project only, with
   `createdBy` and `changedBy` set to the agent and its workspace. A change or move by the user clears `changedBy`.
@@ -1028,13 +1036,12 @@ R11.
   target and model the user chose (a changed subject is checked with the same schema), and tells the asking agent
   where it started.
 - Automatic moves happen only on a state change, so a manual move stays until the next one:
-  - workspace started from the card → In progress;
+  - workspace or run started from the card → In progress;
   - workspace archived → Done (any archive; the user moves the card back if the work was dropped). The module
     listens with `WorkspacesKey.afterStateChange`.
   - Later modules move cards through `CardsKey.workChanged(workspaceId, column, reason)`: pipeline passed or PR
     open → Review, PR merged → Done. `github-pr` finds a workspace's PR by itself (section 11e), also one an agent
     opened with `gh`, so the card reaches Review and Done without the publish form.
-- Runs are not built yet, so a card starts only workspaces.
 
 API under `/api/kanban`:
 
@@ -1046,15 +1053,15 @@ API under `/api/kanban`:
 | `PATCH /cards/:id` | Changes the fields given; `null` clears project, due, or model. `blockedBy` replaces the list. |
 | `POST /cards/:id/move` `{ column, index? }` | Moves or reorders. Without `index`, the card goes to the end. |
 | `DELETE /cards/:id` | Deletes the card, its links both ways, and its history. |
-| `POST /cards/:id/start` `{ …, model? }` | Starts work from the card in a new or an existing workspace (above). |
+| `POST /cards/:id/start` `{ …, model? }` | Starts work from the card in a new or an existing workspace, or a new run (above). |
 
 - Topic `kanban:board` sends every card on subscribe and after every change.
 - The Board page (`#/board`, `#/board/<card id>`, rail icon) shows the columns with a project and a label filter.
   Cards move by drag and drop, or with the move buttons on each card (keyboard). Selecting a card opens it on the
   right: edit, move, delete, blockers, history, and "Start a workspace" with the workspaces module's create form
   (`WorkspaceViewKey.CreateForm`). The workspace view has a Card panel for the workspace's card.
-- The Work section offers "Start in a new workspace" (the create form) and "Start in an existing workspace" (the
-  project's active workspaces). Cards made or changed by an agent show an agent chip, and the card panel names the
+- The Work section offers "Start in a new workspace" (the create form), "Start in an existing workspace" (the
+  project's active workspaces), and "Start a run" (a base line, a model, and a git project when the card has none). Cards made or changed by an agent show an agent chip, and the card panel names the
   agent's workspace with a link to its chat. Home shows a `card-start` approval with the card, whether it is
   blocked, the reason, and a target picker.
 - A Model dropdown (ADR 0120) sits in the "new workspace" form (through `CreateForm`'s `children`), in the card
@@ -1067,8 +1074,8 @@ API under `/api/kanban`:
   with a changed model sends the changed subject.
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
-  --new [--mode m] [--line b] [--base b] | --workspace <id> [--blocked-ok]`.
-- Not built yet: runs from cards, custom columns, and overdue cards on Home (the attention module has no way for
+  --new [--mode m] [--line b] [--base b] | --workspace <id> | --run [--base b] [--blocked-ok]`.
+- Not built yet: custom columns, and overdue cards on Home (the attention module has no way for
   other modules to add items yet).
 
 ## 13. Settings
