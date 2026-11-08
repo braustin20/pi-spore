@@ -60,6 +60,7 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
         workspace: Workspace,
         name: string,
         trigger: ActionTrigger,
+        key?: string,
       ): Promise<{ run: ActionRun; done: Promise<ActionRun> }> => {
         const action = (await actionsOf(workspace)).find((candidate) => candidate.name === name);
         if (!action) {
@@ -70,17 +71,28 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
           );
         }
         const project = await projects.get(workspace.projectId);
-        return runner.start(workspace, action, trigger, {
-          PI_SPORE_WORKSPACE_ID: workspace.id,
-          PI_SPORE_WORKSPACE_PATH: workspace.path,
-          PI_SPORE_PROJECT_ROOT: project.path,
-        });
+        // No await between this check and the insert in runner.start, so two starts with one key cannot both pass.
+        if (key !== undefined) {
+          const existing = runner.byKey(workspace.id, key);
+          if (existing) return { run: existing, done: runner.wait(existing.id) };
+        }
+        return runner.start(
+          workspace,
+          action,
+          trigger,
+          {
+            PI_SPORE_WORKSPACE_ID: workspace.id,
+            PI_SPORE_WORKSPACE_PATH: workspace.path,
+            PI_SPORE_PROJECT_ROOT: project.path,
+          },
+          key,
+        );
       };
 
       const actions: Actions = {
         list: (workspaceId) => actionsOf(workspaces.get(workspaceId)),
-        start: async (workspaceId, name, trigger) =>
-          (await start(workspaces.get(workspaceId), name, trigger)).run,
+        start: async (workspaceId, name, trigger, options) =>
+          (await start(workspaces.get(workspaceId), name, trigger, options?.key)).run,
         wait: (runId) => runner.wait(runId),
         get: (runId) => runner.get(runId),
         readLog: (runId, from, waitMs) => runner.readLog(runId, from, waitMs),

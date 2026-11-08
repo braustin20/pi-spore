@@ -5,7 +5,9 @@ export {
   DEFAULT_TIERS,
   loadSettings,
   type RouterSettings,
+  TIERS,
   type Tier,
+  tierOf,
 } from "./settings.js";
 export {
   type PlanSnapshot,

@@ -433,6 +433,7 @@ export const attentionModule: ServerModule = {
           outcome: outcome === "" ? null : outcome,
           decided_at: now,
         });
+        kinds.get(row.kind)?.decided?.(decided.subject, decided, approved);
         agents.deliver(row.agent_id, decisionMessage(decided, approved, outcome));
         return decided;
       });

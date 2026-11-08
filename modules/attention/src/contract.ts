@@ -22,6 +22,12 @@ export interface ApprovalKind<S extends TSchema = TSchema> {
    * error.
    */
   approve(subject: Static<S>, approval: Approval): Promise<string>;
+  /**
+   * Runs for an approve and for a decline, inside the transaction that stores the decision, with the decided
+   * approval and its final subject. A throw rolls the decision back, so the approval stays open and the user gets
+   * the error. For a gate that must record the decision together with it. Not called for a kind no module handles.
+   */
+  decided?(subject: Static<S>, approval: Approval, approved: boolean): void;
 }
 
 /** Decision gates on Home (ADR 0100). Only the user decides them, through the attention routes. */
