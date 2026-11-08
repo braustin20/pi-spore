@@ -360,6 +360,30 @@ describe("spore-bridge", () => {
     expect(seen).toHaveLength(1);
   });
 
+  it("asks for a new run, with an optional base, and refuses a run mixed with a workspace target", async () => {
+    reply("POST /api/bridge/cards/c1/start", {
+      status: 201,
+      body: { approval: { id: "a3", title: "x" } },
+    });
+    const pi = fakePi();
+    await pi
+      .tool("kanban_start_card")
+      .execute("toolu_k6", { cardId: "c1", run: true, base: "develop", reason: "Big" });
+    expect(seen[0]?.body).toEqual({ target: { kind: "run", base: "develop" }, reason: "Big" });
+    await pi
+      .tool("kanban_start_card")
+      .execute("toolu_k7", { cardId: "c1", run: true, reason: "Big" });
+    expect(seen[1]?.body).toEqual({ target: { kind: "run" }, reason: "Big" });
+    for (const mixed of [{ workspaceId: "w2" }, { isolation: "new" }, { line: "feature" }]) {
+      await expect(
+        pi
+          .tool("kanban_start_card")
+          .execute("toolu_k8", { cardId: "c1", run: true, reason: "x", ...mixed }),
+      ).rejects.toThrow("not both");
+    }
+    expect(seen).toHaveLength(2);
+  });
+
   it("replaces the global AGENTS.md with the pi-spore rules and keeps project files", async () => {
     const options = {
       contextFiles: [

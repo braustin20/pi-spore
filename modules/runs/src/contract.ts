@@ -2,6 +2,7 @@ import { type BridgeCaller, defineInterface } from "@pi-spore/module-api";
 import type {
   AnswerLaneRequest,
   AskCoordinatorRequest,
+  CreateRunRequest,
   Lane,
   MergeLaneRequest,
   ReviseLaneRequest,
@@ -15,6 +16,8 @@ import type {
  * a run workspace.
  */
 export interface Runs {
+  /** Creates a run, the same as POST /api/runs. The model is the coordinator chat's. */
+  create(request: CreateRunRequest, options?: { model?: string }): Promise<Run>;
   /**
    * Adds a lane to the caller's run. 404 when the brief artifact does not exist; 400 when a `dependsOn` id is not a
    * lane of the run. A model above the worker role default's tier files a `lane-model` approval and the lane waits in

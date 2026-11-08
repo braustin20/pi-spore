@@ -549,13 +549,53 @@ describe("pi-spore card start", () => {
     expect(await run(["card", "start", "C1"], deps)).toBe(2);
     expect(await run(["card", "start", "C1", "--new", "--workspace", "W1"], deps)).toBe(2);
     expect(await run(["card", "start", "C1", "--workspace", "W1", "--mode", "new"], deps)).toBe(2);
-    expect(err[0]).toContain("either --new or --workspace");
+    expect(err[0]).toContain("one of --new, --workspace <id>, or --run");
     expect(sent).toEqual([]);
 
     expect(
       await run(["card", "start", "C1", "--new", "--mode", "in-place", "--blocked-ok"], deps),
     ).toBe(0);
     expect(sent[0]?.body).toEqual({ isolation: "in-place", confirmBlocked: true });
+  });
+
+  it("starts a card as a new run, and refuses a run mixed with other targets or options", async () => {
+    const run1 = {
+      id: "R1",
+      projectId: "P1",
+      workspaceId: "W1",
+      line: "spore/fix-ui-abc123",
+      base: "develop",
+      gates: [],
+      coordinatorAgentId: "A1",
+      createdAt: 2,
+      lanes: [],
+      questions: [],
+    };
+    const { deps, out, err, sent } = fakeDeps((key) =>
+      key.startsWith("GET /api/projects")
+        ? Response.json({ projects: [project] })
+        : Response.json({ ...started, run: run1 }, { status: 201 }),
+    );
+    for (const bad of [
+      ["--run", "--new"],
+      ["--run", "--workspace", "W1"],
+      ["--run", "--mode", "new"],
+      ["--run", "--line", "feature"],
+    ]) {
+      expect(await run(["card", "start", "C1", ...bad], deps)).toBe(2);
+    }
+    expect(err[0]).toContain("one of --new, --workspace <id>, or --run");
+    expect(err[3]).toContain("--run takes --base only");
+    expect(sent).toEqual([]);
+
+    expect(
+      await run(["card", "start", "C1", "--run", "--base", "develop", "--blocked-ok"], deps),
+    ).toBe(0);
+    expect(sent[0]?.body).toEqual({ run: true, base: "develop", confirmBlocked: true });
+    expect(out.slice(1)).toEqual([
+      "In run R1 (W1  active   Fix UI  spore/fix-ui-abc123  /home/me/.pi-spore/worktrees/game/fix-ui-abc123)",
+      "Brief sent to coordinator chat A1",
+    ]);
   });
 });
 

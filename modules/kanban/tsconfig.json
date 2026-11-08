@@ -31,6 +31,18 @@
       "path": "../attention"
     },
     {
+      "path": "../runs"
+    },
+    {
+      "path": "../actions"
+    },
+    {
+      "path": "../artifacts"
+    },
+    {
+      "path": "../pipelines"
+    },
+    {
       "path": "../vcs-git"
     },
     {
