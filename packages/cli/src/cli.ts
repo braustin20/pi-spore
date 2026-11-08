@@ -11,6 +11,7 @@ import {
   Approval as ApprovalSchema,
   ArchiveWorkspaceResponse,
   CARD_COLUMNS,
+  CalibrationResponse,
   type Card,
   type CardColumn,
   CardList,
@@ -112,6 +113,8 @@ Commands:
                                            gates: check and test
   run list [--project <project>]           Runs, newest first
   run show <run>                           A run's lanes by wave, with state and workspace
+  usage calibration                        Routing calibration (ADR 0144): how Jev's answers spread, how
+                                           local runs turned out, and a suggested bar. Never changes it
   pr status <workspace>                    Show the workspace's PR, its checks, and the watch
   pr open <workspace> [--title <t>] [--body <b>] [--base <branch>] [--draft]
                                            Push the branch and open a PR on GitHub (outward-facing)
@@ -810,6 +813,42 @@ async function pipelineCommand(
   throw usageError(`Unknown command: pipeline ${args.join(" ")}`);
 }
 
+/** "23/30 (77%)": the sample size sits next to the share. */
+const share = (count: number, total: number) =>
+  `${count}/${total}${total > 0 ? ` (${Math.round((count / total) * 100)}%)` : ""}`;
+
+const TOO_LITTLE = "  too little data";
+
+async function usageCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  if (args.length !== 1 || args[0] !== "calibration")
+    throw usageError(`Unknown command: usage ${args.join(" ")}`);
+  const report = await api.call("GET", "usage/calibration", CalibrationResponse);
+  if (json) return deps.out(JSON.stringify(report));
+  deps.out(
+    `Bar now ${report.threshold}. ${report.decisions} decisions with Jev answers, ${report.outcomes} local outcomes.`,
+  );
+  deps.out(
+    report.suggestedBar === undefined
+      ? `Suggested bar: none (no bar has ${report.minSample} local outcomes with 90% passed)`
+      : `Suggested bar: ${report.suggestedBar}`,
+  );
+  deps.out(`${"bar".padEnd(5)}${"would go local".padEnd(17)}passed`);
+  for (const bar of report.bars) {
+    const passed = `${share(bar.passed, bar.localOutcomes)}${bar.enough ? "" : TOO_LITTLE}`;
+    deps.out(
+      `${String(bar.bar).padEnd(5)}${share(bar.wouldGoLocal, bar.decisions).padEnd(17)}${passed}`,
+    );
+  }
+  for (const [question, buckets] of Object.entries(report.buckets)) {
+    deps.out(question);
+    for (const bucket of buckets) {
+      const range = `${bucket.from.toFixed(1)}-${bucket.to.toFixed(1)}`;
+      const passed = `${share(bucket.passed, bucket.localOutcomes)}${bucket.enough ? "" : TOO_LITTLE}`;
+      deps.out(`  ${range}  ${`answers ${bucket.answers}`.padEnd(12)}passed ${passed}`);
+    }
+  }
+}
+
 const CoordinatedRunBody = Type.Object({ run: RunSchema });
 
 function laneLines(run: Run): string[] {
@@ -967,6 +1006,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "jobs") await jobsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pipeline") await pipelineCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "usage") await usageCommand(new Api(deps, base), deps, rest, json);
     else if (command === "run") await runCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pr") await prCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);

@@ -280,7 +280,8 @@ export interface ServerHost {
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
-| RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
+| RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, explore, session, agent, workspace |
+| Outcome | How a pipeline run with a worker ended (`usage_outcomes`, ADR 0144) | run, workspace, worker agent, state, verdict of the first reviewer stage, review rounds, fix passes, ended at |
 | UsageSnapshot | Latest plan window numbers (a file per plan, `usage/<plan>.json`) | plan, window (5h, 7d), utilization, resets at, seen at, source |
 | Job | A durable unit of background work (`core_jobs`) | id, kind, key, subject, state (running, waiting, interrupted, done, cancelled), step, checkpoint, run at, started at, attempts, error |
 
@@ -502,7 +503,8 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 - Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, askingAgentId?, workerModel? })` does what
   the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`), so
   that run never asks about the local implementer.
-  `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it.
+  `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
+  uses it to record outcomes (section 11a).
 - Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
   card when a run passes, and a tool for the orchestrator to start a run.
 
@@ -566,7 +568,8 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 ## 10. Model routing
 
 See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local-model-queue.md),
-[ADR 0023](decisions/0023-model-tiers.md), and [ADR 0024](decisions/0024-routing-thresholds.md).
+[ADR 0023](decisions/0023-model-tiers.md), [ADR 0024](decisions/0024-routing-thresholds.md), and
+[ADR 0144](decisions/0144-routing-calibration.md).
 
 - `pi-extensions/router/` (package `@pi-spore/router`) registers the virtual model `spore/auto` with
   `pi.registerVirtualModel`. pi-spore agents load it with one more `-e` (section 2). Plain `pi` loads it with
@@ -581,7 +584,10 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   4. Go local only if every "good" answer is at least the threshold (0.7, or 0.55 under usage pressure; the visual
      question always needs 0.7). Otherwise use the cloud model: `router.cloud`, else the pi-subagents `worker`
      model from Pi's settings. If that model is `spore/auto`, the router throws an error that names `router.cloud`
-     and `settings.json`. It does not fall back (ADR 0120).
+     and `settings.json`. It does not fall back (ADR 0120). Explore (ADR 0144): when "straightforward" is the only blocker, the session is a pipeline worker stage
+     (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), and a random draw is below `router.explore`,
+     the task goes local anyway. The reasons say `explore`, and the record has `explore: true`. Over-budget, visual,
+     and classifier-error tasks never explore.
   5. If the cloud model's plan is full, spill (below).
   6. Store the choice as router state on the session branch. Later requests stay on it, to keep the prompt cache.
      Requests outside the agent loop (`direct`, such as compaction) go to the model that answered last.
@@ -591,7 +597,7 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   model, pins the session there, records `kind: "error"` with the message, and shows a warning.
 - Every decision is appended to `~/.pi-spore/usage/routing.jsonl`: time, kind (`initial`, `escalation`, `error`),
   route (`local`, `cloud`, `spill`, `wait`), model, reasons, Jev's good-answer probabilities, the estimate and budget,
-  the threshold, the plan windows it saw, and the session id, file, and folder. Inside pi-spore it also has the agent
+  the threshold, `explore`, the plan windows it saw, and the session id, file, and folder. Inside pi-spore it also has the agent
   and workspace ids. The chat shows each decision as a notice, which is live only. A new `info` notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. The model picker names the model
   that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical model Pi records on each
   assistant message, so it survives reloads and reconnects. The router state on the session holds the route and
@@ -640,6 +646,7 @@ records and routes to cloud.
         "concurrency": 1, "healthUrl": "http://127.0.0.1:8080/health" }
     ],
     "threshold": 0.7,
+    "explore": 0,
     "pressureThreshold": 0.55,
     "pressure": { "weekly": 0.75, "fiveHour": 1 },
     "usageMaxAgeMinutes": 60,
@@ -652,6 +659,8 @@ records and routes to cloud.
 
 - `cloud` has no built-in default: unset means the pi-subagents `worker` model. `cloud` must not be `spore/auto`
   (ADR 0120); set it when `worker` is `spore/auto`.
+- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes `threshold`; the
+  calibration report (section 11a) only suggests a value.
 - `plans` maps a provider to the subscription plan it draws on. `tiers` entries are added to the built-in tier list
   (ADR 0023).
 
@@ -676,8 +685,11 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   and the router ignores them (R18.5).
 - v1 is passive only (ADR 0022). Active polling of the plans' usage endpoints is a v2 option. It would also
   count use from Claude Code and the Codex CLI, which the tap cannot see.
-- The `usage` module (`modules/usage/`, not core, requires `projects` and `workspaces`) owns no tables. It reads the
-  router's files on each request through `@pi-spore/router`, so file formats have one definition:
+- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, and `pipelines`) reads the
+  router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
+  table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
+  the verdict of the last review of its first reviewer stage, its review rounds, and its fix passes. Retention
+  deletes rows with the same cutoff as `routing.jsonl`.
   - `GET /api/usage/plans`: each plan's windows with age and staleness, warnings, the thresholds, and plan files that
     did not read. A warning is a fresh window that is full, a weekly window above `router.pressure.weekly`, or a
     5-hour window at or above `router.pressure.fiveHour` (R18.4).
@@ -688,10 +700,17 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     once.
   - `GET /api/usage/routing?limit=<1-500>`: the newest routing decisions (default 50), and how many lines did not
     parse.
+  - `GET /api/usage/calibration`: the routing calibration report (ADR 0144). It joins each outcome to the newest
+    `initial` decision of its worker agent before the run ended. A `local` decision passed when the verdict is
+    `approve` and no `escalation` record has its session id. The report has Jev's answers per question in ten
+    buckets (answers, local outcomes, passed), and for bars 0.1 to 0.9 how many decisions would have gone local and
+    how many of those passed. A share under 20 local outcomes has `enough: false`. `suggestedBar` is the lowest bar
+    with 20 local outcomes and 90% passed. It is only a suggestion.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
-  warnings at the top; the token table; and the routing decisions with their reasons. It loads on open and on
-  Refresh.
+  warnings at the top; the token table; the routing decisions with their reasons; and the routing calibration (the
+  bars table with "now" and "suggested" chips, and the buckets). It loads on open and on Refresh.
+- CLI: `pi-spore usage calibration [--json]` prints the same report.
 - Not built yet: token use per role (every agent is a worker today), scanning `~/.pi/agent/sessions/` for plain `pi`
   work, and a warning on Home (Home has no module slots yet).
 
@@ -1221,7 +1240,8 @@ With `retention.days = N` (N > 0), it deletes data older than N days:
 - a closed chat, counted from `closed_at`: its session file, deliveries, questions, approvals, and row. The server
   forgets it too, so its id answers 404. A closed chat stays while an open fork of it has not started.
 - action runs that ended before the limit, in any workspace, with their logs;
-- lines of `usage/routing.jsonl` with an older `at` (unreadable lines stay);
+- lines of `usage/routing.jsonl` with an older `at` (unreadable lines stay), and `usage_outcomes` rows that ended
+  before the limit;
 - stored API responses (`core_idempotency`);
 - jobs that ended (`done`, `cancelled`) before the limit (`core_jobs`).
 

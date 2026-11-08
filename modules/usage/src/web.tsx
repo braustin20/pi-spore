@@ -1,5 +1,7 @@
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
+  type CalibrationBar,
+  CalibrationResponse,
   parse,
   RoutingDecisionsResponse,
   TokenUseResponse,
@@ -21,7 +23,7 @@ import {
 } from "@pi-spore/ui";
 import { Gauge, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { formatAge, formatTokens, formatUntil, windowTitle } from "./format.js";
+import { formatAge, formatShare, formatTokens, formatUntil, windowTitle } from "./format.js";
 
 const PLAN_TITLES: Readonly<Record<string, string>> = { claude: "Claude", codex: "OpenAI Codex" };
 
@@ -29,6 +31,7 @@ interface Data {
   plans: UsagePlansResponse;
   tokens: TokenUseResponse;
   routing: RoutingDecisionsResponse;
+  calibration: CalibrationResponse;
   loadedAt: number;
 }
 
@@ -39,6 +42,109 @@ function Bar({ value, tone }: { value: number; tone: "accent" | "warn" | "fail" 
     <div className="h-2 w-full overflow-hidden rounded-full bg-raised">
       <div className={`h-full ${fill}`} style={{ width }} />
     </div>
+  );
+}
+
+const TooLittleData = () => <span className="text-muted"> too little data</span>;
+
+function BarRow({ bar, calibration }: { bar: CalibrationBar; calibration: CalibrationResponse }) {
+  return (
+    <tr>
+      <TableCell className="font-mono">
+        {bar.bar}
+        {bar.bar === calibration.threshold && (
+          <Chip className="ml-1.5" title="router.threshold now">
+            now
+          </Chip>
+        )}
+        {bar.bar === calibration.suggestedBar && (
+          <Chip tone="ok" className="ml-1.5">
+            suggested
+          </Chip>
+        )}
+      </TableCell>
+      <TableCell>{formatShare(bar.wouldGoLocal, bar.decisions)}</TableCell>
+      <TableCell>
+        {bar.localOutcomes === 0 ? "no outcomes" : formatShare(bar.passed, bar.localOutcomes)}
+        {!bar.enough && <TooLittleData />}
+      </TableCell>
+    </tr>
+  );
+}
+
+function CalibrationPanel({ calibration }: { calibration: CalibrationResponse }) {
+  const questions = Object.entries(calibration.buckets);
+  return (
+    <Panel>
+      <PanelHeader title="Routing calibration" />
+      {calibration.decisions === 0 ? (
+        <p className="m-0 text-sm text-muted">
+          No decisions with Jev answers yet. The report fills in as spore/auto routes tasks.
+        </p>
+      ) : (
+        <div className="flex flex-col gap-3">
+          <p className="m-0 text-sm">
+            {calibration.decisions} decisions with Jev answers, {calibration.outcomes} local
+            outcomes. Bar now: {calibration.threshold}.{" "}
+            {calibration.suggestedBar === undefined
+              ? `No suggested bar: no bar has ${calibration.minSample} local outcomes with 90% passed.`
+              : `Suggested bar: ${calibration.suggestedBar}. pi-spore never changes the bar; set router.threshold in settings.json.`}
+          </p>
+          <Table>
+            <thead>
+              <tr>
+                <TableHead>Bar</TableHead>
+                <TableHead>Would go local</TableHead>
+                <TableHead>Passed</TableHead>
+              </tr>
+            </thead>
+            <tbody>
+              {calibration.bars.map((bar) => (
+                <BarRow key={bar.bar} bar={bar} calibration={calibration} />
+              ))}
+            </tbody>
+          </Table>
+          <Table>
+            <thead>
+              <tr>
+                <TableHead>Answer</TableHead>
+                {questions.map(([question]) => (
+                  <TableHead key={question}>{question}</TableHead>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {calibration.buckets.bounded.map((range, index) => (
+                <tr key={range.from}>
+                  <TableCell className="font-mono text-xs">
+                    {range.from.toFixed(1)}–{range.to.toFixed(1)}
+                  </TableCell>
+                  {questions.map(([question, buckets]) => {
+                    const bucket = buckets[index];
+                    return (
+                      <TableCell key={question} className="text-xs">
+                        {bucket?.answers} answers
+                        {bucket && bucket.localOutcomes > 0 && (
+                          <>
+                            , {bucket.passed}/{bucket.localOutcomes} passed
+                            {!bucket.enough && <TooLittleData />}
+                          </>
+                        )}
+                      </TableCell>
+                    );
+                  })}
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+        </div>
+      )}
+      {calibration.skipped > 0 && (
+        <p className="mt-2 mb-0 text-xs text-muted">
+          {calibration.skipped} lines of the decision file did not parse.
+        </p>
+      )}
+    </Panel>
   );
 }
 
@@ -101,12 +207,18 @@ function UsagePage() {
 
   const load = useCallback(() => {
     setBusy(true);
-    Promise.all([api.get("usage/plans"), api.get("usage/tokens"), api.get("usage/routing")])
-      .then(([plans, tokens, routing]) => {
+    Promise.all([
+      api.get("usage/plans"),
+      api.get("usage/tokens"),
+      api.get("usage/routing"),
+      api.get("usage/calibration"),
+    ])
+      .then(([plans, tokens, routing, calibration]) => {
         setData({
           plans: parse(UsagePlansResponse, plans, "usage plans"),
           tokens: parse(TokenUseResponse, tokens, "token use"),
           routing: parse(RoutingDecisionsResponse, routing, "routing decisions"),
+          calibration: parse(CalibrationResponse, calibration, "routing calibration"),
           loadedAt: Date.now(),
         });
         setError(undefined);
@@ -291,6 +403,8 @@ function UsagePage() {
               </p>
             )}
           </Panel>
+
+          <CalibrationPanel calibration={data.calibration} />
         </>
       )}
     </Page>
