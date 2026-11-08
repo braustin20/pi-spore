@@ -1278,7 +1278,11 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
       if (!pipelines) throw new Error("The probe module is not set up");
       return pipelines.start(...args);
     };
-    return { module, ended, startThrough };
+    const stopThrough = (...args: Parameters<Pipelines["stop"]>) => {
+      if (!pipelines) throw new Error("The probe module is not set up");
+      pipelines.stop(...args);
+    };
+    return { module, ended, startThrough, stopThrough };
   }
 
   const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
@@ -1296,6 +1300,27 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
     expect(run).toMatchObject({ state: "running", askingAgentId: agentId });
     expect(ended).toHaveLength(1);
     expect(ended[0]).toMatchObject({ id: run.id, state: "passed", endedAt: expect.any(Number) });
+  });
+
+  it("stops a running run with the given message and rejects a run that ended", async () => {
+    const { module, ended, startThrough, stopThrough } = probe();
+    const server = await start({
+      env: scriptEnv({ worker: ["hang", "hang"] }),
+      extraModules: [module],
+    });
+    const { workspaceId } = await workspace(server, "keystop");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const run = await startThrough(workspaceId, { pipeline: "p", brief: "Build the thing" });
+
+    stopThrough(run.id, "Stopped by the coordinator");
+
+    expect(await getRun(server, run.id)).toMatchObject({
+      state: "stopped",
+      message: "Stopped by the coordinator",
+    });
+    expect(ended).toHaveLength(1);
+    expect(() => stopThrough(run.id, "again")).toThrow(/The run is stopped/);
+    expect(() => stopThrough("missing", "x")).toThrow(/No pipeline run missing/);
   });
 
   it("reports a failed gate stage to the listener with its message", async () => {
