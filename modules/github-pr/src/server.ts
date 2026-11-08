@@ -496,6 +496,14 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         else if (load(workspace.id)) schedule(workspace.id, minInterval);
       });
 
+      // ADR 0121: the PR records of a deleted workspace go with it.
+      workspaces.beforeDeleteWorkspace(async (workspace) => {
+        unschedule(workspace.id);
+        for (const table of ["github_pr_prs", "github_pr_sent", "github_pr_tries"]) {
+          host.store.run(`DELETE FROM ${table} WHERE workspace_id = ?`, workspace.id);
+        }
+      });
+
       host.routes.get("/workspaces/:id", async (c) => {
         const workspace = workspaces.get(c.req.param("id"));
         if (

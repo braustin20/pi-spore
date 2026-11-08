@@ -192,6 +192,11 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
         host.events.publish(`${CHANGES_TOPIC}${agent.workspaceId}`, event);
       });
 
+      // ADR 0121: the review comments of a deleted workspace go with it.
+      workspaces.beforeDeleteWorkspace(async (workspace) => {
+        host.store.run("DELETE FROM changes_comments WHERE workspace_id = ?", workspace.id);
+      });
+
       host.routes.get("/workspaces/:id", async (c) => {
         const current = await target(c.req.param("id"));
         const body: ChangesSummary = {

@@ -11,6 +11,13 @@ import type {
   Workspace,
 } from "@pi-spore/shared";
 
+/** Retention deletes old logs (ADR 0121), so a vanished log file is a 404, not a server error. */
+function logGone(error: unknown): never {
+  if ((error as NodeJS.ErrnoException).code === "ENOENT")
+    throw new ApiError(404, "log_not_found", "The log of this run is gone");
+  throw error;
+}
+
 export const MIGRATIONS = [
   `CREATE TABLE actions_runs (
     id TEXT PRIMARY KEY,
@@ -258,15 +265,15 @@ export class ActionRunner {
     let run = this.get(id);
     const live = this.live.get(id);
     if (waitMs > 0 && live && from !== undefined) {
-      const size = (await stat(run.logPath)).size;
+      const size = (await stat(run.logPath).catch(logGone)).size;
       if (size <= from) await this.change(live, waitMs);
       run = this.get(id);
     }
-    const size = (await stat(run.logPath)).size;
+    const size = (await stat(run.logPath).catch(logGone)).size;
     const start = Math.min(size, from ?? Math.max(0, size - MAX_LOG_READ));
     const length = Math.min(MAX_LOG_READ, size - start);
     const bytes = Buffer.alloc(length);
-    const file = await open(run.logPath, "r");
+    const file = await open(run.logPath, "r").catch(logGone);
     try {
       await file.read(bytes, 0, length, start);
     } finally {

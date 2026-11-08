@@ -2,6 +2,7 @@ import { join } from "node:path";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
+import { removeInside } from "@pi-spore/module-api/node";
 import {
   type ActionRun,
   type ActionTrigger,
@@ -125,6 +126,34 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
         const open = runner.unfinished(workspace.id);
         for (const run of open) runner.cancel(run.id);
         await Promise.all(open.map((run) => runner.wait(run.id)));
+      });
+
+      // ADR 0121: the runs and logs of a deleted workspace go with it.
+      const logsRoot = join(host.home.logs, "actions");
+      workspaces.beforeDeleteWorkspace(async (workspace) => {
+        host.store.run("DELETE FROM actions_runs WHERE workspace_id = ?", workspace.id);
+        await removeInside(host.home.logs, join(logsRoot, workspace.id));
+      });
+
+      workspaces.onRetention(async (cutoff) => {
+        const old = host.store.all<{ id: string; log_path: string }>(
+          "SELECT id, log_path FROM actions_runs WHERE ended_at IS NOT NULL AND ended_at < ?",
+          cutoff,
+        );
+        let count = 0;
+        for (const run of old) {
+          try {
+            await removeInside(logsRoot, run.log_path);
+            host.store.run("DELETE FROM actions_runs WHERE id = ?", run.id);
+            count++;
+          } catch (error) {
+            host.log.error("Retention could not delete an action run", {
+              run: run.id,
+              error: String(error),
+            });
+          }
+        }
+        if (count > 0) host.log.info("Retention deleted action runs", { count });
       });
 
       host.routes.get("/workspaces/:id", async (c) =>

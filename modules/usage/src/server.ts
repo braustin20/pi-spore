@@ -1,7 +1,7 @@
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
-import { loadSettings, readPlans, readRecords, windowViews } from "@pi-spore/router";
+import { loadSettings, pruneRecords, readPlans, readRecords, windowViews } from "@pi-spore/router";
 import type {
   RoutingDecisionsResponse,
   TokenUseResponse,
@@ -61,6 +61,12 @@ export function createUsageModule(): ServerModule {
         loadSettings(host.home.root).catch((error: unknown) => {
           throw new ApiError(422, "bad_settings", (error as Error).message);
         });
+
+      // ADR 0121: the router writes this file from any Pi process, so only this server trims it.
+      workspaces.onRetention(async (cutoff) => {
+        const count = await pruneRecords(host.home.root, cutoff);
+        if (count > 0) host.log.info("Retention deleted routing decisions", { count });
+      });
 
       host.routes.get("/plans", async (c) => {
         const { pressure, usageMaxAgeMinutes } = await settings();

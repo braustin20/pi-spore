@@ -1,4 +1,4 @@
-import { appendFile, mkdir, readFile } from "node:fs/promises";
+import { appendFile, mkdir, open, readFile, rename, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
@@ -87,4 +87,51 @@ export async function readRecords(
     else skipped++;
   }
   return { records, skipped };
+}
+
+/**
+ * Removes the lines whose `at` is before `before` and returns how many went (ADR 0121). A line that does not parse
+ * or has no numeric `at` stays: it is not ours to judge. Nothing is rewritten when nothing is old.
+ */
+export async function pruneRecords(home: string, before: number): Promise<number> {
+  const file = routingFile(home);
+  let bytes: Buffer;
+  try {
+    bytes = await readFile(file);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return 0;
+    throw error;
+  }
+  const lines = bytes.toString("utf8").split("\n");
+  const kept = lines.filter((line) => {
+    try {
+      const at = (JSON.parse(line) as { at?: unknown } | null)?.at;
+      return typeof at !== "number" || at >= before;
+    } catch {
+      return true;
+    }
+  });
+  const removed = lines.length - kept.length;
+  if (removed === 0) return 0;
+  const temp = `${file}.${process.pid}.tmp`;
+  try {
+    await writeFile(temp, kept.join("\n"));
+    // The router appends from other Pi processes: carry over what came after the read.
+    const grown = (await stat(file)).size - bytes.length;
+    if (grown > 0) {
+      const source = await open(file, "r");
+      try {
+        const extra = Buffer.alloc(grown);
+        await source.read(extra, 0, grown, bytes.length);
+        await appendFile(temp, extra);
+      } finally {
+        await source.close();
+      }
+    }
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true });
+    throw error;
+  }
+  return removed;
 }
