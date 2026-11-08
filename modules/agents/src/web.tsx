@@ -354,7 +354,12 @@ function ChatView({
             {workspace.line}
           </Chip>
         )}
-        {agent && <Chip tone={STATUS_TONE[agent.status]}>{agent.status}</Chip>}
+        {agent &&
+          (agent.status === "idle" && agent.helpersRunning ? (
+            <Chip tone="run">working (helper running)</Chip>
+          ) : (
+            <Chip tone={STATUS_TONE[agent.status]}>{agent.status}</Chip>
+          ))}
         <div className="flex-1" />
         {contextUsage && (
           <ContextMeter

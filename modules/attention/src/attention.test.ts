@@ -184,6 +184,28 @@ describe("Home inbox", () => {
     expect(await kinds()).toEqual([]);
   });
 
+  it("shows an idle chat with a running helper as running, and finished once the helper ends", async () => {
+    const { agentId } = await makeAgent("helped");
+    // A helper command is a prompt, which clears the wait, so each one goes in during a turn that sets it again.
+    const duringTurn = async (command: string) => {
+      await json(await prompt(agentId, "slow:200"));
+      await json(
+        await server.request("POST", `/api/agents/${agentId}/prompt`, {
+          message: command,
+          whileBusy: "followUp",
+        }),
+      );
+    };
+
+    await duringTurn("helper:run-1:scout:running");
+    await until(async () => (await inbox()).running[0]?.status === "helpers");
+    expect(await inbox()).toMatchObject({ items: [], running: [{ agentId, status: "helpers" }] });
+
+    await duringTurn("helper:run-1:scout:complete");
+    await until(async () => (await kinds()).includes("finished helped"));
+    expect((await inbox()).running).toEqual([]);
+  });
+
   it("does not show an aborted run as finished", async () => {
     const { agentId } = await makeAgent("aborted");
     await json(await prompt(agentId, "slow:400"));

@@ -72,6 +72,16 @@ describe("workspaceStatuses", () => {
     );
   });
 
+  it("shows an idle chat with a running helper as working, but a wait for the user first", () => {
+    expect(lines([chat("a1", "idle", { helpersRunning: 1 })], [])).toEqual({
+      text: "Working (helper running)",
+      tone: "run",
+    });
+    expect(lines([chat("a1", "idle", { helpersRunning: 2 })], [["a1", "question"]]).text).toBe(
+      "Waiting for your answer",
+    );
+  });
+
   it("keeps a busy or failed chat's own status", () => {
     expect(lines([chat("a1", "busy")], [["a1", "dialog"]]).text).toBe("Working");
     expect(lines([chat("a1", "failed")], [["a1", "question"]]).text).toBe("Agent failed");

@@ -132,6 +132,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Each run in state `running` counts against `agents.maxLive` with the agent processes. It makes a new agent wait
     for a slot but never stops a run that exists. A queued run counts nothing. An agent with a running helper does
     not stop for idleness, and the Stop button of the chat is disabled.
+  - The agent view carries `helpersRunning`, the count of `running` runs, left out when 0. A change of the count is
+    an `AgentChange` of kind `helpers`, so `agents:list` and Home follow it. An idle chat with a running helper shows
+    as working: "Working (helper running)" in the workspace list and on Home, `working (helper running)` in the chat
+    header. It is not done; its process gets the helper's result.
   - `GET /api/agents/:id/children/:runId/transcript?child=<step id>` sends `/subagents-inspect-rpc` to the agent's
     process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
     `child_not_found` for a run not in the list or an agent that is not running, 400 `bad_child_id` for an id with
@@ -528,8 +532,10 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   and after every change (at most once per tick). It has:
   - Every item names its chat (`chat`: id, title, kind, active) and links to `#/workspaces/<id>/chats/<chat>`.
   - `items`, newest first: open questions; open extension dialogs of running agents; failed agents with their error;
-    agents whose last run ended and that wait for the user (`finished`), unless they have an open question.
-  - `running`: agents that are busy, starting, or waiting for a slot.
+    agents whose last run ended and that wait for the user (`finished`), unless they have an open question or a
+    running helper.
+  - `running`: agents that are busy, starting, or waiting for a slot, and idle agents with a running helper
+    (`status: "helpers"`). When the helper ends, an idle agent that waits for the user is `finished` again.
 - The agents module tracks what Home needs (`AgentsKey.attention()`): when each agent entered its status, when each
   dialog opened, and `waiting_since` on `agents_agents`. `waiting_since` is set when a run settles without an abort,
   and cleared when the user sends a message, opens the chat, the chat page sees the run end while it is visible, or
@@ -939,7 +945,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
   supplies a fresh snapshot. The status line follows the active orchestrator chat. When that chat is idle or
   stopped and waits for the user (`AgentsWebKey.setUserWaits`, section 11b), the line says "Waiting for your
-  answer".
+  answer". Otherwise an idle chat with a running helper (`helpersRunning`, section 2) says "Working (helper
+  running)", tone `run`.
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 

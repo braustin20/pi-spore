@@ -48,5 +48,7 @@ to observe them. [Spike Q5](../spikes/q5-subagent-child-runs.md) answered it:
 - When the user stops an agent that has running helpers (the Stop button, parking, or archiving), the runner
   processes may keep running without a row in the UI. The Stop button is disabled while a child run is running.
   Parking and archiving still stop the process.
+- A chat whose own run ended while a helper runs shows as working, not idle or finished: the workspace list, the
+  chat header, and Home read the agent view's `helpersRunning` count.
 - Finished runs can be read only for a few seconds after they end. The result is also in the worker's chat as the
   helper's completion message.

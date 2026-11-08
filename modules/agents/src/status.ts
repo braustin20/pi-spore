@@ -45,6 +45,9 @@ export function workspaceStatus(
   if (wait && (agent.status === "idle" || agent.status === "stopped")) {
     return { text: "Waiting for your answer", tone: "warn" };
   }
+  if (agent.status === "idle" && agent.helpersRunning) {
+    return { text: "Working (helper running)", tone: "run" };
+  }
   return BY_STATUS[agent.status];
 }
 

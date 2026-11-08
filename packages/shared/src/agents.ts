@@ -75,6 +75,8 @@ export const Agent = Type.Object({
   status: AgentStatus,
   /** Why the last start or run failed, with the tail of the process's stderr. */
   error: Type.Optional(Type.String()),
+  /** How many background helper runs are running. Missing when none. */
+  helpersRunning: Type.Optional(Type.Integer()),
   createdAt: Type.Integer(),
 });
 export type Agent = Static<typeof Agent>;
