@@ -25,6 +25,7 @@ import {
   type Run,
   type RunEvent,
   type RunQuestion,
+  type RunState,
   type StartLaneRequest,
   slugify,
 } from "@pi-spore/shared";
@@ -90,6 +91,7 @@ const MIGRATIONS = [
     created_at INTEGER NOT NULL,
     answered_at INTEGER
   )`,
+  "ALTER TABLE runs_runs ADD COLUMN state TEXT NOT NULL DEFAULT 'running'",
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -100,6 +102,7 @@ interface RunRow {
   line: string;
   base: string;
   gates: string;
+  state: RunState;
   coordinator_agent_id: string;
   created_at: number;
 }
@@ -144,6 +147,8 @@ interface LaneSubject {
 
 /** The job kind of a lane merge, keyed by the run id so the merges of one run go one at a time, in order. */
 const MERGE_JOB = "runs.merge";
+
+const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
 
 /** `gate` and `attempt` are the place in the run's gates; `failure` is the first gate that failed, for `finish`. */
 interface MergeCheckpoint {
@@ -200,6 +205,7 @@ const runToView = (
   line: row.line,
   base: row.base,
   gates: JSON.parse(row.gates) as string[],
+  state: row.state,
   coordinatorAgentId: row.coordinator_agent_id,
   createdAt: row.created_at,
   lanes: lanes.map(laneToView),
@@ -318,6 +324,9 @@ export const runsModule: ServerModule = {
           "not_coordinator",
           `Workspace ${caller.workspaceId} is not a run workspace`,
         );
+      }
+      if (run.state === "cancelled") {
+        throw new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`);
       }
       return run;
     };
@@ -641,6 +650,16 @@ export const runsModule: ServerModule = {
         // A step cut off by a restart already started the run.
         if (!(error instanceof ApiError && error.code === "pipeline_running")) throw error;
       }
+      // A cancel that landed during the start found no pipeline run to stop, and its job writes nothing now.
+      if (pipelineRunId && loadLane(lane.id)?.state === "cancelled") {
+        const laneAgents = agents.inWorkspace(lane.workspace_id as string);
+        host.store.transaction(() => {
+          pipelines.stop(pipelineRunId, "Cancelled with the run");
+          for (const agent of laneAgents) agents.dropDeliveries(agent.id);
+        });
+        for (const agent of laneAgents) await agents.stop(agent.id);
+        return { next: null };
+      }
       return {
         commit: () =>
           host.store.run(
@@ -732,6 +751,11 @@ export const runsModule: ServerModule = {
       // A restart may have left an earlier try of this merge in progress.
       await integrate.abort(location);
       const { conflicts } = await integrate.merge(location, laneLine);
+      // A cancel that landed during the merge has already run its own abort, before this merge touched the tree.
+      if (!mergingLane(subject)) {
+        await integrate.abort(location);
+        return { next: null };
+      }
       if (conflicts.length === 0) return {};
       return {
         next: null,
@@ -745,6 +769,9 @@ export const runsModule: ServerModule = {
         },
       };
     };
+
+    /** The action run of each run's gate that is running now, so a cancel can end it. A restart interrupts it anyway. */
+    const gateActions = new Map<string, string>();
 
     /**
      * Runs the gate at the checkpoint's place on the merged tree. The key holds the job id, which is new for each
@@ -770,7 +797,8 @@ export const runsModule: ServerModule = {
       const started = await actions.start(run.workspace_id, action, "pipeline", {
         key: `${run.id}:${lane.id}:${id}:${action}:${attempt}`,
       });
-      const ended = await actions.wait(started.id);
+      gateActions.set(run.id, started.id);
+      const ended = await actions.wait(started.id).finally(() => gateActions.delete(run.id));
       if (ended.status === "interrupted") {
         return { next: "gate", checkpoint: { gate: index, attempt: attempt + 1 } };
       }
@@ -818,6 +846,11 @@ export const runsModule: ServerModule = {
             agents.deliver(run.coordinator_agent_id, gateFailedMessage(lane, failure, path));
           },
         };
+      }
+      // A cancel that landed during the last gate has aborted the merge; committing now would merge a cancelled lane.
+      if (!mergingLane(subject)) {
+        await integrate.abort(location);
+        return { next: null };
       }
       // After a restart the commit may already be made. Then the lane adds nothing to the run line, and a second
       // commit would fail on an empty merge.
@@ -872,6 +905,54 @@ export const runsModule: ServerModule = {
         : undefined;
     });
 
+    /** Stops a run (ADR 0150). It deletes nothing and never merges, pushes, or opens a PR. */
+    const cancelRun = async (id: string): Promise<Run> => {
+      const run = requireRun(id);
+      if (run.state === "cancelled") return viewOf(run);
+      const lanes = lanesOf(id);
+      const agentIds = [
+        run.coordinator_agent_id,
+        ...lanes.flatMap((lane) =>
+          lane.workspace_id ? agents.inWorkspace(lane.workspace_id).map((agent) => agent.id) : [],
+        ),
+      ];
+      const cancelJobs = (kind: string, key: string) => {
+        for (const job of host.jobs.list({ kind, key, states: NOT_ENDED }))
+          host.jobs.cancel(job.id);
+      };
+      host.store.transaction(() => {
+        host.store.run("UPDATE runs_runs SET state = 'cancelled' WHERE id = ?", id);
+        for (const lane of lanes) {
+          if (lane.state === "merged") continue;
+          host.store.run(
+            "UPDATE runs_lanes SET state = 'cancelled', message = 'Cancelled with the run' WHERE id = ?",
+            lane.id,
+          );
+          cancelJobs(LANE_JOB, lane.id);
+        }
+        cancelJobs(MERGE_JOB, id);
+        // The lanes are cancelled first, so `afterRunEnded` finds no starting or running lane to change.
+        for (const lane of lanes) {
+          if ((lane.state !== "starting" && lane.state !== "running") || !lane.pipeline_run_id) {
+            continue;
+          }
+          try {
+            pipelines.stop(lane.pipeline_run_id, "Cancelled with the run");
+          } catch (error) {
+            if (!(error instanceof ApiError && error.code === "run_ended")) throw error;
+          }
+        }
+        for (const agentId of agentIds) agents.dropDeliveries(agentId);
+      });
+      publish();
+      const gateAction = gateActions.get(id);
+      if (gateAction) actions.cancel(gateAction);
+      for (const agentId of agentIds) await agents.stop(agentId);
+      const { integrate } = await integrateOf(run.project_id);
+      await integrate.abort({ path: workspaces.get(run.workspace_id).path, line: run.line });
+      return viewOf(requireRun(id));
+    };
+
     const api: Runs = {
       startLane,
       reviseLane,
@@ -904,6 +985,10 @@ export const runsModule: ServerModule = {
       const request = parseJsonBody(CreateRunRequest, await c.req.text(), "run request");
       return c.json({ run: await createRun(request) }, 201);
     });
+
+    host.routes.post("/:id/cancel", async (c) =>
+      c.json({ run: await cancelRun(c.req.param("id")) }),
+    );
 
     host.routes.get("/:id", (c) => c.json({ run: viewOf(requireRun(c.req.param("id"))) }));
   },

@@ -1002,6 +1002,7 @@ describe("pi-spore run", () => {
     line: "run/big-feature-abc123",
     base: "main",
     gates: ["check", "test"],
+    state: "running",
     coordinatorAgentId: "A0",
     createdAt: 2,
     lanes: [

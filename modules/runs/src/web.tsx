@@ -43,6 +43,7 @@ const STATES: Record<LaneState, { text: string; tone: Tone }> = {
   declined: { text: "Declined", tone: "neutral" },
   merging: { text: "Merging", tone: "run" },
   merged: { text: "Merged", tone: "ok" },
+  cancelled: { text: "Cancelled", tone: "neutral" },
 };
 
 const RunBody = Type.Object({ run: Run });

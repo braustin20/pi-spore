@@ -779,3 +779,150 @@ describe("the runs:list topic", () => {
     expect(states().at(-1)).toBe("running");
   });
 });
+
+describe("cancelling a run (ADR 0150)", () => {
+  const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
+  const cancel = (server: TestServer, runId: string) =>
+    server.request("POST", `/api/runs/${runId}/cancel`);
+  const agentStatus = async (server: TestServer, agentId: string) =>
+    (
+      await json<{ agent: { status: string } }>(
+        await server.request("GET", `/api/agents/${agentId}`),
+      )
+    ).agent.status;
+  const notEnded = (server: TestServer, kind: string) =>
+    server.services.jobs.list({ kind, states: NOT_ENDED });
+
+  it("cancels the run and its lanes, stops their pipeline runs and agents, and deletes nothing", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "cancel");
+    const { run, coordinator } = await createRun(server, projectId, "cancel");
+    await json(
+      await server.request("POST", `/api/agents/${run.coordinatorAgentId}/prompt`, {
+        message: "hello",
+      }),
+    );
+    await until(() => launchOf(run.coordinatorAgentId) !== undefined);
+    const running = await startLane(run, coordinator, "running");
+    const waiting = await startLane(run, coordinator, "waiting", { wave: 2 });
+    await until(async () => (await laneOf(server, run.id, running.id)).state === "running");
+    const started = await laneOf(server, run.id, running.id);
+    const worker = await laneWorker(server, started);
+    await until(() => launchOf(worker.agentId) !== undefined);
+    const lineBefore = git(folder, "rev-parse", run.line);
+
+    const response = await cancel(server, run.id);
+
+    const { run: cancelled } = await json<{ run: Run }>(response);
+    expect(cancelled.state).toBe("cancelled");
+    expect(cancelled.lanes.map((lane) => lane.state)).toEqual(["cancelled", "cancelled"]);
+    expect(cancelled.lanes[0]?.message).toBe("Cancelled with the run");
+    const { runs: pipelineRuns } = await json<{ runs: PipelineRun[] }>(
+      await server.request("GET", `/api/pipelines/workspaces/${started.workspaceId}/runs`),
+    );
+    expect(pipelineRuns.map((entry) => entry.state)).toEqual(["stopped"]);
+    expect(await agentStatus(server, worker.agentId)).toBe("stopped");
+    expect(await agentStatus(server, run.coordinatorAgentId)).toBe("stopped");
+    expect(notEnded(server, "runs.lane")).toEqual([]);
+    expect(waiting.id).toBeDefined();
+    const laneLine = (await workspaceOf(server, started.workspaceId as string)).line as string;
+    expect(git(folder, "branch", "--list", laneLine)).toContain(laneLine);
+    expect(git(folder, "rev-parse", run.line)).toBe(lineBefore);
+  });
+
+  it("aborts a merge in progress and leaves the run worktree clean", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "cancel-merge", {
+      check: "hang-first",
+      test: "pass",
+    });
+    const { run, coordinator } = await createRun(server, projectId, "cancel-merge");
+    const lane = await startLane(run, coordinator, "work");
+    await laneChanges(server, run, lane.id, "feature.txt", "lane change\n");
+    const lineBefore = git(folder, "rev-parse", run.line);
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+    await until(() => existsSync(join(scratch, "counter.txt")));
+
+    await json(await cancel(server, run.id));
+
+    expect((await laneOf(server, run.id, lane.id)).state).toBe("cancelled");
+    const runWorkspace = await workspaceOf(server, run.workspaceId);
+    expect(git(runWorkspace.path, "status", "--porcelain")).toBe("");
+    expect(() => git(runWorkspace.path, "rev-parse", "-q", "--verify", "MERGE_HEAD")).toThrow();
+    expect(git(folder, "rev-parse", run.line)).toBe(lineBefore);
+    expect(server.services.jobs.list({ kind: "runs.merge" }).map((job) => job.state)).toEqual([
+      "cancelled",
+    ]);
+    const { runs: gateRuns } = await json<{ runs: { action: string; status: string }[] }>(
+      await server.request("GET", `/api/actions/workspaces/${run.workspaceId}/runs`),
+    );
+    expect(
+      gateRuns.filter((entry) => entry.action === "check").map((entry) => entry.status),
+    ).toEqual(["cancelled"]);
+  });
+
+  it("keeps a merged lane merged", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "cancel-merged", { check: "pass", test: "pass" });
+    const { run, coordinator } = await createRun(server, projectId, "cancel-merged");
+    const first = await startLane(run, coordinator, "first");
+    await laneChanges(server, run, first.id, "feature.txt", "x\n");
+    await runs.mergeLane(coordinator, { laneId: first.id });
+    await until(async () => (await laneOf(server, run.id, first.id)).state === "merged");
+    const second = await startLane(run, coordinator, "second");
+
+    await json(await cancel(server, run.id));
+
+    expect((await laneOf(server, run.id, first.id)).state).toBe("merged");
+    expect((await laneOf(server, run.id, second.id)).state).toBe("cancelled");
+  });
+
+  it("refuses the run tools with 409 run_cancelled afterwards, and a second cancel answers 200", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "cancel-tools");
+    const { run, coordinator } = await createRun(server, projectId, "cancel-tools");
+    const lane = await startLane(run, coordinator, "one");
+    await json(await cancel(server, run.id));
+    const refused = { status: 409, code: "run_cancelled" };
+
+    await expect(startLane(run, coordinator, "two")).rejects.toMatchObject(refused);
+    await expect(
+      runs.reviseLane(coordinator, { laneId: lane.id, brief: "briefs/one.md" }),
+    ).rejects.toMatchObject(refused);
+    await expect(runs.mergeLane(coordinator, { laneId: lane.id })).rejects.toMatchObject(refused);
+    expect(() => runs.answerLane(coordinator, { questionId: "q", answer: "a" })).toThrow(
+      expect.objectContaining(refused),
+    );
+    const again = await json<{ run: Run }>(await cancel(server, run.id));
+    expect(again.run.state).toBe("cancelled");
+  });
+
+  it("drops a delivery the coordinator has not taken", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "cancel-delivery");
+    const { run, coordinator } = await createRun(server, projectId, "cancel-delivery");
+    const { asWorker } = await laneWithWorker(server, run, coordinator);
+    // A parked workspace takes no delivery, so the question stays pending.
+    await json(await server.request("POST", `/api/workspaces/${run.workspaceId}/park`));
+    await json(await asWorker("POST", "coordinator/questions", { question: "Which hash?" }), 201);
+    const pending = () =>
+      server.store.all(
+        "SELECT 1 FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
+        run.coordinatorAgentId,
+      );
+    expect(pending()).toHaveLength(1);
+
+    await json(await cancel(server, run.id));
+
+    expect(pending()).toEqual([]);
+  });
+
+  it("answers 404 run_not_found for an unknown run", async () => {
+    const server = await start();
+
+    const response = await cancel(server, "nope");
+
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "run_not_found" } });
+  });
+});
