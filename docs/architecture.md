@@ -103,7 +103,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
     `new` unless another is given.
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
-    chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033).
+    chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033). The orchestrator rules say to start
+    every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120).
   - Not built yet: `ask_coordinator` (inside a lane), `report` (the structured stage result), and the coordinator's
     `start_lane`, `answer_lane`, `merge_lane`.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
