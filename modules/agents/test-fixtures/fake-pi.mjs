@@ -18,7 +18,8 @@
 // message with images shows as "<text> [<n> images]" in queue_update.
 // `--fork <file>` copies that session into a new one in `--session-dir`, with `parentSession` in the header, and
 // refuses to be combined with `--session`, as Pi does.
-// Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env} for assertions.
+// Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env, cwd, pid} for assertions;
+// FAKE_PI_MODELS=broken answers get_available_models with a payload that is not a model list.
 import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FAKE_PNG } from "./png.mjs";
@@ -34,7 +35,7 @@ if (process.env.FAKE_PI_RECORD) {
   );
   appendFileSync(
     process.env.FAKE_PI_RECORD,
-    `${JSON.stringify({ argv, env, cwd: process.cwd() })}\n`,
+    `${JSON.stringify({ argv, env, cwd: process.cwd(), pid: process.pid })}\n`,
   );
 }
 
@@ -82,7 +83,7 @@ if (forkSource) {
   }
   lastEntryId = last.id ?? null;
   entryCount = lines.length;
-} else {
+} else if (!argv.includes("--no-session")) {
   const dir = arg("--session-dir");
   mkdirSync(dir, { recursive: true });
   sessionFile = join(dir, `${Date.now()}_fake.jsonl`);
@@ -397,6 +398,7 @@ const handle = (command) => {
       write({ type: "thinking_level_changed", level: command.level });
       return respond(id, type);
     case "get_available_models":
+      if (process.env.FAKE_PI_MODELS === "broken") return respond(id, type, { models: "none" });
       return respond(id, type, {
         models: [
           model,

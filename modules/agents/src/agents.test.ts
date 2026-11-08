@@ -140,7 +140,13 @@ const launches = () =>
     .split("\n")
     .filter(Boolean)
     .map(
-      (line) => JSON.parse(line) as { argv: string[]; env: Record<string, string>; cwd: string },
+      (line) =>
+        JSON.parse(line) as {
+          argv: string[];
+          env: Record<string, string>;
+          cwd: string;
+          pid: number;
+        },
     );
 
 describe("agents", () => {
@@ -464,6 +470,55 @@ describe("agents", () => {
     ).id;
     await json(await prompt(agentId, "hi"));
     expect(launches()[0]?.env.PI_SPORE_UNITY_PROJECT).toBe(folder);
+  });
+
+  describe("model list without a chat (ADR 0120)", () => {
+    const gone = (pid: number) => {
+      try {
+        process.kill(pid, 0);
+        return false;
+      } catch {
+        return true;
+      }
+    };
+
+    it("starts a short-lived process, stops it, and serves the next call from the cache", async () => {
+      await setup();
+      const list = () => server.request("GET", "/api/agents/models");
+      const first = await json<{ models: { id: string }[] }>(await list());
+      expect(first.models.map((model) => model.id)).toEqual(["fake-1", "fake-2"]);
+      expect(launches()).toHaveLength(1);
+      await until(() => gone(launches()[0]?.pid as number));
+      await json(await list());
+      expect(launches()).toHaveLength(1);
+    });
+
+    it("asks again when the cache time is over", async () => {
+      await setup({ modelsCacheMs: 0 });
+      await json(await server.request("GET", "/api/agents/models"));
+      await json(await server.request("GET", "/api/agents/models"));
+      expect(launches()).toHaveLength(2);
+    });
+
+    it("names the cause when Pi does not answer, and stops the process", async () => {
+      await setup({ startTimeoutMs: 200 }, { FAKE_PI_HANG: "1" });
+      const body = await json<{ error: { message: string } }>(
+        await server.request("GET", "/api/agents/models"),
+        502,
+      );
+      expect(body.error.message).toContain("did not answer");
+      await until(() => gone(launches()[0]?.pid as number));
+    });
+
+    it("rejects an answer that is not a model list", async () => {
+      await setup({}, { FAKE_PI_MODELS: "broken" });
+      const body = await json<{ error: { message: string } }>(
+        await server.request("GET", "/api/agents/models"),
+        502,
+      );
+      expect(body.error.message).toContain("model list");
+      await until(() => gone(launches()[0]?.pid as number));
+    });
   });
 
   it("lists models, thinking levels, and commands, and switches model and thinking", async () => {
