@@ -802,6 +802,14 @@ API under `/api/kanban`:
   project's active workspaces). Cards made or changed by an agent show an agent chip, and the card panel names the
   agent's workspace with a link to its chat. Home shows a `card-start` approval with the card, whether it is
   blocked, the reason, and a target picker.
+- A Model dropdown (ADR 0120) sits in the "new workspace" form (through `CreateForm`'s `children`), in the card
+  editor, and in the `card-start` approval. Its list comes from `GET /api/agents/models`, loaded once per dropdown.
+  Its first option sends no model: in a start it is "Card's model (…)" when the card has one, else "Default
+  (orchestrator setting)"; in the editor it clears the card's model. The start forms begin on that first option;
+  the approval begins on the subject's model. A model that the list does not hold stays an option, so loading
+  never changes the selection. A list that fails to load shows a notice and never blocks a start. For an existing
+  workspace the dropdown is disabled with "This workspace's chat keeps its model." and no model is sent. Approving
+  with a changed model sends the changed subject.
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
   --new [--mode m] [--line b] [--base b] | --workspace <id> [--blocked-ok]`.
