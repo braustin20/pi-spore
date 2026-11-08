@@ -1072,6 +1072,35 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
     expect(notices[0]).toMatch(/^Helper runs are not shown: .*version/);
   });
 
+  it("counts running helpers in the agent view and the list, and drops the count when they end", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "hello"));
+    await until(() => statuses(agentId).filter((s) => s === "idle").length >= 2);
+    // A helper command is a prompt, which clears the reply's wait; clear it first so only helper changes publish.
+    await json(await server.request("POST", `/api/agents/${agentId}/seen`));
+    const view = async () =>
+      (await json<{ agent: Agent }>(await server.request("GET", `/api/agents/${agentId}`))).agent;
+    const before = server.events.eventsOf("agents:list").length;
+    const listed = () =>
+      (server.events.eventsOf("agents:list").slice(before) as { agent?: Agent }[]).flatMap(
+        (event) => (event.agent ? [event.agent.helpersRunning] : []),
+      );
+
+    await json(await helper(agentId, "run-1", "running"));
+    await json(await helper(agentId, "run-2", "queued", "worker"));
+    await until(() => latest(agentId)?.length === 2);
+    expect((await view()).helpersRunning).toBe(1);
+    await json(await helper(agentId, "run-2", "running", "worker"));
+    await until(() => listed().at(-1) === 2);
+
+    await json(await helper(agentId, "run-1", "complete"));
+    await json(await helper(agentId, "run-2", "complete", "worker"));
+    await until(() => listed().length === 4);
+    expect(listed()).toEqual([1, 2, 1, undefined]);
+    expect(await view()).not.toHaveProperty("helpersRunning");
+  });
+
   it("counts running helpers against maxLive: a new agent waits until they end", async () => {
     await setup({ maxLive: 2 });
     const first = await makeAgent("a");

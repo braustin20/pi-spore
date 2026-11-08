@@ -125,7 +125,7 @@ export const RunningItem = Type.Object({
   agentId: Type.String(),
   workspace: InboxWorkspace,
   chat: InboxChat,
-  status: AgentStatus,
+  status: Type.Union([AgentStatus, Type.Literal("helpers")]),
   since: Type.Integer(),
 });
 export type RunningItem = Static<typeof RunningItem>;
