@@ -33,6 +33,9 @@ import {
   ProjectList,
   PrStatus,
   parse,
+  type Run,
+  RunList,
+  Run as RunSchema,
   StartCardResponse,
   type StepReport,
   type Workspace,
@@ -102,6 +105,11 @@ Commands:
   pipeline show <run>                      A run's stages, turns, verdicts, and findings
   pipeline cancel <run>
   pipeline retry <run>                     Run a stuck run's step again now, after fixing what blocked it
+  run start <project> <name> [--base <branch>] [--gate <action>]...
+                                           Start a run: a run workspace and a coordinator chat. Default
+                                           gates: check and test
+  run list [--project <project>]           Runs, newest first
+  run show <run>                           A run's lanes by wave, with state and workspace
   pr status <workspace>                    Show the workspace's PR, its checks, and the watch
   pr open <workspace> [--title <t>] [--body <b>] [--base <branch>] [--draft]
                                            Push the branch and open a PR on GitHub (outward-facing)
@@ -130,9 +138,11 @@ function parseArgs(
   args: readonly string[],
   flags: readonly string[],
   switches: readonly string[] = [],
+  repeated: readonly string[] = [],
 ) {
   const positional: string[] = [];
   const options: Record<string, string> = {};
+  const lists: Record<string, string[]> = {};
   const on = new Set<string>();
   for (let i = 0; i < args.length; i++) {
     const arg = args[i] as string;
@@ -142,13 +152,17 @@ function parseArgs(
     }
     const name = arg.slice(2);
     if (switches.includes(name)) on.add(name);
-    else if (flags.includes(name)) {
+    else if (repeated.includes(name)) {
+      const value = args[++i];
+      if (value === undefined) throw usageError(`--${name} needs a value`);
+      lists[name] = [...(lists[name] ?? []), value];
+    } else if (flags.includes(name)) {
       const value = args[++i];
       if (value === undefined) throw usageError(`--${name} needs a value`);
       options[name] = value;
     } else throw usageError(`Unknown option ${arg}`);
   }
-  return { positional, options, on };
+  return { positional, options, on, lists };
 }
 
 class Api {
@@ -785,6 +799,58 @@ async function pipelineCommand(
   throw usageError(`Unknown command: pipeline ${args.join(" ")}`);
 }
 
+const CoordinatedRunBody = Type.Object({ run: RunSchema });
+
+function laneLines(run: Run): string[] {
+  return run.lanes.map((lane) => {
+    const where = lane.workspaceId ? `  workspace ${lane.workspaceId}` : "";
+    const note = lane.message ? `  ${lane.message.split("\n")[0]}` : "";
+    return `  wave ${lane.wave}  ${lane.state.padEnd(9)} ${lane.name}${where}${note}`;
+  });
+}
+
+async function runCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub === "start") {
+    const { positional, options, lists } = parseArgs(rest, ["base"], [], ["gate"]);
+    if (positional.length !== 2) throw usageError("run start takes a project and a name");
+    const project = await api.project(positional[0] as string);
+    const { run } = await api.call("POST", "runs", CoordinatedRunBody, {
+      projectId: project.id,
+      name: positional[1],
+      ...(options.base ? { base: options.base } : {}),
+      ...(lists.gate ? { gates: lists.gate } : {}),
+    });
+    return deps.out(
+      json
+        ? JSON.stringify(run)
+        : `Started run ${run.id}  ${run.line}  from ${run.base}\nWorkspace ${run.workspaceId}`,
+    );
+  }
+  if (sub === "list") {
+    const { positional, options } = parseArgs(rest, ["project"]);
+    if (positional.length > 0) throw usageError("run list takes no positional arguments");
+    const query = new URLSearchParams();
+    if (options.project) query.set("projectId", (await api.project(options.project)).id);
+    const { runs } = await api.call("GET", `runs?${query}`, RunList);
+    if (json) return deps.out(JSON.stringify(runs));
+    if (runs.length === 0) return deps.out("No runs.");
+    for (const run of runs) deps.out(`${run.id}  ${run.line}  ${run.lanes.length} lanes`);
+    return;
+  }
+  if (sub === "show" && rest.length === 1) {
+    const { run } = await api.call("GET", `runs/${rest[0]}`, CoordinatedRunBody);
+    if (json) return deps.out(JSON.stringify(run));
+    deps.out(`Run ${run.id}  ${run.line}  from ${run.base}`);
+    deps.out(`Workspace ${run.workspaceId}  gates: ${run.gates.join(", ")}`);
+    if (run.lanes.length === 0) return deps.out("No lanes.");
+    for (const line of laneLines(run)) deps.out(line);
+    for (const question of run.questions) deps.out(`Open question: ${question.question}`);
+    return;
+  }
+  throw usageError(`Unknown command: run ${args.join(" ")}`);
+}
+
 /** The only file read in the CLI; a missing file is an error that names the path. */
 function readBriefFile(path: string): string {
   try {
@@ -890,6 +956,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "jobs") await jobsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pipeline") await pipelineCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "run") await runCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pr") await prCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;

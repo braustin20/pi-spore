@@ -33,6 +33,20 @@ export const Lane = Type.Object({
 });
 export type Lane = Static<typeof Lane>;
 
+/** A question a lane agent asked its coordinator (R7.5, ADR 0008). */
+export const RunQuestion = Type.Object({
+  id: Type.String(),
+  runId: Type.String(),
+  laneId: Type.String(),
+  /** The lane agent that asked, and gets the answer. */
+  agentId: Type.String(),
+  question: Type.String(),
+  answer: Type.Optional(Type.String()),
+  state: Type.Union([Type.Literal("open"), Type.Literal("answered")]),
+  createdAt: Type.Integer(),
+});
+export type RunQuestion = Static<typeof RunQuestion>;
+
 export const Run = Type.Object({
   id: Type.String(),
   projectId: Type.String(),
@@ -45,11 +59,20 @@ export const Run = Type.Object({
   coordinatorAgentId: Type.String(),
   createdAt: Type.Integer(),
   lanes: Type.Array(Lane),
+  /** The questions of its lanes that wait for an answer. */
+  questions: Type.Array(RunQuestion),
 });
 export type Run = Static<typeof Run>;
 
 export const RunList = Type.Object({ runs: Type.Array(Run) });
 export type RunList = Static<typeof RunList>;
+
+/** The only event of topic `runs:list`: every run, newest first. */
+export const RunEvent = Type.Object({
+  type: Type.Literal("runs"),
+  runs: Type.Array(Run),
+});
+export type RunEvent = Static<typeof RunEvent>;
 
 export const CreateRunRequest = Type.Object(
   {
@@ -91,20 +114,6 @@ export const MergeLaneRequest = Type.Object(
   { additionalProperties: false },
 );
 export type MergeLaneRequest = Static<typeof MergeLaneRequest>;
-
-/** A question a lane agent asked its coordinator (R7.5, ADR 0008). */
-export const RunQuestion = Type.Object({
-  id: Type.String(),
-  runId: Type.String(),
-  laneId: Type.String(),
-  /** The lane agent that asked, and gets the answer. */
-  agentId: Type.String(),
-  question: Type.String(),
-  answer: Type.Optional(Type.String()),
-  state: Type.Union([Type.Literal("open"), Type.Literal("answered")]),
-  createdAt: Type.Integer(),
-});
-export type RunQuestion = Static<typeof RunQuestion>;
 
 export const AskCoordinatorRequest = Type.Object(
   { question: Type.String({ minLength: 1, maxLength: 4_000 }) },

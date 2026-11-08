@@ -175,6 +175,7 @@ export {
   MergeLaneRequest,
   ReviseLaneRequest,
   Run,
+  RunEvent,
   RunList,
   RunQuestion,
   StartLaneRequest,

@@ -29,6 +29,7 @@ import type {
   Lane,
   PipelineRun,
   Run,
+  RunEvent,
   StartLaneRequest,
   Workspace,
 } from "@pi-spore/shared";
@@ -441,8 +442,15 @@ async function laneChanges(
 
 const untilDelivered = (server: TestServer, agentId: string, text: string) =>
   until(async () => (await chat(server, agentId)).some((message) => message.includes(text)));
-const deliveredWith = async (server: TestServer, agentId: string, text: string) =>
-  (await chat(server, agentId)).find((message) => message.includes(text)) as string;
+/** The agent's first message that holds `text`. A delivery reaches the chat after the commit that wrote it. */
+const deliveredWith = async (server: TestServer, agentId: string, text: string) => {
+  let found: string | undefined;
+  await until(async () => {
+    found = (await chat(server, agentId)).find((message) => message.includes(text));
+    return found !== undefined;
+  });
+  return found as string;
+};
 
 describe("merging a lane (ADR 0150)", () => {
   const GREEN = { check: "pass", test: "pass" };
@@ -749,5 +757,25 @@ describe("questions up the chain (R7.5, ADR 0008)", () => {
 
     expect(refused.status).toBe(403);
     expect(await refused.json()).toMatchObject({ error: { code: "not_in_lane" } });
+  });
+});
+
+describe("the runs:list topic", () => {
+  it("gives every run on subscribe, and a new snapshot when a lane changes state", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "topic");
+    const { run, coordinator } = await createRun(server, projectId, "topic");
+
+    const [snapshot] = (await server.events.snapshot("runs:list")) as RunEvent[];
+    expect(snapshot?.runs.map((entry) => entry.id)).toEqual([run.id]);
+
+    const lane = await startLane(run, coordinator, "one");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const states = () =>
+      (server.events.eventsOf("runs:list") as RunEvent[]).map(
+        (event) => event.runs[0]?.lanes[0]?.state,
+      );
+    expect(states()).toContain("waiting");
+    expect(states().at(-1)).toBe("running");
   });
 });

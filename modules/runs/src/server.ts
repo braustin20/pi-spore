@@ -23,6 +23,7 @@ import {
   parseJsonBody,
   type ReviseLaneRequest,
   type Run,
+  type RunEvent,
   type RunQuestion,
   type StartLaneRequest,
   slugify,
@@ -131,6 +132,9 @@ interface QuestionRow {
   created_at: number;
 }
 
+/** The only topic: every run, newest first. */
+const RUNS_TOPIC = "runs:list";
+
 /** The job kind of a lane, keyed by the lane id. */
 const LANE_JOB = "runs.lane";
 
@@ -185,7 +189,11 @@ const questionToView = (row: QuestionRow): RunQuestion => ({
   createdAt: row.created_at,
 });
 
-const runToView = (row: RunRow, lanes: readonly LaneRow[]): Run => ({
+const runToView = (
+  row: RunRow,
+  lanes: readonly LaneRow[],
+  questions: readonly QuestionRow[],
+): Run => ({
   id: row.id,
   projectId: row.project_id,
   workspaceId: row.workspace_id,
@@ -195,6 +203,7 @@ const runToView = (row: RunRow, lanes: readonly LaneRow[]): Run => ({
   coordinatorAgentId: row.coordinator_agent_id,
   createdAt: row.created_at,
   lanes: lanes.map(laneToView),
+  questions: questions.map(questionToView),
 });
 
 const questionMessage = (lane: LaneRow, question: QuestionRow) =>
@@ -273,7 +282,32 @@ export const runsModule: ServerModule = {
         "SELECT * FROM runs_lanes WHERE run_id = ? ORDER BY created_at, id",
         runId,
       );
-    const viewOf = (row: RunRow): Run => runToView(row, lanesOf(row.id));
+    const openQuestionsOf = (runId: string) =>
+      host.store.all<QuestionRow>(
+        "SELECT * FROM runs_questions WHERE run_id = ? AND state = 'open' ORDER BY created_at, id",
+        runId,
+      );
+    const viewOf = (row: RunRow): Run => runToView(row, lanesOf(row.id), openQuestionsOf(row.id));
+    const allRuns = (): Run[] =>
+      host.store
+        .all<RunRow>("SELECT * FROM runs_runs ORDER BY created_at DESC, id DESC")
+        .map(viewOf);
+
+    const publish = () => {
+      const event: RunEvent = { type: "runs", runs: allRuns() };
+      host.events.publish(RUNS_TOPIC, event);
+    };
+    // A change made inside someone else's transaction publishes after it ends: the transaction is synchronous, so
+    // the microtask runs after the commit.
+    const publishAfterCommit = () => queueMicrotask(publish);
+    host.events.onSubscribe(RUNS_TOPIC, () => {
+      const event: RunEvent = { type: "runs", runs: allRuns() };
+      return [event];
+    });
+    // Job steps move lanes on; the browser sees it here.
+    host.jobs.onChange((job) => {
+      if (job.kind === LANE_JOB || job.kind === MERGE_JOB) publish();
+    });
 
     /** The run of a bridge caller: only a run workspace's agents command a run. */
     const runOfCaller = (caller: BridgeCaller): RunRow => {
@@ -343,6 +377,7 @@ export const runsModule: ServerModule = {
         coordinator.id,
         host.now(),
       );
+      publish();
       return viewOf(requireRun(id));
     };
 
@@ -420,6 +455,7 @@ export const runsModule: ServerModule = {
         if (!approval) startLaneJob(id);
         return id;
       });
+      publish();
       return laneToView(loadLane(laneId) as LaneRow);
     };
 
@@ -445,6 +481,7 @@ export const runsModule: ServerModule = {
         );
         startLaneJob(lane.id);
       });
+      publish();
       return laneToView(loadLane(lane.id) as LaneRow);
     };
 
@@ -468,6 +505,7 @@ export const runsModule: ServerModule = {
         );
         host.jobs.start(MERGE_JOB, { laneId: lane.id } satisfies LaneSubject, { key: run.id });
       });
+      publish();
       return laneToView(loadLane(lane.id) as LaneRow);
     };
 
@@ -482,7 +520,7 @@ export const runsModule: ServerModule = {
       }
       const run = requireRun(lane.run_id);
       const id = host.newId();
-      return host.store.transaction(() => {
+      const asked = host.store.transaction(() => {
         host.store.run(
           `INSERT INTO runs_questions (id, run_id, lane_id, agent_id, question, state, created_at)
            VALUES (?, ?, ?, ?, ?, 'open', ?)`,
@@ -497,6 +535,8 @@ export const runsModule: ServerModule = {
         agents.deliver(run.coordinator_agent_id, questionMessage(lane, row));
         return questionToView(row);
       });
+      publish();
+      return asked;
     };
 
     const answerLane = (caller: BridgeCaller, request: AnswerLaneRequest): RunQuestion => {
@@ -512,7 +552,7 @@ export const runsModule: ServerModule = {
       if (question.state !== "open") {
         throw new ApiError(409, "question_answered", `Question ${question.id} has an answer`);
       }
-      return host.store.transaction(() => {
+      const answered = host.store.transaction(() => {
         host.store.run(
           "UPDATE runs_questions SET answer = ?, state = 'answered', answered_at = ? WHERE id = ?",
           request.answer,
@@ -522,6 +562,8 @@ export const runsModule: ServerModule = {
         agents.deliver(question.agent_id, answerMessage(question, request.answer));
         return questionToView(loadQuestion(question.id) as QuestionRow);
       });
+      publish();
+      return answered;
     };
 
     approvals.register({
@@ -544,6 +586,7 @@ export const runsModule: ServerModule = {
           );
           wakeWaiting(lane.run_id);
         }
+        publishAfterCommit();
       },
     });
 
@@ -663,6 +706,7 @@ export const runsModule: ServerModule = {
         lane.id,
       );
       host.jobs.wake(LANE_JOB, lane.id);
+      publishAfterCommit();
     });
 
     /** The run's worktree and the lane's branch: where a merge happens, and what it merges. */
