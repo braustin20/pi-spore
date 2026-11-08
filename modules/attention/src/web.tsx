@@ -393,18 +393,22 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
             <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
               {inbox.running.map((run) => (
                 <li key={run.agentId} className="flex items-center gap-2 text-sm">
-                  <a href={`#/workspaces/${run.workspace.id}`}>{run.workspace.name}</a>
-                  <span className="text-muted">{run.workspace.projectName}</span>
+                  <a href={`#/workspaces/${run.workspace.id}`} className="min-w-0 flex-1 truncate">
+                    {run.workspace.name}
+                  </a>
+                  <span className="w-24 shrink-0 truncate text-muted">
+                    {run.workspace.projectName}
+                  </span>
                   <a
                     href={chatHref(run.workspace, run.chat)}
-                    className="max-w-64 truncate text-muted"
+                    className="w-56 shrink-0 truncate text-muted"
                   >
                     {chatName(run.chat)}
                   </a>
                   <Chip tone={run.status === "waiting" ? "warn" : "run"}>
                     {RUNNING_TEXT[run.status]}
                   </Chip>
-                  <span className="ml-auto text-xs text-muted">
+                  <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted">
                     since {ago(run.since, Date.now())}
                   </span>
                 </li>
