@@ -92,6 +92,8 @@ export const Agent = Type.Object({
   error: Type.Optional(Type.String()),
   /** How many background helper runs are running. Missing when none. */
   helpersRunning: Type.Optional(Type.Integer()),
+  /** "Waiting for <model>" while the router waits for a busy local model (R4.5). Missing otherwise. */
+  routerStatus: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
 });
 export type Agent = Static<typeof Agent>;

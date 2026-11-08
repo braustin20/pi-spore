@@ -18,6 +18,8 @@ export interface PiProcessOptions {
   onNotice(level: string, message: string): void;
   /** The `subagent-async` widget changed. `lines` is undefined when pi-subagents cleared it (ADR 0034). */
   onChildRuns(lines: unknown): void;
+  /** The router extension set or cleared its "Waiting for <model>" status (R4.5). */
+  onRouterStatus(text: string | undefined): void;
   /** A `subagent-inspect` widget carries a reply. Its retraction (no lines) is not passed on. */
   onInspectReply(lines: unknown): void;
   onExit(code: number | null, signal: string | null): void;
@@ -27,6 +29,7 @@ export class PiRequestError extends Error {
   override name = "PiRequestError";
 }
 
+const ROUTER_STATUS_KEY = "pi-spore-router";
 const DIALOG_METHODS = new Set(["select", "confirm", "input", "editor"]);
 const STDERR_TAIL = 4_000;
 
@@ -191,6 +194,10 @@ export class PiProcess {
       this.options.onNotice(String(record.notifyType ?? record.level ?? "info"), record.message);
     } else if (method === "setWidget" && record.widgetKey === CHILD_RUNS_WIDGET) {
       this.options.onChildRuns(record.widgetLines);
+    } else if (method === "setStatus" && record.statusKey === ROUTER_STATUS_KEY) {
+      this.options.onRouterStatus(
+        typeof record.statusText === "string" ? record.statusText : undefined,
+      );
     } else if (
       method === "setWidget" &&
       record.widgetKey === INSPECT_WIDGET &&
@@ -198,7 +205,7 @@ export class PiProcess {
     ) {
       this.options.onInspectReply(record.widgetLines);
     }
-    // Other setWidget calls, setStatus, setTitle, and set_editor_text are terminal UI hints with no place in the web
+    // Other setWidget calls, other setStatus keys, setTitle, and set_editor_text are terminal UI hints with no place in the web
     // chat yet.
   }
 

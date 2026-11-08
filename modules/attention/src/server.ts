@@ -259,7 +259,12 @@ export const attentionModule: ServerModule = {
         )
           items.push({ kind: "finished", at: waitingSince, ...base });
         if (agent.status === "busy" || agent.status === "starting" || agent.status === "waiting")
-          running.push({ ...base, status: agent.status, since });
+          running.push({
+            ...base,
+            status: agent.status,
+            ...(agent.routerStatus ? { detail: agent.routerStatus } : {}),
+            since,
+          });
       }
       items.sort((a, b) => b.at - a.at);
       running.sort((a, b) => b.since - a.since);

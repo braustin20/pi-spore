@@ -127,6 +127,8 @@ export const RunningItem = Type.Object({
   workspace: InboxWorkspace,
   chat: InboxChat,
   status: Type.Union([AgentStatus, Type.Literal("helpers")]),
+  /** Replaces the status text, e.g. "Waiting for <model>" from the router (R4.5). */
+  detail: Type.Optional(Type.String()),
   since: Type.Integer(),
 });
 export type RunningItem = Static<typeof RunningItem>;

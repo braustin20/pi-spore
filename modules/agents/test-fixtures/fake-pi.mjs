@@ -12,6 +12,8 @@
 //                  state "gone" leaves the snapshot. Send it as a prompt, or as one while streaming (it is a command).
 //   "helper-clear" clears the widget, as pi-subagents does about 10 s after the last run ends
 //   "helper-bad"   sets the widget to a payload of an unknown version
+//   "router-status:<text>"  sets the router's `pi-spore-router` status, as its extension does while a local model is
+//                  busy; "router-status-clear" clears it. Both run as commands, even while streaming
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
@@ -444,6 +446,17 @@ const handle = (command) => {
         if (state === "gone") helpers.delete(runId);
         else helpers.set(runId, { agent, state });
         publishHelpers();
+        return respond(id, type, { disposition: "handled" });
+      }
+      if (command.message.startsWith("router-status")) {
+        const text = command.message.slice("router-status:".length);
+        write({
+          type: "extension_ui_request",
+          id: `s${Date.now()}${Math.random()}`,
+          method: "setStatus",
+          statusKey: "pi-spore-router",
+          ...(command.message === "router-status-clear" ? {} : { statusText: text }),
+        });
         return respond(id, type, { disposition: "handled" });
       }
       if (command.message === "helper-clear" || command.message === "helper-bad") {
