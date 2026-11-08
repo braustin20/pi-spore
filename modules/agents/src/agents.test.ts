@@ -373,16 +373,16 @@ describe("agents", () => {
   });
 
   it("keeps at most maxLive agents running; others wait until one stops", async () => {
-    await setup({ maxLive: 1, idleStopMs: 300 });
+    await setup({ maxLive: 1 });
     const first = await makeAgent("a");
     const second = await makeAgent("b");
-    await json(await prompt(first.agentId, "one"));
-    await until(() => status(first.agentId) === "idle" && statuses(first.agentId).length >= 4);
+    await json(await prompt(first.agentId, "slow:300"));
+    await until(() => status(first.agentId) === "busy");
 
     const pending = prompt(second.agentId, "two");
     await until(() => status(second.agentId) === "waiting");
 
-    // The first agent stops after 300 ms idle, which frees the slot.
+    // The first agent ends its run and is idle with a chat waiting, so it stops and frees the slot.
     expect(await json(await pending)).toEqual({ disposition: "started" });
     expect(statuses(first.agentId).at(-1)).toBe("stopped");
     await until(
@@ -390,6 +390,58 @@ describe("agents", () => {
         status(second.agentId) === "idle" &&
         statuses(second.agentId).filter((s) => s === "idle").length >= 2,
     );
+  });
+
+  describe("a waiting chat takes the slot of an idle one (ADR 0026)", () => {
+    const idleAfterPrompt = async (agentId: string, message: string) => {
+      await json(await prompt(agentId, message));
+      await until(() => status(agentId) === "idle" && statuses(agentId).length >= 4);
+    };
+
+    it("stops the agent that has been idle longest, at once", async () => {
+      await setup({ maxLive: 2 });
+      const first = await makeAgent("a");
+      const second = await makeAgent("b");
+      const third = await makeAgent("c");
+      await idleAfterPrompt(first.agentId, "one");
+      await idleAfterPrompt(second.agentId, "two");
+
+      expect(await json(await prompt(third.agentId, "three"))).toEqual({ disposition: "started" });
+      expect(status(first.agentId)).toBe("stopped");
+      expect(status(second.agentId)).toBe("idle");
+    });
+
+    it("never stops a busy agent", async () => {
+      await setup({ maxLive: 2 });
+      const busy = await makeAgent("a");
+      const idle = await makeAgent("b");
+      const third = await makeAgent("c");
+      await json(await prompt(busy.agentId, "slow:60000"));
+      await until(() => status(busy.agentId) === "busy");
+      await idleAfterPrompt(idle.agentId, "two");
+
+      expect(await json(await prompt(third.agentId, "three"))).toEqual({ disposition: "started" });
+      expect(status(idle.agentId)).toBe("stopped");
+      expect(status(busy.agentId)).toBe("busy");
+    });
+
+    it("keeps a chat waiting when every live agent is busy", async () => {
+      await setup({ maxLive: 2 });
+      const first = await makeAgent("a");
+      const second = await makeAgent("b");
+      const third = await makeAgent("c");
+      await json(await prompt(first.agentId, "slow:60000"));
+      await json(await prompt(second.agentId, "slow:60000"));
+      await until(() => status(first.agentId) === "busy" && status(second.agentId) === "busy");
+
+      const pending = prompt(third.agentId, "three");
+      await until(() => status(third.agentId) === "waiting");
+      expect(status(first.agentId)).toBe("busy");
+      expect(status(second.agentId)).toBe("busy");
+
+      await json(await server.request("POST", `/api/agents/${first.agentId}/stop`));
+      expect(await json(await pending)).toEqual({ disposition: "started" });
+    });
   });
 
   it("stops an agent when its workspace is parked, and will not start it while parked", async () => {
@@ -797,8 +849,8 @@ describe("chats (ADR 0030)", () => {
   it("counts side chats against the live-agent limit", async () => {
     await setup({ maxLive: 1 });
     const { agentId: worker, workspaceId } = await makeAgent();
-    await json(await prompt(worker, "one"));
-    await replied(worker, 2);
+    await json(await prompt(worker, "slow:60000"));
+    await until(() => status(worker) === "busy");
     const { agent: side } = await json<{ agent: Agent }>(await newChat(workspaceId, "side"), 201);
 
     const pending = prompt(side.id, "hi");
