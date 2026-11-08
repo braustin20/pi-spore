@@ -17,6 +17,7 @@ import {
   type CardStartTarget,
   COLUMN_TITLES,
   type CreateWorkspaceResponse,
+  ModelChoices,
   type Project,
   ProjectList,
   parse,
@@ -322,6 +323,61 @@ function ColumnView({
   );
 }
 
+/**
+ * The model for work from a card (ADR 0120). The empty value is the default, named by `defaultLabel`. A value the
+ * list does not hold (loading, failed) stays an option, so loading never changes the selection.
+ */
+function ModelSelect({
+  value,
+  onChange,
+  defaultLabel,
+  disabled = false,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  defaultLabel: string;
+  disabled?: boolean;
+}) {
+  const api = useApi();
+  const [models, setModels] = useState<ModelChoices["models"]>([]);
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    if (disabled) return;
+    api
+      .get("agents/models")
+      .then((body) => setModels(parse(ModelChoices, body, "models").models))
+      .catch((caught: unknown) => setError(message(caught)));
+  }, [api, disabled]);
+
+  const options = models.map((model) => ({
+    key: `${model.provider}/${model.id}`,
+    label: model.name ?? `${model.provider}/${model.id}`,
+  }));
+  if (value !== "" && !options.some((option) => option.key === value)) {
+    options.push({ key: value, label: value });
+  }
+  return (
+    <>
+      <Field label="Model">
+        <Select
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          disabled={disabled}
+        >
+          <option value="">{defaultLabel}</option>
+          {options.map((option) => (
+            <option key={option.key} value={option.key}>
+              {option.label}
+            </option>
+          ))}
+        </Select>
+      </Field>
+      {error && <Notice tone="warn">Could not load the model list: {error}.</Notice>}
+    </>
+  );
+}
+
 /** Text field for labels: comma separated. */
 const splitLabels = (text: string) =>
   text
@@ -335,6 +391,7 @@ interface Draft {
   projectId: string;
   labels: string;
   due: string;
+  model: string;
   blockedBy: BlockerRef[];
 }
 
@@ -344,6 +401,7 @@ const draftOf = (card: Card | undefined): Draft => ({
   projectId: card?.projectId ?? "",
   labels: card?.labels.join(", ") ?? "",
   due: card?.due ?? "",
+  model: card?.model ?? "",
   blockedBy: card?.blockedBy.map((blocker) => ({ kind: blocker.kind, id: blocker.id })) ?? [],
 });
 
@@ -475,6 +533,7 @@ function StartWork({
   const [started, setStarted] = useState<string | undefined>();
   const targets = startTargets(card, workspaces);
   const [workspaceId, setWorkspaceId] = useState("");
+  const [model, setModel] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
 
@@ -552,6 +611,13 @@ function StartWork({
             ))}
           </Select>
         </Field>
+        <ModelSelect
+          value=""
+          onChange={() => {}}
+          defaultLabel="The chat's current model"
+          disabled
+        />
+        <p className="m-0 text-xs text-muted">This workspace's chat keeps its model.</p>
         {error && <Notice tone="fail">{error}</Notice>}
         <div className="flex gap-1.5">
           <Button size="sm" variant="primary" type="submit" disabled={busy || workspaceId === ""}>
@@ -570,6 +636,7 @@ function StartWork({
       isolation: request.isolation,
       ...(request.line ? { line: request.line } : {}),
       ...(request.base ? { base: request.base } : {}),
+      ...(model ? { model } : {}),
       ...(confirmed ? { confirmBlocked: true } : {}),
     });
     const { created } = parse(StartCardResponse, body, "start card");
@@ -600,7 +667,15 @@ function StartWork({
         name={card.title}
         submit={submit}
         onCreated={created}
-      />
+      >
+        <ModelSelect
+          value={model}
+          onChange={setModel}
+          defaultLabel={
+            card.model ? `Card's model (${card.model})` : "Default (orchestrator setting)"
+          }
+        />
+      </CreateForm>
       {cancel}
     </div>
   );
@@ -687,11 +762,13 @@ function CardEditor({
           ...fields,
           ...(draft.projectId ? { projectId: draft.projectId } : {}),
           ...(draft.due ? { due: draft.due } : {}),
+          ...(draft.model ? { model: draft.model } : {}),
         })
       : api.send("PATCH", `kanban/cards/${cardId}`, {
           ...fields,
           projectId: draft.projectId || null,
           due: draft.due || null,
+          model: draft.model || null,
         });
     request
       .then((body) => {
@@ -796,6 +873,11 @@ function CardEditor({
             />
           </Field>
         </div>
+        <ModelSelect
+          value={draft.model}
+          onChange={(model) => set({ model })}
+          defaultLabel="Default (orchestrator setting)"
+        />
         <div className="flex flex-col gap-1">
           <div className="flex items-center gap-2 text-xs text-muted">
             <span className="flex-1">Notes (Markdown)</span>

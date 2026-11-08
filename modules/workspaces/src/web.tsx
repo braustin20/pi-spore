@@ -105,6 +105,7 @@ function CreateForm({
   title = "Start a workspace",
   submit: send,
   onCreated,
+  children,
 }: CreateWorkspaceFormProps) {
   const api = useApi();
   const [chosen, setChosen] = useState(projectId ?? projects[0]?.id ?? "");
@@ -211,6 +212,7 @@ function CreateForm({
             </Select>
           </Field>
         )}
+        {children}
         {error && <Notice tone="fail">{error}</Notice>}
         <div>
           <Button
