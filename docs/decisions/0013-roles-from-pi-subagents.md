@@ -20,3 +20,5 @@ overrides on top. Workers may still call pi-subagents for helpers; the UI shows 
 - One place to change a role's model for both `pi` and pi-spore.
 - pi-spore depends on the pi-subagents settings format. A format change must be handled in one adapter.
 - ADR 0034 settles how child runs are observed.
+- ADR 0120: the workspace chat reads the `orchestrator` role, not `worker`. `worker` is a subagent role that the
+  user may set to `spore/auto`.

@@ -210,6 +210,25 @@ describe("Router: first request of a session", () => {
   });
 });
 
+describe("Router: cloud model", () => {
+  const AUTO_ERROR =
+    /spore\/auto cannot be its own cloud model: set "router\.cloud" in .*settings\.json/;
+
+  it("refuses spore/auto as router.cloud and does not fall back to it", async () => {
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ router: { cloud: "spore/auto" } }));
+    const { router } = harness({ workerModel: async () => "spore/auto" });
+    const { ctx } = fakeContext(cwd);
+    await expect(router.route(userRequest(BRIEF), ctx)).rejects.toThrow(AUTO_ERROR);
+  });
+
+  it("refuses spore/auto as the worker model when router.cloud is unset", async () => {
+    writeFileSync(join(home, "settings.json"), "{}");
+    const { router } = harness({ workerModel: async () => "spore/auto" });
+    const { ctx } = fakeContext(cwd);
+    await expect(router.route(userRequest(BRIEF), ctx)).rejects.toThrow(AUTO_ERROR);
+  });
+});
+
 describe("Router: later requests", () => {
   const localState: RouterState = {
     route: "local",

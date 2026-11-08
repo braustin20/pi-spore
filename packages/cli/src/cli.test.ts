@@ -377,7 +377,7 @@ describe("pi-spore action", () => {
 const chatOf = (id: string, extra: Record<string, unknown>) => ({
   id,
   workspaceId: "W1",
-  role: "worker",
+  role: "orchestrator",
   kind: "worker",
   active: true,
   status: "idle",

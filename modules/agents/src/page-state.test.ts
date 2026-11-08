@@ -5,7 +5,7 @@ import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 const agent: Agent = {
   id: "A",
   workspaceId: "W",
-  role: "worker",
+  role: "orchestrator",
   kind: "worker",
   active: true,
   status: "idle",

@@ -38,7 +38,10 @@ async function setup(
   agentsModule = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
-    roleDefaults: async () => ({ provider: "fake", modelId: "fake-1", thinking: "high" }),
+    // A test that names an agent folder reads its settings.json instead (ADR 0013).
+    ...(options.agentDir
+      ? {}
+      : { roleDefaults: async () => ({ provider: "fake", modelId: "fake-1", thinking: "high" }) }),
     baseEnv: {
       PATH: process.env.PATH,
       ORCA_PANE_KEY: "pane",
@@ -463,6 +466,58 @@ describe("agents", () => {
     expect(stopped).toMatchObject({
       model: { provider: "fake", id: "fake-2" },
       thinkingLevel: "low",
+    });
+  });
+
+  describe("orchestrator role (ADR 0120)", () => {
+    const withSettings = (settings: unknown) => {
+      const agentDir = join(scratch, "pi-agent");
+      mkdirSync(agentDir, { recursive: true });
+      writeFileSync(join(agentDir, "settings.json"), JSON.stringify(settings));
+      return agentDir;
+    };
+
+    it("starts a new chat on the orchestrator model and thinking, not the worker's", async () => {
+      const agentDir = withSettings({
+        subagents: {
+          agentOverrides: {
+            orchestrator: { model: "fake/orchestrator-1", thinking: "xhigh" },
+            worker: { model: "spore/auto", thinking: "low" },
+          },
+        },
+      });
+      await setup({ agentDir });
+      const { agentId } = await makeAgent();
+      const [fresh] = (await server.events.snapshot(`agent:${agentId}`)) as AgentEvent[];
+      expect(fresh).toMatchObject({
+        model: { provider: "fake", id: "orchestrator-1" },
+        thinkingLevel: "xhigh",
+      });
+      await json(await prompt(agentId, "one"));
+      await until(() => existsSync(record));
+      const argv = launches()[0]?.argv ?? [];
+      expect(argv.slice(argv.indexOf("--provider"))).toEqual(
+        expect.arrayContaining([
+          "--provider",
+          "fake",
+          "--model",
+          "orchestrator-1",
+          "--thinking",
+          "xhigh",
+        ]),
+      );
+    });
+
+    it("passes no --model when settings have no orchestrator override", async () => {
+      const agentDir = withSettings({
+        subagents: { agentOverrides: { worker: { model: "spore/auto", thinking: "low" } } },
+      });
+      await setup({ agentDir });
+      const { agentId } = await makeAgent();
+      await json(await prompt(agentId, "one"));
+      await until(() => existsSync(record));
+      const argv = launches()[0]?.argv ?? [];
+      for (const flag of ["--provider", "--model", "--thinking"]) expect(argv).not.toContain(flag);
     });
   });
 
