@@ -786,7 +786,12 @@ describe("chats (ADR 0030)", () => {
     await replied(side.id, 2);
 
     const launch = launches()[1];
-    const tools = ["--tools", "read,grep,find,ls,request_human_input", "--exclude-tools", "mcp__*"];
+    const tools = [
+      "--tools",
+      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read",
+      "--exclude-tools",
+      "mcp__*",
+    ];
     expect(launch?.argv).toEqual([
       "--mode",
       "rpc",
@@ -808,7 +813,7 @@ describe("chats (ADR 0030)", () => {
       "user: one",
       "assistant: echo: one",
       "user: tools",
-      "assistant: tools: read,grep,find,ls,request_human_input",
+      "assistant: tools: read,grep,find,ls,request_human_input,artifacts_list,artifacts_read",
     ]);
     // The worker and the side chat run at the same time, and the side chat has its own session file.
     expect(agentsModule.manager().liveCount()).toBe(2);
@@ -838,7 +843,7 @@ describe("chats (ADR 0030)", () => {
       expect.arrayContaining(["--session-dir", "--tools", "--exclude-tools"]),
     );
     expect(texts(await chat(side.id)).at(-1)).toBe(
-      "assistant: tools: read,grep,find,ls,request_human_input",
+      "assistant: tools: read,grep,find,ls,request_human_input,artifacts_list,artifacts_read",
     );
     // A side chat is never a worker chat to switch to.
     expect(await code(await server.request("POST", `/api/agents/${side.id}/activate`), 409)).toBe(

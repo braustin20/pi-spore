@@ -1,5 +1,6 @@
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import { agentsModule } from "@pi-spore/mod-agents/server";
+import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { bridgeModule } from "@pi-spore/mod-bridge/server";
 import { changesModule } from "@pi-spore/mod-changes/server";
@@ -20,6 +21,7 @@ export const serverModules: readonly ServerModule[] = [
   vcsGitModule,
   vcsFolderModule,
   workspacesModule,
+  artifactsModule,
   unityModule,
   agentsModule,
   actionsModule,

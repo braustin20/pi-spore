@@ -2,6 +2,7 @@ export { cn } from "./cn.js";
 export { Button, type ButtonProps } from "./components/button.js";
 export { Chip, type Tone } from "./components/chip.js";
 export { CollapsibleSection } from "./components/collapsible-section.js";
+export { ContentDialog } from "./components/content-dialog.js";
 export { DiffCount } from "./components/diff-count.js";
 export { EmptyState } from "./components/empty-state.js";
 export { Checkbox, Field, Input, Select, Textarea } from "./components/field.js";

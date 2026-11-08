@@ -10,7 +10,7 @@ import type { BridgeClient } from "./client.js";
  * `{ type: "string", enum: [...] }`, the enum shape every model provider accepts; a union of literals becomes
  * `anyOf`, which some do not. Pi's own StringEnum returns another schema library's type.
  */
-function StringEnum<const T extends readonly string[]>(
+export function StringEnum<const T extends readonly string[]>(
   values: T,
   options: { description?: string } = {},
 ) {

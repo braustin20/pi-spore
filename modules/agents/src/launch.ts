@@ -20,11 +20,12 @@ export const SPORE_EXTENSIONS: readonly string[] = [
  * that it does not name, so no extension can turn `edit`, `write`, `bash`, `codemode`, or a subagent tool back on, and
  * a forked session's recorded loadout cannot either. Pi keeps MCP tools (`mcp__*`) registered past an allowlist that
  * names none, and MCP servers can write, so `--exclude-tools` removes them. `request_human_input` (spore-bridge) only
- * files a question; spore-bridge's `check` and `run_action` run project commands and are left out.
+ * files a question; spore-bridge's `check` and `run_action` run project commands and are left out. `artifacts_list`
+ * and `artifacts_read` change nothing, so a side chat may use them; `artifacts_write` is left out.
  */
 export const SIDE_CHAT_TOOLS: readonly string[] = [
   "--tools",
-  "read,grep,find,ls,request_human_input",
+  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read",
   "--exclude-tools",
   "mcp__*",
 ];

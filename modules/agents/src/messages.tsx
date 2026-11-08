@@ -1,7 +1,7 @@
 import { type ChatMessage, type ImageRef, isImageRef, type RunningTool } from "@pi-spore/shared";
 import { Chip, cn, Spinner } from "@pi-spore/ui";
 import { ChevronRight } from "lucide-react";
-import type { ReactNode } from "react";
+import { type ComponentType, createContext, type ReactNode, useContext } from "react";
 import Markdown, { type Components, defaultUrlTransform } from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { bashSummary } from "./bash-summary.js";
@@ -83,9 +83,47 @@ function Fold({ label, children }: { label: string; children: ReactNode }) {
   );
 }
 
+/** What a link to a Markdown file opens. Another module sets it; without one the link stays plain. */
+export type FileLink = ComponentType<{ workspaceId: string; path: string; children: ReactNode }>;
+
+let FileLinkView: FileLink | undefined;
+
+export function setFileLink(component: FileLink): void {
+  FileLinkView = component;
+}
+
+const isMarkdownPath = (path: string) => /\.(md|markdown)$/i.test(path);
+
+/** The workspace of the chat, so a file link can name the folder a relative path is in. */
+const WorkspaceContext = createContext<string | undefined>(undefined);
+
+function MarkdownLink({ href, children }: { href: string; children: ReactNode }) {
+  const workspaceId = useContext(WorkspaceContext);
+  const target = linkTarget(href);
+  const plain = <a href={href}>{children}</a>;
+  if (target.kind !== "local") return plain;
+  if (isImagePath(target.path)) {
+    return (
+      <LinkedImage
+        path={target.path}
+        alt={typeof children === "string" ? children : ""}
+        fallback={plain}
+      />
+    );
+  }
+  if (FileLinkView && workspaceId && isMarkdownPath(target.path)) {
+    return (
+      <FileLinkView workspaceId={workspaceId} path={target.path}>
+        {children}
+      </FileLinkView>
+    );
+  }
+  return plain;
+}
+
 /**
- * Images the agent links (ADR 0060, ADR 0061): a local image path shows through the server's linked-image route,
- * a remote image waits for a click, and anything else stays a plain link.
+ * Links the agent writes (ADR 0060, ADR 0061, ADR 0070): a local image path shows through the server's linked-image
+ * route, a remote image waits for a click, a Markdown file opens in the viewer, and anything else stays a plain link.
  */
 const MARKDOWN_COMPONENTS: Components = {
   img: ({ src, alt }) => {
@@ -99,18 +137,7 @@ const MARKDOWN_COMPONENTS: Components = {
       return <LinkedImage path={target.path} alt={label} fallback={plain} />;
     return plain;
   },
-  a: ({ href, children }) => {
-    const target = linkTarget(href ?? "");
-    const plain = <a href={href}>{children}</a>;
-    if (target.kind !== "local" || !isImagePath(target.path)) return plain;
-    return (
-      <LinkedImage
-        path={target.path}
-        alt={typeof children === "string" ? children : ""}
-        fallback={plain}
-      />
-    );
-  },
+  a: ({ href, children }) => <MarkdownLink href={href ?? ""}>{children}</MarkdownLink>,
 };
 
 const urlTransform = (url: string) => keepFileUrls(url, defaultUrlTransform);
@@ -251,12 +278,14 @@ function hasVisibleContent(message: ChatMessage): boolean {
 
 export function MessageList({
   agentId,
+  workspaceId,
   messages,
   streaming,
   running,
 }: {
   /** The chat, whose routes serve its images. */
   agentId: string;
+  workspaceId: string;
   messages: readonly ChatMessage[];
   streaming?: ChatMessage;
   running: readonly RunningTool[];
@@ -276,61 +305,68 @@ export function MessageList({
 
   return (
     <ChatImages agentId={agentId}>
-      <div className="flex flex-col gap-5">
-        {messages.map((message, index) => {
-          const key = `${message.role}-${message.timestamp ?? index}-${index}`;
-          switch (message.role) {
-            case "user": {
-              const text = plainText(message.content);
-              return (
-                <div
-                  key={key}
-                  className="flex max-w-[85%] flex-col gap-2 self-end rounded-xl border border-line bg-raised px-3.5 py-2 text-[15px]"
-                >
-                  {text.trim() !== "" && <MarkdownText text={text} />}
-                  <ImageRow images={imagesOf(message.content)} />
-                </div>
-              );
+      <WorkspaceContext value={workspaceId}>
+        <div className="flex flex-col gap-5">
+          {messages.map((message, index) => {
+            const key = `${message.role}-${message.timestamp ?? index}-${index}`;
+            switch (message.role) {
+              case "user": {
+                const text = plainText(message.content);
+                return (
+                  <div
+                    key={key}
+                    className="flex max-w-[85%] flex-col gap-2 self-end rounded-xl border border-line bg-raised px-3.5 py-2 text-[15px]"
+                  >
+                    {text.trim() !== "" && <MarkdownText text={text} />}
+                    <ImageRow images={imagesOf(message.content)} />
+                  </div>
+                );
+              }
+              case "assistant":
+                return (
+                  <AssistantMessage
+                    key={key}
+                    message={message}
+                    results={results}
+                    running={runningById}
+                  />
+                );
+              case "toolResult":
+                // Shown inside its tool call; only an orphan result is shown on its own.
+                return shownCalls.has(String(message.toolCallId)) ? null : (
+                  <div key={key} className="flex flex-col gap-2">
+                    <Pre>{clip(plainText(message.content))}</Pre>
+                    <ImageRow images={imagesOf(message.content)} />
+                  </div>
+                );
+              case "compaction":
+                return (
+                  <Fold key={key} label="Context compacted">
+                    <MarkdownText text={plainText(message.content)} />
+                  </Fold>
+                );
+              case "bashExecution":
+                return (
+                  <Pre key={key}>
+                    $ {String(message.command ?? "")}
+                    {"\n"}
+                    {clip(String(message.output ?? ""))}
+                  </Pre>
+                );
+              default:
+                return null;
             }
-            case "assistant":
-              return (
-                <AssistantMessage
-                  key={key}
-                  message={message}
-                  results={results}
-                  running={runningById}
-                />
-              );
-            case "toolResult":
-              // Shown inside its tool call; only an orphan result is shown on its own.
-              return shownCalls.has(String(message.toolCallId)) ? null : (
-                <div key={key} className="flex flex-col gap-2">
-                  <Pre>{clip(plainText(message.content))}</Pre>
-                  <ImageRow images={imagesOf(message.content)} />
-                </div>
-              );
-            case "compaction":
-              return (
-                <Fold key={key} label="Context compacted">
-                  <MarkdownText text={plainText(message.content)} />
-                </Fold>
-              );
-            case "bashExecution":
-              return (
-                <Pre key={key}>
-                  $ {String(message.command ?? "")}
-                  {"\n"}
-                  {clip(String(message.output ?? ""))}
-                </Pre>
-              );
-            default:
-              return null;
-          }
-        })}
-        {streaming && hasVisibleContent(streaming) && (
-          <AssistantMessage message={streaming} results={results} running={runningById} streaming />
-        )}
-      </div>
+          })}
+          {streaming && hasVisibleContent(streaming) && (
+            <AssistantMessage
+              message={streaming}
+              results={results}
+              running={runningById}
+              streaming
+            />
+          )}
+        </div>
+      </WorkspaceContext>
     </ChatImages>
   );
 }

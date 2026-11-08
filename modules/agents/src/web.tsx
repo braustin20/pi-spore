@@ -26,7 +26,7 @@ import Type from "typebox";
 import { ChatBar } from "./chats.js";
 import { Composer, DialogCard } from "./composer.js";
 import { Helpers } from "./helpers.js";
-import { MessageList } from "./messages.js";
+import { MessageList, setFileLink } from "./messages.js";
 import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 import { reduceAgentList, workspaceStatuses } from "./status.js";
 import { type AgentsWeb, AgentsWebKey, type UserWait, type UseUserWaits } from "./web-contract.js";
@@ -442,6 +442,7 @@ function ChatView({
           )}
           <MessageList
             agentId={agentId}
+            workspaceId={workspace.id}
             messages={chat.messages}
             running={chat.running}
             {...(chat.streaming ? { streaming: chat.streaming } : {})}
@@ -559,6 +560,7 @@ export const agentsWeb: WebModule = {
       setUserWaits: (hook) => {
         useUserWaits = hook;
       },
+      setFileLink,
       DialogCard,
     };
     host.provide(AgentsWebKey, web);

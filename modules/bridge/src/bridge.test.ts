@@ -1,9 +1,10 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
+import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule, INBOX_TOPIC } from "@pi-spore/mod-attention/server";
 import { cardBrief, kanbanModule } from "@pi-spore/mod-kanban/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
@@ -11,7 +12,17 @@ import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { Approval, Card, ChatState, Inbox, InboxEvent, Question } from "@pi-spore/shared";
+import type {
+  Approval,
+  ArtifactInfo,
+  BridgeArtifactFile,
+  BridgeArtifactList,
+  Card,
+  ChatState,
+  Inbox,
+  InboxEvent,
+  Question,
+} from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bridgeModule } from "./server.js";
 
@@ -54,6 +65,7 @@ async function start(
       actionsModule,
       attentionModule,
       kanbanModule,
+      artifactsModule,
       bridgeModule,
     ],
     {
@@ -612,6 +624,162 @@ describe("cards from agents (ADR 0100)", () => {
     expect(added.status).toBe(403);
     expect(await added.json()).toMatchObject({ error: { code: "read_only_chat" } });
     expect((await call("GET", "cards")).status).toBe(200);
+  });
+});
+
+describe("artifacts from agents (ADR 0070)", () => {
+  it("writes, reads, and lists in both scopes, and records the agent", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "art-own");
+    const call = asAgent(server, agentId, workspaceId);
+
+    const { artifact: plan } = await json<{ artifact: ArtifactInfo }>(
+      await call("POST", "artifacts", { scope: "workspace", path: "plans/a.md", content: "# A" }),
+    );
+    expect(plan).toMatchObject({ scope: "workspace", ownerId: workspaceId, writtenBy: agentId });
+    const { artifact: note } = await json<{ artifact: ArtifactInfo }>(
+      await call("POST", "artifacts", { scope: "project", path: "notes.md", content: "shared" }),
+    );
+    expect(note).toMatchObject({ scope: "project", writtenBy: agentId });
+
+    const list = await json<BridgeArtifactList>(await call("GET", "artifacts"));
+    expect(list.workspace.map((entry) => entry.path)).toEqual(["plans/a.md"]);
+    expect(list.project.map((entry) => entry.path)).toEqual(["notes.md"]);
+
+    const read = await json<BridgeArtifactFile>(
+      await call("GET", "artifacts/file?scope=workspace&path=plans%2Fa.md"),
+    );
+    expect(read).toMatchObject({ content: "# A", artifact: { path: "plans/a.md" } });
+    const shared = await json<BridgeArtifactFile>(
+      await call("GET", "artifacts/file?scope=project&path=notes.md"),
+    );
+    expect(shared.content).toBe("shared");
+  });
+
+  it("keeps an agent to its own workspace and project, and shares the project's files", async () => {
+    const server = await start();
+    const a = await workspace(server, "art-a");
+    const a2 = await sibling(server, a.workspaceId, "art-a2");
+    const b = await workspace(server, "art-b");
+    const callA = asAgent(server, a.agentId, a.workspaceId);
+    const callA2 = asAgent(server, a2.agentId, a2.workspaceId);
+    const callB = asAgent(server, b.agentId, b.workspaceId);
+
+    await json(
+      await callB("POST", "artifacts", { scope: "workspace", path: "secret.md", content: "b" }),
+    );
+    await json(
+      await callB("POST", "artifacts", { scope: "project", path: "b-note.md", content: "b" }),
+    );
+    await json(
+      await callA2("POST", "artifacts", { scope: "project", path: "p-note.md", content: "p" }),
+    );
+
+    const list = await json<BridgeArtifactList>(await callA("GET", "artifacts"));
+    expect(list.workspace).toEqual([]);
+    expect(list.project.map((entry) => entry.path)).toEqual(["p-note.md"]);
+    for (const scope of ["workspace", "project"]) {
+      for (const path of ["secret.md", "b-note.md"]) {
+        const read = await callA("GET", `artifacts/file?scope=${scope}&path=${path}`);
+        expect(read.status).toBe(404);
+      }
+    }
+    expect(
+      (
+        await json<BridgeArtifactFile>(
+          await callA("GET", "artifacts/file?scope=project&path=p-note.md"),
+        )
+      ).content,
+    ).toBe("p");
+    // Another workspace of the same project does not see this workspace's own files.
+    expect((await json<BridgeArtifactList>(await callA2("GET", "artifacts"))).workspace).toEqual(
+      [],
+    );
+  });
+
+  it("answers a bad scope with 400", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "art-scope");
+    const call = asAgent(server, agentId, workspaceId);
+    for (const query of ["path=a.md", "scope=other&path=a.md"]) {
+      const response = await call("GET", `artifacts/file?${query}`);
+      expect(response.status).toBe(400);
+      expect(await response.json()).toMatchObject({ error: { code: "bad_query" } });
+    }
+  });
+
+  it("lets a read-only side chat list and read, and refuses its writes", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "art-side");
+    await json(
+      await asAgent(server, agentId, workspaceId)("POST", "artifacts", {
+        scope: "workspace",
+        path: "a.md",
+        content: "hi",
+      }),
+    );
+    const call = asAgent(server, agentId, workspaceId, true);
+    expect((await json<BridgeArtifactList>(await call("GET", "artifacts"))).workspace).toHaveLength(
+      1,
+    );
+    expect(
+      (
+        await json<BridgeArtifactFile>(
+          await call("GET", "artifacts/file?scope=workspace&path=a.md"),
+        )
+      ).content,
+    ).toBe("hi");
+    const written = await call("POST", "artifacts", {
+      scope: "workspace",
+      path: "b.md",
+      content: "no",
+    });
+    expect(written.status).toBe(403);
+    expect(await written.json()).toMatchObject({ error: { code: "read_only_chat" } });
+  });
+
+  it("returns the first answer to a replayed write and writes once", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "art-replay");
+    const call = asAgent(server, agentId, workspaceId);
+    const body = (content: string) => ({ scope: "workspace", path: "r.md", content });
+    const read = async () =>
+      (
+        await json<BridgeArtifactFile>(
+          await call("GET", "artifacts/file?scope=workspace&path=r.md"),
+        )
+      ).content;
+
+    const first = await json<{ artifact: ArtifactInfo }>(
+      await call("POST", "artifacts", body("first"), "toolu_a1"),
+    );
+    await json(await call("POST", "artifacts", body("second"), "toolu_a2"));
+    // The server refuses a reused key with another body, so the replay repeats the first call. A real second
+    // write would put "first" back over "second".
+    const replay = await json<{ artifact: ArtifactInfo }>(
+      await call("POST", "artifacts", body("first"), "toolu_a1"),
+    );
+
+    expect(replay).toEqual(first);
+    expect(await read()).toBe("second");
+  });
+
+  it("says a file that is not UTF-8 text is not text", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "art-binary");
+    const call = asAgent(server, agentId, workspaceId);
+    await json(
+      await call("POST", "artifacts", { scope: "workspace", path: "bad.md", content: "x" }),
+    );
+    const file = join(server.paths.artifacts, "workspaces", workspaceId, "bad.md");
+    writeFileSync(file, Buffer.from([0xff, 0xfe, 0x00, 0x80]));
+    expect(readFileSync(file)).toHaveLength(4);
+
+    const response = await call("GET", "artifacts/file?scope=workspace&path=bad.md");
+    expect(response.status).toBe(415);
+    expect(await response.json()).toMatchObject({
+      error: { code: "not_text", message: expect.stringContaining("Artifacts tab") },
+    });
   });
 });
 
