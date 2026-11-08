@@ -1,8 +1,7 @@
 import { createHash } from "node:crypto";
-import { constants } from "node:fs";
-import { open, realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, resolve, sep } from "node:path";
+import { extname, isAbsolute, resolve } from "node:path";
 import { ApiError } from "@pi-spore/module-api";
+import { readFileInside } from "@pi-spore/module-api/node";
 import { IMAGE_TYPES, type ImageRef, type PromptImage } from "@pi-spore/shared";
 
 export type ImageType = (typeof IMAGE_TYPES)[number];
@@ -199,8 +198,6 @@ export function servableType(mimeType: string): ImageType {
   return mimeType;
 }
 
-const inside = (path: string, root: string) => path === root || path.startsWith(root + sep);
-
 /**
  * Reads an image file an agent linked in a message (ADR 0060). `path` is absolute or relative to the workspace
  * folder. It is served only when, after resolving symlinks, it is inside one of `roots`, has an image extension,
@@ -212,52 +209,23 @@ export async function readLinkedImage(
   roots: readonly string[],
   maxBytes: number,
 ): Promise<{ mimeType: ImageType; bytes: Buffer }> {
-  if (path.includes("\0")) throw new ApiError(400, "bad_path", "The path has a NUL character");
-  const notFound = () => new ApiError(404, "image_not_found", `No image at ${path}`);
-  const requested = isAbsolute(path) ? path : resolve(base, path);
-  const real = await realpath(requested).catch(() => {
-    throw notFound();
-  });
-  const realRoots = (
-    await Promise.all(roots.map((root) => realpath(root).catch(() => undefined)))
-  ).filter((root): root is string => root !== undefined);
-  if (!realRoots.some((root) => inside(real, root))) {
-    throw new ApiError(
-      403,
-      "outside_workspace",
-      "The chat shows only images inside the workspace folder or its artifacts folder",
-    );
-  }
-  // The real name counts, so `shot.png` linking to `.env` is refused.
+  const notAnImage = () =>
+    new ApiError(415, "not_an_image", "The chat shows only PNG, JPEG, WebP, and GIF files");
+  const { real, bytes } = await readFileInside(
+    isAbsolute(path) ? path : resolve(base, path),
+    roots,
+    maxBytes,
+    // The real name counts, so `shot.png` linking to `.env` is refused.
+    (real) => {
+      if (!TYPE_OF_EXTENSION[extname(real).toLowerCase()]) throw notAnImage();
+    },
+  );
   const mimeType = TYPE_OF_EXTENSION[extname(real).toLowerCase()];
-  if (!mimeType)
-    throw new ApiError(415, "not_an_image", "The chat shows only PNG, JPEG, WebP, and GIF files");
-  const checked = await stat(real);
-  // O_NOFOLLOW and the same inode as the checked path: a symlink swapped in after the check is not followed.
-  const handle = await open(real, constants.O_RDONLY | constants.O_NOFOLLOW).catch(() => {
-    throw notFound();
-  });
-  try {
-    const opened = await handle.stat();
-    if (opened.ino !== checked.ino || opened.dev !== checked.dev) throw notFound();
-    if (!opened.isFile())
-      throw new ApiError(415, "not_an_image", "The chat shows only PNG, JPEG, WebP, and GIF files");
-    if (opened.size > maxBytes) {
-      throw new ApiError(
-        413,
-        "image_too_large",
-        `The image is ${formatMib(opened.size)}; the limit is ${formatMib(maxBytes)}`,
-      );
-    }
-    const bytes = await handle.readFile();
-    if (sniff(bytes) !== mimeType)
-      throw new ApiError(
-        415,
-        "not_an_image",
-        `The file is not a ${extname(real).slice(1).toUpperCase()} image`,
-      );
-    return { mimeType, bytes };
-  } finally {
-    await handle.close();
-  }
+  if (!mimeType || sniff(bytes) !== mimeType)
+    throw new ApiError(
+      415,
+      "not_an_image",
+      `The file is not a ${extname(real).slice(1).toUpperCase()} image`,
+    );
+  return { mimeType, bytes };
 }

@@ -52,6 +52,9 @@
       "path": "../../modules/changes"
     },
     {
+      "path": "../../modules/artifacts"
+    },
+    {
       "path": "../../modules/github-pr"
     }
   ]

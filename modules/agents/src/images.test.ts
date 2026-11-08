@@ -329,20 +329,20 @@ describe("images the agent links", () => {
 
     const refused = async (path: string, status: number, code: string) =>
       expect(await errorCode(await linked(agentId, path), status), path).toBe(code);
-    await refused("../outside.png", 403, "outside_workspace");
-    await refused(outside, 403, "outside_workspace");
-    await refused(join(other.folder, "theirs.png"), 403, "outside_workspace");
-    await refused("../other/theirs.png", 403, "outside_workspace");
-    await refused("escape.png", 403, "outside_workspace");
-    await refused("up/outside.png", 403, "outside_workspace");
+    await refused("../outside.png", 403, "outside_root");
+    await refused(outside, 403, "outside_root");
+    await refused(join(other.folder, "theirs.png"), 403, "outside_root");
+    await refused("../other/theirs.png", 403, "outside_root");
+    await refused("escape.png", 403, "outside_root");
+    await refused("up/outside.png", 403, "outside_root");
     await refused("secret.png", 415, "not_an_image");
     await refused(".env", 415, "not_an_image");
     await refused("renamed.png", 415, "not_an_image");
     await refused("notes.txt", 415, "not_an_image");
     await refused("fake.png", 415, "not_an_image");
-    await refused("dir.png", 415, "not_an_image");
-    await refused("big.png", 413, "image_too_large");
-    await refused("missing.png", 404, "image_not_found");
+    await refused("dir.png", 415, "not_a_file");
+    await refused("big.png", 413, "file_too_large");
+    await refused("missing.png", 404, "file_not_found");
     await refused("a\0b.png", 400, "bad_path");
     expect(
       await errorCode(await server.request("GET", `/api/agents/${agentId}/linked-image`), 400),

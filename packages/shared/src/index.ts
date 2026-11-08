@@ -38,6 +38,17 @@ export {
   ThinkingLevel,
 } from "./agents.js";
 export {
+  ArtifactInfo,
+  ArtifactList,
+  ArtifactScope,
+  ArtifactsEvent,
+  BridgeArtifactFile,
+  BridgeArtifactList,
+  BridgeWriteArtifactRequest,
+  PromoteArtifactRequest,
+  WriteArtifactRequest,
+} from "./artifacts.js";
+export {
   AnswerQuestionRequest,
   Approval,
   ApprovalList,

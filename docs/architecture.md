@@ -78,8 +78,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     or with `--fork` from a copy of the active orchestrator chat's session on their first start (409 `nothing_to_fork`
     when the orchestrator chat has no session yet). The copy keeps the worker's model. After that first start the page
     gets a new snapshot with the copied messages.
-  - Side chats are read-only through their tools: `--tools read,grep,find,ls,request_human_input` and
-    `--exclude-tools 'mcp__*'` (ADR 0033). Their bridge token is read-only, so bridge routes that run commands refuse
+  - Side chats are read-only through their tools: `--tools
+    read,grep,find,ls,request_human_input,artifacts_list,artifacts_read` and `--exclude-tools 'mcp__*'` (ADR 0033,
+    ADR 0070). Their bridge token is read-only, so bridge routes that run commands refuse
     it, and spore-bridge gives them their own rules.
   - Title: the first user message, cut to 60 characters, set on the first prompt. Chats from before titles take it
     from their history when first read; side chats never take it from the copied history. The user can rename.
@@ -103,6 +104,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
     `new` unless another is given.
+  - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
+    `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
+    `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
+    never from the request. A read-only side chat may list and read; a write answers 403 `read_only_chat`.
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
     chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033). The orchestrator rules say to start
     every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120).
@@ -738,6 +743,41 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
 - Not built yet: "waiting for you" on Home (the attention module has no way for other modules to add items, Q18),
   and PR tools for agents (they come through spore-bridge).
 
+## 11f. Artifacts
+
+See [ADR 0070](decisions/0070-artifacts-per-workspace-and-project.md). Requirements R14.
+
+- The `artifacts` module (core, requires `projects`, `workspaces`) keeps files outside every working copy and Git:
+  `~/.pi-spore/artifacts/workspaces/<workspace id>/` and `~/.pi-spore/artifacts/projects/<project id>/`. The disk
+  holds the content. The table `artifacts_artifacts` holds, per scope, owner, and path, the agent that wrote it last
+  (none for the user), the workspace it was promoted from, and the time. A file put there by hand shows with its
+  modification time.
+- Paths are relative, with `/` between folders, at most 255 characters, without empty, `.`, or `..` parts,
+  backslashes, or control characters (400 `bad_path`). Reads use `readFileInside` (`@pi-spore/module-api/node`):
+  after resolving symlinks the file must be a regular file inside the owner's folder (403 `outside_root`). Writes
+  make folders one at a time and check each real path, and open the file with `O_NOFOLLOW`. At most 10 MiB per
+  file (413 `artifact_too_large`).
+- Other modules use `ArtifactsKey`: `list`, `read`, `write`, and `promote`. The bridge uses it for the agent tools
+  (section 2).
+- Routes:
+
+  | Route | Does |
+  |---|---|
+  | `GET /api/artifacts/workspaces/:id`, `GET /api/artifacts/projects/:id` | `{ artifacts }` of that folder, by path. |
+  | `GET /api/artifacts/{workspaces,projects}/:id/file?path=` | The bytes, typed by extension, with `nosniff` and a `sandbox` CSP. |
+  | `POST /api/artifacts/{workspaces,projects}/:id/file` `{ path, content }` | Creates or replaces a text file, written by the user. |
+  | `POST /api/artifacts/workspaces/:id/promote` `{ path }` | Copies a workspace file to the same path in its project. The original stays. 409 `artifact_exists` if the project has that path; a promotion never replaces. |
+  | `GET /api/artifacts/workspaces/:id/view?path=` | A Markdown or image file for the viewer, from the workspace folder or its two artifact folders. Other extensions answer 415 `not_viewable`, so `.env` and other repo files stay unreadable here. |
+
+- Topic `artifacts:<workspace id>` sends `{ type: "artifacts", workspace, project }` on subscribe and after every
+  write or promotion. A project change goes to every workspace of the project.
+- Nothing deletes artifacts: not archive, not retention, not removing a project (R14.3, ADR 0121).
+- Web: an Artifacts tab on the workspace lists both scopes, shows the selected file, and promotes workspace files.
+  The viewer renders Markdown (images in it show as links and never load, ADR 0061), shows images, puts HTML in an
+  `<iframe sandbox="">` (no scripts, no same origin), and shows other text as code. In the chat, a link to a local
+  `.md` or `.markdown` file opens the same viewer in a dialog through the `view` route. The agents module offers this
+  slot as `AgentsWeb.setFileLink`; without it the link stays plain.
+
 ## 11. Unity module
 
 See [ADR 0011](decisions/0011-unity-support.md).
@@ -978,7 +1018,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   data/pi-spore.sqlite   store (+ .lock)
   sessions/<workspace>/  Pi session JSONL files
   worktrees/<project>/<slug>-<id>/
-  artifacts/<workspace>/
+  artifacts/workspaces/<workspace>/   workspace artifacts (kept after archive)
+  artifacts/projects/<project>/       project artifacts
   pipelines/             user pipelines
   usage/<plan>.json      latest plan usage snapshots (written by the usage tap)
   usage/routing.jsonl    routing decisions (written by the router)

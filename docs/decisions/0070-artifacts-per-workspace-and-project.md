@@ -18,8 +18,9 @@ artifacts, and there was no viewer for Markdown files inside the repository.
   - project artifacts in `~/.pi-spore/artifacts/projects/<project id>/`: decisions, spikes, notes shared by all
     workspaces of the project.
 - A workspace artifact can be promoted to its project (a copy; the original stays for history).
-- Agents write and read artifacts through spore-bridge tools (`write_artifact`, `read_artifact`,
-  `list_artifacts`), limited to their own workspace and its project.
+- Agents write and read artifacts through spore-bridge tools (`artifacts_write`, `artifacts_read`,
+  `artifacts_list`, named like the `kanban_*` tools), limited to their own workspace and its project. Side chats get
+  `artifacts_list` and `artifacts_read`, which change nothing (an addition to ADR 0033's list).
 - One viewer for artifacts and for files inside the repository: Markdown rendered, images shown, HTML previewed in
   a sandboxed frame, other text shown as code.
 - Artifacts are kept after archive. Removing a project does not delete its artifacts without an explicit yes.
