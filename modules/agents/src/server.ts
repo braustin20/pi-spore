@@ -18,7 +18,12 @@ import {
   type Workspace,
 } from "@pi-spore/shared";
 import { type AgentChange, type Agents, AgentsKey } from "./contract.js";
-import { DELIVERIES_MIGRATION, Deliveries } from "./deliveries.js";
+import {
+  DELIVERIES_JOB_MIGRATION,
+  DELIVERIES_MIGRATION,
+  DELIVERY_JOB,
+  Deliveries,
+} from "./deliveries.js";
 import { checkPromptImages, imageHeaders, readLinkedImage, servableType } from "./images.js";
 import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
@@ -66,6 +71,8 @@ const MIGRATIONS = [
   "ALTER TABLE agents_agents ADD COLUMN model TEXT",
   // ADR 0121: retention counts a closed chat from the day it was closed.
   "ALTER TABLE agents_agents ADD COLUMN closed_at INTEGER",
+  // ADR 0004: a delivery's job on the runner.
+  DELIVERIES_JOB_MIGRATION,
 ];
 
 interface Row {
@@ -150,7 +157,6 @@ export function createAgentsModule(
       const exclude = options.excludeExtensions ?? ["npm:pi-lens"];
       const listeners: ((agentId: string, change: AgentChange) => void)[] = [];
       const chatDeleteListeners: ((agentId: string) => void)[] = [];
-      let deliveries: Deliveries | undefined;
 
       const resourceArgs =
         options.resourceArgs ??
@@ -198,7 +204,7 @@ export function createAgentsModule(
           );
           for (const listener of listeners) listener(agentId, change);
           if (change === "status" && agents.view(agentId).status === "idle")
-            deliveries?.flush(agentId);
+            host.jobs.wake(DELIVERY_JOB, agentId);
         },
         maxLive: options.maxLive ?? 4,
         idleStopMs: options.idleStopMs ?? 10 * 60_000,
@@ -222,6 +228,7 @@ export function createAgentsModule(
 
       const queue = new Deliveries({
         store: host.store,
+        jobs: host.jobs,
         log: host.log,
         now: host.now,
         newId: host.newId,
@@ -231,15 +238,12 @@ export function createAgentsModule(
           await agents.prompt(agentId, message, "followUp");
         },
       });
-      deliveries = queue;
-      // Rows left from before a restart.
-      for (const agentId of queue.pendingAgents()) queue.flush(agentId);
       workspaces.afterResume((workspace) => {
         const rows = host.store.all<Row>(
           "SELECT * FROM agents_agents WHERE workspace_id = ?",
           workspace.id,
         );
-        for (const row of rows) queue.flush(row.id);
+        for (const row of rows) host.jobs.wake(DELIVERY_JOB, row.id);
       });
 
       // Parking stops agents (R2.3); archiving removes the worktree, so its agent must stop first.
@@ -355,8 +359,9 @@ export function createAgentsModule(
       };
       host.provide(AgentsKey, api);
 
-      // ADR 0121. Deliveries go first: a flush already running for a forgotten chat only fails on its next read.
+      // ADR 0121. Deliveries go first: a send already running for a forgotten chat only fails on its next read.
       const dropChat = async (row: Row) => {
+        queue.cancelJobs(row.id);
         host.store.run("DELETE FROM agents_deliveries WHERE agent_id = ?", row.id);
         host.store.run("DELETE FROM agents_agents WHERE id = ?", row.id);
         await agents.forget(row.id);
@@ -510,7 +515,7 @@ export function createAgentsModule(
             host.store.run("UPDATE agents_agents SET active = 1 WHERE id = ?", target.id);
             await agents.setActive(target.id, true);
             // Answers that came while it was inactive.
-            queue.flush(target.id);
+            host.jobs.wake(DELIVERY_JOB, target.id);
           }
           return c.json({ agent: agents.view(target.id) });
         });

@@ -20,8 +20,9 @@ export interface AgentAttention {
 export interface Agents {
   /**
    * Queues a message for the agent as a durable delivery (architecture 6): a prompt when it is idle, a follow-up when
-   * it is busy, a start first when it is stopped. A parked workspace keeps it until it is resumed. The row is written
-   * at once, so a caller inside `store.transaction` commits it together with its own changes.
+   * it is busy, a start first when it is stopped. A parked workspace keeps it until it is resumed. The row and its
+   * job on the runner are written at once, so a caller inside `store.transaction` commits them together with its own
+   * changes.
    */
   deliver(agentId: string, message: string): void;
   /**
