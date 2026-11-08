@@ -1047,7 +1047,7 @@ describe("pi-spore run", () => {
     const { deps, out, sent } = fakeDeps(answer);
     expect(await run(["run", "list", "--project", "game"], deps)).toBe(0);
     expect(sent.at(-1)?.url).toBe("http://127.0.0.1:7420/api/runs?projectId=P1");
-    expect(out).toEqual(["U1  run/big-feature-abc123  2 lanes"]);
+    expect(out).toEqual(["U1  run/big-feature-abc123  running  2 lanes"]);
   });
 
   it("shows the lanes with wave, state, and workspace", async () => {
@@ -1055,14 +1055,26 @@ describe("pi-spore run", () => {
     expect(await run(["run", "show", "U1"], deps)).toBe(0);
     expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/runs/U1");
     const text = out.join("\n");
+    expect(out[0]).toBe("Run U1  run/big-feature-abc123  from main  running");
     expect(text).toContain("wave 1  failed    api  workspace W2  gate check failed");
     expect(text).toContain("wave 2  waiting   ui");
+  });
+
+  it("cancels a run", async () => {
+    const { deps, out, sent } = fakeDeps(answer);
+    expect(await run(["run", "cancel", "U1"], deps)).toBe(0);
+    expect(sent[0]).toMatchObject({
+      method: "POST",
+      url: "http://127.0.0.1:7420/api/runs/U1/cancel",
+    });
+    expect(out).toEqual(["Cancelled run U1  run/big-feature-abc123"]);
   });
 
   it("prints help and fails on bad usage", async () => {
     const { deps, err, sent } = fakeDeps(answer);
     expect(await run(["run", "start", "game"], deps)).toBe(2);
     expect(await run(["run", "show"], deps)).toBe(2);
+    expect(await run(["run", "cancel"], deps)).toBe(2);
     expect(await run(["run", "start", "game", "x", "--gate"], deps)).toBe(2);
     expect(err.at(-1)).toContain("Usage: pi-spore");
     expect(sent).toEqual([]);
