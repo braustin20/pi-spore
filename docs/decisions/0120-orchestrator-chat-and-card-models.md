@@ -15,12 +15,13 @@
   is built for.
 - The router's cloud model is `router.cloud`, or else the `worker` model (`pi-extensions/router/src/index.ts`). If
   `worker` became `spore/auto`, the router would route to itself.
-- The user's rules say the parent writes the code by default. It delegates implementation only when the work
-  cannot fit one context, is wide rather than deep, or the user asked. Read-only helpers (`scout`, `researcher`,
-  `reviewer`) are always allowed. Model routing is approved once, before implementation. A worker gets a fresh,
-  compact brief with one outcome, named edit boundaries, acceptance checks, and a handoff contract. In a
-  benchmark the user ran, delegated workers wrote two to three times the code of the parent and missed existing
-  seams.
+- The user's older rules (paint-crafter `AGENTS.md`) say the parent writes the code by default. They delegate
+  only when the work cannot fit one context, is wide rather than deep, or the user asked. The reason is a
+  benchmark: delegated workers wrote two to three times the code of the parent and missed existing seams. The
+  user now wants the pipeline's `implement` stage to run on a worker (R4.9), with the orchestrator checking the
+  result for conciseness. This ADR replaces the older rule for pi-spore. Read-only helpers (`scout`, `researcher`,
+  `reviewer`) are always allowed. A worker gets a fresh, compact brief with one outcome, named edit boundaries,
+  acceptance checks, and a handoff contract.
 - ADR 0007 describes a coordinator over many lane workspaces (v1, built last). That is a different thing. The
   orchestrator here is the chat of one workspace.
 
@@ -60,7 +61,13 @@
   `subagent` tool and a bounded brief. The router decides on that brief, and the choice sticks for that worker run.
 - `router.cloud` must name a real model. The router refuses `spore/auto` as its own cloud model and says which
   setting to fix. It does not fall back to the `worker` model when that is `spore/auto`.
-- Work that stays in the chat needs no router: the orchestrator is already on the model the card chose.
+- **The orchestrator plans and a worker implements.** The pipeline's `implement` stage is a separate `worker`
+  agent (R4.9). The orchestrator does not write the feature code. It may make tiny corrections and edit docs.
+- **The conciseness check.** After every worker run the orchestrator reads the real diff against the plan. Extra
+  validation, duplicated types, code that skips an existing seam, and changes outside the brief are too verbose.
+  It sends a fresh worker the goal, the current diff, and the exact cuts to make. After three passes without
+  success it re-splits the task or takes it over.
+- The user's yes to the plan covers its workers. The plan names the slices, and says they run on `spore/auto`.
 
 **4. The orchestrator's rules** go into pi-spore's rules in spore-bridge (`rules.ts`, ADR 0031), because agents in
 pi-spore do not see the user's global `AGENTS.md`. Draft:
@@ -77,16 +84,19 @@ Plan
   only if the user says yes.
 
 Build
-- You write the code by default. A worker cannot see what you have loaded, so it guesses and writes more than
-  needed.
-- Start a `worker` only when one of these holds: the work cannot fit one context; the work is wide, in independent
-  slices on different files; or the user asked.
-- Before the first worker, tell the user which slices go to workers and why, and wait for a yes with
-  request_human_input. That yes covers every worker for this plan.
-- One brief, one outcome. Give each worker the goal, the files it may edit and where to start reading, the
-  invariants, the pass or fail command, and what to report. Give it a fresh context, not this conversation.
-- Only one writer works in the worktree at a time. Wait for a worker to finish before you edit or start another.
-- Read the real diff after every worker. A worker that finds new work reports it. You decide what happens next.
+- You plan and check. A worker writes the feature code. You may write failing tests first when that makes the brief
+  exact, edit docs, and make tiny corrections.
+- Send the plan to the user with request_human_input before the first worker. Name the slices and say they run
+  on spore/auto. The user's yes covers every worker for this plan.
+- One brief, one outcome. Give each worker the goal, the files it may edit and where to start reading, one example
+  of the pattern to copy, the invariants, the pass or fail command, and what to report. Give it a fresh context,
+  not this conversation.
+- Only one writer works in the worktree at a time. Wait for a worker to finish before you start another.
+- After every worker, read the real diff. Do not trust the report alone.
+- Check for conciseness. Extra validation, duplicated types, code that skips an existing seam, and changes outside
+  the brief are too much. Send a new worker the goal, the current diff, and the exact cuts. After three passes
+  without success, split the task again or take it over.
+- A worker that finds new work reports it. You decide what happens next.
 - A fix pass is a new worker with the goal, the current diff, and the newest failure output.
 
 Finish
@@ -100,8 +110,9 @@ Finish
   decision 3 the `worker` role is already on `spore/auto`, so the stage gets the router with no extra code. That
   card also asks for a chat notice per routing decision. The model picker now names the routed model, so the card
   keeps only the part about the usage-pressure approval (R4.10) and the queue status (R4.5).
-- **Build review pipelines (R6).** The default pipeline starts with `implement` (role `worker`). Open point 1 below
-  decides who runs it.
+- **Build review pipelines (R6).** The default pipeline starts with `implement` (role `worker`, `tier = "route"`).
+  That matches this ADR: a separate worker agent runs it, and the orchestrator plans and checks. Architecture
+  section 8 needs no change.
 - **Build coordinator runs and lanes (R7).** The coordinator is the orchestrator of a run over many lane
   workspaces. A lane is a workspace with its own orchestrator chat. The lane model override (R4.8) and the card
   model of decision 2 are one mechanism: a model stored on the new chat. The model field and its column must come
@@ -115,15 +126,15 @@ Finish
 - The default chat model moves from Sonnet to the orchestrator setting, and the user can override it per card or
   per start. Sonnet and the router are used where the work is bounded.
 - The worker brief is the router's input, so routing gets better data than a chat's first message.
+- The orchestrator reads every diff, so its model's quota pays for review, not for the bulk of the code.
+- `AGENTS.md` of a project that says "the parent writes the code" (paint-crafter) conflicts with this. A project
+  `AGENTS.md` still loads in pi-spore agents. The user decides whether to change it.
 - The orchestrator rules are a draft. The user tunes them from real runs.
 - pi-spore must keep working with a settings file that lacks `orchestrator`. It then uses Pi's default model.
 - Open points for the build:
-  1. Who runs the pipeline's `implement` stage: a separate `worker` agent on the router (R4.9 as written), or the
-     orchestrator chat itself when it writes the code, with a `worker` only when it delegates? The user's rules
-     favor the second. Not settled.
-  2. The dropdown needs a model list when no chat is running. Today the list comes from a running chat
+  1. The dropdown needs a model list when no chat is running. Today the list comes from a running chat
     (`get_available_models`). The build must pick a source and count its cost against `agents.maxLive`.
-  3. A pi-subagents `worker` run in the chat is shown as a child run (ADR 0034). Its resolved model shows there.
+  2. A pi-subagents `worker` run in the chat is shown as a child run (ADR 0034). Its resolved model shows there.
 - Build order, one card each: (1) `orchestrator` role and the `router.cloud` check; (2) card `model` field and
   `agents_agents.model`; (3) the model list route; (4) dropdowns on the board and on Home; (5) orchestrator rules
   and UI wording.

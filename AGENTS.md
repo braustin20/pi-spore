@@ -22,6 +22,18 @@ agents across Git projects, with first-class Unity support. Read these before ch
 - pi-spore never merges to a base branch, never enables auto-merge, never changes a role's model without approval,
   and never closes a Unity editor without an explicit yes.
 
+## Delegation (ADR 0120)
+
+- The chat plans and checks. A `worker` subagent writes the feature code, on `spore/auto`. The chat may write
+  failing tests first, edit docs, and make tiny corrections.
+- `scout`, `researcher`, and `reviewer` are always allowed. Ask the user before the first worker, with the plan.
+  That yes covers every worker for the plan.
+- One brief per worker: one outcome, the files it may edit, one example of the pattern, the invariants, one pass or
+  fail command, a fresh context. One writer in the worktree at a time.
+- After each worker, read the real diff and check it for conciseness: extra validation, duplicated types, code that
+  skips an existing seam, and changes outside the brief go back to a new worker as exact cuts. After three passes,
+  re-split the task or take it over.
+
 ## Module rules
 
 - Every feature beyond the core lives in `modules/<id>/`, an npm package `@pi-spore/mod-<id>` with `src/server.ts`
