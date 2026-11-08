@@ -80,11 +80,19 @@ role = "worker"
 tier = "route"
 `;
 
+/** Pi exits at once while this file exists, so a delivery to an agent that is not running stays pending. */
+const PI_DOWN = () => join(scratch, "pi-down");
+
 async function start(options: { home?: string; firstId?: number; record?: boolean } = {}) {
   const script = join(scratch, "script.json");
   writeFileSync(script, JSON.stringify({ worker: ["hang", "hang", "hang"] }));
+  const wrapper = join(scratch, "pi-wrapper.mjs");
+  writeFileSync(
+    wrapper,
+    `import { existsSync } from "node:fs";\nif (existsSync(${JSON.stringify(PI_DOWN())})) process.exit(1);\nawait import(${JSON.stringify(FAKE_PI)});\n`,
+  );
   const agents = createAgentsModule({
-    pi: { command: process.execPath, args: [FAKE_PI] },
+    pi: { command: process.execPath, args: [wrapper] },
     resourceArgs: async () => ["--no-extensions"],
     roleDefaults: async () => ({ provider: "fake", modelId: "mid" }),
     baseEnv: {
@@ -924,5 +932,147 @@ describe("cancelling a run (ADR 0150)", () => {
 
     expect(response.status).toBe(404);
     expect(await response.json()).toMatchObject({ error: { code: "run_not_found" } });
+  });
+});
+
+describe("a new coordinator chat (ADR 0030)", () => {
+  const newWorkerChat = async (server: TestServer, workspaceId: string) =>
+    (
+      await json<{ agent: { id: string } }>(
+        await server.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
+        201,
+      )
+    ).agent.id;
+  /** A chat that works cannot be replaced (409 worker_busy), so the tests stop the coordinator first. */
+  const stopped = async (server: TestServer, agentId: string) => {
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+  };
+  const isAsked = (message: string) =>
+    message.startsWith("user: ") && message.includes("asks (question");
+  const pendingOf = (server: TestServer, agentId: string) =>
+    server.store
+      .all<{ message: string }>(
+        "SELECT message FROM agents_deliveries WHERE agent_id = ? AND state = 'pending' ORDER BY created_at, id",
+        agentId,
+      )
+      .map((row) => row.message);
+
+  it("becomes the coordinator, gets a handover of the whole run, and launches with the coordinator tools", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "handover");
+    const { run, coordinator } = await createRun(server, projectId, "handover");
+    const { lane, asWorker } = await laneWithWorker(server, run, coordinator);
+    const later = await startLane(run, coordinator, "later", { wave: 2 });
+    const { question } = await json<{ question: { id: string } }>(
+      await asWorker("POST", "coordinator/questions", { question: "Which hash?" }),
+      201,
+    );
+    await untilDelivered(server, run.coordinatorAgentId, question.id);
+    await stopped(server, run.coordinatorAgentId);
+
+    const chatId = await newWorkerChat(server, run.workspaceId);
+
+    expect((await getRun(server, run.id)).coordinatorAgentId).toBe(chatId);
+    const handover = await deliveredWith(server, chatId, "coordinator of the run");
+    expect(handover).toContain("new chat");
+    expect(handover).toContain(run.line);
+    expect(handover).toContain(run.base);
+    expect(handover).toContain(`"asker" (${lane.id}), wave 1, running, brief briefs/asker.md`);
+    expect(handover).toContain(`"later" (${later.id}), wave 2, waiting, brief briefs/later.md`);
+    expect(handover).toContain(`${question.id}: lane "asker" asks: Which hash?`);
+    expect(handover).toContain("answer_lane");
+    await until(() => launchOf(chatId) !== undefined);
+    expect(launchOf(chatId)?.env.PI_SPORE_RUN_ROLE).toBe("coordinator");
+    expect(launchOf(chatId)?.env.PI_SPORE_RUN_ID).toBe(run.id);
+    expect(launchOf(chatId)?.argv.join(" ")).toContain(COORDINATOR_TOOLS.join(","));
+  });
+
+  it("lists the diff of a passed lane", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "handover-diff");
+    const { run, coordinator } = await createRun(server, projectId, "handover-diff");
+    const started = await startLane(run, coordinator, "done");
+    await passLane(server, run.id, started.id);
+    await untilDelivered(server, run.coordinatorAgentId, "passed its pipeline");
+    await stopped(server, run.coordinatorAgentId);
+
+    const chatId = await newWorkerChat(server, run.workspaceId);
+
+    const handover = await deliveredWith(server, chatId, "coordinator of the run");
+    expect(handover).toContain(
+      `"done" (${started.id}), wave 1, passed, brief briefs/done.md, diff runs/${run.id}/lanes/${started.id}.diff`,
+    );
+  });
+
+  // Pi cannot start, so the questions stay pending on the coordinator that never took them.
+  it("moves the deliveries the old chat has not taken to the new chat, after the handover", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "handover-queue");
+    const { run, coordinator } = await createRun(server, projectId, "handover-queue");
+    const { asWorker } = await laneWithWorker(server, run, coordinator);
+    writeFileSync(PI_DOWN(), "");
+    await asWorker("POST", "coordinator/questions", { question: "First?" });
+    await asWorker("POST", "coordinator/questions", { question: "Second?" });
+    await until(() => pendingOf(server, run.coordinatorAgentId).length === 2);
+
+    const chatId = await newWorkerChat(server, run.workspaceId);
+
+    expect(pendingOf(server, run.coordinatorAgentId)).toEqual([]);
+    expect(pendingOf(server, chatId)).toHaveLength(3);
+    rmSync(PI_DOWN());
+    await json(await server.request("POST", `/api/workspaces/${run.workspaceId}/park`));
+    await json(await server.request("POST", `/api/workspaces/${run.workspaceId}/resume`));
+    // The handover also quotes the open questions, so the moved messages are told apart by their own wording.
+    await until(async () => (await chat(server, chatId)).filter(isAsked).length === 2);
+    const messages = await chat(server, chatId);
+    const at = (text: string) => messages.findIndex((message) => message.includes(text));
+    expect(at("coordinator of the run")).toBe(0);
+    expect(messages.findIndex(isAsked)).toBeGreaterThan(0);
+    expect(messages.filter(isAsked).map((message) => message.includes("First?"))).toEqual([
+      true,
+      false,
+    ]);
+  });
+
+  it("gets the report of a lane that passes after the change, not the old chat", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "handover-report");
+    const { run, coordinator } = await createRun(server, projectId, "handover-report");
+    const started = await startLane(run, coordinator, "work");
+    await until(async () => (await laneOf(server, run.id, started.id)).state === "running");
+    const chatId = await newWorkerChat(server, run.workspaceId);
+
+    await passLane(server, run.id, started.id);
+
+    const report = await deliveredWith(server, chatId, "passed its pipeline");
+    expect(report).toContain(started.id);
+    expect(await chat(server, run.coordinatorAgentId)).toEqual([]);
+  });
+
+  it("makes an older chat the coordinator when the user activates it", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "handover-activate");
+    const { run } = await createRun(server, projectId, "handover-activate");
+    const second = await newWorkerChat(server, run.workspaceId);
+    expect((await getRun(server, run.id)).coordinatorAgentId).toBe(second);
+    await untilDelivered(server, second, "coordinator of the run");
+    await stopped(server, second);
+
+    await json(await server.request("POST", `/api/agents/${run.coordinatorAgentId}/activate`));
+
+    expect((await getRun(server, run.id)).coordinatorAgentId).toBe(run.coordinatorAgentId);
+  });
+
+  it("keeps the coordinator of a cancelled run", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "handover-cancelled");
+    const { run } = await createRun(server, projectId, "handover-cancelled");
+    await json(await server.request("POST", `/api/runs/${run.id}/cancel`));
+
+    const chatId = await newWorkerChat(server, run.workspaceId);
+
+    expect(chatId).not.toBe(run.coordinatorAgentId);
+    expect((await getRun(server, run.id)).coordinatorAgentId).toBe(run.coordinatorAgentId);
+    expect(pendingOf(server, chatId)).toEqual([]);
   });
 });

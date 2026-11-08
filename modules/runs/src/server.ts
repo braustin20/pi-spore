@@ -254,6 +254,39 @@ const gateFailedMessage = (
     "You can call revise_lane with a new brief to fix it.",
   ].join("\n");
 
+/** What the lane diff artifact is called once a lane has passed; `report` and `merge` write it. */
+const laneDiffPath = (runId: string, laneId: string) => `runs/${runId}/lanes/${laneId}.diff`;
+
+const HAS_LANE_DIFF: readonly LaneState[] = ["passed", "merging", "merged"];
+
+const handoverMessage = (
+  run: RunRow,
+  runName: string,
+  lanes: readonly LaneRow[],
+  questions: readonly (QuestionRow & { laneName: string })[],
+) =>
+  [
+    `The user started a new chat. This chat is now the coordinator of the run "${runName}" (${run.id}).`,
+    `The run line is ${run.line}. Its base is ${run.base}.`,
+    lanes.length === 0 ? "The run has no lanes yet." : "The lanes:",
+    ...lanes.map(
+      (lane) =>
+        `- "${lane.name}" (${lane.id}), wave ${lane.wave}, ${lane.state}, brief ${lane.brief}${
+          HAS_LANE_DIFF.includes(lane.state) ? `, diff ${laneDiffPath(run.id, lane.id)}` : ""
+        }`,
+    ),
+    ...(questions.length === 0
+      ? ["No lane question is open."]
+      : [
+          "Open lane questions. Answer each with answer_lane:",
+          ...questions.map(
+            (question) =>
+              `- ${question.id}: lane "${question.laneName}" asks: ${question.question}`,
+          ),
+        ]),
+    "Messages for the old chat follow.",
+  ].join("\n");
+
 export const runsModule: ServerModule = {
   id: "runs",
   requires: ["projects", "workspaces", "agents", "artifacts", "attention", "actions", "pipelines"],
@@ -275,6 +308,8 @@ export const runsModule: ServerModule = {
       if (!run) throw new ApiError(404, "run_not_found", `No run ${id}`);
       return run;
     };
+    // A job step's commit reads it again: the user may have started a new coordinator chat during the step's async work.
+    const coordinatorOf = (runId: string) => requireRun(runId).coordinator_agent_id;
     const runByWorkspace = (workspaceId: string) =>
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE workspace_id = ?", workspaceId);
     const loadLane = (id: string) =>
@@ -684,7 +719,7 @@ export const runsModule: ServerModule = {
       if (lane.state === "failed") {
         return {
           next: null,
-          commit: () => agents.deliver(run.coordinator_agent_id, failedMessage(lane)),
+          commit: () => agents.deliver(coordinatorOf(run.id), failedMessage(lane)),
         };
       }
       const { integrate } = await integrateOf(run.project_id);
@@ -694,11 +729,11 @@ export const runsModule: ServerModule = {
         { path: runWorkspace.path, line: run.line },
         laneWorkspace.line as string,
       );
-      const path = `runs/${run.id}/lanes/${lane.id}.diff`;
+      const path = laneDiffPath(run.id, lane.id);
       await artifacts.write({ scope: "workspace", id: run.workspace_id }, path, diff);
       return {
         next: null,
-        commit: () => agents.deliver(run.coordinator_agent_id, passedMessage(lane, path)),
+        commit: () => agents.deliver(coordinatorOf(run.id), passedMessage(lane, path)),
       };
     };
 
@@ -765,7 +800,7 @@ export const runsModule: ServerModule = {
             `merge conflict in ${conflicts.join(", ")}`,
             lane.id,
           );
-          agents.deliver(run.coordinator_agent_id, conflictMessage(lane, run.line, conflicts));
+          agents.deliver(coordinatorOf(run.id), conflictMessage(lane, run.line, conflicts));
         },
       };
     };
@@ -843,7 +878,7 @@ export const runsModule: ServerModule = {
               `gate ${failure.action} failed`,
               lane.id,
             );
-            agents.deliver(run.coordinator_agent_id, gateFailedMessage(lane, failure, path));
+            agents.deliver(coordinatorOf(run.id), gateFailedMessage(lane, failure, path));
           },
         };
       }
@@ -869,7 +904,7 @@ export const runsModule: ServerModule = {
             (other) => other.state === "merged" || other.state === "declined",
           );
           agents.deliver(
-            run.coordinator_agent_id,
+            coordinatorOf(run.id),
             [
               `Lane "${lane.name}" (${lane.id}) is merged into ${run.line}. The gates passed on the merged tree.`,
               ...(done
@@ -903,6 +938,32 @@ export const runsModule: ServerModule = {
       return lane
         ? { env: { PI_SPORE_RUN_ID: lane.run_id, PI_SPORE_RUN_ROLE: "lane" } }
         : undefined;
+    });
+
+    // A new or reactivated worker chat takes over the run (ADR 0030: the old chat is read-only history). A cancelled
+    // or finished run keeps its coordinator.
+    agents.afterWorkerChange((agent) => {
+      const run = runByWorkspace(agent.workspaceId);
+      if (run?.state !== "running" || run.coordinator_agent_id === agent.id) return;
+      const lanes = lanesOf(run.id);
+      const questions = openQuestionsOf(run.id).map((question) => ({
+        ...question,
+        laneName: lanes.find((lane) => lane.id === question.lane_id)?.name as string,
+      }));
+      host.store.transaction(() => {
+        host.store.run(
+          "UPDATE runs_runs SET coordinator_agent_id = ? WHERE id = ?",
+          agent.id,
+          run.id,
+        );
+        // The handover goes first, so the old chat's unsent messages follow it in order.
+        agents.deliver(
+          agent.id,
+          handoverMessage(run, workspaces.get(run.workspace_id).name, lanes, questions),
+        );
+        agents.moveDeliveries(run.coordinator_agent_id, agent.id);
+      });
+      publish();
     });
 
     /** Stops a run (ADR 0150). It deletes nothing and never merges, pushes, or opens a PR. */
