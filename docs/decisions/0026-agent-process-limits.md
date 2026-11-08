@@ -16,6 +16,10 @@ agent uses about 0.2 to 0.5 GB. Unity editors need several GB each, and the mach
 - An agent process with no run, no queued input, and no open dialog stops after 10 idle minutes (setting
   `agents.idleStopMinutes`). Its session file keeps the conversation. It restarts with `--session` in about 1 s
   when it gets work.
+- A stopped agent restarts quickly, so idleness must not block work. When a chat waits for a slot, pi-spore stops
+  idle agents at once, longest idle first, until each waiting chat has a slot. An agent that is busy, has queued
+  input, has an open dialog, or has running helpers (ADR 0034) is never stopped this way. The 10-minute idle stop
+  stays for the case where nobody waits.
 
 ## Consequences
 

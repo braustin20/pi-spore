@@ -629,7 +629,9 @@ export class AgentManager {
   private async acquireSlot(live: Live): Promise<void> {
     while (this.othersLive(live) + this.runningChildren() >= this.options.maxLive) {
       if (live.status !== "waiting") this.setStatus(live, "waiting");
-      await new Promise<void>((resolve) => this.waiting.push(resolve));
+      const turn = new Promise<void>((resolve) => this.waiting.push(resolve));
+      this.evictIdle();
+      await turn;
     }
   }
 
@@ -907,12 +909,34 @@ export class AgentManager {
   /** Starts the idle clock when nothing is running, queued, or waiting for an answer (ADR 0026). */
   private armIdle(live: Live): void {
     this.clearIdle(live);
-    const queued = live.chat.queue.steering.length + live.chat.queue.followUp.length;
-    if (!live.process?.alive || live.chat.busy || queued > 0 || live.dialogs.size > 0) return;
-    // A running helper delivers its result to this process (ADR 0034).
-    if (runningCount(live.children) > 0) return;
+    if (!this.isIdle(live)) return;
     live.idleTimer = setTimeout(() => void this.stop(live.record.id), this.options.idleStopMs);
     live.idleTimer.unref();
+    this.evictIdle();
+  }
+
+  private isIdle(live: Live): boolean {
+    const queued = live.chat.queue.steering.length + live.chat.queue.followUp.length;
+    if (!live.process?.alive || live.chat.busy || queued > 0 || live.dialogs.size > 0) return false;
+    // A running helper delivers its result to this process (ADR 0034).
+    return runningCount(live.children) === 0;
+  }
+
+  /**
+   * Stops idle agents, longest idle first, so waiting chats can start. A stopped chat restarts in about 1 s,
+   * so idleness must not block work (ADR 0026). Agents already stopping count as slots on their way.
+   */
+  private evictIdle(): void {
+    let freeing = 0;
+    const candidates: Live[] = [];
+    for (const live of this.agents.values()) {
+      if (live.stopping && live.process?.alive) freeing++;
+      else if (this.isIdle(live)) candidates.push(live);
+    }
+    candidates.sort((a, b) => a.since - b.since);
+    for (const live of candidates.slice(0, Math.max(0, this.waiting.length - freeing))) {
+      void this.stop(live.record.id);
+    }
   }
 
   private clearIdle(live: Live): void {
