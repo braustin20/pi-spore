@@ -1,4 +1,4 @@
-import { parse, Workspace, type WorkspaceState } from "@pi-spore/shared";
+import { type Project, parse, Workspace, type WorkspaceState } from "@pi-spore/shared";
 import Type from "typebox";
 
 export interface WorkspaceGroup {
@@ -33,6 +33,34 @@ export function groupWorkspaces(
         .sort((a, b) => b.updatedAt - a.updatedAt),
     }))
     .filter((group) => group.workspaces.length > 0);
+}
+
+export interface ProjectGroup {
+  projectId: string;
+  name: string;
+  /** False when there is only one group: one project needs no divider. */
+  divider: boolean;
+  parts: WorkspaceGroup[];
+}
+
+/** The list column's project groups, sorted by project name. Each holds its own state groups. */
+export function groupByProject(
+  workspaces: readonly Workspace[],
+  projects: readonly Pick<Project, "id" | "name">[],
+  options: { showArchived: boolean; projectId?: string | undefined },
+): ProjectGroup[] {
+  const ids = [...new Set(workspaces.map((workspace) => workspace.projectId))].filter(
+    (id) => options.projectId === undefined || id === options.projectId,
+  );
+  const groups = ids
+    .map((projectId) => ({
+      projectId,
+      name: projects.find((project) => project.id === projectId)?.name ?? projectId,
+      parts: groupWorkspaces(workspaces, { showArchived: options.showArchived, projectId }),
+    }))
+    .filter((group) => group.parts.length > 0)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return groups.map((group) => ({ ...group, divider: groups.length > 1 }));
 }
 
 /** A short age such as `now`, `5m`, `3h`, or `2d`. */
