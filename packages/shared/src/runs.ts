@@ -139,3 +139,25 @@ export const AnswerLaneRequest = Type.Object(
   { additionalProperties: false },
 );
 export type AnswerLaneRequest = Static<typeof AnswerLaneRequest>;
+
+export const OpenRunPrRequest = Type.Object(
+  {
+    title: Type.String({ minLength: 1, maxLength: 256 }),
+    body: Type.String({ maxLength: 65_536 }),
+  },
+  { additionalProperties: false },
+);
+export type OpenRunPrRequest = Static<typeof OpenRunPrRequest>;
+
+/** What a `run-pr` approval holds (ADR 0100). The user may edit `title` and `body` on approve, not the rest. */
+export const RunPrSubject = Type.Object(
+  {
+    runId: Type.String(),
+    title: Type.String(),
+    body: Type.String(),
+    base: Type.String(),
+    head: Type.String(),
+  },
+  { additionalProperties: false },
+);
+export type RunPrSubject = Static<typeof RunPrSubject>;

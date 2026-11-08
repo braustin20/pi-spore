@@ -4,6 +4,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Type from "typebox";
+import { ApprovalAnswer } from "./cards.js";
 import { type BridgeClient, type BridgeEnv, QuestionAnswer } from "./client.js";
 
 const LaneAnswer = Type.Object({
@@ -173,6 +174,36 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
       return {
         content: text(`The answer to question ${question.id} was sent to the lane agent.`),
         details: { questionId: question.id },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "open_run_pr",
+    label: "Ask to open the run's PR",
+    description:
+      "Ask the user to open the one PR of this run, then end your turn. Call it only when every lane is merged or " +
+      "declined. Nothing is sent to GitHub until the user approves on pi-spore's Home page; they may edit the title " +
+      "and body or decline. It never merges the PR. The decision arrives as a new user message.",
+    promptSnippet: "Ask the user to open the run's PR once every lane is merged or declined",
+    promptGuidelines: ["Call open_run_pr alone, as the last tool call of your turn, then stop."],
+    parameters: Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 256, description: "The PR title" }),
+      body: Type.String({ maxLength: 65_536, description: "The PR body: what the run built" }),
+    }),
+    async execute(toolCallId, params, signal) {
+      const { approval } = await client.call(ApprovalAnswer, "coordinator/pr", {
+        body: params,
+        receipt: toolCallId,
+        ...(signal ? { signal } : {}),
+      });
+      return {
+        content: text(
+          `The request is on the user's Home page (approval ${approval.id}: ${approval.title}). Stop now. ` +
+            "The decision arrives as a new user message.",
+        ),
+        details: { approvalId: approval.id },
+        terminate: true,
       };
     },
   });

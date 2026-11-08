@@ -23,6 +23,7 @@ import {
   type CardColumn,
   FileQuestionRequest,
   MergeLaneRequest,
+  OpenRunPrRequest,
   parseJsonBody,
   ReviseLaneRequest,
   StageReport,
@@ -232,6 +233,13 @@ export const bridgeModule: ServerModule = {
       refuseReadOnly(caller, "merge lanes");
       const request = parseJsonBody(MergeLaneRequest, await c.req.text(), "lane merge");
       return c.json({ lane: await runs.mergeLane(caller, request) });
+    });
+
+    host.routes.post("/coordinator/pr", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "open the run's PR");
+      const request = parseJsonBody(OpenRunPrRequest, await c.req.text(), "run PR request");
+      return c.json({ approval: runs.requestPr(caller, request) }, 201);
     });
 
     // Lane reviewers are read-only and may ask their coordinator, so this route does not refuse read-only callers.

@@ -2,6 +2,7 @@ import { ActionsKey } from "@pi-spore/mod-actions/server";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { ArtifactsKey } from "@pi-spore/mod-artifacts/server";
 import { ApprovalsKey } from "@pi-spore/mod-attention/server";
+import { PullRequestsKey } from "@pi-spore/mod-github-pr/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
@@ -15,15 +16,18 @@ import {
 import { loadSettings, TIERS, tierOf } from "@pi-spore/router";
 import {
   type AnswerLaneRequest,
+  type Approval,
   type AskCoordinatorRequest,
   CreateRunRequest,
   type Lane,
   type LaneState,
   type MergeLaneRequest,
+  type OpenRunPrRequest,
   parseJsonBody,
   type ReviseLaneRequest,
   type Run,
   type RunEvent,
+  RunPrSubject,
   type RunQuestion,
   type RunState,
   type StartLaneRequest,
@@ -48,6 +52,7 @@ export const COORDINATOR_TOOLS: readonly string[] = [
   "revise_lane",
   "merge_lane",
   "answer_lane",
+  "open_run_pr",
 ];
 
 const MIGRATIONS = [
@@ -92,6 +97,7 @@ const MIGRATIONS = [
     answered_at INTEGER
   )`,
   "ALTER TABLE runs_runs ADD COLUMN state TEXT NOT NULL DEFAULT 'running'",
+  "ALTER TABLE runs_runs ADD COLUMN pr_approval_id TEXT",
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -104,6 +110,7 @@ interface RunRow {
   gates: string;
   state: RunState;
   coordinator_agent_id: string;
+  pr_approval_id: string | null;
   created_at: number;
 }
 
@@ -164,6 +171,9 @@ const LOG_TAIL_CHARS = 4096;
 const LANE_MODEL = "lane-model";
 const LaneModelSubject = Type.Object({ laneId: Type.String() }, { additionalProperties: false });
 type LaneModelSubject = Static<typeof LaneModelSubject>;
+
+/** The approval kind filed when the coordinator asks to open the run's PR (ADR 0100, ADR 0130). */
+const RUN_PR = "run-pr";
 
 const DEFAULT_GATES = ["check", "test"];
 const DEFAULT_PIPELINE = "default";
@@ -289,7 +299,16 @@ const handoverMessage = (
 
 export const runsModule: ServerModule = {
   id: "runs",
-  requires: ["projects", "workspaces", "agents", "artifacts", "attention", "actions", "pipelines"],
+  requires: [
+    "projects",
+    "workspaces",
+    "agents",
+    "artifacts",
+    "attention",
+    "actions",
+    "pipelines",
+    "github-pr",
+  ],
   core: false,
   setup(host) {
     host.store.migrate("runs", MIGRATIONS);
@@ -300,6 +319,7 @@ export const runsModule: ServerModule = {
     const approvals = host.use(ApprovalsKey);
     const pipelines = host.use(PipelinesKey);
     const actions = host.use(ActionsKey);
+    const pullRequests = host.use(PullRequestsKey);
 
     const loadRun = (id: string) =>
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE id = ?", id);
@@ -610,6 +630,90 @@ export const runsModule: ServerModule = {
       return answered;
     };
 
+    const requestPr = (caller: BridgeCaller, request: OpenRunPrRequest): Approval => {
+      const run = runOfCaller(caller);
+      if (run.state === "finished") {
+        throw new ApiError(409, "run_finished", `The PR of run ${run.id} is open`);
+      }
+      const lanes = lanesOf(run.id);
+      const open = lanes.find((lane) => lane.state !== "merged" && lane.state !== "declined");
+      if (open || !lanes.some((lane) => lane.state === "merged")) {
+        throw new ApiError(
+          409,
+          "run_not_finished",
+          open
+            ? `Lane "${open.name}" (${open.id}) is ${open.state}; every lane must be merged or declined`
+            : "No lane is merged yet",
+        );
+      }
+      if (run.pr_approval_id) {
+        throw new ApiError(
+          409,
+          "run_pr_asked",
+          `Approval ${run.pr_approval_id} already asks the user to open the PR of run ${run.id}`,
+        );
+      }
+      const approval = host.store.transaction(() => {
+        const filed = approvals.file(caller, {
+          kind: RUN_PR,
+          title: `Open the PR of run "${workspaces.get(run.workspace_id).name}"`,
+          reason:
+            "Opening a PR sends the run's branch and this text to GitHub. pi-spore never merges it; a human does (ADR 0130).",
+          subject: {
+            runId: run.id,
+            title: request.title,
+            body: request.body,
+            base: run.base,
+            head: run.line,
+          } satisfies RunPrSubject,
+        });
+        host.store.run("UPDATE runs_runs SET pr_approval_id = ? WHERE id = ?", filed.id, run.id);
+        return filed;
+      });
+      publish();
+      return approval;
+    };
+
+    approvals.register({
+      kind: RUN_PR,
+      subject: RunPrSubject,
+      approve: async (subject, approval) => {
+        const filed = approval.subject as RunPrSubject;
+        if (
+          subject.runId !== filed.runId ||
+          subject.base !== filed.base ||
+          subject.head !== filed.head
+        ) {
+          throw new ApiError(
+            422,
+            "approval_run_changed",
+            "Approve can change the title and body, not the run, base, or head",
+          );
+        }
+        const run = requireRun(subject.runId);
+        if (run.state === "cancelled") {
+          throw new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`);
+        }
+        const pr = await pullRequests.open(run.workspace_id, {
+          title: subject.title,
+          body: subject.body,
+          base: run.base,
+        });
+        return `Opened PR #${pr.number} (${pr.url}) from ${run.line} into ${run.base}. A human merges it; pi-spore never merges it and never turns on auto-merge.`;
+      },
+      decided: (subject, approval, approved) => {
+        const run = loadRun(subject.runId);
+        if (run?.pr_approval_id !== approval.id) return;
+        host.store.run(
+          approved
+            ? "UPDATE runs_runs SET pr_approval_id = NULL, state = 'finished' WHERE id = ?"
+            : "UPDATE runs_runs SET pr_approval_id = NULL WHERE id = ?",
+          run.id,
+        );
+        publishAfterCommit();
+      },
+    });
+
     approvals.register({
       kind: LANE_MODEL,
       subject: LaneModelSubject,
@@ -909,7 +1013,7 @@ export const runsModule: ServerModule = {
               `Lane "${lane.name}" (${lane.id}) is merged into ${run.line}. The gates passed on the merged tree.`,
               ...(done
                 ? [
-                    "All lanes of the run are merged. Tell the user to open the one PR from this workspace's PR tab. pi-spore never merges to the base line.",
+                    "All lanes of the run are merged or declined. Call open_run_pr with a title and a body to ask the user to open the run's one PR. pi-spore never merges to the base line.",
                   ]
                 : []),
             ].join("\n"),
@@ -1020,6 +1124,7 @@ export const runsModule: ServerModule = {
       mergeLane,
       askCoordinator,
       answerLane,
+      requestPr,
       laneOf: (workspaceId) => {
         const lane = laneByWorkspace(workspaceId);
         return lane ? { runId: lane.run_id, laneId: lane.id } : undefined;

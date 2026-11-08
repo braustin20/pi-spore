@@ -15,6 +15,7 @@ import { actionsModule } from "@pi-spore/mod-actions/server";
 import { createAgentsModule } from "@pi-spore/mod-agents/server";
 import { type Artifacts, ArtifactsKey, artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
+import { createGithubPrModule } from "@pi-spore/mod-github-pr/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
@@ -30,6 +31,7 @@ import type {
   PipelineRun,
   Run,
   RunEvent,
+  RunPrSubject,
   StartLaneRequest,
   Workspace,
 } from "@pi-spore/shared";
@@ -39,6 +41,9 @@ import { asAgent, chat, json, until } from "./testing.js";
 
 const GATE_ACTION = fileURLToPath(new URL("../test-fixtures/gate-action.mjs", import.meta.url));
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
+const FAKE_GH = fileURLToPath(
+  new URL("../../github-pr/test-fixtures/fake-gh.mjs", import.meta.url),
+);
 
 let scratch: string;
 let servers: { server: TestServer; agents: ReturnType<typeof createAgentsModule> }[];
@@ -83,8 +88,12 @@ tier = "route"
 /** Pi exits at once while this file exists, so a delivery to an agent that is not running stays pending. */
 const PI_DOWN = () => join(scratch, "pi-down");
 
+/** The fake GitHub's state file: every `gh` call is recorded in it. */
+const ghState = () => join(scratch, "gh.json");
+
 async function start(options: { home?: string; firstId?: number; record?: boolean } = {}) {
   const script = join(scratch, "script.json");
+  if (!existsSync(ghState())) writeFileSync(ghState(), JSON.stringify({ prs: [] }));
   writeFileSync(script, JSON.stringify({ worker: ["hang", "hang", "hang"] }));
   const wrapper = join(scratch, "pi-wrapper.mjs");
   writeFileSync(
@@ -114,6 +123,7 @@ async function start(options: { home?: string; firstId?: number; record?: boolea
       attentionModule,
       artifactsModule,
       kanbanModule,
+      createGithubPrModule({ gh: { command: process.execPath, args: [FAKE_GH, ghState()] } }),
       pipelinesModule,
       runsModule,
       bridgeModule,
@@ -556,7 +566,7 @@ describe("merging a lane (ADR 0150)", () => {
     expect(git(folder, "rev-parse", "main")).toBe(main);
   });
 
-  it("tells the coordinator to open the one PR when the last lane is merged", async () => {
+  it("tells the coordinator to call open_run_pr when the last lane is merged", async () => {
     const server = await start();
     const { projectId, folder } = await project(server, "last", GREEN);
     const main = git(folder, "rev-parse", "main");
@@ -568,7 +578,7 @@ describe("merging a lane (ADR 0150)", () => {
 
     await untilDelivered(server, run.coordinatorAgentId, "All lanes of the run are merged");
     const delivery = await deliveredWith(server, run.coordinatorAgentId, "All lanes");
-    expect(delivery).toContain("PR tab");
+    expect(delivery).toContain("open_run_pr");
     expect(git(folder, "rev-parse", "main")).toBe(main);
   });
 
@@ -1074,5 +1084,144 @@ describe("a new coordinator chat (ADR 0030)", () => {
     expect(chatId).not.toBe(run.coordinatorAgentId);
     expect((await getRun(server, run.id)).coordinatorAgentId).toBe(run.coordinatorAgentId);
     expect(pendingOf(server, chatId)).toEqual([]);
+  });
+});
+
+describe("the run PR (ADR 0100, ADR 0130)", () => {
+  const GREEN = { check: "pass", test: "pass" };
+  const ghCalls = () =>
+    (JSON.parse(readFileSync(ghState(), "utf8")) as { calls?: string[][] }).calls ?? [];
+  const prCreates = () => ghCalls().filter((call) => call[0] === "pr" && call[1] === "create");
+  const remoteHas = (origin: string, line: string) => git(origin, "branch", "--list", line) !== "";
+  const decide = (server: TestServer, id: string, action: "approve" | "decline", body: object) =>
+    server.request("POST", `/api/attention/approvals/${id}/${action}`, body);
+
+  /** A run whose only lane is merged with green gates, in a project that has a bare `origin` for the push. */
+  async function mergedRun(name: string) {
+    const server = await start();
+    const { projectId, folder } = await project(server, name, GREEN);
+    const origin = join(scratch, `${name}-origin.git`);
+    git(scratch, "init", "-q", "--bare", origin);
+    git(folder, "remote", "add", "origin", origin);
+    git(folder, "push", "-q", "origin", "main");
+    const { run, coordinator } = await createRun(server, projectId, name);
+    const lane = await startLane(run, coordinator, "only");
+    await laneChanges(server, run, lane.id, "feature.txt", "x\n");
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "merged");
+    return { server, run, coordinator, origin, lane };
+  }
+
+  it("files one run-pr approval and opens nothing until the user approves", async () => {
+    const { server, run, coordinator, origin } = await mergedRun("pr-file");
+
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "All lanes merged." });
+
+    expect(await openApprovals(server)).toEqual([
+      expect.objectContaining({
+        id: filed.id,
+        kind: "run-pr",
+        agentId: run.coordinatorAgentId,
+        subject: {
+          runId: run.id,
+          title: "Ship it",
+          body: "All lanes merged.",
+          base: "main",
+          head: run.line,
+        },
+      }),
+    ]);
+    expect(ghCalls()).toEqual([]);
+    expect(remoteHas(origin, run.line)).toBe(false);
+  });
+
+  it("opens the PR once on approve, with the edited title, and finishes the run", async () => {
+    const { server, run, coordinator, origin } = await mergedRun("pr-approve");
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "All lanes merged." });
+
+    await json(
+      await decide(server, filed.id, "approve", {
+        subject: { ...(filed.subject as RunPrSubject), title: "Edited" },
+      }),
+    );
+
+    expect(prCreates()).toEqual([
+      [
+        "pr",
+        "create",
+        "--base=main",
+        `--head=${run.line}`,
+        "--title=Edited",
+        "--body=All lanes merged.",
+      ],
+    ]);
+    expect(remoteHas(origin, run.line)).toBe(true);
+    expect((await getRun(server, run.id)).state).toBe("finished");
+    const outcome = await deliveredWith(server, run.coordinatorAgentId, "Opened PR #1");
+    expect(outcome).toContain(`from ${run.line} into main`);
+    expect(outcome).toContain("never turns on auto-merge");
+  });
+
+  it("refuses a second request while one is open with 409 run_pr_asked", async () => {
+    const { coordinator } = await mergedRun("pr-twice");
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "" });
+
+    expect(() => runs.requestPr(coordinator, { title: "Again", body: "" })).toThrow(
+      expect.objectContaining({ status: 409, code: "run_pr_asked" }),
+    );
+    expect(() => runs.requestPr(coordinator, { title: "Again", body: "" })).toThrow(filed.id);
+  });
+
+  it("refuses a run with a lane that is not merged or declined with 409 run_not_finished", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "pr-early", GREEN);
+    const { run, coordinator } = await createRun(server, projectId, "pr-early");
+
+    expect(() => runs.requestPr(coordinator, { title: "x", body: "" })).toThrow(
+      expect.objectContaining({
+        status: 409,
+        code: "run_not_finished",
+        message: expect.stringContaining("No lane is merged yet"),
+      }),
+    );
+    const lane = await startLane(run, coordinator, "early");
+    await laneChanges(server, run, lane.id, "feature.txt", "x\n");
+
+    expect(() => runs.requestPr(coordinator, { title: "x", body: "" })).toThrow(
+      expect.objectContaining({
+        status: 409,
+        code: "run_not_finished",
+        message: expect.stringContaining(`"early" (${lane.id}) is passed`),
+      }),
+    );
+    expect(await openApprovals(server)).toEqual([]);
+  });
+
+  it("gives the coordinator the decline note, opens nothing, and lets it ask again", async () => {
+    const { server, run, coordinator, origin } = await mergedRun("pr-decline");
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "" });
+
+    await json(await decide(server, filed.id, "decline", { note: "Reword the title" }));
+
+    const note = await deliveredWith(server, run.coordinatorAgentId, "The user declined");
+    expect(note).toContain("Reword the title");
+    expect(ghCalls()).toEqual([]);
+    expect(remoteHas(origin, run.line)).toBe(false);
+    expect((await getRun(server, run.id)).state).toBe("running");
+    expect(runs.requestPr(coordinator, { title: "Better", body: "" }).id).not.toBe(filed.id);
+  });
+
+  it("keeps the approval open when approve changes the head, with 422 approval_run_changed", async () => {
+    const { server, coordinator } = await mergedRun("pr-head");
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "" });
+
+    const response = await decide(server, filed.id, "approve", {
+      subject: { ...(filed.subject as RunPrSubject), head: "main" },
+    });
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: { code: "approval_run_changed" } });
+    expect((await openApprovals(server)).map((approval) => approval.id)).toEqual([filed.id]);
+    expect(ghCalls()).toEqual([]);
   });
 });

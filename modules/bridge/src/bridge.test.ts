@@ -6,6 +6,7 @@ import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule, INBOX_TOPIC } from "@pi-spore/mod-attention/server";
+import { createGithubPrModule } from "@pi-spore/mod-github-pr/server";
 import { cardBrief, kanbanModule } from "@pi-spore/mod-kanban/server";
 import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
@@ -29,6 +30,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { bridgeModule } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
+const FAKE_GH = fileURLToPath(
+  new URL("../../github-pr/test-fixtures/fake-gh.mjs", import.meta.url),
+);
 
 let scratch: string;
 let servers: { server: TestServer; agents: ReturnType<typeof createAgentsModule> }[];
@@ -68,6 +72,9 @@ async function start(
       attentionModule,
       kanbanModule,
       artifactsModule,
+      createGithubPrModule({
+        gh: { command: process.execPath, args: [FAKE_GH, join(scratch, "gh.json")] },
+      }),
       pipelinesModule,
       runsModule,
       bridgeModule,

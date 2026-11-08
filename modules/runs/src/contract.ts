@@ -1,9 +1,11 @@
 import { type BridgeCaller, defineInterface } from "@pi-spore/module-api";
 import type {
   AnswerLaneRequest,
+  Approval,
   AskCoordinatorRequest,
   Lane,
   MergeLaneRequest,
+  OpenRunPrRequest,
   ReviseLaneRequest,
   Run,
   RunQuestion,
@@ -44,6 +46,13 @@ export interface Runs {
    * run; 409 `question_answered` for a second answer.
    */
   answerLane(caller: BridgeCaller, request: AnswerLaneRequest): RunQuestion;
+  /**
+   * Files a `run-pr` approval for the caller's run, so the user decides whether its one PR opens (ADR 0100, ADR 0130).
+   * The PR opens on approve; pi-spore never merges it. 403 `not_coordinator` and 409 `run_cancelled` as above; 409
+   * `run_finished` when the PR is already open; 409 `run_not_finished` while a lane is not `merged` or `declined`, or
+   * none is `merged`; 409 `run_pr_asked` while an earlier request waits for the user.
+   */
+  requestPr(caller: BridgeCaller, request: OpenRunPrRequest): Approval;
   /** The lane whose workspace this is. */
   laneOf(workspaceId: string): { runId: string; laneId: string } | undefined;
   /** The run whose workspace this is. */
