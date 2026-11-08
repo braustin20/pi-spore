@@ -10,6 +10,7 @@ import {
   useRef,
   useState,
 } from "react";
+import { readDraft, writeDraft } from "./drafts.js";
 
 export interface SlashCommand {
   name: string;
@@ -40,6 +41,15 @@ function readBase64(file: File): Promise<string> {
   });
 }
 
+function loadDraft(chatId: string): string {
+  try {
+    return readDraft(localStorage, chatId);
+  } catch (caught) {
+    console.error(`Could not read the draft of chat ${chatId}`, caught);
+    return "";
+  }
+}
+
 /**
  * The message box. Enter sends, Shift+Enter adds a line. Images come in by paste, drag and drop, or the image button
  * (PNG, JPEG, WebP, GIF); the server checks their size. While the agent works, a message goes in as a steer
@@ -47,6 +57,7 @@ function readBase64(file: File): Promise<string> {
  * thinking) sit in the row under the text.
  */
 export function Composer({
+  chatId,
   busy,
   disabled,
   loadCommands,
@@ -55,6 +66,8 @@ export function Composer({
   onSend,
   onAbort,
 }: {
+  /** Keys the saved draft: the unsent text stays in the browser, per chat. Images are not kept. */
+  chatId: string;
   busy: boolean;
   disabled: boolean;
   loadCommands: () => Promise<SlashCommand[]>;
@@ -68,7 +81,7 @@ export function Composer({
   ) => Promise<void>;
   onAbort: () => void;
 }) {
-  const [text, setText] = useState("");
+  const [text, setText] = useState(() => loadDraft(chatId));
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string | undefined>();
   const [dragging, setDragging] = useState(false);
@@ -83,6 +96,15 @@ export function Composer({
     },
     [],
   );
+
+  // Save on every change; an empty text (after a successful send) clears the draft. A failed send leaves it.
+  useEffect(() => {
+    try {
+      writeDraft(localStorage, chatId, text);
+    } catch (caught) {
+      console.error(`Could not save the draft of chat ${chatId}`, caught);
+    }
+  }, [chatId, text]);
 
   const addFiles = (files: readonly File[]) => {
     const wrong = files.filter((file) => !isImageType(file.type));
