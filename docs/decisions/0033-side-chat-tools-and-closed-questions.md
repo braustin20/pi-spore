@@ -26,7 +26,8 @@ or switched to another. The question then belongs to a chat that cannot run.
 - Side chats start with `--tools read,grep,find,ls,request_human_input --exclude-tools 'mcp__*'`, on the first
   start and on every resume. They get no `edit`, `write`, `bash`, `codemode`, `tool_search`, subagent tools, or MCP
   tools. Of spore-bridge's tools they keep only `request_human_input`, which files a question and changes nothing.
-  `check` and `run_action` run project commands, so they are left out.
+  `check` and `run_action` run project commands, so they are left out. (ADR 0070 adds the read-only
+  `artifacts_list` and `artifacts_read` to the list.)
 - A side chat's bridge token is marked read-only, and `POST /api/bridge/runs` refuses it with 403 `read_only_chat`.
 - spore-bridge gives side chats their own rules (`PI_SPORE_CHAT_KIND=side`): they can read and search, not change
   files, and should describe needed changes for the worker chat.
