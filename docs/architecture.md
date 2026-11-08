@@ -277,7 +277,7 @@ export interface ServerHost {
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
 | Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer) |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state; a lane's question is a `runs_questions` row |
-| Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`; later model upgrade, close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
+| Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, pipeline gates; later close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
@@ -509,11 +509,11 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 ## 9. Runs and lanes
 
 See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-questions-up-the-chain.md),
-[ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md), and
-[ADR 0150](decisions/0150-run-worktree-and-green-merges.md). Requirements R7, R4.8.
+[ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
+[ADR 0150](decisions/0150-run-worktree-and-green-merges.md), and [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md). Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
-`pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
+`pipelines`, `github-pr`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
 
 - **Start.** `POST /api/runs` `{ projectId, name, base?, gates? }` needs a provider with `integrate` (else 422
   `not_supported`). `base` defaults to the main copy's current line; `gates` to `check` and `test`. It creates
@@ -521,7 +521,7 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   stored, so its PR tab targets the base), and its orchestrator chat. That chat is the coordinator.
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,start_lane,
-  revise_lane,merge_lane,answer_lane`: no write or shell tools. Its token is not read-only, so it writes artifacts
+  revise_lane,merge_lane,answer_lane,open_run_pr`: no write or shell tools. Its token is not read-only, so it writes artifacts
   and calls the run routes. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
 - **Lanes.** `start_lane` takes a brief that is an artifact of the run workspace (404 `brief_not_found`), a wave
   (1 or more), lane ids it depends on (400 `bad_depends_on`), a pipeline (default `default`), and a model.
@@ -536,7 +536,8 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   - `afterRunEnded` moves the lane to `passed` or `failed` in the pipeline's own transaction.
   - `revise_lane` sends a `passed` or `failed` lane back with a new brief; a new pipeline run starts in the same lane
     workspace (409 `lane_not_revisable` otherwise). It is the answer to a conflict or a red gate.
-  - States: `approval`, `waiting`, `starting`, `running`, `passed`, `failed`, `declined`, `merging`, `merged`.
+  - States: `approval`, `waiting`, `starting`, `running`, `passed`, `failed`, `declined`, `merging`, `merged`,
+    `cancelled`.
 - **Merge** (ADR 0150). `merge_lane` takes a `passed` lane (409 `lane_not_mergeable`), makes it `merging`, and
   starts job `runs.merge`, keyed by the run, so merges go one at a time. `merge` aborts any merge a restart left,
   then merges the lane line into the run worktree without a commit. A conflict aborts, puts the lane back to
@@ -544,23 +545,46 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `ActionsKey.start` with a key per merge job and attempt. `finish` commits when all passed (`merged`, wakes waiting
   lanes); on a red gate it writes the diff to `runs/<run>/lanes/<lane>-gates.diff`, aborts, puts the lane back to
   `passed`, and sends the diff path and the last 4 KiB of the log. The run line only holds merges whose gates passed.
-  When every lane is `merged` or `declined`, the coordinator is told to have the user open the one PR from the run
-  workspace's PR tab. A human merges it.
+  When every lane is `merged` or `declined`, the coordinator is told to call `open_run_pr`.
+- **Run states.** `running`, `cancelled`, or `finished` (its PR opened).
+- **Cancel.** `POST /api/runs/:id/cancel` (user token) ends a run. In one transaction the run becomes `cancelled`,
+  every lane not `merged` becomes `cancelled`, the `runs.lane` and `runs.merge` jobs are cancelled, each lane's
+  pipeline run stops through `PipelinesKey.stop`, and the pending deliveries of the coordinator and every lane agent
+  are dropped (`AgentsKey.dropDeliveries`). Then a running gate action is cancelled, the coordinator and every lane
+  agent stop (`AgentsKey.stop`, as archiving does), and any merge in the run worktree aborts, so the tree is clean.
+  The `merge` and `finish` steps check the lane again after their git work and abort if it was cancelled meanwhile.
+  It deletes nothing: lane workspaces, branches, the run line, and artifacts stay. It never merges, pushes, or opens
+  a PR. A second cancel answers the run. The lane tools answer 409 `run_cancelled` for a cancelled run.
+- **New coordinator** (ADR 0030). `AgentsKey.afterWorkerChange` runs when a worker chat becomes a workspace's active
+  one (a new chat, an older one activated, or one `activeWorker` creates). For a `running` run whose workspace it is,
+  that chat becomes the coordinator, and in one transaction it gets a handover first (the run name, line, and base;
+  every lane with its wave, state, brief, and diff path; the open lane questions), then the old chat's pending
+  deliveries, in order (`AgentsKey.moveDeliveries`). Job commits read the coordinator again, so a report never goes
+  to the old chat. The launch hook gives the new chat the coordinator role, as it keys on the workspace.
+- **Run PR** (ADR 0100, ADR 0130). `open_run_pr { title, body }` (bridge `POST /api/bridge/coordinator/pr`) needs
+  every lane `merged` or `declined` and one `merged` (409 `run_not_finished` with the reason), no open request (409
+  `run_pr_asked`), and a run that is not `finished` (409 `run_finished`). It files a `run-pr` approval with the
+  title, body, base, and head (the run line), and the tool ends the turn. On approve, where the user may edit the
+  title and body only (422 `approval_run_changed`), the runs module opens the PR through the github-pr module's
+  `PullRequestsKey.open`, the same path as the PR tab's publish, and the run becomes `finished`. The outcome or the
+  decline note goes to the coordinator, as for every approval. No agent runs `gh`; nothing merges the PR but a
+  human.
 - **Questions** (R7.5, R7.6, ADR 0008). `ask_coordinator` from a lane agent inserts a `runs_questions` row and
   delivers it to the coordinator in one transaction (403 `not_in_lane` outside a lane). The coordinator answers
   with `answer_lane` from the spec, or asks the user with `request_human_input` first; the answer is stored and
   delivered to the asking agent in one transaction (404 `question_not_found`, 409 `question_answered`). The bridge
   refuses `request_human_input` from a lane with 409 `ask_coordinator`. There is no lane-to-lane route.
-- Bridge routes: `POST /api/bridge/lanes`, `/lanes/revise`, `/lanes/merge`, `/coordinator/answers` (not for
+- Bridge routes: `POST /api/bridge/lanes`, `/lanes/revise`, `/lanes/merge`, `/coordinator/answers`, `/coordinator/pr` (not for
   read-only callers), and `/coordinator/questions` (lane reviewers too). The runs module checks who may call each.
-- Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`. Topic
+- Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`,
+  `POST /api/runs/:id/cancel`. Topic
   `runs:list` sends `{ type: "runs", runs }` on subscribe and after every change.
-- Web: a Runs page (`#/runs`, rail icon) with a start form and every run's lanes by wave, and a run panel on a run
-  workspace (the same card) or a lane workspace (a link to its run).
+- Web: a Runs page (`#/runs`, rail icon) with a start form and every run's state and lanes by wave, and a run panel
+  on a run workspace (the same card) or a lane workspace (a link to its run). A running run's card has Cancel, with
+  a confirm that names what stops. Home shows a `run-pr` approval with the head and base and an editable title and
+  body.
 - CLI: `pi-spore run start <project> <name> [--base <line>] [--gate <action>]...`, `run list [--project <id>]`,
-  `run show <run>`.
-- Not built yet: cancelling a run, a coordinator change when the user starts a new chat in the run workspace (the
-  run keeps the chat it started with), and a PR tool for the coordinator.
+  `run show <run>`, `run cancel <run>`.
 
 ## 10. Model routing
 
@@ -752,7 +776,10 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   - `POST /api/attention/approvals/:id/decline` `{ note? }` stores the decline and delivers it with the note.
   - A kind's optional `decided(subject, approval, approved)` runs inside the transaction that stores either
     decision; a throw rolls it back and leaves the approval open. Pipelines use it for `pipeline-round-limit` and
-    `pipeline-local-implementer`.
+    `pipeline-local-implementer`; runs for `lane-model` and `run-pr`.
+  - Kinds now: `card-start` (kanban), `lane-model` and `run-pr` (runs, section 9), `pipeline-round-limit` and
+    `pipeline-local-implementer` (pipelines). A `run-pr` subject is `{ runId, title, body, base, head }`; approve
+    may change the title and body, and opens the run's PR through `PullRequestsKey` (section 11e).
   - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
@@ -858,6 +885,8 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
   PR, stores it, turns the watch on, and moves the workspace's card to Review (`CardsKey.workChanged`). The form
   starts with the workspace name as title, the card's body as body, and the workspace's base. A base like
   `origin/main` loses its remote name.
+- `PullRequestsKey.open(workspaceId, { title, body, base, draft? })` gives other modules the same path as Publish,
+  with the same errors. The runs module uses it when the user approves a `run-pr` approval (section 9).
 - A PR opened outside pi-spore for the workspace's branch (an agent's `gh pr create`) is found and shown, with the
   watch off. `gh pr view <branch>` looks at open, merged, and closed PRs: the newest open one, else the newest.
   pi-spore looks:
