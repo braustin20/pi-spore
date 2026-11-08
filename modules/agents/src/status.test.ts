@@ -16,7 +16,7 @@ const workspace = (state: Workspace["state"]): Workspace => ({
 const agent = (status: Agent["status"]): Agent => ({
   id: "a1",
   workspaceId: "w1",
-  role: "worker",
+  role: "orchestrator",
   kind: "worker",
   active: true,
   status,

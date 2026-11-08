@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import type { AssistantMessage } from "@earendil-works/pi-ai";
 import type {
   ExtensionContext,
@@ -58,6 +59,7 @@ export interface RouterDeps {
 }
 
 /** How long to wait between looks at a busy local target's lock. */
+const AUTO_MODEL = "spore/auto";
 const LOCK_POLL_MS = 1_000;
 const STATUS_KEY = "pi-spore-router";
 
@@ -311,7 +313,9 @@ export class Router {
     ctx: ExtensionContext,
     error: unknown,
   ): Promise<ModelRoute<RouterState>> {
-    const cloud = this.lastCloud ?? (await this.deps.workerModel().catch(() => undefined));
+    const candidate = this.lastCloud ?? (await this.deps.workerModel().catch(() => undefined));
+    // Routing to itself would loop, so a misconfigured cloud model ends in the error that names the setting.
+    const cloud = candidate === AUTO_MODEL ? undefined : candidate;
     if (!cloud)
       throw new Error(
         `spore/auto failed and has no cloud model to fall back to: ${errorText(error)}`,
@@ -347,6 +351,11 @@ export class Router {
     if (!cloud) {
       throw new Error(
         'No cloud model: set "router.cloud" in pi-spore settings.json or subagents.agentOverrides.worker.model in Pi settings',
+      );
+    }
+    if (cloud === AUTO_MODEL) {
+      throw new Error(
+        `${AUTO_MODEL} cannot be its own cloud model: set "router.cloud" in ${join(this.deps.home, "settings.json")} to a real model (ADR 0120)`,
       );
     }
     splitModel(cloud);

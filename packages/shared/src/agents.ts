@@ -43,7 +43,7 @@ export const AgentStatus = Type.Union([
 ]);
 export type AgentStatus = Static<typeof AgentStatus>;
 
-export const AgentRole = Type.Literal("worker");
+export const AgentRole = Type.Literal("orchestrator");
 export type AgentRole = Static<typeof AgentRole>;
 
 /**

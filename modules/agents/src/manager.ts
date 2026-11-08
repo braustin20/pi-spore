@@ -32,7 +32,7 @@ import { readTranscript } from "./transcript.js";
 export interface AgentRecord {
   id: string;
   workspaceId: string;
-  role: "worker";
+  role: "orchestrator";
   kind: ChatKind;
   /** The workspace's active worker chat, or a side chat: the chat can run (ADR 0030). */
   active: boolean;

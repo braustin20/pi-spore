@@ -48,7 +48,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (this
   process's agent token, ADR 0032), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker` or
   `side`), and `PI_SPORE_UNITY_PROJECT` (Unity projects). Later: `PI_SPORE_RUN_ID` (in a run) and the workspace action env.
-- **Chats** (ADR 0030, ADR 0033). An agent is one chat: one row in `agents_agents` with a `kind` (`worker` or
+- **Chats** (ADR 0030, ADR 0033, ADR 0120). The role of a workspace chat is `orchestrator`: a new chat starts on
+  `subagents.agentOverrides.orchestrator` (model, thinking) from Pi's settings, and on Pi's own default when that
+  override is missing. The `worker` role is a subagent on `spore/auto`; `worker` stays only as a chat `kind`, in
+  `PI_SPORE_CHAT_KIND`, and in the routes. An agent is one chat: one row in `agents_agents` with a `kind` (`worker` or
   `side`), an `active` flag, a `title`, and `forked_from` (the worker chat a side chat copies).
   - A workspace has one active worker chat (a partial unique index). Only it and side chats can run; an older worker
     chat is read-only history and refuses to start with 409 `chat_inactive`. The manager also refuses to start a
@@ -211,7 +214,7 @@ export interface ServerHost {
 |---|---|---|
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
 | Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), card |
-| Agent | One Pi conversation (a chat) | id, workspace, role, kind (worker, side), active, title, forked from, model selection, session path, process state, parent agent |
+| Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`), kind (worker, side), active, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, coordinator agent, integration branch, spec artifact, state |
 | Lane | A workspace inside a run | id, run, workspace, wave, depends on, brief artifact, state |
 | Pipeline | A declared stage list (file) | id, source (user or project), stages |
@@ -380,7 +383,8 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
      the brief: bounded, explicit requirements, visual, straightforward.
   4. Go local only if every "good" answer is at least the threshold (0.7, or 0.55 under usage pressure; the visual
      question always needs 0.7). Otherwise use the cloud model: `router.cloud`, else the pi-subagents `worker`
-     model from Pi's settings.
+     model from Pi's settings. If that model is `spore/auto`, the router throws an error that names `router.cloud`
+     and `settings.json`. It does not fall back (ADR 0120).
   5. If the cloud model's plan is full, spill (below).
   6. Store the choice as router state on the session branch. Later requests stay on it, to keep the prompt cache.
      Requests outside the agent loop (`direct`, such as compaction) go to the model that answered last.
@@ -445,7 +449,8 @@ records and routes to cloud.
 }
 ```
 
-- `cloud` has no built-in default: unset means the pi-subagents `worker` model.
+- `cloud` has no built-in default: unset means the pi-subagents `worker` model. `cloud` must not be `spore/auto`
+  (ADR 0120); set it when `worker` is `spore/auto`.
 - `plans` maps a provider to the subscription plan it draws on. `tiers` entries are added to the built-in tier list
   (ADR 0023).
 

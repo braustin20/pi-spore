@@ -59,12 +59,14 @@ const MIGRATIONS = [
     WHERE kind = 'worker' AND active = 1;`,
   // ADR 0110: a closed chat leaves the chat bar. Its row and session file stay, so ids held elsewhere stay valid.
   "ALTER TABLE agents_agents ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
+  // ADR 0120: the role of a workspace chat is `orchestrator`; `worker` is a subagent role now. `kind` keeps its values.
+  "UPDATE agents_agents SET role = 'orchestrator'",
 ];
 
 interface Row {
   id: string;
   workspace_id: string;
-  role: "worker";
+  role: "orchestrator";
   kind: "worker" | "side";
   active: number;
   title: string | null;
@@ -273,7 +275,7 @@ export function createAgentsModule(
       const newRow = (workspaceId: string, kind: Row["kind"], forkedFrom: string | null): Row => ({
         id: host.newId(),
         workspace_id: workspaceId,
-        role: "worker",
+        role: "orchestrator",
         kind,
         active: 1,
         title: null,
