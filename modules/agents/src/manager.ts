@@ -25,7 +25,7 @@ import {
 } from "./child-runs.js";
 import type { AgentAttention, AgentChange } from "./contract.js";
 import { ChatImages } from "./images.js";
-import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS } from "./launch.js";
+import { modelArgs, type RoleDefaults, SIDE_CHAT_TOOLS, withModel } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
 import { readTranscript } from "./transcript.js";
 
@@ -45,6 +45,8 @@ export interface AgentRecord {
   waitingSince: number | null;
   /** The user closed the chat: it is off the chat bar and Home, and never runs again. Its session file stays. */
   closed: boolean;
+  /** The model a new session starts on, `provider/id`, or null for the role's default (ADR 0120). */
+  model: string | null;
 }
 
 export interface ManagerOptions {
@@ -569,7 +571,10 @@ export class AgentManager {
       }
     }
     if (!live.model || !live.thinkingLevel) {
-      const defaults = await this.options.roleDefaults(live.record.role);
+      const defaults = withModel(
+        await this.options.roleDefaults(live.record.role),
+        live.record.model,
+      );
       if (!live.model && defaults.provider && defaults.modelId) {
         live.model = { provider: defaults.provider, id: defaults.modelId };
       }
@@ -762,7 +767,9 @@ export class AgentManager {
       }
       return ["--fork", source, "--session-dir", dir];
     }
-    const role = modelArgs(await this.options.roleDefaults(live.record.role));
+    const role = modelArgs(
+      withModel(await this.options.roleDefaults(live.record.role), live.record.model),
+    );
     return ["--session-dir", dir, ...role];
   }
 

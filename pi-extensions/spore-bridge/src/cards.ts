@@ -79,6 +79,9 @@ const Labels = Type.Array(Type.String({ minLength: 1, maxLength: 40 }), {
   description: "Labels, such as plan:<short name> for the cards of one plan",
 });
 const Due = Type.String({ pattern: "^\\d{4}-\\d{2}-\\d{2}$", description: "A day, YYYY-MM-DD" });
+const Model = Type.String({
+  description: "provider/id; the model of the chat that work from this card starts",
+});
 const BlockedBy = Type.Array(Type.String({ minLength: 1 }), {
   maxItems: 50,
   description: "Ids of cards that must be done first",
@@ -135,6 +138,7 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
       body: Type.Optional(Body),
       labels: Type.Optional(Labels),
       due: Type.Optional(Due),
+      model: Type.Optional(Model),
       column: Type.Optional(StringEnum(COLUMNS, { description: "Default: backlog" })),
       blockedBy: Type.Optional(BlockedBy),
     }),
@@ -153,7 +157,7 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
     label: "Change card",
     description:
       "Change a kanban card of this project: the fields given are replaced, blockedBy replaces the whole list, " +
-      "column moves the card to the end of that column, and due null clears the day.",
+      "column moves the card to the end of that column, and due or model null clears it.",
     promptSnippet: "Change or move a kanban card of this project",
     parameters: Type.Object({
       cardId: Type.String({ minLength: 1 }),
@@ -161,6 +165,7 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
       body: Type.Optional(Body),
       labels: Type.Optional(Labels),
       due: Type.Optional(Type.Union([Due, Type.Null()])),
+      model: Type.Optional(Type.Union([Model, Type.Null()])),
       column: Type.Optional(StringEnum(COLUMNS)),
       blockedBy: Type.Optional(BlockedBy),
     }),

@@ -61,6 +61,8 @@ const MIGRATIONS = [
   "ALTER TABLE agents_agents ADD COLUMN closed INTEGER NOT NULL DEFAULT 0",
   // ADR 0120: the role of a workspace chat is `orchestrator`; `worker` is a subagent role now. `kind` keeps its values.
   "UPDATE agents_agents SET role = 'orchestrator'",
+  // ADR 0120: the model a new chat starts on, `provider/id`. NULL: the role's default.
+  "ALTER TABLE agents_agents ADD COLUMN model TEXT",
 ];
 
 interface Row {
@@ -75,6 +77,7 @@ interface Row {
   created_at: number;
   waiting_since: number | null;
   closed: number;
+  model: string | null;
 }
 
 const toRecord = (row: Row): AgentRecord => ({
@@ -89,6 +92,7 @@ const toRecord = (row: Row): AgentRecord => ({
   createdAt: row.created_at,
   waitingSince: row.waiting_since,
   closed: row.closed === 1,
+  model: row.model,
 });
 
 export interface AgentsModuleOptions {
@@ -256,8 +260,8 @@ export function createAgentsModule(
 
       const insert = (row: Row): Agent => {
         host.store.run(
-          `INSERT INTO agents_agents (id, workspace_id, role, kind, active, title, forked_from, session_file, created_at)
-           VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?)`,
+          `INSERT INTO agents_agents (id, workspace_id, role, kind, active, title, forked_from, session_file, created_at, model)
+           VALUES (?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
           row.id,
           row.workspace_id,
           row.role,
@@ -265,6 +269,7 @@ export function createAgentsModule(
           row.active,
           row.forked_from,
           row.created_at,
+          row.model,
         );
         agents.track(toRecord(row));
         const agent = agents.view(row.id);
@@ -272,7 +277,12 @@ export function createAgentsModule(
         return agent;
       };
 
-      const newRow = (workspaceId: string, kind: Row["kind"], forkedFrom: string | null): Row => ({
+      const newRow = (
+        workspaceId: string,
+        kind: Row["kind"],
+        forkedFrom: string | null,
+        model: string | null,
+      ): Row => ({
         id: host.newId(),
         workspace_id: workspaceId,
         role: "orchestrator",
@@ -284,15 +294,25 @@ export function createAgentsModule(
         created_at: host.now(),
         waiting_since: null,
         closed: 0,
+        model,
       });
 
-      /** The workspace's active worker chat; the first call for a workspace creates it. */
-      const ensureWorker = (workspaceId: string): Promise<{ agent: Agent; created: boolean }> => {
+      /**
+       * The workspace's active worker chat; the first call for a workspace creates it. `model` applies only to a
+       * chat created here: an existing chat keeps its own (ADR 0120).
+       */
+      const ensureWorker = (
+        workspaceId: string,
+        model?: string,
+      ): Promise<{ agent: Agent; created: boolean }> => {
         const workspace = workspaces.get(workspaceId);
         return inOrder(workspace.id, async () => {
           const existing = activeWorker(workspace.id);
           if (existing) return { agent: agents.view(existing.id), created: false };
-          return { agent: insert(newRow(workspace.id, "worker", null)), created: true };
+          return {
+            agent: insert(newRow(workspace.id, "worker", null, model ?? null)),
+            created: true,
+          };
         });
       };
 
@@ -301,7 +321,8 @@ export function createAgentsModule(
           agents.view(agentId);
           queue.add(agentId, message);
         },
-        activeWorker: async (workspaceId) => (await ensureWorker(workspaceId)).agent,
+        activeWorker: async (workspaceId, options) =>
+          (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),
         attention: () => agents.attention(),
         onChange: (listener) => {
@@ -357,7 +378,7 @@ export function createAgentsModule(
           await c.req.text(),
           "create agent request",
         );
-        const { agent, created } = await ensureWorker(request.workspaceId);
+        const { agent, created } = await ensureWorker(request.workspaceId, request.model);
         return c.json({ agent }, created ? 201 : 200);
       });
 
@@ -374,7 +395,10 @@ export function createAgentsModule(
         return inOrder(workspace.id, async () => {
           if (request.kind === "worker") {
             await retireWorker(workspace.id);
-            return c.json({ agent: insert(newRow(workspace.id, "worker", null)) }, 201);
+            return c.json(
+              { agent: insert(newRow(workspace.id, "worker", null, request.model ?? null)) },
+              201,
+            );
           }
           let forkedFrom: string | null = null;
           if (request.fork) {
@@ -388,7 +412,7 @@ export function createAgentsModule(
             }
             forkedFrom = worker.id;
           }
-          return c.json({ agent: insert(newRow(workspace.id, "side", forkedFrom)) }, 201);
+          return c.json({ agent: insert(newRow(workspace.id, "side", forkedFrom, null)) }, 201);
         });
       });
 

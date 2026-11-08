@@ -106,6 +106,16 @@ export async function readRoleDefaults(agentDir: string, role: string): Promise<
   return defaults;
 }
 
+/**
+ * The role's defaults with a chat's own model (`provider/id`) in place of the role's. Thinking stays the role's
+ * (ADR 0120). The model was checked when the chat was created.
+ */
+export function withModel(defaults: RoleDefaults, model: string | null): RoleDefaults {
+  if (model === null) return defaults;
+  const slash = model.indexOf("/");
+  return { ...defaults, provider: model.slice(0, slash), modelId: model.slice(slash + 1) };
+}
+
 /** Launch arguments that pick the role's model for a new session. A resumed session keeps the model it had. */
 export function modelArgs(defaults: RoleDefaults): string[] {
   return [

@@ -499,6 +499,22 @@ describe("check and run_action", () => {
 });
 
 describe("cards from agents (ADR 0100)", () => {
+  it("sets and clears a card's model (ADR 0120)", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "plans");
+    const call = asAgent(server, agentId, workspaceId);
+    const { card } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 1", model: "fake/card-model" }),
+      201,
+    );
+    expect(card.model).toBe("fake/card-model");
+    const cleared = await json<{ card: Card }>(
+      await call("POST", `cards/${card.id}`, { model: null }),
+    );
+    expect(cleared.card.model).toBeUndefined();
+    expect((await call("POST", "cards", { title: "Bad", model: "bad" })).status).toBe(400);
+  });
+
   it("adds, lists, and changes cards of the agent's own project, and records the agent", async () => {
     const server = await start();
     const { agentId, workspaceId } = await workspace(server, "plans");
