@@ -101,6 +101,9 @@ export const workspacesModule: ServerModule = {
       return row;
     };
 
+    const publish = (workspace: Workspace) =>
+      host.events.publish("workspaces:list", { type: "workspace", workspace });
+
     const listRows = (filter: { projectId?: string; state?: string }): Row[] => {
       const where: string[] = [];
       const params: string[] = [];
@@ -210,6 +213,7 @@ export const workspacesModule: ServerModule = {
         row.updated_at,
       );
       const workspace = toWorkspace(row);
+      publish(workspace);
       const steps: StepReport[] = [];
       if (request.isolation !== "in-place") {
         for (const listener of createdListeners) {
@@ -267,6 +271,7 @@ export const workspacesModule: ServerModule = {
         row.id,
       );
       const workspace = toWorkspace({ ...row, state, updated_at: now });
+      publish(workspace);
       for (const listener of stateListeners) {
         try {
           listener(workspace, row.state);
@@ -280,6 +285,10 @@ export const workspacesModule: ServerModule = {
       }
       return workspace;
     };
+
+    host.events.onSubscribe("workspaces:list", () => [
+      { type: "snapshot", workspaces: listRows({}).map(toWorkspace) },
+    ]);
 
     host.routes.get("/", (c) => {
       const projectId = c.req.query("projectId");
@@ -312,7 +321,9 @@ export const workspacesModule: ServerModule = {
         now,
         row.id,
       );
-      return c.json({ workspace: toWorkspace({ ...row, name: request.name, updated_at: now }) });
+      const workspace = toWorkspace({ ...row, name: request.name, updated_at: now });
+      publish(workspace);
+      return c.json({ workspace });
     });
 
     host.routes.post("/:id/park", async (c) => {

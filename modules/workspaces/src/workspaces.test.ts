@@ -27,6 +27,7 @@ import {
 } from "@pi-spore/shared";
 import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { reduceWorkspaceList } from "./list.js";
 import { type Workspaces, WorkspacesKey, workspacesModule } from "./server.js";
 
 const ALL = [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, unityModule];
@@ -459,6 +460,42 @@ describe("workspace lifecycle", () => {
       await errorCode(await server.request("POST", `/api/workspaces/${workspace.id}/park`), 409),
     ).toBe("bad_state");
     expect((await call("POST", "/resume")).state).toBe("active");
+  });
+
+  it("pushes a list snapshot and an update for every change, and a fresh snapshot on reconnect", async () => {
+    const project = await addProject(makeUnityRepo());
+    const [empty] = await server.events.snapshot("workspaces:list");
+    let list = reduceWorkspaceList([], empty);
+    expect(list).toEqual([]);
+
+    const served = async () =>
+      parse(WorkspaceList, await json(await server.request("GET", "/api/workspaces"), 200), "list")
+        .workspaces;
+    /** Runs one change and applies the events it published, which must be exactly one. */
+    const change = async (run: () => Promise<unknown>) => {
+      const before = server.events.eventsOf("workspaces:list").length;
+      await run();
+      const events = server.events.eventsOf("workspaces:list").slice(before);
+      expect(events).toHaveLength(1);
+      list = reduceWorkspaceList(list, events[0]);
+      expect(list).toEqual(await served());
+    };
+
+    let id = "";
+    await change(async () => {
+      id = (await createWorkspace({ projectId: project.id, name: "Live", isolation: "in-place" }))
+        .workspace.id;
+    });
+    await change(() => server.request("PATCH", `/api/workspaces/${id}`, { name: "Renamed" }));
+    for (const step of ["park", "resume", "archive"]) {
+      await change(() => server.request("POST", `/api/workspaces/${id}/${step}`));
+    }
+    expect(list.map((workspace) => [workspace.name, workspace.state])).toEqual([
+      ["Renamed", "archived"],
+    ]);
+
+    const [snapshot] = await server.events.snapshot("workspaces:list");
+    expect(reduceWorkspaceList([], snapshot)).toEqual(await served());
   });
 
   it("filters the list by project and state", async () => {

@@ -10,7 +10,6 @@ import {
   parse,
   type StepReport,
   type Workspace,
-  WorkspaceList,
 } from "@pi-spore/shared";
 import {
   Button,
@@ -44,15 +43,8 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import {
-  type ComponentType,
-  type ReactNode,
-  type SubmitEvent,
-  useCallback,
-  useEffect,
-  useState,
-} from "react";
-import { ago, groupWorkspaces } from "./list.js";
+import { type ComponentType, type ReactNode, type SubmitEvent, useEffect, useState } from "react";
+import { ago, groupWorkspaces, reduceWorkspaceList } from "./list.js";
 import {
   type CreateWorkspaceFormProps,
   type UseWorkspaceStatus,
@@ -364,12 +356,10 @@ function WorkspaceListColumn({
 function Details({
   workspace,
   project,
-  onChanged,
   onNotes,
 }: {
   workspace: Workspace;
   project: Project | undefined;
-  onChanged: () => void;
   onNotes: (notes: Note[]) => void;
 }) {
   const api = useApi();
@@ -381,7 +371,6 @@ function Details({
     setBusy(true);
     setError(undefined);
     return promise
-      .then(onChanged)
       .catch((caught: unknown) => setError(message(caught)))
       .finally(() => setBusy(false));
   };
@@ -429,7 +418,6 @@ function Details({
     } finally {
       setBusy(false);
     }
-    onChanged();
   };
 
   const stateTone =
@@ -508,13 +496,11 @@ function Details({
 function RightColumn({
   workspace,
   project,
-  onChanged,
   onNotes,
   onCollapse,
 }: {
   workspace: Workspace;
   project: Project | undefined;
-  onChanged: () => void;
   onNotes: (notes: Note[]) => void;
   onCollapse: () => void;
 }) {
@@ -553,13 +539,7 @@ function RightColumn({
         </div>
         <TabsContent value="details" className="overflow-y-auto">
           {/* Keyed by id, so a rename or error of one workspace does not carry over to the next. */}
-          <Details
-            key={workspace.id}
-            workspace={workspace}
-            project={project}
-            onChanged={onChanged}
-            onNotes={onNotes}
-          />
+          <Details key={workspace.id} workspace={workspace} project={project} onNotes={onNotes} />
           {[...panels]
             .sort((a, b) => a.order - b.order)
             .map((panel) => (
@@ -619,25 +599,20 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
     window.innerWidth >= 1100,
   );
 
-  const load = useCallback(() => {
-    api
-      .get("workspaces")
-      .then((body) => {
-        setWorkspaces(parse(WorkspaceList, body, "workspace list").workspaces);
-        setError(undefined);
-      })
-      .catch((caught: unknown) => setError(message(caught)));
-  }, [api]);
-
   useEffect(() => {
     api
       .get("projects")
       .then((body) => setProjects(parse(ProjectList, body, "project list").projects))
       .catch((caught: unknown) => setError(message(caught)));
-    load();
-    window.addEventListener("focus", load);
-    return () => window.removeEventListener("focus", load);
-  }, [api, load]);
+  }, [api]);
+
+  useEffect(
+    () =>
+      api.subscribe("workspaces:list", (event) => {
+        setWorkspaces((current) => reduceWorkspaceList(current ?? [], event));
+      }),
+    [api],
+  );
 
   // Notes belong to the workspace they were made for.
   // biome-ignore lint/correctness/useExhaustiveDependencies: clears on selection change only
@@ -684,7 +659,6 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           projects={projects}
           projectId={projectId}
           onCreated={(result) => {
-            load();
             window.location.hash = `#/workspaces/${result.workspace.id}`;
             // After the hash change, so the selection change does not clear them.
             setTimeout(() => setNotes(createdNotes(result)), 0);
@@ -730,7 +704,6 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           <RightColumn
             workspace={workspace}
             project={project}
-            onChanged={load}
             onNotes={setNotes}
             onCollapse={() => setRightOpen(false)}
           />

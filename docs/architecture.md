@@ -886,7 +886,9 @@ workspace as `POST /api/workspaces` does, for modules that start work, such as k
 The workspace view has three panes: the workspace list (grouped active, parked, then archived behind a toggle,
 newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
 panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<project>` (filtered to a project),
-`#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. Other web modules
+`#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. The list
+follows the topic `workspaces:list`: a snapshot of every workspace on subscribe and after a reconnect, then one
+`workspace` event for each create, rename, park, resume, and archive, wherever it came from. Other web modules
 fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so
@@ -921,7 +923,7 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
 - One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream),
-  `agents:list` (agent list snapshots and updates),
+  `agents:list` (agent list snapshots and updates), `workspaces:list` (workspace list snapshots and updates),
   `attention:inbox` (Home), and `kanban:board` (the board).
 - Modules add their own WebSocket routes with `host.sockets.add(path, open)`, under `/api/<module id>/`. `open`
   gets the path params and throws an ApiError to refuse the upgrade with its status. Every upgrade, `/api/ws`
