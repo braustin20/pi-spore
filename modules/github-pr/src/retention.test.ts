@@ -11,17 +11,9 @@ import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { createGithubPrModule, type PrTimer } from "./server.js";
+import { createGithubPrModule } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
-
-const timer: PrTimer = (run, ms) => {
-  const entry = { run, ms, cancelled: false };
-  timers.push(entry);
-  return () => {
-    entry.cancelled = true;
-  };
-};
 
 const DAY = 86_400_000;
 const START = 1_700_000_000_000;
@@ -31,15 +23,12 @@ const SLACK = 10_000;
 let home: string;
 let scratch: string;
 let servers: TestServer[];
-/** Polls the module scheduled. */
-let timers: { run: () => Promise<void>; ms: number; cancelled: boolean }[];
 let agentModules: ReturnType<typeof createAgentsModule>[];
 
 beforeEach(() => {
   home = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-github-pr-retention-home-")));
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-github-pr-retention-repos-")));
   servers = [];
-  timers = [];
   agentModules = [];
   writeFileSync(join(home, "settings.json"), JSON.stringify({ retention: { days: 30 } }));
 });
@@ -67,7 +56,7 @@ async function start(startAt: number, firstId = 0): Promise<TestServer> {
       agents,
       attentionModule,
       kanbanModule,
-      createGithubPrModule({ gh: { command: process.execPath, args: ["unused"] }, timer }),
+      createGithubPrModule({ gh: { command: process.execPath, args: ["unused"] } }),
     ],
     { home, startAt, firstId },
   );
@@ -116,6 +105,11 @@ const rows = (server: TestServer, workspaceId: string): number[] =>
       server.store.all(`SELECT 1 FROM ${table} WHERE workspace_id = ?`, workspaceId).length,
   );
 
+const liveWatchJobs = (server: TestServer): number =>
+  server.store.all(
+    "SELECT 1 FROM core_jobs WHERE kind = 'github-pr.watch' AND state NOT IN ('done', 'cancelled')",
+  ).length;
+
 /** An archived workspace with a watched PR, a sent item, and a try, then a restart `days` later. */
 async function archivedThenRestarted(days: number) {
   const first = await start(START);
@@ -137,24 +131,22 @@ async function archivedThenRestarted(days: number) {
   );
   await archive(first, workspaceId);
   await stop();
-  timers = [];
   return { server: await start(START + days * DAY + SLACK, 1000), workspaceId };
 }
 
 describe("github-pr retention", () => {
-  it("deletes the PR records of an archived workspace past the limit and cancels its poll", async () => {
+  it("deletes the PR records of an archived workspace past the limit", async () => {
     const { server, workspaceId } = await archivedThenRestarted(31);
 
     expect(rows(server, workspaceId)).toEqual([0, 0, 0]);
-    // The restart scheduled the watch, and the sweep cancelled it.
-    expect(timers).toHaveLength(1);
-    expect(timers.every((entry) => entry.cancelled)).toBe(true);
+    expect(liveWatchJobs(server)).toBe(0);
   });
 
   it("keeps the PR records of an archived workspace inside the limit", async () => {
     const { server, workspaceId } = await archivedThenRestarted(29);
 
     expect(rows(server, workspaceId)).toEqual([1, 1, 1]);
-    expect(timers.some((entry) => !entry.cancelled)).toBe(true);
+    // An archived workspace is not polled.
+    expect(liveWatchJobs(server)).toBe(0);
   });
 });

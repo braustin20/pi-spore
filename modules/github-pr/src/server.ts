@@ -3,7 +3,7 @@ import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
-import { ApiError, type ServerModule } from "@pi-spore/module-api";
+import { ApiError, type ServerModule, type StepOutcome } from "@pi-spore/module-api";
 import {
   type PrEvent,
   type PrStatus,
@@ -73,19 +73,12 @@ interface PrRow {
   created_at: number;
 }
 
-/** Runs a poll later and returns a function that cancels it. Tests pass their own to run polls on demand. */
-export type PrTimer = (run: () => Promise<void>, ms: number) => () => void;
-
-const realTimer: PrTimer = (run, ms) => {
-  const handle = setTimeout(() => void run(), ms);
-  // A pending poll must not keep the server process alive.
-  handle.unref();
-  return () => clearTimeout(handle);
-};
+/** The job kind of a PR watch: key and subject are the workspace id (ADR 0004). */
+const WATCH_JOB = "github-pr.watch";
+const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
 
 export interface GithubPrModuleOptions {
   gh?: GhCommand;
-  timer?: PrTimer;
   /** Automatic tries in a row before the watch waits for the user (R9.2). */
   maxTries?: number;
   /** Poll interval after a change, doubling up to `maxIntervalMs` while nothing changes. */
@@ -106,7 +99,6 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
   const maxTries = options.maxTries ?? 3;
   const minInterval = options.minIntervalMs ?? 30_000;
   const maxInterval = options.maxIntervalMs ?? 5 * 60_000;
-  const timer = options.timer ?? realTimer;
   return {
     id: "github-pr",
     requires: ["projects", "workspaces", "agents", "kanban"],
@@ -118,9 +110,6 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       const agents = host.use(AgentsKey);
       const cards = host.use(CardsKey);
       const gh = new Gh(host.exec, options.gh ?? { command: "gh", args: [] });
-      const scheduled = new Map<string, () => void>();
-      /** One poll per workspace at a time; a later request waits for the running one. */
-      const running = new Map<string, Promise<void>>();
 
       const load = (workspaceId: string) =>
         host.store.get<PrRow>("SELECT * FROM github_pr_prs WHERE workspace_id = ?", workspaceId);
@@ -225,21 +214,24 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         host.events.publish(`${PR_TOPIC}${workspaceId}`, event);
       };
 
-      const unschedule = (workspaceId: string) => {
-        scheduled.get(workspaceId)?.();
-        scheduled.delete(workspaceId);
+      const cancelWatchJobs = (workspaceId: string) => {
+        for (const job of host.jobs.list({
+          kind: WATCH_JOB,
+          key: workspaceId,
+          states: NOT_ENDED,
+        })) {
+          host.jobs.cancel(job.id);
+        }
       };
 
-      const schedule = (workspaceId: string, ms: number) => {
-        unschedule(workspaceId);
-        update(workspaceId, { next_poll_at: host.now() + ms, interval_ms: ms });
-        scheduled.set(
-          workspaceId,
-          timer(() => {
-            scheduled.delete(workspaceId);
-            return poll(workspaceId);
-          }, ms),
-        );
+      /** Starts the one watch job of the workspace, `after` ms from now, in place of any older one. */
+      const startWatch = (workspaceId: string, after: number) => {
+        cancelWatchJobs(workspaceId);
+        update(workspaceId, {
+          next_poll_at: after > 0 ? host.now() + after : null,
+          interval_ms: minInterval,
+        });
+        host.jobs.start(WATCH_JOB, { workspaceId }, { key: workspaceId, after });
       };
 
       /** Moves the workspace's card when the PR opens or merges (ADR 0012, ADR 0040). */
@@ -301,47 +293,63 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         return parts.join("\n\n");
       };
 
-      /** Looks at the PR, sends failures to the worker when due, and schedules the next look (R9.2). */
-      const pollOnce = async (workspaceId: string): Promise<void> => {
+      /**
+       * Looks at the PR, decides whether the worker gets failures, and returns the store writes as `commit`, with the
+       * next poll (R9.2). Only this job sends feedback, so a refresh cannot race it into a second send.
+       */
+      const watchStep = async (workspaceId: string): Promise<StepOutcome<never>> => {
         const row = load(workspaceId);
-        if (!row) return;
+        if (!row || row.watch_state === "off" || row.watch_state === "done") return { next: null };
         const workspace = workspaces.get(workspaceId);
-        // A parked workspace's agents are stopped; an archived one has no folder. Resume schedules again.
-        if (workspace.state !== "active" || !existsSync(workspace.path)) return;
+        // The watch also ends if the folder is gone; the job is cancelled when the workspace is parked or archived.
+        if (workspace.state !== "active" || !existsSync(workspace.path)) return { next: null };
         const before = viewOf(row);
+        const now = host.now();
         let pr: PullRequest | undefined;
         try {
           pr = await gh.view(workspace.path, String(row.number));
         } catch (error) {
-          update(workspaceId, { message: (error as Error).message, polled_at: host.now() });
-          if (row.watch_state === "watching" || row.watch_state === "waiting") {
-            schedule(workspaceId, Math.min(row.interval_ms * 2, maxInterval));
-          }
-          return;
+          const interval = Math.min(row.interval_ms * 2, maxInterval);
+          return {
+            next: "poll",
+            after: interval,
+            commit: () =>
+              update(workspaceId, {
+                message: (error as Error).message,
+                polled_at: now,
+                next_poll_at: now + interval,
+                interval_ms: interval,
+              }),
+          };
         }
         if (!pr) throw new ApiError(404, "pr_not_found", `PR #${row.number} is gone`);
-        stateChanged(workspaceId, before, pr);
-        const now = host.now();
-        update(workspaceId, {
-          view: JSON.stringify(pr),
+        const found = pr;
+        const fields: Partial<PrRow> = {
+          view: JSON.stringify(found),
           polled_at: now,
           message: row.watch_state === "waiting" ? row.message : null,
-        });
-        if (pr.state !== "open") {
-          unschedule(workspaceId);
-          update(workspaceId, { watch_state: "done", next_poll_at: null });
-          return;
+        };
+        if (found.state !== "open") {
+          return {
+            next: null,
+            commit: () => {
+              stateChanged(workspaceId, before, found);
+              update(workspaceId, { ...fields, watch_state: "done", next_poll_at: null });
+            },
+          };
         }
-        if (row.watch_state === "off" || row.watch_state === "done") return;
 
         const changed =
-          before.headId !== pr.headId ||
-          checksKey(before) !== checksKey(pr) ||
-          before.mergeable !== pr.mergeable;
-        const pending = pr.checks.some((check) => check.state === "pending");
+          before.headId !== found.headId ||
+          checksKey(before) !== checksKey(found) ||
+          before.mergeable !== found.mergeable;
+        let send:
+          | { workerId: string; message: string; comments: BotComment[]; summary: string }
+          | undefined;
+        const pending = found.checks.some((check) => check.state === "pending");
         if (!pending) {
-          const failed = pr.checks.filter((check) => check.state === "fail");
-          const freshFailures = failed.length > 0 && row.handled_head !== pr.headId;
+          const failed = found.checks.filter((check) => check.state === "fail");
+          const freshFailures = failed.length > 0 && row.handled_head !== found.headId;
           const sent = new Set(
             host.store
               .all<{ item: string }>(
@@ -350,30 +358,26 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
               )
               .map((entry) => entry.item),
           );
-          const comments = (await gh.botComments(workspace.path, pr.number)).filter(
+          const comments = (await gh.botComments(workspace.path, found.number)).filter(
             (comment) => !sent.has(comment.key),
           );
           if (freshFailures || comments.length > 0) {
             if (row.watch_state === "watching") {
               const worker = activeWorker(workspaceId);
               if (row.tries >= maxTries) {
-                update(workspaceId, {
-                  watch_state: "waiting",
-                  message: `Stopped after ${maxTries} automatic tries in a row. Waiting for you.`,
-                });
+                fields.watch_state = "waiting";
+                fields.message = `Stopped after ${maxTries} automatic tries in a row. Waiting for you.`;
               } else if (!worker) {
-                update(workspaceId, {
-                  watch_state: "waiting",
-                  message: "The workspace has no worker chat to send failures to. Waiting for you.",
-                });
+                fields.watch_state = "waiting";
+                fields.message =
+                  "The workspace has no worker chat to send failures to. Waiting for you.";
               } else {
-                const attempt = row.tries + 1;
                 const message = await feedback(
                   workspace.path,
-                  pr,
+                  found,
                   freshFailures ? failed : [],
                   comments,
-                  attempt,
+                  row.tries + 1,
                 );
                 const summary = [
                   freshFailures
@@ -385,62 +389,82 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
                 ]
                   .filter(Boolean)
                   .join(" and ");
-                const head = pr.headId;
-                // The delivery, the sent marks, and the try count commit together.
-                host.store.transaction(() => {
-                  agents.deliver(worker.id, message);
-                  for (const comment of comments) {
-                    host.store.run(
-                      "INSERT OR IGNORE INTO github_pr_sent (workspace_id, item) VALUES (?, ?)",
-                      workspaceId,
-                      comment.key,
-                    );
-                  }
-                  host.store.run(
-                    "INSERT INTO github_pr_tries (id, workspace_id, at, head_id, summary) VALUES (?, ?, ?, ?, ?)",
-                    host.newId(),
-                    workspaceId,
-                    now,
-                    head,
-                    `Sent ${summary} to the worker (try ${attempt} of ${maxTries})`,
-                  );
-                  update(workspaceId, {
-                    tries: attempt,
-                    ...(freshFailures ? { handled_head: head } : {}),
-                  });
-                });
+                send = { workerId: worker.id, message, comments, summary };
+                fields.tries = row.tries + 1;
+                if (freshFailures) fields.handled_head = found.headId;
               }
             }
-          } else if (failed.length === 0 && row.clean_head !== pr.headId) {
+          } else if (failed.length === 0 && row.clean_head !== found.headId) {
             // A head with every check passed and nothing to send ends the run of tries.
-            update(workspaceId, {
-              tries: 0,
-              clean_head: pr.headId,
-              watch_state: "watching",
-              message: null,
-            });
+            fields.tries = 0;
+            fields.clean_head = found.headId;
+            fields.watch_state = "watching";
+            fields.message = null;
           }
         }
-        schedule(workspaceId, changed ? minInterval : Math.min(row.interval_ms * 2, maxInterval));
+        const interval = changed ? minInterval : Math.min(row.interval_ms * 2, maxInterval);
+        return {
+          next: "poll",
+          after: interval,
+          commit: () => {
+            stateChanged(workspaceId, before, found);
+            // The delivery, the sent marks, the try, and the row commit together with the next poll time.
+            if (send) {
+              agents.deliver(send.workerId, send.message);
+              for (const comment of send.comments) {
+                host.store.run(
+                  "INSERT OR IGNORE INTO github_pr_sent (workspace_id, item) VALUES (?, ?)",
+                  workspaceId,
+                  comment.key,
+                );
+              }
+              host.store.run(
+                "INSERT INTO github_pr_tries (id, workspace_id, at, head_id, summary) VALUES (?, ?, ?, ?, ?)",
+                host.newId(),
+                workspaceId,
+                now,
+                found.headId,
+                `Sent ${send.summary} to the worker (try ${fields.tries} of ${maxTries})`,
+              );
+            }
+            update(workspaceId, { ...fields, next_poll_at: now + interval, interval_ms: interval });
+          },
+        };
       };
 
-      const poll = (workspaceId: string): Promise<void> => {
-        const previous = running.get(workspaceId) ?? Promise.resolve();
-        const next = previous
-          .then(() => pollOnce(workspaceId))
-          .catch((error: unknown) => {
-            host.log.error("PR poll failed", { workspace: workspaceId, error: String(error) });
-            update(workspaceId, { message: (error as Error).message });
-          })
-          .then(() => publishStatus(workspaceId))
-          .catch((error: unknown) => {
-            host.log.error("PR status failed", { workspace: workspaceId, error: String(error) });
-          })
-          .finally(() => {
-            if (running.get(workspaceId) === next) running.delete(workspaceId);
+      /** A watch that fails outside gh's view ends with the reason on the row, as a failed poll always did. */
+      const runWatchStep = async (workspaceId: string): Promise<StepOutcome<never>> => {
+        try {
+          return await watchStep(workspaceId);
+        } catch (error) {
+          host.log.error("PR poll failed", { workspace: workspaceId, error: String(error) });
+          return {
+            next: null,
+            commit: () => update(workspaceId, { message: (error as Error).message }),
+          };
+        }
+      };
+
+      /**
+       * Reads the PR and stores the view, and moves the card. It never sends feedback: only the watch job does.
+       * Used by a refresh and a push.
+       */
+      const refreshView = async (workspace: Workspace, row: PrRow): Promise<void> => {
+        try {
+          const pr = await gh.view(workspace.path, String(row.number));
+          if (!pr) throw new ApiError(404, "pr_not_found", `PR #${row.number} is gone`);
+          stateChanged(workspace.id, viewOf(row), pr);
+          update(workspace.id, {
+            view: JSON.stringify(pr),
+            polled_at: host.now(),
+            message: row.watch_state === "waiting" ? row.message : null,
+            ...(pr.state !== "open" ? { watch_state: "done", next_poll_at: null } : {}),
           });
-        running.set(workspaceId, next);
-        return next;
+          if (pr.state !== "open") cancelWatchJobs(workspace.id);
+        } catch (error) {
+          update(workspace.id, { message: (error as Error).message, polled_at: host.now() });
+        }
+        await publishStatus(workspace.id);
       };
 
       /** Stores a PR pi-spore has not seen yet for this workspace. */
@@ -457,7 +481,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           host.now(),
         );
         stateChanged(workspace.id, undefined, pr);
-        if (watch && pr.state === "open") schedule(workspace.id, minInterval);
+        if (watch && pr.state === "open") startWatch(workspace.id, minInterval);
       };
 
       const publishable = async (workspaceId: string) => {
@@ -484,24 +508,44 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         return [event];
       });
 
-      // Watches pick up where they were after a restart.
+      host.jobs.define<{ workspaceId: string }, never>(WATCH_JOB, [
+        { name: "poll", run: ({ subject }) => runWatchStep(subject.workspaceId) },
+      ]);
+
+      // The job commits its writes itself, so its listeners tell the UI. A cancel is followed by the caller's own publish.
+      host.jobs.onChange((job) => {
+        if (job.kind !== WATCH_JOB || job.key === null || job.state === "cancelled") return;
+        publishStatus(job.key).catch((error: unknown) => {
+          host.log.error("PR status failed", { workspace: job.key, error: String(error) });
+        });
+      });
+
+      // Watches from before the runner have no job. Later ones keep the job, and its next poll time, across restarts.
       for (const row of host.store.all<PrRow>(
         "SELECT * FROM github_pr_prs WHERE watch_state IN ('watching', 'waiting')",
       )) {
-        schedule(row.workspace_id, minInterval);
+        const hasJob =
+          host.jobs.list({ kind: WATCH_JOB, key: row.workspace_id, states: NOT_ENDED }).length > 0;
+        if (hasJob || workspaces.get(row.workspace_id).state !== "active") continue;
+        host.jobs.start(
+          WATCH_JOB,
+          { workspaceId: row.workspace_id },
+          { key: row.workspace_id, after: Math.max(0, (row.next_poll_at ?? 0) - host.now()) },
+        );
       }
 
       workspaces.afterStateChange((workspace) => {
-        if (workspace.state !== "active") unschedule(workspace.id);
-        else if (load(workspace.id)) schedule(workspace.id, minInterval);
+        if (workspace.state !== "active") cancelWatchJobs(workspace.id);
+        else if (["watching", "waiting"].includes(load(workspace.id)?.watch_state ?? ""))
+          startWatch(workspace.id, minInterval);
       });
 
       // ADR 0121: the PR records of a deleted workspace go with it.
       workspaces.beforeDeleteWorkspace(async (workspace) => {
-        unschedule(workspace.id);
-        for (const table of ["github_pr_prs", "github_pr_sent", "github_pr_tries"]) {
-          host.store.run(`DELETE FROM ${table} WHERE workspace_id = ?`, workspace.id);
-        }
+        cancelWatchJobs(workspace.id);
+        host.store.run("DELETE FROM github_pr_prs WHERE workspace_id = ?", workspace.id);
+        host.store.run("DELETE FROM github_pr_sent WHERE workspace_id = ?", workspace.id);
+        host.store.run("DELETE FROM github_pr_tries WHERE workspace_id = ?", workspace.id);
       });
 
       host.routes.get("/workspaces/:id", async (c) => {
@@ -511,7 +555,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           workspace.state === "active" &&
           existsSync(workspace.path)
         ) {
-          if (load(workspace.id)) await poll(workspace.id);
+          const row = load(workspace.id);
+          if (row) await refreshView(workspace, row);
           else if (workspace.line && (await providerOf(workspace)).publish) {
             // A PR opened outside pi-spore is shown, but not watched until the user turns the watch on.
             const found = await gh.view(workspace.path, workspace.line);
@@ -560,7 +605,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         parseJsonBody(PushRequest, await c.req.text(), "push request");
         const { workspace, push, line } = await publishable(c.req.param("id"));
         await push({ path: workspace.path, line }, line);
-        if (load(workspace.id)) await poll(workspace.id);
+        const row = load(workspace.id);
+        if (row) await refreshView(workspace, row);
         return c.json(await status(workspace.id));
       });
 
@@ -581,12 +627,12 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             message: null,
             interval_ms: minInterval,
           });
-          if (workspace.state === "active") await poll(workspace.id);
+          if (workspace.state === "active") startWatch(workspace.id, 0);
         } else {
-          unschedule(workspace.id);
+          cancelWatchJobs(workspace.id);
           update(workspace.id, { watch_state: "off", next_poll_at: null, message: null });
-          await publishStatus(workspace.id);
         }
+        await publishStatus(workspace.id);
         return c.json(await status(workspace.id));
       });
     },
