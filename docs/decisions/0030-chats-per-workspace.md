@@ -2,6 +2,8 @@
 
 - Status: Accepted
 - Date: 2026-11-07
+- Note: ADR 0120 renames the chat. Where this text says the chat is "the worker" or a "worker chat", read "the
+  orchestrator" or "orchestrator chat". The `worker` chat kind, the routes, and the env names stay.
 - Requirements: R3.1, R3.8, R3.9
 
 ## Context

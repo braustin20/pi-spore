@@ -49,9 +49,9 @@ not built in v1.
 - R3.5 Agents have a `request_human_input` tool. Agents in a run ask their coordinator instead (R7).
 - R3.6 Concurrency and nesting limits for agents are settings, with safe defaults.
 - R3.7 The user can exclude extensions from pi-spore agents while keeping them in the `pi` CLI.
-- R3.8 A workspace can start a fresh worker chat; earlier worker chats stay readable and can be made active again.
-  Only one worker chat runs at a time (ADR 0030).
-- R3.9 Read-only side chats run next to the worker, started empty or from the worker's current context
+- R3.8 A workspace can start a fresh orchestrator chat; earlier orchestrator chats stay readable and can be made active again.
+  Only one orchestrator chat runs at a time (ADR 0030).
+- R3.9 Read-only side chats run next to the orchestrator, started empty or from the orchestrator's current context
   (ADR 0030).
 
 ## R4. Model routing and local models
