@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { type CliDeps, run } from "./cli.js";
 
@@ -800,5 +803,181 @@ describe("pi-spore pr", () => {
     expect(await run(["pr", "watch", "W1", "on"], deps)).toBe(0);
     expect(sent[1]?.body).toEqual({ on: true });
     expect(await run(["pr", "watch", "W1", "maybe"], deps)).toBe(2);
+  });
+});
+
+describe("pi-spore pipeline", () => {
+  const stages = [
+    { name: "implement", role: "worker" },
+    { name: "review", role: "reviewer" },
+  ];
+  const turns = [
+    {
+      id: "T1",
+      runId: "R1",
+      stageIndex: 0,
+      stage: "implement",
+      round: 1,
+      kind: "task",
+      role: "worker",
+      agentId: "A1",
+      report: {
+        turn: "T1",
+        summary: "Built it",
+        tests: [{ name: "adds", proof: "proofs/adds.txt" }],
+      },
+      createdAt: 1,
+    },
+    {
+      id: "T2",
+      runId: "R1",
+      stageIndex: 1,
+      stage: "review",
+      round: 1,
+      kind: "review",
+      role: "reviewer",
+      agentId: "A2",
+      report: {
+        turn: "T2",
+        summary: "Needs work",
+        verdict: "revise",
+        findings: [
+          { severity: "minor", title: "Naming" },
+          { severity: "blocking", title: "Crash on empty input", file: "src/a.ts", line: 12 },
+        ],
+        earlyStop: { stop: false, probability: 0.2 },
+      },
+      createdAt: 2,
+    },
+  ];
+  const pipelineRun = {
+    id: "R1",
+    workspaceId: "W1",
+    pipelineId: "ship",
+    source: "user",
+    hash: "abc",
+    stages,
+    brief: "Build it",
+    askingAgentId: "A0",
+    state: "running",
+    stageIndex: 1,
+    blocked: "stage review: reviewer model is not stronger",
+    tests: [],
+    turns,
+    createdAt: 1,
+  };
+
+  it("lists pipelines, a broken one with its error", async () => {
+    const { deps, out, sent } = fakeDeps(() =>
+      Response.json({
+        pipelines: [
+          { id: "ship", source: "user", hash: "abc", stages },
+          { id: "bad", source: "project", error: "stage 1: unknown key" },
+        ],
+      }),
+    );
+    expect(await run(["pipeline", "list", "W1"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/pipelines/workspaces/W1");
+    expect(out).toEqual([
+      `${"ship".padEnd(20)} ${"user".padEnd(9)} implement > review`,
+      `${"bad".padEnd(20)} ${"project".padEnd(9)} error: stage 1: unknown key`,
+    ]);
+  });
+
+  it("starts a run from --brief, or from --brief-file", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "pi-spore-cli-"));
+    try {
+      const file = join(dir, "brief.md");
+      writeFileSync(file, "From a file");
+      const { deps, out, sent } = fakeDeps(
+        () => Response.json({ run: pipelineRun }, { status: 201 }),
+        {
+          resolvePath: (path) => path,
+        },
+      );
+
+      expect(await run(["pipeline", "start", "W1", "ship", "--brief", "Do it"], deps)).toBe(0);
+      expect(await run(["pipeline", "start", "W1", "ship", "--brief-file", file], deps)).toBe(0);
+
+      expect(sent.map((request) => request.body)).toEqual([
+        { pipeline: "ship", brief: "Do it" },
+        { pipeline: "ship", brief: "From a file" },
+      ]);
+      expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/pipelines/workspaces/W1/runs");
+      expect(out[0]).toContain("Started R1  running");
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("needs exactly one of --brief and --brief-file, and names an unreadable file", async () => {
+    const { deps, err, sent } = fakeDeps(() => Response.json({}));
+    expect(await run(["pipeline", "start", "W1", "ship"], deps)).toBe(2);
+    expect(
+      await run(["pipeline", "start", "W1", "ship", "--brief", "a", "--brief-file", "b"], deps),
+    ).toBe(2);
+    expect(
+      await run(["pipeline", "start", "W1", "ship", "--brief-file", "/nope/brief.md"], deps),
+    ).toBe(1);
+    expect(err.at(-1)).toContain("/nope/brief.md");
+    expect(sent).toEqual([]);
+  });
+
+  it("lists runs, one line each, with the stage and why a run is stuck", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json({ runs: [pipelineRun] }));
+    expect(await run(["pipeline", "runs", "W1"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/pipelines/workspaces/W1/runs");
+    expect(out).toEqual([
+      `R1  ${"running".padEnd(12)} ship  stage review  blocked: stage review: reviewer model is not stronger`,
+    ]);
+  });
+
+  it("shows stages, turns, verdicts, and findings by severity", async () => {
+    const { deps, out, sent } = fakeDeps(() => Response.json({ run: pipelineRun }));
+    expect(await run(["pipeline", "show", "R1"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/pipelines/runs/R1");
+    const text = out.join("\n");
+    expect(text).toContain("Stage review  (current)");
+    expect(text).toContain("task round 1  worker  chat A1  reported");
+    expect(text).toContain("test: adds  proof proofs/adds.txt");
+    expect(text).toContain("review round 1  reviewer  chat A2  revise");
+    expect(text.indexOf("blocking: Crash on empty input (src/a.ts:12)")).toBeLessThan(
+      text.indexOf("minor: Naming"),
+    );
+    expect(text).toContain("Jev: go on (20%)");
+    expect(text).toContain("Fix it, then: pi-spore pipeline retry R1");
+  });
+
+  it("prints the run with --json", async () => {
+    const { deps, out } = fakeDeps(() => Response.json({ run: pipelineRun }));
+    expect(await run(["pipeline", "show", "R1", "--json"], deps)).toBe(0);
+    expect(JSON.parse(out[0] as string)).toMatchObject({ id: "R1", state: "running" });
+  });
+
+  it("cancels and retries a run", async () => {
+    const { deps, out, sent } = fakeDeps((key) =>
+      Response.json({
+        run: { ...pipelineRun, state: key.endsWith("/cancel") ? "stopped" : "running" },
+      }),
+    );
+    expect(await run(["pipeline", "cancel", "R1"], deps)).toBe(0);
+    expect(await run(["pipeline", "retry", "R1"], deps)).toBe(0);
+    expect(sent.map((request) => `${request.method} ${request.url}`)).toEqual([
+      "POST http://127.0.0.1:7420/api/pipelines/runs/R1/cancel",
+      "POST http://127.0.0.1:7420/api/pipelines/runs/R1/retry",
+    ]);
+    expect(out[0]).toContain("Cancelled R1  stopped");
+    expect(out[1]).toContain("Retried R1  running");
+  });
+
+  it("shows the server's refusal of a retry", async () => {
+    const { deps, err } = fakeDeps(() =>
+      Response.json(
+        { error: { code: "run_not_waiting", message: "The run has no waiting job to retry" } },
+        { status: 409 },
+      ),
+    );
+    expect(await run(["pipeline", "retry", "R1"], deps)).toBe(1);
+    expect(err).toEqual(["The run has no waiting job to retry"]);
   });
 });

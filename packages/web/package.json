@@ -15,6 +15,7 @@
     "@pi-spore/mod-changes": "0.0.0",
     "@pi-spore/mod-github-pr": "0.0.0",
     "@pi-spore/mod-kanban": "0.0.0",
+    "@pi-spore/mod-pipelines": "0.0.0",
     "@pi-spore/mod-projects": "0.0.0",
     "@pi-spore/mod-terminals": "0.0.0",
     "@pi-spore/mod-unity": "0.0.0",

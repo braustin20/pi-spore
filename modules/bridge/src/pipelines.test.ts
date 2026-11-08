@@ -726,13 +726,19 @@ describe("min_strength_over (R4.4)", () => {
     const records = readFileSync(join(scratch, "record.jsonl"), "utf8");
     expect(records).not.toContain('"PI_SPORE_STAGE_ROLE":"reviewer"');
     writeTiers(server.paths.root, { ...TIERS, "fake/weak": "heavy" });
-    const job = server.services.jobs.list({
-      kind: "pipelines.stage",
-      states: ["waiting"],
-    })[0] as JobView;
-    await json(await server.request("POST", `/api/jobs/${job.id}/retry`));
+    await json(await server.request("POST", `/api/pipelines/runs/${started.id}/retry`));
     await until(async () => (await getRun(server, started.id)).state === "passed");
     expect((await getRun(server, started.id)).blocked).toBeUndefined();
+  });
+
+  it("answers 409 to a retry of a run with no waiting job", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { run } = await runUntil(server, "noretry", IMPLEMENT, "passed");
+
+    const response = await server.request("POST", `/api/pipelines/runs/${run.id}/retry`);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "run_not_waiting" } });
   });
 
   it("names the missing tier setting when the reviewer model has no tier", async () => {

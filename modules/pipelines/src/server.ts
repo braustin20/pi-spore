@@ -877,6 +877,18 @@ export const pipelinesModule: ServerModule = {
 
     host.routes.get("/runs/:id", (c) => c.json({ run: viewOf(requireRun(c.req.param("id"))) }));
 
+    // Runs the waiting stage job's step now: the way to continue after the user fixed what blocked it.
+    host.routes.post("/runs/:id/retry", (c) => {
+      const run = requireRun(c.req.param("id"));
+      const job = host.jobs
+        .list({ kind: STAGE_JOB, key: run.workspace_id, states: ["waiting"] })
+        .find((found) => (found.subject as StageSubject).runId === run.id);
+      if (!job) throw new ApiError(409, "run_not_waiting", "The run has no waiting job to retry");
+      host.jobs.retry(job.id);
+      publish(run.workspace_id);
+      return c.json({ run: viewOf(requireRun(run.id)) });
+    });
+
     host.routes.post("/runs/:id/cancel", (c) => {
       const run = requireRun(c.req.param("id"));
       host.store.transaction(() => {

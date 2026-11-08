@@ -56,6 +56,9 @@
     },
     {
       "path": "../../modules/github-pr"
+    },
+    {
+      "path": "../../modules/pipelines"
     }
   ]
 }

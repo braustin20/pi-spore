@@ -8,6 +8,11 @@
       "@pi-spore/source": "./src/server.ts",
       "types": "./dist/server.d.ts",
       "default": "./dist/server.js"
+    },
+    "./web": {
+      "@pi-spore/source": "./src/web.tsx",
+      "types": "./dist/web.d.ts",
+      "default": "./dist/web.js"
     }
   },
   "dependencies": {
@@ -20,7 +25,13 @@
     "@pi-spore/module-api": "0.0.0",
     "@pi-spore/router": "0.0.0",
     "@pi-spore/shared": "0.0.0",
+    "@pi-spore/ui": "0.0.0",
+    "lucide-react": "1.70.0",
+    "react": "19.3.1",
     "smol-toml": "1.9.1",
     "typebox": "1.4.5"
+  },
+  "devDependencies": {
+    "react-dom": "19.3.1"
   }
 }

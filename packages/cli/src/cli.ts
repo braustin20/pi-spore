@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import {
   ActionList,
   ActionLog,
@@ -23,6 +24,11 @@ import {
   Job,
   JobList,
   JobState,
+  PipelineList,
+  type PipelineRun,
+  PipelineRunList,
+  PipelineRun as PipelineRunSchema,
+  type PipelineTurn,
   Project,
   ProjectList,
   PrStatus,
@@ -89,13 +95,20 @@ Commands:
   jobs [--all]                             Background jobs that have not ended; --all includes ended ones
   jobs retry <job>                         Run an interrupted or waiting job again now
   jobs cancel <job>
+  pipeline list <workspace>                Pipelines the workspace can start; a broken one shows its error
+  pipeline start <workspace> <pipeline> (--brief <text> | --brief-file <path>)
+                                           Start a run; a workspace has one active run at a time
+  pipeline runs <workspace>                The workspace's runs, newest first
+  pipeline show <run>                      A run's stages, turns, verdicts, and findings
+  pipeline cancel <run>
+  pipeline retry <run>                     Run a stuck run's step again now, after fixing what blocked it
   pr status <workspace>                    Show the workspace's PR, its checks, and the watch
   pr open <workspace> [--title <t>] [--body <b>] [--base <branch>] [--draft]
                                            Push the branch and open a PR on GitHub (outward-facing)
   pr push <workspace>                      Push new commits to the PR's branch (never forced)
   pr watch <workspace> on|off              Send failed checks to the worker, or stop
 
-<project> is a project id or slug. <workspace>, <card>, <approval>, and <job> are ids.
+<project> is a project id or slug. <workspace>, <card>, <approval>, <job>, and <run> are ids.
 
 Environment:
   PI_SPORE_URL    Server address (default ${DEFAULT_URL})
@@ -673,6 +686,114 @@ async function jobsCommand(api: Api, deps: CliDeps, args: string[], json: boolea
   for (const job of jobs) deps.out(jobLine(job));
 }
 
+const RunBody = Type.Object({ run: PipelineRunSchema });
+
+function runLine(run: PipelineRun): string {
+  const stage = run.stages[run.stageIndex]?.name ?? "-";
+  const note = run.blocked ? `  blocked: ${run.blocked}` : run.message ? `  ${run.message}` : "";
+  return `${run.id}  ${run.state.padEnd(12)} ${run.pipelineId}  stage ${stage}${note.split("\n")[0]}`;
+}
+
+function turnLines(turn: PipelineTurn): string[] {
+  const { report } = turn;
+  const lines = [
+    `  ${turn.kind} round ${turn.round}  ${turn.role}  chat ${turn.agentId}  ${report ? (report.verdict ?? "reported") : "waiting for report"}`,
+  ];
+  if (!report) return lines;
+  lines.push(`    ${report.summary.split("\n").join("\n    ")}`);
+  for (const severity of ["blocking", "important", "minor"] as const) {
+    for (const finding of (report.findings ?? []).filter((found) => found.severity === severity)) {
+      const where = finding.file
+        ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})`
+        : "";
+      lines.push(`    ${severity}: ${finding.title}${where}`);
+    }
+  }
+  for (const test of report.tests ?? []) lines.push(`    test: ${test.name}  proof ${test.proof}`);
+  if (report.earlyStop) {
+    const { stop, probability, error } = report.earlyStop;
+    const chance = probability === undefined ? "" : ` (${Math.round(probability * 100)}%)`;
+    lines.push(`    Jev: ${stop ? "stop" : "go on"}${chance}${error ? `  ${error}` : ""}`);
+  }
+  return lines;
+}
+
+function printRun(deps: CliDeps, run: PipelineRun): void {
+  deps.out(`Run ${run.id}  ${run.pipelineId} (${run.source})  ${run.state}`);
+  deps.out(`Workspace ${run.workspaceId}`);
+  if (run.message) deps.out(`Message: ${run.message}`);
+  if (run.blocked)
+    deps.out(`Blocked: ${run.blocked}\nFix it, then: pi-spore pipeline retry ${run.id}`);
+  run.stages.forEach((stage, index) => {
+    deps.out("");
+    deps.out(`Stage ${stage.name}${index === run.stageIndex ? "  (current)" : ""}`);
+    const turns = run.turns.filter((turn) => turn.stageIndex === index);
+    if (turns.length === 0 && stage.gates) deps.out(`  gates: ${stage.gates.join(", ")}`);
+    for (const turn of turns) for (const line of turnLines(turn)) deps.out(line);
+  });
+}
+
+async function pipelineCommand(
+  api: Api,
+  deps: CliDeps,
+  args: string[],
+  json: boolean,
+): Promise<void> {
+  const [sub, ...rest] = args;
+  const show = (run: PipelineRun, verb: string) =>
+    deps.out(json ? JSON.stringify(run) : `${verb} ${runLine(run)}`);
+  if (sub === "list" && rest.length === 1) {
+    const { pipelines } = await api.call("GET", `pipelines/workspaces/${rest[0]}`, PipelineList);
+    if (json) return deps.out(JSON.stringify(pipelines));
+    if (pipelines.length === 0) return deps.out("No pipelines.");
+    for (const pipeline of pipelines) {
+      const what = pipeline.error
+        ? `error: ${pipeline.error}`
+        : (pipeline.stages ?? []).map((stage) => stage.name).join(" > ");
+      deps.out(`${pipeline.id.padEnd(20)} ${pipeline.source.padEnd(9)} ${what}`);
+    }
+    return;
+  }
+  if (sub === "start") {
+    const { positional, options } = parseArgs(rest, ["brief", "brief-file"]);
+    if (positional.length !== 2)
+      throw usageError("pipeline start takes a workspace and a pipeline");
+    if ((options.brief === undefined) === (options["brief-file"] === undefined))
+      throw usageError("pipeline start needs --brief <text> or --brief-file <path>");
+    const brief = options.brief ?? readBriefFile(deps.resolvePath(options["brief-file"] as string));
+    const { run } = await api.call("POST", `pipelines/workspaces/${positional[0]}/runs`, RunBody, {
+      pipeline: positional[1],
+      brief,
+    });
+    return show(run, "Started");
+  }
+  if (sub === "runs" && rest.length === 1) {
+    const { runs } = await api.call("GET", `pipelines/workspaces/${rest[0]}/runs`, PipelineRunList);
+    if (json) return deps.out(JSON.stringify(runs));
+    if (runs.length === 0) return deps.out("No runs.");
+    for (const run of runs) deps.out(runLine(run));
+    return;
+  }
+  if (sub === "show" && rest.length === 1) {
+    const { run } = await api.call("GET", `pipelines/runs/${rest[0]}`, RunBody);
+    return json ? deps.out(JSON.stringify(run)) : printRun(deps, run);
+  }
+  if ((sub === "cancel" || sub === "retry") && rest.length === 1) {
+    const { run } = await api.call("POST", `pipelines/runs/${rest[0]}/${sub}`, RunBody, {});
+    return show(run, sub === "cancel" ? "Cancelled" : "Retried");
+  }
+  throw usageError(`Unknown command: pipeline ${args.join(" ")}`);
+}
+
+/** The only file read in the CLI; a missing file is an error that names the path. */
+function readBriefFile(path: string): string {
+  try {
+    return readFileSync(path, "utf8");
+  } catch (error) {
+    throw new CliError(`Cannot read the brief file ${path}: ${(error as Error).message}`, 1);
+  }
+}
+
 function printPr(deps: CliDeps, status: PrStatus): void {
   const { pr, watch } = status;
   if (!pr) {
@@ -768,6 +889,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "card") await cardCommand(new Api(deps, base), deps, rest, json);
     else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "jobs") await jobsCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "pipeline") await pipelineCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pr") await prCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;

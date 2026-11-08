@@ -83,6 +83,13 @@ class Jobs implements JobService {
       start: (kind, subject, startOptions) => this.start(kind, subject, startOptions),
       wake: (kind, key) => this.wake(kind, key),
       cancel: (id) => this.cancel(id),
+      retry: (id) => {
+        const kind = this.get(id)?.kind;
+        if (kind !== undefined && !kind.startsWith(`${moduleId}.`)) {
+          throw new Error(`Job ${id} is of kind "${kind}", not one of "${moduleId}."`);
+        }
+        this.retry(id);
+      },
       list: (filter) => this.list(filter),
       onChange: (listener) => this.onChange(listener),
       prune: (before) => this.prune(before),

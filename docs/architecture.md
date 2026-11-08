@@ -275,7 +275,8 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
   - Jobs with the same kind and key run one at a time, oldest first; a waiting or interrupted one blocks the later
     ones, so deliveries keep their order. `jobs.wake(kind, key)` makes waiting jobs due again; a wake during a
     running step applies when it settles. A step that throws makes its job `waiting` with the error; waiting jobs
-    run again on a wake, a retry, and a server start.
+    run again on a wake, a retry, and a server start. `jobs.retry(id)` does the same for one job; a module can retry
+    only jobs of its own kinds.
   - After every module's setup, the runner resumes running and waiting jobs on the step they were on, so a
     committed step never runs again. A delayed step keeps its due time. Jobs of a kind no enabled module defines
     are left as they are.
