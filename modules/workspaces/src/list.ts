@@ -1,4 +1,5 @@
-import type { Workspace, WorkspaceState } from "@pi-spore/shared";
+import { parse, Workspace, type WorkspaceState } from "@pi-spore/shared";
+import Type from "typebox";
 
 export interface WorkspaceGroup {
   state: WorkspaceState;
@@ -42,4 +43,19 @@ export function ago(time: number, now: number): string {
   const hours = Math.floor(minutes / 60);
   if (hours < 24) return `${hours}h`;
   return `${Math.floor(hours / 24)}d`;
+}
+
+const ListEvent = Type.Union([
+  Type.Object({ type: Type.Literal("snapshot"), workspaces: Type.Array(Workspace) }),
+  Type.Object({ type: Type.Literal("workspace"), workspace: Workspace }),
+]);
+
+/** Applies one `workspaces:list` event. Workspaces are never deleted, so there is no removal event. */
+export function reduceWorkspaceList(workspaces: Workspace[], raw: unknown): Workspace[] {
+  const event = parse(ListEvent, raw, "workspace list event");
+  if (event.type === "snapshot") return event.workspaces;
+  const { workspace } = event;
+  if (!workspaces.some((existing) => existing.id === workspace.id))
+    return [workspace, ...workspaces];
+  return workspaces.map((existing) => (existing.id === workspace.id ? workspace : existing));
 }

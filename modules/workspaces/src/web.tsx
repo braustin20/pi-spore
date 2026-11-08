@@ -1,4 +1,4 @@
-import { ApiRequestError, useApi, type WebModule } from "@pi-spore/module-api";
+import { type ApiClient, ApiRequestError, useApi, type WebModule } from "@pi-spore/module-api";
 import {
   ArchiveWorkspaceResponse,
   type CreateWorkspaceRequest,
@@ -10,7 +10,6 @@ import {
   parse,
   type StepReport,
   type Workspace,
-  WorkspaceList,
 } from "@pi-spore/shared";
 import {
   Button,
@@ -44,15 +43,8 @@ import {
   Plus,
   X,
 } from "lucide-react";
-import {
-  type ComponentType,
-  type ReactNode,
-  type SubmitEvent,
-  useCallback,
-  useEffect,
-  useState,
-} from "react";
-import { ago, groupWorkspaces } from "./list.js";
+import { type ComponentType, type ReactNode, type SubmitEvent, useEffect, useState } from "react";
+import { ago, groupWorkspaces, reduceWorkspaceList } from "./list.js";
 import {
   type CreateWorkspaceFormProps,
   type UseWorkspaceStatus,
@@ -234,37 +226,82 @@ function CreateForm({
   );
 }
 
+/** Archives after a confirm. Returns the step notes, or undefined when the user says no. */
+async function archiveWorkspace(api: ApiClient, workspace: Workspace): Promise<Note[] | undefined> {
+  const what =
+    workspace.isolation === "in-place" ? "" : " Its copy will be removed; the branch stays.";
+  if (!window.confirm(`Archive "${workspace.name}"?${what}`)) return undefined;
+  const send = async (force: boolean) =>
+    parse(
+      ArchiveWorkspaceResponse,
+      await api.send("POST", `workspaces/${workspace.id}/archive`, force ? { force } : {}),
+      "archive",
+    );
+  try {
+    return (await send(false)).steps.map(stepNote);
+  } catch (caught) {
+    // A failed step such as teardown answers `<step>_failed`; force skips it and any uncommitted-work check.
+    const question =
+      caught instanceof ApiRequestError && caught.code === "uncommitted_work"
+        ? "Delete the uncommitted work and archive anyway?"
+        : caught instanceof ApiRequestError && caught.code.endsWith("_failed")
+          ? "Archive anyway? This also deletes any uncommitted work in the copy."
+          : undefined;
+    if (!question) throw caught;
+    if (!window.confirm(`${(caught as Error).message}\n\n${question}`)) return undefined;
+    return (await send(true)).steps.map(stepNote);
+  }
+}
+
 function WorkspaceRow({
   workspace,
   project,
   status,
   selected,
   now,
+  onArchive,
 }: {
   workspace: Workspace;
   project: string;
   status: WorkspaceStatus | undefined;
   selected: boolean;
   now: number;
+  onArchive: () => void;
 }) {
+  // The button sits beside the row link, not in it: a button must not nest in an anchor.
   return (
-    <ListRow href={`#/workspaces/${workspace.id}`} selected={selected}>
-      <div className="flex items-baseline gap-2">
-        <span className="min-w-0 flex-1 truncate text-sm font-medium">{workspace.name}</span>
-        <span className="shrink-0 font-mono text-[11px] text-muted">
-          {ago(workspace.updatedAt, now)}
-        </span>
-      </div>
-      <div className="truncate text-xs text-muted">
-        {project}
-        {workspace.line && <span className="font-mono"> · {workspace.line}</span>}
-      </div>
-      {status && (
-        <StatusLine tone={status.tone} className="mt-0.5 max-w-full">
-          {status.text}
-        </StatusLine>
+    <div className="group relative">
+      <ListRow href={`#/workspaces/${workspace.id}`} selected={selected}>
+        <div className="flex items-baseline gap-2">
+          <span className="min-w-0 flex-1 truncate text-sm font-medium">{workspace.name}</span>
+          <span className="shrink-0 font-mono text-[11px] text-muted group-focus-within:invisible group-hover:invisible">
+            {ago(workspace.updatedAt, now)}
+          </span>
+        </div>
+        <div className="truncate text-xs text-muted">
+          {project}
+          {workspace.line && <span className="font-mono"> · {workspace.line}</span>}
+        </div>
+        {status && (
+          <StatusLine tone={status.tone} className="mt-0.5 max-w-full">
+            {status.text}
+          </StatusLine>
+        )}
+      </ListRow>
+      {workspace.state !== "archived" && (
+        <Tooltip label="Archive">
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label={`Archive ${workspace.name}`}
+            className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+            onClick={onArchive}
+          >
+            <X />
+          </Button>
+        </Tooltip>
       )}
-    </ListRow>
+    </div>
   );
 }
 
@@ -275,6 +312,7 @@ function WorkspaceListColumn({
   projectId,
   error,
   onCollapse,
+  onArchive,
 }: {
   workspaces: readonly Workspace[] | undefined;
   projects: readonly Project[];
@@ -282,6 +320,7 @@ function WorkspaceListColumn({
   projectId: string | undefined;
   error: string | undefined;
   onCollapse: () => void;
+  onArchive: (workspace: Workspace) => void;
 }) {
   const [showArchived, setShowArchived] = useStoredFlag("pi-spore.workspaces.archived", false);
   const statuses = useStatus(workspaces ?? []);
@@ -344,6 +383,7 @@ function WorkspaceListColumn({
                 status={statuses.get(workspace.id)}
                 selected={workspace.id === selectedId}
                 now={now}
+                onArchive={() => onArchive(workspace)}
               />
             ))}
           </section>
@@ -364,12 +404,10 @@ function WorkspaceListColumn({
 function Details({
   workspace,
   project,
-  onChanged,
   onNotes,
 }: {
   workspace: Workspace;
   project: Project | undefined;
-  onChanged: () => void;
   onNotes: (notes: Note[]) => void;
 }) {
   const api = useApi();
@@ -381,7 +419,6 @@ function Details({
     setBusy(true);
     setError(undefined);
     return promise
-      .then(onChanged)
       .catch((caught: unknown) => setError(message(caught)))
       .finally(() => setBusy(false));
   };
@@ -399,37 +436,16 @@ function Details({
   };
 
   const archive = async () => {
-    const what =
-      workspace.isolation === "in-place" ? "" : " Its copy will be removed; the branch stays.";
-    if (!window.confirm(`Archive "${workspace.name}"?${what}`)) return;
-    const send = async (force: boolean) =>
-      parse(
-        ArchiveWorkspaceResponse,
-        await api.send("POST", `workspaces/${workspace.id}/archive`, force ? { force } : {}),
-        "archive",
-      );
     setBusy(true);
     setError(undefined);
     try {
-      onNotes((await send(false)).steps.map(stepNote));
+      const notes = await archiveWorkspace(api, workspace);
+      if (notes) onNotes(notes);
     } catch (caught) {
-      // A failed step such as teardown answers `<step>_failed`; force skips it and any uncommitted-work check.
-      const question =
-        caught instanceof ApiRequestError && caught.code === "uncommitted_work"
-          ? "Delete the uncommitted work and archive anyway?"
-          : caught instanceof ApiRequestError && caught.code.endsWith("_failed")
-            ? "Archive anyway? This also deletes any uncommitted work in the copy."
-            : undefined;
-      if (!question) setError(message(caught));
-      else if (window.confirm(`${(caught as Error).message}\n\n${question}`)) {
-        await send(true)
-          .then((result) => onNotes(result.steps.map(stepNote)))
-          .catch((forced: unknown) => setError(message(forced)));
-      }
+      setError(message(caught));
     } finally {
       setBusy(false);
     }
-    onChanged();
   };
 
   const stateTone =
@@ -508,13 +524,11 @@ function Details({
 function RightColumn({
   workspace,
   project,
-  onChanged,
   onNotes,
   onCollapse,
 }: {
   workspace: Workspace;
   project: Project | undefined;
-  onChanged: () => void;
   onNotes: (notes: Note[]) => void;
   onCollapse: () => void;
 }) {
@@ -553,13 +567,7 @@ function RightColumn({
         </div>
         <TabsContent value="details" className="overflow-y-auto">
           {/* Keyed by id, so a rename or error of one workspace does not carry over to the next. */}
-          <Details
-            key={workspace.id}
-            workspace={workspace}
-            project={project}
-            onChanged={onChanged}
-            onNotes={onNotes}
-          />
+          <Details key={workspace.id} workspace={workspace} project={project} onNotes={onNotes} />
           {[...panels]
             .sort((a, b) => a.order - b.order)
             .map((panel) => (
@@ -619,25 +627,20 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
     window.innerWidth >= 1100,
   );
 
-  const load = useCallback(() => {
-    api
-      .get("workspaces")
-      .then((body) => {
-        setWorkspaces(parse(WorkspaceList, body, "workspace list").workspaces);
-        setError(undefined);
-      })
-      .catch((caught: unknown) => setError(message(caught)));
-  }, [api]);
-
   useEffect(() => {
     api
       .get("projects")
       .then((body) => setProjects(parse(ProjectList, body, "project list").projects))
       .catch((caught: unknown) => setError(message(caught)));
-    load();
-    window.addEventListener("focus", load);
-    return () => window.removeEventListener("focus", load);
-  }, [api, load]);
+  }, [api]);
+
+  useEffect(
+    () =>
+      api.subscribe("workspaces:list", (event) => {
+        setWorkspaces((current) => reduceWorkspaceList(current ?? [], event));
+      }),
+    [api],
+  );
 
   // Notes belong to the workspace they were made for.
   // biome-ignore lint/correctness/useExhaustiveDependencies: clears on selection change only
@@ -684,7 +687,6 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           projects={projects}
           projectId={projectId}
           onCreated={(result) => {
-            load();
             window.location.hash = `#/workspaces/${result.workspace.id}`;
             // After the hash change, so the selection change does not clear them.
             setTimeout(() => setNotes(createdNotes(result)), 0);
@@ -704,6 +706,12 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           projectId={projectId}
           error={error}
           onCollapse={() => setListOpen(false)}
+          onArchive={(target) =>
+            void archiveWorkspace(api, target).then(
+              (result) => result && setNotes(result),
+              (caught: unknown) => setNotes([{ text: message(caught), error: true }]),
+            )
+          }
         />
       ) : (
         <CollapsedColumn label="Show the list" side="left" onExpand={() => setListOpen(true)} />
@@ -730,7 +738,6 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           <RightColumn
             workspace={workspace}
             project={project}
-            onChanged={load}
             onNotes={setNotes}
             onCollapse={() => setRightOpen(false)}
           />
