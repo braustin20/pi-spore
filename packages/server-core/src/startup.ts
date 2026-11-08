@@ -10,6 +10,7 @@ import {
 } from "@pi-spore/module-api";
 import { Hono } from "hono";
 import type { AgentTokenStore } from "./agent-tokens.js";
+import type { JobService } from "./jobs.js";
 import type { SocketRouter } from "./sockets.js";
 
 export interface HostServices {
@@ -25,6 +26,7 @@ export interface HostServices {
   agentTokens: AgentTokenStore;
   /** WebSocket routes; each module adds its own through `host.sockets`. */
   sockets: SocketRouter;
+  jobs: JobService;
 }
 
 export interface SetUpModule {
@@ -55,6 +57,7 @@ export async function setupModules(
       ...services,
       routes,
       sockets: services.sockets.forModule(module.id),
+      jobs: services.jobs.forModule(module.id),
       onStarted: (listener) => {
         startedListeners.push(listener);
       },
@@ -62,6 +65,8 @@ export async function setupModules(
     });
     result.push({ id: module.id, routes });
   }
+  // Every kind is defined by now, so jobs of a disabled module are the only ones left untouched.
+  services.jobs.resume();
   for (const listener of startedListeners) {
     try {
       await listener();

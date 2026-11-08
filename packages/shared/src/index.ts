@@ -86,6 +86,7 @@ export {
   type RunningTool,
 } from "./chat.js";
 export { HealthResponse } from "./health.js";
+export { Job, JobList, JobState } from "./jobs.js";
 export {
   BlockerRef,
   BoardEvent,

@@ -4,12 +4,13 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getRequestListener } from "@hono/node-server";
-import type { EventHub, Exec, Logger, ServerModule } from "@pi-spore/module-api";
+import type { EventHub, Exec, JobTimer, Logger, ServerModule } from "@pi-spore/module-api";
 import type { Hono } from "hono";
 import { AgentTokenStore } from "./agent-tokens.js";
 import { CORE_MIGRATIONS, createApp } from "./app.js";
 import { exec as realExec } from "./exec.js";
 import { ensureHome, resolveHome, type ServerPaths } from "./home.js";
+import { createJobService, realTimer } from "./jobs.js";
 import { attachUpgrades, SocketRouter } from "./sockets.js";
 import { type HostServices, setupModules } from "./startup.js";
 import { SqliteStore } from "./store.js";
@@ -97,6 +98,8 @@ export async function createTestServer(
     home?: string;
     /** Where the id counter starts, so a restarted server does not hand out the first server's ids again. */
     firstId?: number;
+    /** Schedules delayed job steps. Real unless a fake is given, so tests control delays. */
+    timer?: JobTimer;
   } = {},
 ): Promise<TestServer> {
   const root = options.home ?? mkdtempSync(join(tmpdir(), "pi-spore-test-"));
@@ -114,17 +117,27 @@ export async function createTestServer(
   const agentTokens = new AgentTokenStore();
   const sockets = new SocketRouter(silentLog);
   if (http) attachUpgrades(http, TEST_TOKEN, (pathname) => sockets.route(pathname));
+  const now = () => clock++;
+  const newId = () => `01TEST${String(++counter).padStart(20, "0")}`;
+  const jobs = createJobService({
+    store,
+    log: silentLog,
+    now,
+    newId,
+    timer: options.timer ?? realTimer,
+  });
   const services: HostServices = {
     events,
     log: silentLog,
     store,
     home: paths,
     exec: options.exec ?? realExec,
-    now: () => clock++,
-    newId: () => `01TEST${String(++counter).padStart(20, "0")}`,
+    now,
+    newId,
     url,
     agentTokens,
     sockets,
+    jobs,
   };
   const setUp = await setupModules(modules, [], services);
   const created = createApp({
@@ -135,6 +148,7 @@ export async function createTestServer(
     token: TEST_TOKEN,
     agentTokens,
     store,
+    jobs,
     log: silentLog,
   });
   app = created;
@@ -157,6 +171,7 @@ export async function createTestServer(
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       }),
     close: () => {
+      jobs.stop();
       sockets.close();
       http?.closeAllConnections();
       http?.close();
