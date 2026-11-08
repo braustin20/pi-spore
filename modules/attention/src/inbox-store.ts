@@ -1,3 +1,4 @@
+import type { UserWait } from "@pi-spore/mod-agents/web";
 import type { ApiClient } from "@pi-spore/module-api";
 import { type Inbox, InboxEvent, type InboxItem, parse } from "@pi-spore/shared";
 
@@ -50,6 +51,16 @@ export function chatAsks(
     (item): item is Extract<InboxItem, { kind: "question" | "approval" }> =>
       (item.kind === "question" || item.kind === "approval") && item.chat.id === chatId,
   );
+}
+
+/** Why each chat waits for the user. The first item for a chat wins, so the newest. */
+export function chatWaits(inbox: Inbox | undefined): Map<string, UserWait> {
+  const waits = new Map<string, UserWait>();
+  for (const item of inbox?.items ?? []) {
+    if (item.kind !== "question" && item.kind !== "approval" && item.kind !== "dialog") continue;
+    if (!waits.has(item.chat.id)) waits.set(item.chat.id, item.kind);
+  }
+  return waits;
 }
 
 export interface InboxStore {

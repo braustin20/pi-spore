@@ -135,6 +135,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
     `child_not_found` for a run not in the list or an agent that is not running, 400 `bad_child_id` for an id with
     characters other than letters, digits, and `: _ . -`, 503 when pi-subagents does not answer in 10 s or fails.
+  - The chat's Transcript button asks once per step, with the step id as `child`. pi-subagents records a running
+    run's session file only on its step, so a run-level read has no messages until the run ends. A run without
+    steps is read at run level. An empty reply shows "No messages yet." While the run is running and the
+    transcript is open, the page reads it again every 3 s.
   - Side chats have no subagent tools (ADR 0033), so they have no helpers.
 
 ## 3. Repo layout
@@ -536,6 +540,11 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   `QuestionCard` and approval views. An answer is the same call from both places, and the inbox update removes the
   item from both. Failures, finished work, and dialogs stay as they were (dialogs show in the chat already). An older
   worker chat, a side chat, or a workspace that is not active shows no panel; their questions are closed (ADR 0033).
+- The workspace list shows "Waiting for your answer" (tone `warn`) for a workspace whose active worker chat has an
+  open question, approval, or dialog and is idle or stopped. The agents web interface has
+  `AgentsWebKey.setUserWaits(hook)`: a React hook that returns, per chat id, why that chat waits for the user
+  (`question`, `approval`, or `dialog`). The attention web module sets it from the same `attention:inbox` store, with
+  `chatWaits(inbox)`. With no hook set, the list looks as before.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not.
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
@@ -909,7 +918,9 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   passes `chatId`; without it the pane shows the active orchestrator chat.
 - `setStatus` sets a React hook that returns one status line per workspace. The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
-  supplies a fresh snapshot. The status line follows the active orchestrator chat.
+  supplies a fresh snapshot. The status line follows the active orchestrator chat. When that chat is idle or
+  stopped and waits for the user (`AgentsWebKey.setUserWaits`, section 11b), the line says "Waiting for your
+  answer".
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 
