@@ -63,6 +63,9 @@
     },
     {
       "path": "../../modules/pipelines"
+    },
+    {
+      "path": "../../modules/runs"
     }
   ]
 }
