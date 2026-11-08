@@ -219,8 +219,8 @@ export interface ServerHost {
   - every required module is present and enabled;
   - core modules are not disabled;
   - the dependency graph has no cycle.
-- Setup runs in dependency order. Then `onStarted` listeners run in the same order; a throw is logged and does not
-  stop startup.
+- Setup runs in dependency order. Then the job runner resumes jobs (section 6), and `onStarted` listeners run in the
+  same order; a throw is logged and does not stop startup.
 - Server-only helpers are in `@pi-spore/module-api/node`, so the web bundle never imports Node modules:
   `removeInside(root, target)` deletes a path only when it is inside `root`, also through symlinked folders.
 - A module reaches another only through `host.use()` with an `InterfaceKey` that the other module exports. It never
@@ -248,7 +248,7 @@ export interface ServerHost {
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, session, agent, workspace |
 | UsageSnapshot | Latest plan window numbers (a file per plan, `usage/<plan>.json`) | plan, window (5h, 7d), utilization, resets at, seen at, source |
-| Job | A durable unit of background work | id, kind, state, input, checkpoint, attempts, lease |
+| Job | A durable unit of background work (`core_jobs`) | id, kind, key, subject, state (running, waiting, interrupted, done, cancelled), step, checkpoint, run at, started at, attempts, error |
 
 ## 6. Persistence and durability
 
@@ -258,20 +258,36 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
   no native module to build. It supports FTS5 for the v2 search.
 - A lock file next to it. A second server refuses to start.
 - Each module owns its tables and ships numbered migrations.
-- **Jobs.** Pipeline stages, PR watching, lane starts, and deliveries are jobs:
-  - A job runs as named steps.
-  - Each step commits a checkpoint in the same transaction as its effects on the store.
-  - After a restart, the runner picks up running jobs from their last checkpoint.
-  - A step that was cut off while it waited on an agent turn asks the agent process to continue its session. If
-    that is unsafe, it marks the stage `interrupted` and asks the user on Home.
+- **Jobs.** PR watching and deliveries are jobs today; pipeline stages and lane starts will be. Core owns the
+  runner (`host.jobs`, `packages/server-core/src/jobs.ts`) and its table `core_jobs`:
+  - A module defines a kind (`<module id>.<name>`) as a list of named steps during setup, and starts jobs with
+    `jobs.start(kind, subject, { key, after })`. Start is a plain insert, so it joins the caller's transaction; the
+    job runs only if that commits.
+  - A step does its async work, then returns an outcome: a `commit` function with its store effects, a checkpoint,
+    the next step (default the next in the list; `null` ends the job), a delay (`after`), or `wait`. The runner
+    runs `commit` and writes the next step, checkpoint, and due time in one transaction. It first checks that the
+    job is still running on the same step, so a late result of a cancelled or retried job writes nothing.
+  - Jobs with the same kind and key run one at a time, oldest first; a waiting or interrupted one blocks the later
+    ones, so deliveries keep their order. `jobs.wake(kind, key)` makes waiting jobs due again; a wake during a
+    running step applies when it settles. A step that throws makes its job `waiting` with the error; waiting jobs
+    run again on a wake, a retry, and a server start.
+  - After every module's setup, the runner resumes running and waiting jobs on the step they were on, so a
+    committed step never runs again. A delayed step keeps its due time. Jobs of a kind no enabled module defines
+    are left as they are.
+  - A step marked `agentTurn` that was cut off is not run again: its job becomes `interrupted` and shows on Home
+    with Retry and Cancel. No step waits on an agent turn yet. Asking the agent process to continue its session
+    instead comes with pipeline stages.
+  - `GET /api/jobs?state=` lists jobs (default: not ended), `POST /api/jobs/:id/retry` runs an interrupted or
+    waiting job's step now, `POST /api/jobs/:id/cancel` ends one. A wrong state is 409.
 - **Deliveries.** A question, answer, or lane result to an agent is a row in `agents_deliveries`, written through
   `AgentsKey.deliver` in the same transaction as the change that causes it (answering a question writes the answer
   and the delivery together). The agents module sends it as a prompt: it starts the process if needed, and sends a
   follow-up if the agent is busy. The row is marked `done` when Pi accepts it. No polling by agents.
-  - Pending rows are tried again on server start, when the agent becomes idle, and when its workspace is resumed.
-    A parked or archived workspace keeps its rows. A failed try records the error and stays pending.
+  - Each row has an `agents.delivery` job keyed by the agent, written in the same transaction. Its one step waits
+    while the workspace or the chat is not active, and after a failed send (the row records attempts and the
+    error). It is woken when the agent becomes idle, when its workspace is resumed, when its chat is made active,
+    and when a new message for the agent comes. A parked or archived workspace keeps its rows.
   - Delivery is at least once: a crash between Pi's accept and the `done` write sends the message again.
-  - Deliveries do not use the job runner yet; it does not exist. They move to it when it lands.
 - **Idempotency.** Mutating API requests carry an `Idempotency-Key`. The response is stored and replayed for a repeat
   of the same key. Server errors (5xx) are not stored, so a retry runs again. Retention deletes stored responses
   older than `retention.days` (section 14).
@@ -543,8 +559,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   agent is stopped.
 - The Home page (`#/`, attention web module) shows the items as cards: a question with its choices and a text
   answer; the same dialog card as the chat (from the agents web interface `AgentsWebKey`); a failure with its error;
-  a finished agent with Open chat and Dismiss. Running work is a short list below. The Home rail icon shows the item
-  count through `RailItem.useBadge`.
+  a finished agent with Open chat and Dismiss. The inbox also has `interrupted`: jobs a restart cut off (section
+  6), read through `host.jobs` and shown as "Interrupted work" with Retry and Cancel. Running work is a short list
+  below. The Home rail icon shows the count of items and interrupted jobs through `RailItem.useBadge`.
 - The chat page shows its own open questions and approvals above the composer, so the user need not go to Home. The
   agents web interface has `AgentsWebKey.addChatPanel(id, component)`: the chat page renders each added component,
   given the chat's id, above the composer of an active chat. With none added, the chat looks as before. The attention
@@ -682,8 +699,10 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
 - Tables: `github_pr_prs` (one per workspace: number, the last view as JSON, watch state, tries, the head whose
   failures were sent, the last clean head, message, poll times), `github_pr_sent` (bot comments already sent), and
   `github_pr_tries` (each automatic message, for the tab).
-- Watch (R9.2), a timer per watched PR; timers start again on server start and when a workspace resumes, and stop
-  while it is parked or archived:
+- Watch (R9.2), a `github-pr.watch` job per watched PR (section 6), keyed by the workspace, with one `poll` step.
+  Each poll's writes (the view, the delivery, the sent marks, the try, the next poll time) commit with its
+  checkpoint, so a restart resumes at the saved next poll time and never sends twice. Parking or archiving
+  cancels the job; resuming starts a new one. Only the job sends; a refresh or a push only stores the view:
   - Each poll reads the PR. 30 s after a change (head, checks, mergeability), doubling to 5 min while nothing
     changes.
   - When no check on the head is pending, it reads the bot comments. If a check failed on a head not handled yet,
@@ -980,7 +999,8 @@ With `retention.days = N` (N > 0), it deletes data older than N days:
   forgets it too, so its id answers 404. A closed chat stays while an open fork of it has not started.
 - action runs that ended before the limit, in any workspace, with their logs;
 - lines of `usage/routing.jsonl` with an older `at` (unreadable lines stay);
-- stored API responses (`core_idempotency`).
+- stored API responses (`core_idempotency`);
+- jobs that ended (`done`, `cancelled`) before the limit (`core_jobs`).
 
 It never deletes active or parked workspaces, git branches, kanban cards, artifacts, the folder of an in-place
 workspace, or anything outside `~/.pi-spore`. Modules take part through `WorkspacesKey.onRetention(cutoff)` and
@@ -1004,6 +1024,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   ones refuse a read-only side chat with 403 `read_only_chat`.
 - CLI for approvals: `pi-spore approvals list [--all]`, `pi-spore approvals approve <id>`, `pi-spore approvals
   decline <id> [--note text]`.
+- CLI for jobs: `pi-spore jobs [--all]` (id, kind, state, step, error), `pi-spore jobs retry <id>`, `pi-spore jobs
+  cancel <id>`.
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
 - Chats (agents module, ADR 0030):
