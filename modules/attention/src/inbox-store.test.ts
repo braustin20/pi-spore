@@ -37,7 +37,7 @@ function fakeApi() {
     },
   } as unknown as ApiClient;
   const send = (items: InboxItem[]) => {
-    const inbox: Inbox = { items, running: [] };
+    const inbox: Inbox = { items, interrupted: [], running: [] };
     listener?.({ type: "inbox", inbox });
   };
   return { api, send, subscriptions: () => subscriptions, listening: () => listener !== undefined };
@@ -118,7 +118,7 @@ describe("chatAsks", () => {
       { kind: "finished", at: 2, agentId: "a1", workspace, chat },
       question("q1", 1),
     ];
-    expect(chatAsks({ items, running: [] }, "a1").map(itemKey)).toEqual([
+    expect(chatAsks({ items, interrupted: [], running: [] }, "a1").map(itemKey)).toEqual([
       "question:q2",
       "approval:p1",
       "question:q1",
@@ -153,7 +153,7 @@ describe("chatWaits", () => {
       question("q2", 5),
       question("q1", 1),
     ];
-    expect(chatWaits({ items, running: [] })).toEqual(
+    expect(chatWaits({ items, interrupted: [], running: [] })).toEqual(
       new Map([
         ["a2", "dialog"],
         ["a1", "question"],
@@ -163,6 +163,6 @@ describe("chatWaits", () => {
 
   it("is empty before the first inbox and once everything is answered", () => {
     expect(chatWaits(undefined).size).toBe(0);
-    expect(chatWaits({ items: [], running: [] }).size).toBe(0);
+    expect(chatWaits({ items: [], interrupted: [], running: [] }).size).toBe(0);
   });
 });

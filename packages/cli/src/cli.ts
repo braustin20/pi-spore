@@ -20,6 +20,9 @@ import {
   type FileDiff,
   HealthResponse,
   type Isolation,
+  Job,
+  JobList,
+  JobState,
   Project,
   ProjectList,
   PrStatus,
@@ -83,13 +86,16 @@ Commands:
   approvals list [--all]                   Open approvals agents asked for; --all includes decided ones
   approvals approve <approval>
   approvals decline <approval> [--note <text>]
+  jobs [--all]                             Background jobs that have not ended; --all includes ended ones
+  jobs retry <job>                         Run an interrupted or waiting job again now
+  jobs cancel <job>
   pr status <workspace>                    Show the workspace's PR, its checks, and the watch
   pr open <workspace> [--title <t>] [--body <b>] [--base <branch>] [--draft]
                                            Push the branch and open a PR on GitHub (outward-facing)
   pr push <workspace>                      Push new commits to the PR's branch (never forced)
   pr watch <workspace> on|off              Send failed checks to the worker, or stop
 
-<project> is a project id or slug. <workspace>, <card>, and <approval> are ids.
+<project> is a project id or slug. <workspace>, <card>, <approval>, and <job> are ids.
 
 Environment:
   PI_SPORE_URL    Server address (default ${DEFAULT_URL})
@@ -645,6 +651,28 @@ async function approvalsCommand(
   throw usageError(`Unknown command: approvals ${args.join(" ")}`);
 }
 
+function jobLine(job: Job): string {
+  return `${job.id}  ${job.kind}  ${job.state}  ${job.step}${job.error ? `  ${job.error}` : ""}`;
+}
+
+async function jobsCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  const [sub, ...rest] = args;
+  if (sub === "retry" || sub === "cancel") {
+    if (rest.length !== 1) throw usageError(`jobs ${sub} takes one job id`);
+    const job = await api.call("POST", `jobs/${rest[0]}/${sub}`, Job, {});
+    return deps.out(json ? JSON.stringify(job) : `${job.id} is now ${job.state}`);
+  }
+  const { positional, on } = parseArgs(args, [], ["all"]);
+  if (positional.length > 0) throw usageError(`Unknown command: jobs ${args.join(" ")}`);
+  const query = on.has("all")
+    ? `?${JobState.anyOf.map((state) => `state=${state.const}`).join("&")}`
+    : "";
+  const { jobs } = await api.call("GET", `jobs${query}`, JobList);
+  if (json) return deps.out(JSON.stringify(jobs));
+  if (jobs.length === 0) return deps.out("No jobs.");
+  for (const job of jobs) deps.out(jobLine(job));
+}
+
 function printPr(deps: CliDeps, status: PrStatus): void {
   const { pr, watch } = status;
   if (!pr) {
@@ -739,6 +767,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "chat") await chatCommand(new Api(deps, base), deps, rest, json);
     else if (command === "card") await cardCommand(new Api(deps, base), deps, rest, json);
     else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "jobs") await jobsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pr") await prCommand(new Api(deps, base), deps, rest, json);
     else throw usageError(`Unknown command: ${args.join(" ")}`);
     return 0;

@@ -1,6 +1,7 @@
 import Type, { type Static } from "typebox";
 import { ActionRun } from "./actions.js";
 import { AgentDialog, AgentStatus, ChatKind } from "./agents.js";
+import { Job } from "./jobs.js";
 import { WorkspaceState } from "./workspaces.js";
 
 /**
@@ -130,8 +131,10 @@ export const RunningItem = Type.Object({
 });
 export type RunningItem = Static<typeof RunningItem>;
 
+/** `interrupted` holds jobs a restart stopped part way. They are not items: they have no agent, chat, or workspace. */
 export const Inbox = Type.Object({
   items: Type.Array(InboxItem),
+  interrupted: Type.Array(Job),
   running: Type.Array(RunningItem),
 });
 export type Inbox = Static<typeof Inbox>;

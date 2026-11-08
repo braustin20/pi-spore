@@ -116,7 +116,7 @@ async function until(check: () => Promise<boolean>, ms = 5_000): Promise<void> {
 describe("Home inbox", () => {
   it("is empty with nothing to do", async () => {
     await makeAgent("quiet");
-    expect(await inbox()).toEqual({ items: [], running: [] });
+    expect(await inbox()).toEqual({ items: [], interrupted: [], running: [] });
   });
 
   it("shows an open extension dialog until it is answered", async () => {
@@ -218,7 +218,7 @@ describe("Home inbox", () => {
   it("sends the whole inbox to subscribers on subscribe and after changes", async () => {
     const { agentId } = await makeAgent("live");
     const [first] = (await server.events.snapshot(INBOX_TOPIC)) as InboxEvent[];
-    expect(first).toEqual({ type: "inbox", inbox: { items: [], running: [] } });
+    expect(first).toEqual({ type: "inbox", inbox: { items: [], interrupted: [], running: [] } });
 
     await json(await prompt(agentId, "hi"));
     await until(async () =>
@@ -321,5 +321,84 @@ describe("approvals (ADR 0100)", () => {
     await until(async () => (await inbox()).items.every((item) => item.kind !== "approval"));
     const decline = await server.request("POST", `/api/attention/approvals/${approval.id}/decline`);
     expect(decline.status).toBe(409);
+  });
+});
+
+describe("Home interrupted work", () => {
+  it("lists a job a restart interrupted, and drops it after a retry", async () => {
+    const home = join(scratch, "restart-home");
+    mkdirSync(home);
+    let started!: () => void;
+    const stepStarted = new Promise<void>((resolve) => {
+      started = resolve;
+    });
+    // The step never settles, as an agent turn that the restart cuts off.
+    const hang = new Promise<void>(() => {});
+    const jobModule: ServerModule = {
+      id: "interrupt-test",
+      requires: [],
+      core: false,
+      setup(host) {
+        host.jobs.define("interrupt-test.x", [
+          {
+            name: "turn",
+            agentTurn: true,
+            async run() {
+              started();
+              await hang;
+              return {};
+            },
+          },
+        ]);
+      },
+    };
+    const open = async (firstId?: number) => {
+      const own = createAgentsModule({
+        pi: { command: process.execPath, args: [FAKE_PI] },
+        resourceArgs: async () => ["--no-extensions"],
+        roleDefaults: async () => ({}),
+        baseEnv: { PATH: process.env.PATH },
+        idleStopMs: 60_000,
+        startTimeoutMs: 5_000,
+      });
+      const opened = await createTestServer(
+        [
+          projectsModule,
+          vcsGitModule,
+          vcsFolderModule,
+          workspacesModule,
+          own,
+          attentionModule,
+          jobModule,
+        ],
+        { home, ...(firstId ? { firstId } : {}) },
+      );
+      return { opened, own };
+    };
+
+    const first = await open();
+    const id = first.opened.services.jobs.start("interrupt-test.x", {});
+    await stepStarted;
+    first.opened.close();
+    await first.own.manager().stopAll();
+
+    const second = await open(1_000);
+    try {
+      const listed = await json<Inbox>(await second.opened.request("GET", "/api/attention/inbox"));
+      expect(listed.interrupted).toMatchObject([
+        { id, kind: "interrupt-test.x", state: "interrupted" },
+      ]);
+      const [snapshot] = (await second.opened.events.snapshot(INBOX_TOPIC)) as InboxEvent[];
+      expect(snapshot?.inbox.interrupted.map((job) => job.id)).toEqual([id]);
+
+      await json(await second.opened.request("POST", `/api/jobs/${id}/retry`));
+      const topic = () => second.opened.events.eventsOf(INBOX_TOPIC) as InboxEvent[];
+      await until(async () => topic().some((event) => event.inbox.interrupted.length === 0));
+      const after = await json<Inbox>(await second.opened.request("GET", "/api/attention/inbox"));
+      expect(after.interrupted).toEqual([]);
+    } finally {
+      await second.own.manager().stopAll();
+      second.opened.close();
+    }
   });
 });
