@@ -19,7 +19,9 @@
 // Each prompt takes the next entry for the agent's PI_SPORE_STAGE_ROLE. A cursor file `<file>.<role>.cursor` keeps the
 // position, so a new process (a fresh reviewer, or after a restart) continues the script. An entry is
 //   "hang"    replies with plain text and sends no report
-//   {...}     a report: the fake reads the turn id from the prompt line `Turn: <id>`, POSTs { ...entry, turn } to /api/bridge/reports with its token and a receipt, and ends
+//   {...}     a report: the fake first writes an assistant message with a tool call, as Pi does before a tool runs, so
+//             the session already records the model. An entry field `model: "<provider>/<id>"` switches the model
+//             first, as `set_model` does; the field is not sent. The fake reads the turn id from the prompt line `Turn: <id>`, POSTs { ...entry, turn } to /api/bridge/reports with its token and a receipt, and ends
 //             the turn. The reply says the server's answer.
 // A script with no entry left writes an error to stderr and replies with text.
 // A prompt sent while streaming with streamingBehavior "followUp" runs after the current run ends, as in Pi.
@@ -217,20 +219,24 @@ const badImages = (images) =>
         typeof image.mimeType !== "string",
     ));
 
-async function screenshot() {
-  const timestamp = ++clock;
-  const call = { type: "toolCall", id: "call-shot", name: "screenshot", arguments: {} };
+/** The assistant message that holds a tool call, written before the tool runs. */
+function toolCallMessage(call) {
   const assistant = {
     role: "assistant",
     content: [call],
     provider: model.provider,
     model: model.id,
     stopReason: "toolUse",
-    timestamp,
+    timestamp: ++clock,
   };
   write({ type: "message_start", message: assistant });
   write({ type: "message_end", message: assistant });
   appendMessage(assistant);
+}
+
+async function screenshot() {
+  const call = { type: "toolCall", id: "call-shot", name: "screenshot", arguments: {} };
+  toolCallMessage(call);
   write({ type: "tool_execution_start", toolCallId: call.id, toolName: call.name, args: {} });
   const content = [
     { type: "text", text: "Captured" },
@@ -302,6 +308,18 @@ async function scripted(text) {
   if (entry === "hang") return `waiting (${role} ${position})`;
   const turn = /^Turn: (\S+)$/m.exec(text)?.[1];
   if (!turn) return "no turn id in the prompt";
+  const { model: switchTo, ...fields } = entry;
+  if (switchTo) {
+    const slash = switchTo.indexOf("/");
+    model = { ...model, provider: switchTo.slice(0, slash), id: switchTo.slice(slash + 1) };
+    appendEntry({ type: "model_change", provider: model.provider, modelId: model.id });
+  }
+  toolCallMessage({
+    type: "toolCall",
+    id: `call-report-${position}`,
+    name: "report",
+    arguments: {},
+  });
   try {
     const response = await fetch(`${process.env.PI_SPORE_URL}/api/bridge/reports`, {
       method: "POST",
@@ -310,7 +328,7 @@ async function scripted(text) {
         "content-type": "application/json",
         "idempotency-key": `report_${role}_${position}`,
       },
-      body: JSON.stringify({ ...entry, turn }),
+      body: JSON.stringify({ ...fields, turn }),
     });
     const body = await response.json();
     return response.ok

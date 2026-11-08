@@ -161,6 +161,8 @@ export const PipelineRun = Type.Object({
   stageIndex: Type.Integer(),
   /** Why the run failed, stopped, or waits. */
   message: Type.Optional(Type.String()),
+  /** Why a running run does not move: the error of its stage job, which waits for a fix and a retry. */
+  blocked: Type.Optional(Type.String()),
   /** Every test a worker reported, with its proof path. */
   tests: Type.Array(TestProof),
   turns: Type.Array(PipelineTurn),

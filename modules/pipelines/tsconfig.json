@@ -24,6 +24,12 @@
     },
     {
       "path": "../artifacts"
+    },
+    {
+      "path": "../attention"
+    },
+    {
+      "path": "../../pi-extensions/router"
     }
   ]
 }

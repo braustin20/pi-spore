@@ -1,3 +1,4 @@
+import { execFileSync } from "node:child_process";
 import { createHash } from "node:crypto";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -13,8 +14,10 @@ import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import type { JobView } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type {
+  Approval,
   BridgeArtifactFile,
   ChatState,
   PipelineList,
@@ -92,10 +95,21 @@ async function json<T = Record<string, unknown>>(response: Response, status = 20
 }
 
 /** A folder project with one in-place workspace and its worker chat, the chat that asks for pipeline runs. */
-async function workspace(server: TestServer, name: string) {
+async function workspace(server: TestServer, name: string, options: { git?: boolean } = {}) {
   const folder = join(scratch, name);
   mkdirSync(join(folder, ".pi-spore"), { recursive: true });
   writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+  if (options.git) {
+    writeFileSync(join(folder, "a.txt"), "one\n");
+    for (const args of [
+      ["init", "-q", "-b", "main"],
+      ["add", "."],
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "base"],
+      ["checkout", "-q", "-b", "feature"],
+    ]) {
+      execFileSync("git", args, { cwd: folder });
+    }
+  }
   const { project } = await json<{ project: { id: string } }>(
     await server.request("POST", "/api/projects", { path: folder }),
     201,
@@ -112,7 +126,18 @@ async function workspace(server: TestServer, name: string) {
     await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
     201,
   );
-  return { workspaceId: workspace.id, agentId: agent.id };
+  return { workspaceId: workspace.id, agentId: agent.id, folder };
+}
+
+/** What a worker leaves in a git workspace: a commit, an edited tracked file, and an untracked file. */
+function workerChange(folder: string) {
+  writeFileSync(join(folder, "committed.txt"), "committed line\n");
+  execFileSync("git", ["add", "committed.txt"], { cwd: folder });
+  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work"], {
+    cwd: folder,
+  });
+  writeFileSync(join(folder, "a.txt"), "one\nedited line\n");
+  writeFileSync(join(folder, "new.txt"), "untracked line\n");
 }
 
 /** Calls a bridge route as an agent process would, with its own token. */
@@ -173,11 +198,12 @@ role = "worker"
 tier = "route"
 `;
 
-const WITH_REVIEW = `${IMPLEMENT}
-[[stage]]
-name = "review"
-role = "reviewer"
-`;
+/** A review stage after the implement stage; `lines` are more keys of the stage. */
+const withReview = (...lines: string[]) =>
+  `${IMPLEMENT}\n[[stage]]\nname = "review"\nrole = "reviewer"\n${lines.join("\n")}\n`;
+
+const withAdversarial = (...lines: string[]) =>
+  `${IMPLEMENT}\n[[stage]]\nname = "adversarial"\nrole = "adversarial-reviewer"\n${lines.join("\n")}\n`;
 
 const startRun = (server: TestServer, workspaceId: string, pipeline = "p") =>
   server.request("POST", `/api/pipelines/workspaces/${workspaceId}/runs`, {
@@ -274,17 +300,21 @@ describe("a pipeline run", () => {
     expect(prompt).toContain(`\nTurn: ${turn.id}\n`);
   });
 
-  it("fails the run when the next stage is a reviewer stage, which is not built yet", async () => {
+  it("fails the run when the next stage is a gate stage, which is not built yet", async () => {
     const server = await start({ env: scriptEnv({ worker: [DONE] }) });
-    const { workspaceId } = await workspace(server, "review");
-    userPipeline(server.paths.root, "p", WITH_REVIEW);
+    const { workspaceId } = await workspace(server, "gate");
+    userPipeline(
+      server.paths.root,
+      "p",
+      `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check"]\n`,
+    );
 
     const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
     await until(async () => (await getRun(server, run.id)).state === "failed");
 
     expect(await getRun(server, run.id)).toMatchObject({
       stageIndex: 1,
-      message: "stage review: reviewer stages are not built yet",
+      message: "stage gates: gate stages are not built yet",
     });
   });
 
@@ -463,5 +493,404 @@ describe("a restart in the middle of a stage (R6.6)", () => {
       1,
     );
     expect((await getRun(second, runId)).turns[0]?.report?.summary).toBe("Done after restart");
+  });
+});
+
+const FIX = { summary: "Fixed the findings" };
+const FINDING = { severity: "important", title: "Missing null check", file: "a.txt", line: 2 };
+const TIERS = {
+  "spore/auto": "local",
+  "fake/strong": "heavy",
+  "fake/weak": "local",
+  "fake/mid": "medium",
+};
+
+const writeTiers = (home: string, tiers: Record<string, string>) =>
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ tiers }));
+
+/** A stage agent as the server shows it, and how its process was launched. */
+async function stageAgent(server: TestServer, agentId: string) {
+  const { agent } = await json<{ agent: { role: string; title: string; kind: string } }>(
+    await server.request("GET", `/api/agents/${agentId}`),
+  );
+  const launched = readFileSync(join(scratch, "record.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
+    .find((entry) => entry.env.PI_SPORE_AGENT_ID === agentId);
+  const { argv } = launched as { argv: string[] };
+  return { agent, tools: argv[argv.indexOf("--tools") + 1] };
+}
+
+/** Starts a run on a fresh workspace and waits for the run to end in `state`. */
+async function runUntil(
+  server: TestServer,
+  name: string,
+  pipeline: string,
+  state: PipelineRun["state"],
+) {
+  const { workspaceId } = await workspace(server, name);
+  userPipeline(server.paths.root, "p", pipeline);
+  const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+  await until(async () => (await getRun(server, run.id)).state === state);
+  return { workspaceId, run: await getRun(server, run.id) };
+}
+
+const kinds = (run: PipelineRun) => run.turns.map((turn) => `${turn.kind}${turn.round}`);
+
+describe("a review stage", () => {
+  it("sends a REVISE to the same worker, then a fresh reviewer runs round 2, and APPROVE passes", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        reviewer: [
+          { summary: "Not yet", verdict: "revise", findings: [FINDING] },
+          { summary: "Good", verdict: "approve" },
+        ],
+      }),
+    });
+
+    const { run } = await runUntil(server, "revise", withReview("rounds = 2"), "passed");
+
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1", "review2"]);
+    const [task, first, fix, second] = run.turns as [
+      PipelineTurn,
+      PipelineTurn,
+      PipelineTurn,
+      PipelineTurn,
+    ];
+    expect(fix.agentId).toBe(task.agentId);
+    expect(second.agentId).not.toBe(first.agentId);
+    const prompt = (await chat(server, task.agentId)).find((message) =>
+      message.includes(`Turn: ${fix.id}`),
+    );
+    expect(prompt).toContain("[important] Missing null check (a.txt:2)");
+    expect(prompt).toContain("Reviewer summary: Not yet");
+    const [one, two] = await Promise.all([
+      stageAgent(server, first.agentId),
+      stageAgent(server, second.agentId),
+    ]);
+    expect(one.agent).toMatchObject({ role: "reviewer", kind: "stage", title: "Review 1" });
+    expect(two.agent).toMatchObject({ role: "reviewer", kind: "stage", title: "Review 2" });
+    expect(one.tools).not.toMatch(/bash|edit|write/);
+  });
+
+  it("asks the reviewer to check each proof, and names the brief, the diff, and the tests", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    const { workspaceId, agentId, folder } = await workspace(server, "prompt", { git: true });
+    workerChange(folder);
+    userPipeline(server.paths.root, "p", withReview());
+    const { run: started } = await json<{ run: PipelineRun }>(
+      await startRun(server, workspaceId),
+      201,
+    );
+    await until(async () => (await getRun(server, started.id)).state === "passed");
+
+    const run = await getRun(server, started.id);
+    const reviewer = run.turns[1] as PipelineTurn;
+    const prompt = (await chat(server, reviewer.agentId))[0];
+    expect(prompt).toContain(`\nTurn: ${reviewer.id}\n`);
+    expect(prompt).toContain(`pipelines/${run.id}/brief.md`);
+    expect(prompt).toContain(`pipelines/${run.id}/review-1.diff`);
+    expect(prompt).toContain("- adds: proof proofs/adds.md");
+    expect(prompt).toContain("every test the change adds is in this list");
+    const diff = await json<BridgeArtifactFile>(
+      await asAgent(
+        server,
+        agentId,
+        workspaceId,
+      )("GET", `artifacts/file?scope=workspace&path=pipelines/${run.id}/review-1.diff`),
+    );
+    expect(diff.content).toContain("## Committed since main");
+    expect(diff.content).toContain("+committed line");
+    expect(diff.content).toContain("## Uncommitted and untracked");
+    expect(diff.content).toContain("+edited line");
+    expect(diff.content).toContain("+untracked line");
+  });
+
+  it("says there is no diff for a project without change support", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    const { workspaceId, agentId } = await workspace(server, "nodiff");
+    userPipeline(server.paths.root, "p", withReview());
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const diff = await json<BridgeArtifactFile>(
+      await asAgent(
+        server,
+        agentId,
+        workspaceId,
+      )("GET", `artifacts/file?scope=workspace&path=pipelines/${run.id}/review-1.diff`),
+    );
+
+    expect(diff.content).toContain("No diff");
+    expect(diff.content).toContain("Read the files");
+  });
+});
+
+describe("the round limit", () => {
+  const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
+  const limited = () => scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE, REVISE] });
+
+  const openApprovals = async (server: TestServer) =>
+    (
+      await json<{ approvals: Approval[] }>(
+        await server.request("GET", "/api/attention/approvals?state=open"),
+      )
+    ).approvals;
+
+  it("waits on a pipeline-round-limit approval after two REVISEs, and approve passes the run", async () => {
+    const server = await start({ env: limited() });
+    const { run } = await runUntil(server, "limit", withReview("rounds = 2"), "waiting_user");
+
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1", "review2"]);
+    const [approval] = await openApprovals(server);
+    expect(approval).toMatchObject({
+      kind: "pipeline-round-limit",
+      subject: { runId: run.id, stage: "review" },
+      agentId: run.askingAgentId,
+    });
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+    );
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
+  });
+
+  it("stops the run when the user declines", async () => {
+    const server = await start({ env: limited() });
+    const { run } = await runUntil(server, "decline", withReview("rounds = 2"), "waiting_user");
+    const [approval] = await openApprovals(server);
+
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/decline`, {}),
+    );
+
+    expect(await getRun(server, run.id)).toMatchObject({
+      state: "stopped",
+      message: "Declined at the review round limit",
+    });
+  });
+
+  it("keeps waiting after a restart, and a job retry does not move it on", async () => {
+    const home = join(scratch, "home");
+    const env = limited();
+    const first = await start({ home, env });
+    const { run } = await runUntil(first, "restartlimit", withReview("rounds = 2"), "waiting_user");
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+    const stageJob = () =>
+      second.services.jobs.list({
+        kind: "pipelines.stage",
+        states: ["running", "waiting"],
+      })[0] as JobView;
+    await until(() => stageJob().state === "waiting");
+    expect(stageJob().step).toBe("decide");
+    const retried = await json<JobView>(
+      await second.request("POST", `/api/jobs/${stageJob().id}/retry`),
+    );
+    await until(() => stageJob().state === "waiting");
+
+    expect(retried.state).toBe("running");
+    expect(await getRun(second, run.id)).toMatchObject({ state: "waiting_user" });
+    expect(kinds(await getRun(second, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
+    expect(await openApprovals(second)).toHaveLength(1);
+  });
+});
+
+describe("min_strength_over (R4.4)", () => {
+  const STRONG = withReview('model = "fake/weak"', 'min_strength_over = "implement"');
+
+  it("starts no reviewer on a model that is not stronger, and a settings fix plus a retry starts it", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    writeTiers(server.paths.root, TIERS);
+    const { workspaceId } = await workspace(server, "weak");
+    userPipeline(server.paths.root, "p", STRONG);
+    const { run: started } = await json<{ run: PipelineRun }>(
+      await startRun(server, workspaceId),
+      201,
+    );
+
+    await until(async () => (await getRun(server, started.id)).blocked !== undefined);
+
+    const blocked = await getRun(server, started.id);
+    expect(blocked.state).toBe("running");
+    expect(blocked.blocked).toContain("fake/weak (tier local)");
+    expect(blocked.blocked).toContain("spore/auto (tier local)");
+    expect(blocked.turns).toHaveLength(1);
+    const records = readFileSync(join(scratch, "record.jsonl"), "utf8");
+    expect(records).not.toContain('"PI_SPORE_STAGE_ROLE":"reviewer"');
+    writeTiers(server.paths.root, { ...TIERS, "fake/weak": "heavy" });
+    const job = server.services.jobs.list({
+      kind: "pipelines.stage",
+      states: ["waiting"],
+    })[0] as JobView;
+    await json(await server.request("POST", `/api/jobs/${job.id}/retry`));
+    await until(async () => (await getRun(server, started.id)).state === "passed");
+    expect((await getRun(server, started.id)).blocked).toBeUndefined();
+  });
+
+  it("names the missing tier setting when the reviewer model has no tier", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE], reviewer: [] }) });
+    writeTiers(server.paths.root, { "spore/auto": "local" });
+    const { workspaceId } = await workspace(server, "notier");
+    userPipeline(
+      server.paths.root,
+      "p",
+      withReview('model = "fake/unlisted"', 'min_strength_over = "implement"'),
+    );
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    expect((await getRun(server, run.id)).blocked).toContain("fake/unlisted has no tier");
+  });
+
+  it("fails the run when the reviewer ran on a weaker model than it started on", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE],
+        reviewer: [{ summary: "Good", verdict: "approve", model: "fake/weak" }],
+      }),
+    });
+    writeTiers(server.paths.root, { ...TIERS, "spore/auto": "light" });
+    const { run } = await runUntil(
+      server,
+      "weaker",
+      withReview('model = "fake/strong"', 'min_strength_over = "implement"'),
+      "failed",
+    );
+
+    expect(run.message).toContain("R4.4");
+    expect(run.message).toContain(
+      "fake/weak (tier local) is not stronger than spore/auto (tier light)",
+    );
+  });
+});
+
+describe("the Jev early stop (ADR 0015)", () => {
+  const MINOR = { severity: "minor", title: "Naming" };
+  const STOP = { stop: true, probability: 0.9 };
+  const reviewer = (...entries: unknown[]) => scriptEnv({ worker: [DONE, FIX], reviewer: entries });
+
+  it("ends the stage after one fix when Jev stops a REVISE with minor findings", async () => {
+    const server = await start({
+      env: reviewer({ summary: "Nits", verdict: "revise", findings: [MINOR], earlyStop: STOP }),
+    });
+
+    const { run } = await runUntil(
+      server,
+      "jev",
+      withReview("rounds = 2", 'early_stop = "jev"'),
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+    expect(run.turns[1]?.report?.earlyStop).toEqual(STOP);
+    const prompt = (await chat(server, run.workerAgentId as string)).find((message) =>
+      message.includes(`Turn: ${run.turns[2]?.id}`),
+    );
+    expect(prompt).toContain("This is the last fix");
+  });
+
+  it("runs round 2 when a finding is blocking (Jev cannot veto it)", async () => {
+    const server = await start({
+      env: reviewer(
+        {
+          summary: "Bad",
+          verdict: "revise",
+          findings: [{ ...MINOR, severity: "blocking" }],
+          earlyStop: STOP,
+        },
+        { summary: "Good", verdict: "approve" },
+      ),
+    });
+
+    const { run } = await runUntil(
+      server,
+      "veto",
+      withReview("rounds = 2", 'early_stop = "jev"'),
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1", "review2"]);
+  });
+
+  it("ignores earlyStop when the stage has no early_stop", async () => {
+    const server = await start({
+      env: reviewer(
+        { summary: "Nits", verdict: "revise", findings: [MINOR], earlyStop: STOP },
+        { summary: "Good", verdict: "approve" },
+      ),
+    });
+
+    const { run } = await runUntil(server, "ignored", withReview("rounds = 2"), "passed");
+
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1", "review2"]);
+  });
+});
+
+describe("an adversarial stage", () => {
+  it("ends after one worker fix on REVISE, with no second adversarial reviewer", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        "adversarial-reviewer": [{ summary: "Broken", verdict: "revise", findings: [FINDING] }],
+      }),
+    });
+
+    const { run } = await runUntil(
+      server,
+      "adversarial",
+      withAdversarial("rounds = 1", "fix_passes = 1"),
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+    const stage = await stageAgent(server, (run.turns[1] as PipelineTurn).agentId);
+    expect(stage.agent).toMatchObject({ role: "adversarial-reviewer", title: "Adversarial 1" });
+  });
+});
+
+describe("reviewer report rules", () => {
+  it("refuses a report without a verdict and a report with tests, both with 400", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: ["hang"] }),
+    });
+    const { workspaceId } = await workspace(server, "rules");
+    userPipeline(server.paths.root, "p", withReview());
+    const { run: started } = await json<{ run: PipelineRun }>(
+      await startRun(server, workspaceId),
+      201,
+    );
+    await until(async () => (await getRun(server, started.id)).turns.length === 2);
+    const turn = (await getRun(server, started.id)).turns[1] as PipelineTurn;
+    await until(() =>
+      said(server, turn.agentId).some((message) => message.startsWith("assistant:")),
+    );
+    const reviewer = asAgent(server, turn.agentId, workspaceId);
+
+    const noVerdict = await reviewer("POST", "reports", { turn: turn.id, summary: "Fine" });
+    const withTests = await reviewer("POST", "reports", {
+      turn: turn.id,
+      summary: "Fine",
+      verdict: "approve",
+      tests: [{ name: "x", proof: "p.md" }],
+    });
+
+    expect(noVerdict.status).toBe(400);
+    expect(await noVerdict.json()).toMatchObject({ error: { code: "bad_report" } });
+    expect(withTests.status).toBe(400);
+    expect(await withTests.json()).toMatchObject({ error: { code: "bad_report" } });
+    expect((await getRun(server, started.id)).turns[1]?.report).toBeUndefined();
   });
 });
