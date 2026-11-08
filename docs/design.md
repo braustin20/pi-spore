@@ -90,7 +90,7 @@ later):
 ```
 
 - **Rail:** icons for Home, Board (kanban), Projects, Usage, Settings. Badges for counts that need you.
-- **Workspace list:** grouped by state, newest first. Each row has project, name, time, one live status line
+- **Workspace list:** grouped by project, then by state, newest first. Each row has name, time, one live status line
   ("Thinking...", "review 1/2", "waiting for Strata", "gates failed"), and chips (`PR #42`, `lane 2/5`, routed
   model).
 - **Chat:** messages with rendered Markdown, collapsed tool calls, and proposals shown as numbered option blocks.
@@ -104,8 +104,9 @@ What exists now:
 
 - **Rail:** Home, Board, Workspaces, Projects, Usage. A module adds an entry with `rail: { order, icon }` on its page; only pages
   that exist get one.
-- **Workspace list:** Active, then Parked; Archived behind "Show archived". Newest activity first. Each row: name,
-  age, project and branch, and a status line from the agent ("Working", "Idle", "Agent failed", "Parked").
+- **Workspace list:** one group per project, sorted by name, with a divider heading when there are two or more.
+  Inside a project: Active, then Parked; Archived behind "Show archived". Newest activity first. Each row: name,
+  age, branch, and a status line from the agent ("Working", "Idle", "Agent failed", "Parked").
   Filtered to one project on `#/workspaces/in/<project>`. The list can be hidden to a thin strip.
 - **Middle:** the chat. Header: name, branch, agent status, context meter, Compact, Stop agent. Under it, the chat
   bar: the workspace's chats as links (active worker chat, side chats with an eye icon, older worker chats dimmed

@@ -1217,8 +1217,8 @@ The workspaces module calls other modules around a copy through its contract: `a
 every park, resume, and archive; a listener that throws is logged and does not undo the change. `create` makes a
 workspace as `POST /api/workspaces` does, for modules that start work, such as kanban.
 
-The workspace view has three panes: the workspace list (grouped active, parked, then archived behind a toggle,
-newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
+The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
+and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
 panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<project>` (filtered to a project),
 `#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. The list
 follows the topic `workspaces:list`: a snapshot of every workspace on subscribe and after a reconnect, then one
