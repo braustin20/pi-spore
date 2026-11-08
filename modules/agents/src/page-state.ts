@@ -10,7 +10,7 @@ import {
 } from "@pi-spore/shared";
 
 export interface Notice {
-  /** Stable across the list trimming older notices, for React keys. */
+  /** Stable across the list dropping older notices, for React keys. */
   id: number;
   level: string;
   message: string;
@@ -101,18 +101,18 @@ export function reducePage(state: PageState, raw: unknown): PageState {
     }
     case "dialog_closed":
       return { ...state, dialogs: state.dialogs.filter((open) => open.id !== event.dialogId) };
-    case "notice":
+    case "notice": {
+      const level = String(event.level);
+      // The id comes from the last notice before any are dropped, so it never repeats.
+      const id = (state.notices.at(-1)?.id ?? 0) + 1;
+      // Info notices (the per-reply TPS line) are stale at once: a new one replaces the old ones.
+      const kept =
+        level === "info" ? state.notices.filter((n) => n.level !== "info") : state.notices;
       return {
         ...state,
-        notices: [
-          ...state.notices,
-          {
-            id: (state.notices.at(-1)?.id ?? 0) + 1,
-            level: String(event.level),
-            message: String(event.message),
-          },
-        ].slice(-MAX_NOTICES),
+        notices: [...kept, { id, level, message: String(event.message) }].slice(-MAX_NOTICES),
       };
+    }
     default:
       return state;
   }
