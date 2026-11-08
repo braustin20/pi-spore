@@ -52,24 +52,24 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   `subagents.agentOverrides.orchestrator` (model, thinking) from Pi's settings, and on Pi's own default when that
   override is missing. The `worker` role is a subagent on `spore/auto`; `worker` stays only as a chat `kind`, in
   `PI_SPORE_CHAT_KIND`, and in the routes. An agent is one chat: one row in `agents_agents` with a `kind` (`worker` or
-  `side`), an `active` flag, a `title`, and `forked_from` (the worker chat a side chat copies).
-  - A workspace has one active worker chat (a partial unique index). Only it and side chats can run; an older worker
-    chat is read-only history and refuses to start with 409 `chat_inactive`. The manager also refuses to start a
-    worker chat while another worker chat of the workspace has a live process (409 `worker_running`).
-  - New chat: the active worker chat becomes inactive, its process stops (its session file stays), and a new active
-    worker chat starts empty. Make active works the same way for an older chat. Both refuse with 409 `worker_busy`
-    while the current worker chat is busy, starting, or waiting for a slot. Chat changes of one workspace run one at
+  `side`), an `active` flag, a `title`, and `forked_from` (the orchestrator chat a side chat copies).
+  - A workspace has one active orchestrator chat (a partial unique index). Only it and side chats can run; an older orchestrator
+    chat is read-only history and refuses to start with 409 `chat_inactive`. The manager also refuses to start an
+    orchestrator chat while another orchestrator chat of the workspace has a live process (409 `worker_running`).
+  - New chat: the active orchestrator chat becomes inactive, its process stops (its session file stays), and a new active
+    orchestrator chat starts empty. Make active works the same way for an older chat. Both refuse with 409 `worker_busy`
+    while the current orchestrator chat is busy, starting, or waiting for a slot. Chat changes of one workspace run one at
     a time.
   - Close (ADR 0110): the "x" on a chat tab sets `closed = 1` and `active = 0`, and stops the process. The row and
     session file stay, because other modules hold agent ids. A closed chat is left out of the chat list, the
     `agents:list` snapshot, and Home; a `removed` event drops it from open pages. It cannot be activated again
-    (409 `chat_closed`). A chat that is working refuses with 409 `chat_busy`. Closing the active worker chat leaves
+    (409 `chat_closed`). A chat that is working refuses with 409 `chat_busy`. Closing the active orchestrator chat leaves
     the workspace without one, and the next `POST /api/agents` starts a fresh chat.
   - A chat that becomes inactive drops its Home items: its failure, its finished mark, and its open questions, which
     are closed (ADR 0033). Pending deliveries to it wait until it is active again.
   - Side chats: any number, next to the worker, counted against `agents.maxLive` like any agent. They start empty,
-    or with `--fork` from a copy of the active worker chat's session on their first start (409 `nothing_to_fork`
-    when the worker chat has no session yet). The copy keeps the worker's model. After that first start the page
+    or with `--fork` from a copy of the active orchestrator chat's session on their first start (409 `nothing_to_fork`
+    when the orchestrator chat has no session yet). The copy keeps the worker's model. After that first start the page
     gets a new snapshot with the copied messages.
   - Side chats are read-only through their tools: `--tools read,grep,find,ls,request_human_input` and
     `--exclude-tools 'mcp__*'` (ADR 0033). Their bridge token is read-only, so bridge routes that run commands refuse
@@ -500,7 +500,7 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
 
 - The `attention` module (core, requires `projects`, `workspaces`, `agents`) owns questions (`attention_questions`:
   agent, workspace, question, choices, state `open`, `answered`, or `closed`, answer, times). A question closes when
-  its worker chat stops being the active one; answering it then is 409 `question_closed` (ADR 0033). The bridge module files them
+  its orchestrator chat stops being the active one; answering it then is 409 `question_closed` (ADR 0033). The bridge module files them
   through `QuestionsKey`.
 - `POST /api/attention/questions/:id/answer` `{ answer }` stores the answer and queues it for the agent through
   `AgentsKey.deliver`, in one transaction. A second answer is 409 `question_answered`. The agent gets a message that
@@ -593,11 +593,11 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 - Limits (module options): 1000 files in a list, 200 files with hunks in a diff without `path`, and 3000 lines or
   512 KiB per file. A larger or binary file has a `note` (`too_large`, `binary`) and no hunks.
 - Diff-line comments (R8.3) live in `changes_comments` (workspace, path, side `old` or `new`, line, the line's
-  code, body, created, sent). "Send to agent" writes one delivery to the workspace's active worker chat
+  code, body, created, sent). "Send to agent" writes one delivery to the workspace's active orchestrator chat
   (`AgentsKey.deliver`) and marks the comments sent in the same transaction. Sent comments leave the open list. No
-  worker chat yet is 409 `no_worker_chat`. The message lists each comment with its file, line, quoted code, and text.
+  orchestrator chat yet is 409 `no_worker_chat`. The message lists each comment with its file, line, quoted code, and text.
 - Topic `changes:<workspace id>` sends the open comments on subscribe and after each change
-  (`{ type: "comments" }`), and `{ type: "stale" }` when a worker chat of the workspace ends a run, so an open tab
+  (`{ type: "comments" }`), and `{ type: "stale" }` when an orchestrator chat of the workspace ends a run, so an open tab
   reloads.
 
 | Route | Does |
@@ -649,13 +649,13 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
   - Each poll reads the PR. 30 s after a change (head, checks, mergeability), doubling to 5 min while nothing
     changes.
   - When no check on the head is pending, it reads the bot comments. If a check failed on a head not handled yet,
-    or a bot left comments not sent yet, it sends one message to the active worker chat (`AgentsKey.deliver`):
+    or a bot left comments not sent yet, it sends one message to the active orchestrator chat (`AgentsKey.deliver`):
     each failed check with its link and the last 80 lines (8 KiB) of its failed log (ANSI codes removed, at most 5
     logs), then the bot comments with file and line, then "commit and push again; do not force-push; do not merge".
     The delivery, the sent marks, and the try count commit in one transaction.
   - A bot is an account GitHub types `Bot` (Q14: their comments go to the worker; people's do not).
   - At most 3 tries in a row (module option). A head with every check passed and nothing to send ends the run. After
-    3 tries, or with no worker chat, the watch is `waiting` with a message, and sends nothing until the user resumes
+    3 tries, or with no orchestrator chat, the watch is `waiting` with a message, and sends nothing until the user resumes
     (`watch on`), which starts a new run and sends the current failures again.
   - A merged PR moves the card to Done; a merged or closed PR ends the watch (`done`).
 - Topic `github-pr:<workspace id>` sends the status on subscribe and after each poll.
@@ -742,7 +742,7 @@ R11.
   fields (a new workspace through `WorkspacesKey.create`, named after the card) or `{ workspaceId }` (an active
   workspace of the card's project; a parked one is 409 `workspace_not_active`, another project's 422
   `project_mismatch`). The card links to the workspace and moves to In progress, and in the same transaction its
-  brief (title, labels, due day, blockers, notes) goes to the workspace's active worker chat through
+  brief (title, labels, due day, blockers, notes) goes to the workspace's active orchestrator chat through
   `AgentsKey.deliver`. `AgentsKey.activeWorker` creates that chat if the workspace has none. A busy worker gets the
   brief as a follow-up after its current run. A card with an open workspace answers 409 `card_has_workspace`. A
   blocked card answers 409 `card_blocked` unless the request carries `confirmBlocked: true`; the board asks the user
@@ -874,10 +874,10 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 - `addTab` adds a tab after Details (Terminals). A `wide` tab widens the column while it is open. Its component
   mounts only while the tab is open.
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
-  passes `chatId`; without it the pane shows the active worker chat.
+  passes `chatId`; without it the pane shows the active orchestrator chat.
 - `setStatus` sets a React hook that returns one status line per workspace. The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
-  supplies a fresh snapshot. The status line follows the active worker chat.
+  supplies a fresh snapshot. The status line follows the active orchestrator chat.
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 
@@ -919,10 +919,10 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 
   | Route | Does |
   |---|---|
-  | `GET /api/agents?workspaceId=` | The workspace's chats: the active worker chat, side chats, then older worker chats, newest first in each group. |
-  | `POST /api/agents` `{ workspaceId }` | The active worker chat; the first call creates it (201). |
-  | `POST /api/agents/chats` `{ workspaceId, kind, fork? }` | Starts a worker chat (replaces the active one) or a side chat; `fork` copies the worker chat's context. |
-  | `POST /api/agents/:id/activate` | Makes an older worker chat the active one; the current one stops first. |
+  | `GET /api/agents?workspaceId=` | The workspace's chats: the active orchestrator chat, side chats, then older orchestrator chats, newest first in each group. |
+  | `POST /api/agents` `{ workspaceId }` | The active orchestrator chat; the first call creates it (201). |
+  | `POST /api/agents/chats` `{ workspaceId, kind, fork? }` | Starts an orchestrator chat (replaces the active one) or a side chat; `fork` copies the orchestrator chat's context. |
+  | `POST /api/agents/:id/activate` | Makes an older orchestrator chat the active one; the current one stops first. |
   | `POST /api/agents/:id/title` `{ title }` | Renames a chat. |
   | `POST /api/agents/:id/close` | Closes a chat for good (ADR 0110). 409 `chat_busy` while it works. |
   | `POST /api/agents/:id/prompt` `{ message, images?, whileBusy? }` | Sends a message; `images` are `{ mimeType, data }` in base64 (below). |

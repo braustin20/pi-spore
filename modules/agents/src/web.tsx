@@ -380,8 +380,8 @@ function ChatView({
             <Notice tone="warn">
               <div className="flex items-center gap-2">
                 <span className="flex-1">
-                  This is an older worker chat. It is read-only. Make it active to continue it; the
-                  current worker chat stops first.
+                  This is an older orchestrator chat. It is read-only. Make it active to continue
+                  it; the current orchestrator chat stops first.
                 </span>
                 <Button
                   size="sm"

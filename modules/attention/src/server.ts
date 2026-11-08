@@ -482,7 +482,7 @@ export const attentionModule: ServerModule = {
           throw new ApiError(
             409,
             "question_closed",
-            "That question was closed: its chat is no longer the active worker chat",
+            "That question was closed: its chat is no longer the active orchestrator chat",
           );
         }
         if (row.state !== "open")
