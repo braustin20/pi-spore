@@ -573,6 +573,30 @@ describe("a review stage", () => {
     expect(one.tools).not.toMatch(/bash|edit|write/);
   });
 
+  it("tells the round 2 reviewer what round 1 found and when to answer revise", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        reviewer: [
+          { summary: "Not yet", verdict: "revise", findings: [FINDING] },
+          { summary: "Good", verdict: "approve" },
+        ],
+      }),
+    });
+    const { run } = await runUntil(server, "converge", withReview("rounds = 2"), "passed");
+
+    const [first, second] = [run.turns[1], run.turns[3]] as [PipelineTurn, PipelineTurn];
+    const round1 = (await chat(server, first.agentId))[0] as string;
+    const round2 = (await chat(server, second.agentId))[0] as string;
+    expect(round1).not.toContain("Answer revise only");
+    expect(round2).toContain("Round 1 reviewer summary: Not yet");
+    expect(round2).toContain("Round 1 findings:\n1. [important] Missing null check (a.txt:2)");
+    expect(round2).toContain("The worker's fix report: Fixed the findings");
+    expect(round2).toContain("First check that each earlier finding is fixed.");
+    expect(round2.split("\n").some((line) => line.startsWith("Answer revise only"))).toBe(true);
+    expect(round2).toContain("A new finding that round 1 could have raised is important at most");
+  });
+
   it("asks the reviewer to check each proof, and names the brief, the diff, and the tests", async () => {
     const server = await start({
       env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
@@ -630,8 +654,9 @@ describe("a review stage", () => {
   });
 });
 
+const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
+
 describe("the round limit", () => {
-  const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
   const limited = () => scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE, REVISE] });
 
   const openApprovals = async (server: TestServer) =>
@@ -641,7 +666,7 @@ describe("the round limit", () => {
       )
     ).approvals;
 
-  it("waits on a pipeline-round-limit approval after two REVISEs, and approve passes the run", async () => {
+  it("waits on a pipeline-round-limit approval after two REVISEs, and accept passes the run", async () => {
     const server = await start({ env: limited() });
     const { run } = await runUntil(server, "limit", withReview("rounds = 2"), "waiting_user");
 
@@ -649,14 +674,76 @@ describe("the round limit", () => {
     const [approval] = await openApprovals(server);
     expect(approval).toMatchObject({
       kind: "pipeline-round-limit",
-      subject: { runId: run.id, stage: "review" },
+      subject: { runId: run.id, stage: "review", action: "fix" },
       agentId: run.askingAgentId,
     });
     await json(
-      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {
+        subject: { ...(approval?.subject as object), action: "accept" },
+      }),
     );
     await until(async () => (await getRun(server, run.id)).state === "passed");
     expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
+    await until(async () =>
+      (await chat(server, run.askingAgentId as string)).some((message) =>
+        message.includes(
+          "The user chose accept: the run goes on after stage review without a fix.",
+        ),
+      ),
+    );
+  });
+
+  it("names the workspace and lists the findings and the three choices", async () => {
+    const server = await start({ env: limited() });
+    const { run } = await runUntil(server, "named", withReview("rounds = 2"), "waiting_user");
+
+    const [approval] = await openApprovals(server);
+
+    const title = 'Review round limit in workspace "named": stage "review" of pipeline p';
+    expect(approval?.title).toBe(title);
+    expect(approval?.reason).toContain("Reviewer: Still wrong");
+    expect(approval?.reason).toContain("Findings:\n1. [important] Missing null check (a.txt:2)");
+    expect(approval?.reason).toContain(
+      "\nFix: the worker makes one last fix for these findings, with no review after it, and the run goes on.\nAccept: the run goes on without a fix.\nDecline: the run stops.",
+    );
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+    );
+    await until(async () =>
+      (await chat(server, run.askingAgentId as string)).some((message) =>
+        message.includes(`Request: ${title}`),
+      ),
+    );
+  });
+
+  it("fix starts one last worker fix with the findings, and the run passes with no review after it", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE, FIX, FIX], reviewer: [REVISE, REVISE] }),
+    });
+    const { run } = await runUntil(server, "fixlast", withReview("rounds = 2"), "waiting_user");
+    const [approval] = await openApprovals(server);
+
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+    );
+
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    const done = await getRun(server, run.id);
+    expect(kinds(done)).toEqual(["task1", "review1", "fix1", "review2", "fix2"]);
+    const lastFix = done.turns.at(-1) as PipelineTurn;
+    const prompt = (await chat(server, lastFix.agentId)).find((message) =>
+      message.includes(`Turn: ${lastFix.id}`),
+    );
+    expect(prompt).toContain("[important] Missing null check (a.txt:2)");
+    expect(prompt).toContain("This is the last fix: no review follows it.");
+    expect(done.message).toBeUndefined();
+    await until(async () =>
+      (await chat(server, run.askingAgentId as string)).some((message) =>
+        message.includes(
+          "The user chose fix: the worker makes one last fix for stage review, with no review after it; then the run goes on.",
+        ),
+      ),
+    );
   });
 
   it("stops the run when the user declines", async () => {

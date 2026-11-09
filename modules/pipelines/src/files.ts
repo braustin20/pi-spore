@@ -23,6 +23,7 @@ tier = "route"
 name = "review"
 role = "reviewer"
 rounds = 2
+fix_passes = 1
 early_stop = "jev"
 min_strength_over = "implement"
 

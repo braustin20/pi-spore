@@ -1,3 +1,8 @@
+import {
+  type ApprovalViewProps,
+  type AttentionWeb,
+  AttentionWebKey,
+} from "@pi-spore/mod-attention/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
@@ -251,11 +256,46 @@ function PipelinePanel({ workspace }: { workspace: Workspace }) {
   );
 }
 
+let DeclineNote: AttentionWeb["DeclineNote"] | undefined;
+
+/** A `pipeline-round-limit` approval on Home: the three choices at a review stage's round limit. */
+function RoundLimitView({ approval, busy, approve, decline }: ApprovalViewProps) {
+  const [note, setNote] = useState("");
+  const Note = DeclineNote as AttentionWeb["DeclineNote"];
+  // The server checks the subject again on approve; only `action` changes here.
+  const subject = approval.subject as object;
+  return (
+    <div className="flex flex-col gap-2.5">
+      <p className="m-0 text-sm font-medium">{approval.title}</p>
+      <p className="m-0 text-sm whitespace-pre-wrap">{approval.reason}</p>
+      <Note note={note} onChange={setNote} />
+      <div className="flex gap-2">
+        <Button
+          variant="primary"
+          disabled={busy}
+          onClick={() => approve({ ...subject, action: "fix" })}
+        >
+          Fix the findings, then go on
+        </Button>
+        <Button disabled={busy} onClick={() => approve({ ...subject, action: "accept" })}>
+          Go on without a fix
+        </Button>
+        <Button disabled={busy} onClick={() => decline(note.trim() || undefined)}>
+          Stop the run
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export const pipelinesWeb: WebModule = {
   id: "pipelines",
-  requires: ["workspaces"],
+  requires: ["workspaces", "attention"],
   core: false,
   setup(host) {
+    const attention = host.use(AttentionWebKey);
+    DeclineNote = attention.DeclineNote;
+    attention.addApprovalView("pipeline-round-limit", RoundLimitView);
     const view = host.use(WorkspaceViewKey);
     view.addTab({ id: "pipeline", title: "Pipeline", order: 6, component: PipelineTab });
     view.addPanel({ id: "pipeline", order: 6, component: PipelinePanel });

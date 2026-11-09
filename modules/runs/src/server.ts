@@ -1143,6 +1143,16 @@ export const runsModule: ServerModule = {
       },
     };
     host.provide(RunsKey, api);
+    pipelines.setLaneLookup((workspaceId) => {
+      const lane = laneByWorkspace(workspaceId);
+      return lane
+        ? {
+            run: workspaces.get(requireRun(lane.run_id).workspace_id).name,
+            laneId: lane.id,
+            lane: lane.name,
+          }
+        : undefined;
+    });
 
     host.routes.get("/", (c) => {
       const projectId = c.req.query("projectId");

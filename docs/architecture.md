@@ -423,6 +423,7 @@ name = "review"
 role = "reviewer"
 rounds = 2                # the most reviewer runs; a fresh read-only agent each round
 early_stop = "jev"        # Jev may end the review early; it never adds a round
+fix_passes = 1            # a REVISE on round 2 gets one fix, with no review after it
 min_strength_over = "implement"   # the reviewer's tier must be above every model the worker used
 
 [[stage]]
@@ -461,11 +462,19 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   one and tells the agent once to continue and call `report`. There are no other automatic reminders.
 - **Review rounds** (R6.3, R6.4). Round r starts a fresh reviewer with the brief, the manifest with proof paths, and
   a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
-  from the provider's `changes`). APPROVE ends the stage. REVISE sends the findings to the same worker as a fix
+  from the provider's `changes`). From round 2 on, the prompt also has the previous round's summary and findings and
+  the worker's fix report. It tells the reviewer to check each earlier finding first, to answer REVISE only for a
+  bug, a missing or wrong test, a regression, or a break of the brief, to list style, naming, wording, and taste as
+  `minor`, and to rate a new finding the previous round could have raised `important` at most. APPROVE ends the
+  stage. REVISE sends the findings to the same worker as a fix
   turn, then round r + 1. Jev ends the stage after that fix instead when the stage has `early_stop = "jev"`, the
   report's `earlyStop.stop` is true, and no finding is blocking. A REVISE on the last round gets one last fix with
   `fix_passes = 1`; otherwise the run is `waiting_user` with a `pipeline-round-limit` approval on Home for the asking
-  chat. Its `decided` hook, in the decision's transaction, moves the run on (approve) or stops it (decline).
+  chat. Its title names the workspace, and for a lane the run and the lane id; the runs module gives pipelines that
+  lookup through `Pipelines.setLaneLookup`, because runs requires pipelines. The reason lists the findings with their
+  severity. The subject is `{ runId, stage, action }`, filed with `action: "fix"`. Its `decided` hook, in the
+  decision's transaction, acts on the choice: `fix` starts one last fix turn with no review after it, then the stage
+  ends; `accept` ends the stage without a fix; decline stops the run. Home shows the three as buttons, fix first.
 - **min_strength_over** (R4.4, ADR 0023). Before a reviewer starts, its model (stage `model`, `spore/auto` for
   `route`, else the role default) must have a tier strictly above every model in `modelsUsed` of the worker. A
   missing model or tier, or a weaker model, throws: the job waits with the error, shown on the run as `blocked`,
@@ -829,7 +838,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     decision; a throw rolls it back and leaves the approval open. Pipelines use it for `pipeline-round-limit` and
     `pipeline-local-implementer`; runs for `lane-model` and `run-pr`.
   - Kinds now: `card-start` (kanban), `lane-model` and `run-pr` (runs, section 9), `pipeline-round-limit` and
-    `pipeline-local-implementer` (pipelines). A `run-pr` subject is `{ runId, title, body, base, head }`; approve
+    `pipeline-local-implementer` (pipelines). A `pipeline-round-limit` subject is `{ runId, stage, action }` with
+    `action` `fix` or `accept` (section 8). A `run-pr` subject is `{ runId, title, body, base, head }`; approve
     may change the title and body, and opens the run's PR through the opener the github-pr module sets (section 11e).
   - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
     its own request.
