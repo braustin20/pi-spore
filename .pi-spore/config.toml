@@ -1,0 +1,25 @@
+# pi-spore's own actions (ADR 0027). Pipelines and runs use check and test as gates.
+
+[actions.setup]
+run = ["npm", "ci"]
+description = "Install dependencies in a new copy"
+
+[actions.check]
+run = ["npm", "run", "check"]
+description = "Biome, then tsc -b"
+
+# Some tests compare the env a child gets, so the PI_SPORE_* names an action or an agent adds must not leak in.
+[actions.test]
+run = [
+  "env",
+  "-u", "PI_SPORE_WORKSPACE_ID",
+  "-u", "PI_SPORE_WORKSPACE_PATH",
+  "-u", "PI_SPORE_PROJECT_ROOT",
+  "-u", "PI_SPORE_AGENT_ID",
+  "-u", "PI_SPORE_CHAT_KIND",
+  "-u", "PI_SPORE_URL",
+  "-u", "PI_SPORE_TOKEN",
+  "npm", "test",
+]
+description = "Vitest"
+exclusive = true
