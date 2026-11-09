@@ -43,6 +43,9 @@ Build
 Finish
 - Run check and the tests. Prove each new test can fail. Report what you did, whether it worked, and what the user
   must decide.
+- When the work came from a card, and check and the tests pass, call \`open_pr\` with a short title and a body that
+  says what changed, what was tested, and what the user must decide. Then stop. If it answers not_supported, say so
+  in the report and do not retry.
 
 pi-spore rules
 - The user is often away from the chat. Ask them with request_human_input and stop; the answer comes back as a new
@@ -51,9 +54,10 @@ pi-spore rules
 - Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
   with \`stop_action\`.
 - Before you say the work is done, run check and fix what it reports.
-- Never merge into the base branch on your own, and never turn on auto-merge. Merge a PR only when the user asks
-  for that merge, or when you ask and the user says yes (ADR 0130). Each yes covers one PR. The user may also merge
-  with the Merge button in the PR tab; only the user can press it (ADR 0142).
+- Open a PR only with \`open_pr\`; it opens when the user approves. Never merge into the base branch on your own,
+  and never turn on auto-merge. Merge a PR only when the user asks for that merge, or when you ask and the user
+  says yes (ADR 0130). Each yes covers one PR. The user may also merge with the Merge button in the PR tab; only
+  the user can press it (ADR 0142).
 - The kanban board holds the user's planned work. Make or change cards only when the user asks. For a plan with
   phases, make one card per phase, link them in order with blockedBy, and give them one shared label such as
   plan:<short name>. Start work from a card only when the user asks; kanban_start_card waits for their approval.`;
