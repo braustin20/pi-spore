@@ -391,6 +391,19 @@ describe("a lane", () => {
     expect(runs.runOf(run.workspaceId)?.id).toBe(run.id);
   });
 
+  it("sends the coordinator no pipelines end message for its lane's run (ADR 0162)", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "laneend");
+    const { run, coordinator } = await createRun(server, projectId, "laneend");
+
+    const lane = await startLane(run, coordinator, "feature");
+    await passLane(server, run.id, lane.id);
+    await untilDelivered(server, run.coordinatorAgentId, `"feature" (${lane.id}) passed`);
+
+    const messages = await chat(server, run.coordinatorAgentId);
+    expect(messages.filter((message) => message.includes("ended passed"))).toEqual([]);
+  });
+
   it("tells the coordinator once when the lane's pipeline blocks on a missing gate action, and passes after the fix", async () => {
     const server = await start();
     writeFileSync(
