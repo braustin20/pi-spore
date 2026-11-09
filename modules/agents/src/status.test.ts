@@ -95,6 +95,46 @@ describe("workspaceStatuses", () => {
     expect(lines([chat("a1", "failed")], [["a1", "question"]]).text).toBe("Agent failed");
   });
 
+  it("shows a working stage agent's title over a stopped or missing worker chat", () => {
+    const stage = (id: string, status: Agent["status"], title?: string) =>
+      chat(id, status, { kind: "stage", role: "reviewer", ...(title ? { title } : {}) });
+    expect(lines([chat("a1", "stopped"), stage("s1", "busy", "review round 1")], [])).toEqual({
+      text: "Working: review round 1",
+      tone: "run",
+    });
+    expect(lines([stage("s1", "starting")], []).tone).toBe("run");
+    expect(lines([stage("s1", "waiting", "review round 1")], [])).toEqual({
+      text: "Waiting for a free agent slot",
+      tone: "warn",
+    });
+    expect(
+      lines([stage("s0", "waiting"), stage("s1", "busy", "Implement")], [["a1", "question"]]).text,
+    ).toBe("Working: Implement");
+  });
+
+  it("follows the worker chat when no stage agent works", () => {
+    const stage = (status: Agent["status"]) => chat("s1", status, { kind: "stage", title: "x" });
+    expect(lines([chat("a1", "stopped"), stage("idle")], []).text).toBe("Agent stopped");
+    expect(lines([chat("a1", "idle"), stage("stopped")], [["a1", "question"]]).text).toBe(
+      "Waiting for your answer",
+    );
+    expect(lines([stage("failed")], []).text).toBe("No agent yet");
+  });
+
+  it("keeps each workspace's stage agents to itself", () => {
+    const other = { ...workspace("active"), id: "w2" };
+    const statuses = workspaceStatuses(
+      [workspace("active"), other],
+      [
+        chat("a1", "stopped"),
+        chat("s2", "busy", { kind: "stage", workspaceId: "w2", title: "Implement" }),
+      ],
+      new Map(),
+    );
+    expect(statuses.get("w1")?.text).toBe("Agent stopped");
+    expect(statuses.get("w2")?.text).toBe("Working: Implement");
+  });
+
   it("ignores a side chat's or an older chat's wait (ADR 0030)", () => {
     const agents = [
       chat("a1", "idle"),
