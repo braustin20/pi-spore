@@ -522,7 +522,9 @@ fail_first = "artifact"
   takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
   is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The
   fresh agent has the stage's or run's model, else the role default read when it starts, so a settings fix works.
-  A restart or another wake does not mark the turn, so it only blocks again. Failed turns do not count as rounds.
+  A restart or another wake does not mark the turn, so it only blocks again. Retry also works while such a wake runs
+  the blocked step again: it marks the turn and wakes the job, so the step runs once more after it settles. Failed
+  turns do not count as rounds.
 - **Review rounds** (R6.3, R6.4). Round r starts a fresh reviewer with the brief, the manifest with proof paths, and
   a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
   from the provider's `changes`). From round 2 on, the prompt also has the previous round's summary and findings and
