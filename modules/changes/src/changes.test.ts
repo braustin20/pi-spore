@@ -18,6 +18,7 @@ import type {
   Workspace,
 } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FAKE_PNG } from "../../agents/test-fixtures/png.mjs";
 import { CHANGES_TOPIC, createChangesModule } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
@@ -316,5 +317,158 @@ describe("diff comments", () => {
     expect(
       await errorCode(await server.request("DELETE", `/api/changes/comments/${made.id}`), 404),
     ).toBe("comment_not_found");
+  });
+});
+
+describe("staged comments", () => {
+  const comment = async (workspaceId: string, line: number) =>
+    (
+      await json<{ comment: DiffComment }>(
+        await server.request("POST", `/api/changes/workspaces/${workspaceId}/comments`, {
+          path: "a.txt",
+          side: "new",
+          line,
+          code: `code ${line}`,
+          body: `Fix line ${line}.`,
+        }),
+        201,
+      )
+    ).comment;
+  const stage = (workspaceId: string, body: Record<string, unknown>) =>
+    server.request("POST", `/api/changes/workspaces/${workspaceId}/comments/stage`, body);
+  const open = async (workspaceId: string) =>
+    (await get<{ comments: DiffComment[] }>(`workspaces/${workspaceId}/comments`)).comments;
+
+  it("go with the next message of the chat, in one message, and are marked sent", async () => {
+    const workspace = await gitWorkspace();
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    for (const line of [1, 2, 3]) await comment(workspace.id, line);
+    await json(await stage(workspace.id, { staged: true }));
+    expect((await open(workspace.id)).map((item) => item.staged)).toEqual([true, true, true]);
+
+    await json(
+      await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "Go on" }),
+    );
+    await until(() => said(agent.id).length > 0);
+    const messages = said(agent.id);
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain("Go on");
+    for (const line of [1, 2, 3]) {
+      expect(messages[0]).toContain(
+        `\`a.txt\` line ${line}:\n   > code ${line}\n   Fix line ${line}.`,
+      );
+    }
+    expect(await open(workspace.id)).toEqual([]);
+
+    await json(
+      await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "Again" }),
+    );
+    await until(() => said(agent.id).length > 1);
+    expect(said(agent.id)[1]).toBe("Again");
+  });
+
+  it("leave a dropped comment open and out of the message", async () => {
+    const workspace = await gitWorkspace();
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    await comment(workspace.id, 1);
+    const two = await comment(workspace.id, 2);
+    await comment(workspace.id, 3);
+    await json(await stage(workspace.id, { staged: true }));
+    await json(await stage(workspace.id, { staged: false, ids: [two.id] }));
+
+    await json(await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "Go" }));
+    await until(() => said(agent.id).length > 0);
+    expect(said(agent.id)[0]).toContain("Fix line 1.");
+    expect(said(agent.id)[0]).not.toContain("Fix line 2.");
+    expect(said(agent.id)[0]).toContain("Fix line 3.");
+    expect(await open(workspace.id)).toMatchObject([{ id: two.id, staged: false }]);
+  });
+
+  it("keep the images of the message and go with it", async () => {
+    const workspace = await gitWorkspace();
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    await comment(workspace.id, 1);
+    await json(await stage(workspace.id, { staged: true }));
+    await json(
+      await server.request("POST", `/api/agents/${agent.id}/prompt`, {
+        message: "Look",
+        images: [{ mimeType: "image/png", data: FAKE_PNG }],
+      }),
+    );
+    await until(() => said(agent.id).length > 0);
+    expect(said(agent.id)[0]).toContain("Look");
+    expect(said(agent.id)[0]).toContain("Fix line 1.");
+    const replies = (server.events.eventsOf(`agent:${agent.id}`) as AgentEvent[]).flatMap((event) =>
+      JSON.stringify(event),
+    );
+    expect(replies.some((event) => event.includes("[1 images]"))).toBe(true);
+    expect(await open(workspace.id)).toEqual([]);
+  });
+
+  it("keep the steer choice of a message sent while the chat works", async () => {
+    const workspace = await gitWorkspace();
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    await json(
+      await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "slow:800" }),
+    );
+    await until(() => said(agent.id).length > 0);
+    await comment(workspace.id, 1);
+    await json(await stage(workspace.id, { staged: true }));
+    await json(
+      await server.request("POST", `/api/agents/${agent.id}/prompt`, {
+        message: "Now",
+        whileBusy: "steer",
+      }),
+    );
+    const queues = () =>
+      (server.events.eventsOf(`agent:${agent.id}`) as AgentEvent[]).flatMap((event) => {
+        const pi =
+          event.type === "pi" ? (event.event as { type: string; steering?: string[] }) : undefined;
+        return pi?.type === "queue_update" ? [pi] : [];
+      });
+    await until(() => queues().length > 0);
+    expect(queues()[0]?.steering?.[0]).toContain("Fix line 1.");
+    expect(await open(workspace.id)).toEqual([]);
+  });
+
+  it("stay staged when the message is a slash command", async () => {
+    const workspace = await gitWorkspace();
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    await comment(workspace.id, 1);
+    await json(await stage(workspace.id, { staged: true }));
+    await json(
+      await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: " /compact" }),
+    );
+    await until(() => said(agent.id).length > 0);
+    expect(said(agent.id)).toEqual([" /compact"]);
+    expect(await open(workspace.id)).toMatchObject([{ staged: true }]);
+  });
+
+  it("send a message without comments when none is staged", async () => {
+    const workspace = await gitWorkspace();
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    await comment(workspace.id, 1);
+    await json(await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "Hi" }));
+    await until(() => said(agent.id).length > 0);
+    expect(said(agent.id)).toEqual(["Hi"]);
+    expect(await open(workspace.id)).toHaveLength(1);
   });
 });
