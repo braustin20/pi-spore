@@ -1,51 +1,79 @@
-// A throwaway pi-spore server for agent work: it builds, then runs on a temp home and a free port, so it can
-// never read or stop the real install. Project actions inherit the real server's environment, so the child's
-// PI_SPORE_HOME, PI_SPORE_PORT, PI_SPORE_URL, PI_SPORE_TOKEN and PI_SPORE_SERVER_PID are set on purpose here.
+// A workspace's own pi-spore server, for the user and for agents that work on pi-spore: it builds, then runs the
+// worktree's server on a free port. The home is <worktree>/.pi-spore-dev/home and is kept between runs, so test
+// data survives restarts. Delete .pi-spore-dev/ to reset. The server never touches ~/.pi-spore: devEnv sets its
+// own home and drops the outer server's PI_SPORE_* names. The sample project is its own git repo, because a project
+// that shared .git with the real repo would show the dev server's branches there (ADR 0161).
 import { spawn } from "node:child_process";
-import { mkdtemp, rm } from "node:fs/promises";
-import { createServer } from "node:net";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { mkdir, readFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
+import { devEnv, ensureSampleProject, ensureSampleRepo, freePort } from "./dev-server-lib.mjs";
+
+const worktree = dirname(dirname(fileURLToPath(import.meta.url)));
+const devRoot = join(worktree, ".pi-spore-dev");
+const home = join(devRoot, "home");
+const sampleRepo = join(devRoot, "sample-repo");
 
 /** Resolves with a child's exit code, or null when a signal ended it. */
 const exited = (child) => new Promise((resolve) => child.once("exit", (code) => resolve(code)));
 
-const built = await exited(spawn("npm", ["run", "build"], { stdio: "inherit" }));
+const built = await exited(spawn("npm", ["run", "build"], { stdio: "inherit", cwd: worktree }));
 if (built !== 0) process.exit(built ?? 1);
 
-const home = await mkdtemp(join(tmpdir(), "pi-spore-dev-"));
+await mkdir(home, { recursive: true });
+const port = await freePort();
+const url = `http://127.0.0.1:${port}/`;
 
-// Port 0 is handed out only when free, so the probe is closed before the server gets the number.
-const port = await new Promise((resolve, reject) => {
-  const probe = createServer();
-  probe.on("error", reject);
-  probe.listen(0, "127.0.0.1", () => {
-    const found = probe.address().port;
-    probe.close(() => resolve(found));
-  });
+const serverEntry = join(worktree, "packages/server/dist/main.js");
+const child = spawn(process.execPath, [serverEntry], {
+  stdio: "inherit",
+  env: devEnv(process.env, home, port),
+});
+let childCode;
+const childDone = exited(child).then((code) => {
+  childCode = code ?? 1;
+  return childCode;
 });
 
-const env = { ...process.env, PI_SPORE_HOME: home, PI_SPORE_PORT: String(port) };
-for (const key of ["PI_SPORE_URL", "PI_SPORE_TOKEN", "PI_SPORE_SERVER_PID"]) delete env[key];
+/** Sends a signal to the server. The action runner may have signalled this process group already, so a gone child is fine. */
+const signalChild = (signal) => {
+  try {
+    if (child.pid !== undefined) process.kill(child.pid, signal);
+  } catch (error) {
+    if (error.code !== "ESRCH") throw error;
+  }
+};
 
-const url = `http://127.0.0.1:${port}`;
-console.log(`pi-spore dev server: ${url} (home ${home}, token in ${join(home, "token")})`);
+for (const signal of ["SIGINT", "SIGTERM"]) process.once(signal, () => signalChild(signal));
 
-const serverEntry = fileURLToPath(new URL("../packages/server/dist/main.js", import.meta.url));
-const child = spawn(process.execPath, [serverEntry], { stdio: "inherit", env });
+/** Polls /api/health until it answers 200. Throws when the server exits or 30 s pass. */
+const waitForHealth = async () => {
+  const deadline = Date.now() + 30_000;
+  while (childCode === undefined) {
+    if (Date.now() > deadline)
+      throw new Error(`Server did not answer ${url}api/health within 30 s`);
+    const ok = await fetch(`${url}api/health`).then(
+      (response) => response.status === 200,
+      () => false,
+    );
+    if (ok) return;
+    await sleep(200);
+  }
+  throw new Error(`Server exited with code ${childCode} before it answered ${url}api/health`);
+};
 
-for (const signal of ["SIGINT", "SIGTERM"]) {
-  process.once(signal, () => {
-    // The action runner may have already signalled this process group; forward once, ignore a gone child.
-    try {
-      if (child.pid !== undefined) process.kill(child.pid, signal);
-    } catch (error) {
-      if (error.code !== "ESRCH") throw error;
-    }
-  });
+try {
+  await waitForHealth();
+  const token = (await readFile(join(home, "token"), "utf8")).trim();
+  await ensureSampleRepo(sampleRepo);
+  await ensureSampleProject(url, token, sampleRepo);
+} catch (error) {
+  console.error(error instanceof Error ? error.message : error);
+  signalChild("SIGTERM");
+  await childDone;
+  process.exit(1);
 }
 
-const code = await exited(child);
-await rm(home, { recursive: true, force: true });
-process.exit(code ?? 1);
+console.log(`pi-spore dev server: ${url}`);
+process.exit(await childDone);

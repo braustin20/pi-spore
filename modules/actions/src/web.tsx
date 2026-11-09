@@ -19,6 +19,9 @@ const RunBody = Type.Object({ run: ActionRunSchema });
 /** The log view keeps this many characters; the full log stays on disk. */
 const MAX_SHOWN = 200_000;
 
+/** Loopback URLs only: a run's own dev server. The capture group makes `split` keep them at odd indexes. */
+const LOOPBACK_URL = /(http:\/\/(?:127\.0\.0\.1|localhost):\d+(?:\/[^\s"'()[\]]*)?)/;
+
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 const commandText = (action: ActionView) =>
   typeof action.run === "string" ? action.run : action.run.join(" ");
@@ -72,19 +75,45 @@ function RunLog({ runId, onEnded }: { runId: string; onEnded: () => void }) {
     };
   }, [api, runId, onEnded]);
 
+  const parts = text.split(LOOPBACK_URL);
+  const newestUrl = parts.findLast((_, index) => index % 2 === 1);
   return (
     <div className="flex flex-col gap-2">
       {run && (
         <div className="flex flex-wrap items-center gap-1.5 text-xs">
           <span className="font-medium">{run.action}</span>
           <Chip tone={RUN_TONE[run.status]}>{statusText(run)}</Chip>
+          {run.status === "running" && newestUrl && (
+            <Button asChild size="sm">
+              <a href={newestUrl} target="_blank" rel="noreferrer">
+                Open
+              </a>
+            </Button>
+          )}
           <code className="[overflow-wrap:anywhere] text-muted">{run.logPath}</code>
         </div>
       )}
       {run?.error && <Notice tone="fail">{run.error}</Notice>}
       {error && <Notice tone="fail">{error}</Notice>}
       <pre className="m-0 max-h-80 overflow-auto rounded-md border border-line bg-bg p-2.5 text-xs [overflow-wrap:anywhere] whitespace-pre-wrap text-muted">
-        {text || " "}
+        {text
+          ? parts.map((part, index) =>
+              index % 2 === 1 ? (
+                <a
+                  // biome-ignore lint/suspicious/noArrayIndexKey: the parts have no identity besides their place
+                  key={index}
+                  href={part}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent underline"
+                >
+                  {part}
+                </a>
+              ) : (
+                part
+              ),
+            )
+          : " "}
       </pre>
     </div>
   );

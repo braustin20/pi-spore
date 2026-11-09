@@ -6,3 +6,4 @@ dist/
 coverage/
 .pi-spore/config.local.toml
 .tsbuild/
+.pi-spore-dev/
