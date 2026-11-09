@@ -1,5 +1,5 @@
 /**
- * The classifier questions of ADR 0024. Each is a choice between a "good" answer (fit for a local model) and a
+ * The classifier questions of ADR 0024 and 0141. Each is a choice between a "good" answer (fit for a local model) and a
  * "bad" one. The router reads the probability of the good answer.
  */
 export const QUESTIONS = {
@@ -37,6 +37,24 @@ export const QUESTIONS = {
       hard: "Subtle design, cross-cutting changes, or hard debugging",
     },
   },
+  foundational: {
+    type: "choice",
+    instructions:
+      "Does the work requested in `prompt` build core infrastructure or foundations that other code will rest on, or a novel feature with no existing pattern to follow?",
+    criteria: {
+      routine: "Routine work that follows existing patterns",
+      foundational: "Core infrastructure, foundational, or novel work",
+    },
+  },
+  design: {
+    type: "choice",
+    instructions:
+      "Does the task in `prompt` need design judgment or a sense of feel, such as architecture, API or UX design, planning, or gameplay feel?",
+    criteria: {
+      given: "Carries out a design that is already decided",
+      design: "Needs design judgment, planning, or feel",
+    },
+  },
 } as const;
 
 export type Question = keyof typeof QUESTIONS;
@@ -47,7 +65,15 @@ export const GOOD: Readonly<Record<Question, string>> = {
   explicit: "explicit",
   visual: "nonvisual",
   straightforward: "straightforward",
+  foundational: "routine",
+  design: "given",
 };
+
+/** Rung 3 when one of these falls below `router.heavyThreshold` (ADR 0141). */
+export const HEAVY_QUESTIONS: Question[] = ["visual", "design", "foundational"];
+
+/** Rung 1 only when all of these reach `router.threshold` (ADR 0141). */
+export const CHEAP_QUESTIONS: Question[] = ["bounded", "explicit", "straightforward"];
 
 /** Probability of the good answer per question. */
 export type JevAnswers = Record<Question, number>;
@@ -57,7 +83,7 @@ export const MAX_PROMPT_CHARS = 16_000;
 
 /**
  * Reads the good-answer probabilities from a classifier result. Throws when the result is an error or an answer is
- * missing or malformed, so the router records why and goes to the cloud model.
+ * missing or malformed, so the router records why and goes to rung 3.
  */
 export function readAnswers(result: unknown): JevAnswers {
   const { stopReason, errorMessage, answers } = (result ?? {}) as {
@@ -89,5 +115,7 @@ export function readAnswers(result: unknown): JevAnswers {
     explicit: read("explicit"),
     visual: read("visual"),
     straightforward: read("straightforward"),
+    foundational: read("foundational"),
+    design: read("design"),
   };
 }

@@ -1,16 +1,35 @@
-import { join } from "node:path";
-import type { AssistantMessage } from "@earendil-works/pi-ai";
+import {
+  type Api,
+  type AssistantMessage,
+  getSupportedThinkingLevels,
+  type Model,
+} from "@earendil-works/pi-ai";
 import type {
   ExtensionContext,
   ModelRoute,
   ModelRouteRequest,
 } from "@earendil-works/pi-coding-agent";
-import { cloudChoice, type Decision, decide, escalation, type Route } from "./decide.js";
-import { contentText, type Estimate, estimateTokens } from "./estimate.js";
+import {
+  type DecideInput,
+  type Decision,
+  decide,
+  escalation,
+  ladderChoice,
+  type Route,
+  type Rung,
+} from "./decide.js";
+import { contentText, estimateTokens } from "./estimate.js";
 import { type JevAnswers, MAX_PROMPT_CHARS, QUESTIONS, readAnswers } from "./jev.js";
 import type { LocalLocks } from "./lock.js";
 import { appendRecord, type RoutingRecord } from "./records.js";
-import { type LocalTarget, loadSettings, type RouterSettings, splitModel } from "./settings.js";
+import {
+  type LadderEntry,
+  type LocalTarget,
+  loadSettings,
+  type RouterSettings,
+  splitModel,
+  type ThinkingLevel,
+} from "./settings.js";
 import {
   type PlanState,
   planState,
@@ -23,9 +42,14 @@ import {
 /** Router state on the session branch (Pi stores it as a `pi.virtual-model-state` entry). */
 export interface RouterState {
   route: Exclude<Route, "wait">;
+  rung: Rung;
+  /** The ladder plan the session draws on. Absent for a local session when every plan was full. */
+  plan?: string;
   /** `provider/id` the session is pinned to. */
   model: string;
-  /** Failed local requests in a row. */
+  /** The level the router uses for the model, not the one the user picked for `spore/auto`. */
+  thinking: ThinkingLevel;
+  /** Failed requests in a row on the model. */
   failures: number;
   decidedAt: number;
   reasons: string[];
@@ -36,6 +60,11 @@ export type RouterRequest = ModelRouteRequest<RouterState>;
 /** Thrown when no plan has room: Pi ends the request with this message (ADR 0024: the task waits for a reset). */
 export class NoRoomError extends Error {
   override name = "NoRoomError";
+}
+
+/** A setting is wrong. Pi ends the request with its message; the router does not fall back (ADR 0141). */
+export class RouterConfigError extends Error {
+  override name = "RouterConfigError";
 }
 
 export interface RouterDeps {
@@ -55,13 +84,10 @@ export interface RouterDeps {
     target: { provider: string; modelId: string },
     ctx: ExtensionContext,
   ): Promise<unknown>[];
-  /** The cloud model when `router.cloud` is unset: the pi-subagents `worker` model. */
-  workerModel(): Promise<string | undefined>;
   isOverflow(message: AssistantMessage, contextWindow?: number): boolean;
 }
 
 /** How long to wait between looks at a busy local target's lock. */
-const AUTO_MODEL = "spore/auto";
 const LOCK_POLL_MS = 1_000;
 const STATUS_KEY = "pi-spore-router";
 
@@ -73,23 +99,80 @@ function lastUserText(messages: RouterRequest["messages"]): string {
 const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
+/** The first ladder's entry on a rung: where direct requests and the router's own errors go. */
+function firstLadderEntry(
+  settings: RouterSettings,
+  rung: Rung,
+): { plan: string; entry: LadderEntry } {
+  const { plan, rungs } = settings.ladders[0] as RouterSettings["ladders"][number];
+  return { plan, entry: rungs[rung - 1] as LadderEntry };
+}
+
+/** The fields of a decision that every routing record carries. */
+function decisionFields(decision: Decision) {
+  return {
+    route: decision.route,
+    rung: decision.rung,
+    ...(decision.plan ? { plan: decision.plan } : {}),
+    ...(decision.model ? { model: decision.model } : {}),
+    ...(decision.thinking ? { thinking: decision.thinking } : {}),
+    reasons: decision.reasons,
+    ...(decision.resetsAt !== undefined ? { resetsAt: decision.resetsAt } : {}),
+  };
+}
+
 /**
- * The `spore/auto` router (ADR 0009, 0010, 0024) and the usage tap (ADR 0022). One instance per Pi process. It holds
+ * Checks every ladder entry and local target against Pi's catalog on each request (ADR 0141): a model that is
+ * missing, or a thinking level it does not take, ends the request. A local target missing from the catalog stays
+ * allowed: the router then sends the task up the ladder.
+ */
+function checkCatalog(settings: RouterSettings, ctx: ExtensionContext): void {
+  const lookup = (ref: string): Model<Api> | undefined => {
+    const { provider, id } = splitModel(ref);
+    return ctx.modelRegistry.find(provider, id);
+  };
+  const checkThinking = (setting: string, ref: string, level: ThinkingLevel, model: Model<Api>) => {
+    const levels = getSupportedThinkingLevels(model);
+    if (!levels.includes(level)) {
+      throw new RouterConfigError(
+        `${setting}.thinking ${level}: ${ref} takes ${levels.join(", ")}`,
+      );
+    }
+  };
+  settings.ladders.forEach((ladder, i) => {
+    ladder.rungs.forEach((entry, j) => {
+      const setting = `router.ladders[${i}].rungs[${j}]`;
+      const model = lookup(entry.model);
+      if (!model) {
+        throw new RouterConfigError(`${setting}.model ${entry.model} is not in Pi's model catalog`);
+      }
+      checkThinking(setting, entry.model, entry.thinking, model);
+    });
+  });
+  settings.localTargets.forEach((target, i) => {
+    const model = lookup(target.model);
+    if (model) checkThinking(`router.localTargets[${i}]`, target.model, target.thinking, model);
+  });
+}
+
+/**
+ * The `spore/auto` router (ADR 0009, 0010, 0141) and the usage tap (ADR 0022). One instance per Pi process. It holds
  * the local slots this process took, released when the agent run settles or the session shuts down.
  */
 export class Router {
   private readonly held = new Map<string, string>();
-  /** The cloud model of the last settings read, for routing after the router's own errors. */
-  private lastCloud: string | undefined;
 
   constructor(private readonly deps: RouterDeps) {}
 
   async route(request: RouterRequest, ctx: ExtensionContext): Promise<ModelRoute<RouterState>> {
+    // Settings errors end the request: there is no ladder to fall back to (ADR 0141).
+    const settings = await loadSettings(this.deps.home);
+    checkCatalog(settings, ctx);
     try {
-      return await this.routeOrThrow(request, ctx);
+      return await this.routeOrThrow(request, ctx, settings);
     } catch (error) {
       if (error instanceof NoRoomError || request.signal?.aborted) throw error;
-      return this.fallBack(request, ctx, error);
+      return this.fallBack(request, ctx, settings, error);
     }
   }
 
@@ -118,69 +201,57 @@ export class Router {
   private async routeOrThrow(
     request: RouterRequest,
     ctx: ExtensionContext,
+    settings: RouterSettings,
   ): Promise<ModelRoute<RouterState>> {
-    const settings = await loadSettings(this.deps.home);
-    const cloud = await this.cloudModel(settings);
-    const state = request.state;
+    // A state from before ADR 0141 has no rung: decide again once.
+    const state = request.state?.rung === undefined ? undefined : request.state;
 
     if (request.reason === "direct") {
       // Compaction summaries and other side requests: stay on the model that answered last.
-      const model = request.previous?.model ?? this.find(ctx, cloud);
-      return { model, thinkingLevel: request.thinkingLevel };
+      const first = firstLadderEntry(settings, 1).entry;
+      if (!request.previous)
+        return { model: this.find(ctx, first.model), thinkingLevel: first.thinking };
+      return {
+        model: request.previous.model,
+        thinkingLevel: request.previous.thinkingLevel ?? state?.thinking ?? first.thinking,
+      };
     }
-    if (!state) return this.decideNew(request, ctx, settings, cloud);
-    if (state.route !== "local") {
-      return { model: this.find(ctx, state.model), thinkingLevel: request.thinkingLevel };
-    }
+    if (!state) return this.decideNew(request, ctx, settings);
 
-    const target = settings.localTargets.find((candidate) => candidate.model === state.model);
-    if (!target) {
-      return this.escalate(
-        request,
-        ctx,
-        settings,
-        cloud,
-        state,
-        `${state.model} is no longer a local target`,
-      );
+    const target =
+      state.route === "local"
+        ? settings.localTargets.find((candidate) => candidate.model === state.model)
+        : undefined;
+    if (state.route === "local" && !target) {
+      return this.escalate(ctx, settings, state, `${state.model} is no longer a local target`);
     }
     let next: RouterState = state;
-    if (request.reason === "retry" && request.failed) {
+    // Rung 3 has nowhere to go: its failures pass through.
+    if (request.reason === "retry" && request.failed && state.rung < 3) {
       const failed = request.failed.message;
+      const contextWindow = target?.contextWindow ?? this.find(ctx, state.model).contextWindow;
       const verdict = escalation(state.failures, {
-        overflow: this.deps.isOverflow(failed, target.contextWindow),
+        overflow: this.deps.isOverflow(failed, contextWindow),
         ...(failed.errorMessage ? { errorMessage: failed.errorMessage } : {}),
       });
       if (verdict.escalate) {
-        return this.escalate(
-          request,
-          ctx,
-          settings,
-          cloud,
-          state,
-          verdict.reason ?? "failed on local",
-        );
+        return this.escalate(ctx, settings, state, verdict.reason ?? "failed on the model");
       }
       if (verdict.failures !== state.failures) next = { ...state, failures: verdict.failures };
     } else if (state.failures > 0) {
       next = { ...state, failures: 0 };
     }
-    try {
-      await this.holdLocal(target, ctx, request.signal);
-    } catch (error) {
-      if (request.signal?.aborted) throw error;
-      return this.escalate(
-        request,
-        ctx,
-        settings,
-        cloud,
-        state,
-        `local target not ready: ${errorText(error)}`,
-      );
+    if (target) {
+      try {
+        await this.holdLocal(target, ctx, request.signal);
+      } catch (error) {
+        if (request.signal?.aborted) throw error;
+        return this.escalate(ctx, settings, state, `local target not ready: ${errorText(error)}`);
+      }
     }
     return {
-      model: this.find(ctx, target.model),
-      thinkingLevel: request.thinkingLevel,
+      model: this.find(ctx, state.model),
+      thinkingLevel: state.thinking,
       ...(next === state ? {} : { state: next }),
     };
   }
@@ -189,7 +260,6 @@ export class Router {
     request: RouterRequest,
     ctx: ExtensionContext,
     settings: RouterSettings,
-    cloud: string,
   ): Promise<ModelRoute<RouterState>> {
     const plans = await this.planStates(settings);
     const brief = lastUserText(request.messages);
@@ -198,24 +268,25 @@ export class Router {
       return ctx.modelRegistry.find(provider, id) !== undefined;
     });
 
-    let estimate: Estimate | undefined;
+    const estimate = await estimateTokens(ctx.getSystemPrompt(), request.messages, brief, ctx.cwd);
+    const jev = await this.classify(settings, brief, ctx, request.signal);
     let budget: number | undefined;
-    let jev: JevAnswers | { error: string } | undefined;
+    let local: DecideInput["local"] = { missing: "no local target in the catalog" };
     if (target) {
       budget = Math.floor(target.contextWindow * target.budget);
-      estimate = await estimateTokens(ctx.getSystemPrompt(), request.messages, brief, ctx.cwd);
-      if (estimate.total <= budget) jev = await this.classify(settings, brief, ctx, request.signal);
+      try {
+        const queue = await this.deps.locks().queue(target.model, target.concurrency);
+        local = { model: target.model, budget, thinking: target.thinking, queue };
+      } catch (error) {
+        local = { missing: errorText(error) };
+      }
     }
 
     let decision = decide({
       settings,
-      cloud,
-      local:
-        target && budget !== undefined
-          ? { model: target.model, budget }
-          : { missing: "no local target in the catalog" },
-      ...(estimate ? { estimate: estimate.total } : {}),
-      ...(jev ? { jev } : {}),
+      local,
+      estimate: estimate.total,
+      jev,
       plans,
       // Only a worker stage explores: a stronger reviewer checks its work (ADR 0144).
       explore:
@@ -226,10 +297,12 @@ export class Router {
         await this.holdLocal(target, ctx, request.signal);
       } catch (error) {
         if (request.signal?.aborted) throw error;
-        const choice = cloudChoice(settings, cloud, plans);
+        const choice = ladderChoice(settings, 1, plans);
         decision = {
-          ...decision,
           ...choice,
+          rung: 1,
+          pressure: decision.pressure,
+          threshold: decision.threshold,
           reasons: [
             ...decision.reasons,
             `local target not ready: ${errorText(error)}`,
@@ -242,35 +315,33 @@ export class Router {
     await this.record(ctx, {
       at: this.deps.now(),
       kind: "initial",
-      route: decision.route,
-      ...(decision.model ? { model: decision.model } : {}),
-      reasons: decision.reasons,
-      ...(estimate ? { estimate: estimate.total } : {}),
+      ...decisionFields(decision),
+      estimate: estimate.total,
       ...(budget !== undefined ? { budget } : {}),
-      ...(jev ? { jev } : {}),
+      jev,
       threshold: decision.threshold,
+      heavyThreshold: settings.heavyThreshold,
       pressure: decision.pressure,
       ...(decision.explore ? { explore: true } : {}),
       usage: Object.values(plans).flatMap((plan) => plan.notes),
-      ...(decision.resetsAt !== undefined ? { resetsAt: decision.resetsAt } : {}),
     });
-    return this.finish(request, ctx, decision);
+    return this.finish(ctx, decision);
   }
 
-  /** Moves a local session to the cloud model (or a spill model) and records why. */
+  /** Moves a session up one rung, on the first plan with room, and records why. */
   private async escalate(
-    request: RouterRequest,
     ctx: ExtensionContext,
     settings: RouterSettings,
-    cloud: string,
     state: RouterState,
     reason: string,
   ): Promise<ModelRoute<RouterState>> {
     await this.releaseTarget(state.model);
     const plans = await this.planStates(settings);
-    const choice = cloudChoice(settings, cloud, plans);
+    const rung = (state.rung + 1) as Rung;
+    const choice = ladderChoice(settings, rung, plans);
     const decision: Decision = {
       ...choice,
+      rung,
       reasons: [reason, ...choice.reasons],
       pressure: false,
       threshold: settings.threshold,
@@ -278,34 +349,32 @@ export class Router {
     await this.record(ctx, {
       at: this.deps.now(),
       kind: "escalation",
-      route: decision.route,
-      ...(decision.model ? { model: decision.model } : {}),
-      reasons: decision.reasons,
+      ...decisionFields(decision),
       usage: Object.values(plans).flatMap((plan) => plan.notes),
-      ...(decision.resetsAt !== undefined ? { resetsAt: decision.resetsAt } : {}),
     });
-    return this.finish(request, ctx, decision);
+    return this.finish(ctx, decision);
   }
 
-  private finish(
-    request: RouterRequest,
-    ctx: ExtensionContext,
-    decision: Decision,
-  ): ModelRoute<RouterState> {
-    if (decision.route === "wait" || !decision.model) {
+  private finish(ctx: ExtensionContext, decision: Decision): ModelRoute<RouterState> {
+    const { model, thinking } = decision;
+    if (decision.route === "wait" || !model || !thinking) {
       const when = decision.resetsAt ? ` until ${new Date(decision.resetsAt).toISOString()}` : "";
       throw new NoRoomError(`No plan has room${when}: ${decision.reasons.join("; ")}`);
     }
+    const label = decision.route === "local" ? "local" : decision.plan;
     ctx.ui.notify(
-      `spore/auto: ${decision.route} → ${decision.model} (${decision.reasons.join("; ")})`,
+      `spore/auto: rung ${decision.rung} ${label} → ${model} (${thinking}) (${decision.reasons.join("; ")})`,
       "info",
     );
     return {
-      model: this.find(ctx, decision.model),
-      thinkingLevel: request.thinkingLevel,
+      model: this.find(ctx, model),
+      thinkingLevel: thinking,
       state: {
         route: decision.route,
-        model: decision.model,
+        rung: decision.rung,
+        ...(decision.plan ? { plan: decision.plan } : {}),
+        model,
+        thinking,
         failures: 0,
         decidedAt: this.deps.now(),
         reasons: decision.reasons,
@@ -313,60 +382,47 @@ export class Router {
     };
   }
 
-  /** The router's own failure: send the request to the cloud model, pin the session there, and record why. */
+  /** The router's own failure: send the request to the first ladder's rung 3, pin the session there, and record why. */
   private async fallBack(
     request: RouterRequest,
     ctx: ExtensionContext,
+    settings: RouterSettings,
     error: unknown,
   ): Promise<ModelRoute<RouterState>> {
-    const candidate = this.lastCloud ?? (await this.deps.workerModel().catch(() => undefined));
-    // Routing to itself would loop, so a misconfigured cloud model ends in the error that names the setting.
-    const cloud = candidate === AUTO_MODEL ? undefined : candidate;
-    if (!cloud)
-      throw new Error(
-        `spore/auto failed and has no cloud model to fall back to: ${errorText(error)}`,
-      );
+    const { plan, entry } = firstLadderEntry(settings, 3);
     const reasons = [`router error: ${errorText(error)}`];
     await this.record(ctx, {
       at: this.deps.now(),
       kind: "error",
       route: "cloud",
-      model: cloud,
+      rung: 3,
+      plan,
+      model: entry.model,
+      thinking: entry.thinking,
       reasons,
     }).catch(() => undefined);
-    ctx.ui.notify(`spore/auto: cloud → ${cloud} (${reasons[0]})`, "warning");
+    ctx.ui.notify(
+      `spore/auto: rung 3 ${plan} → ${entry.model} (${entry.thinking}) (${reasons[0]})`,
+      "warning",
+    );
     return {
-      model: this.find(ctx, cloud),
-      thinkingLevel: request.thinkingLevel,
+      model: this.find(ctx, entry.model),
+      thinkingLevel: entry.thinking,
       ...(request.reason === "direct"
         ? {}
         : {
             state: {
               route: "cloud",
-              model: cloud,
+              rung: 3,
+              plan,
+              model: entry.model,
+              thinking: entry.thinking,
               failures: 0,
               decidedAt: this.deps.now(),
               reasons,
             },
           }),
     };
-  }
-
-  private async cloudModel(settings: RouterSettings): Promise<string> {
-    const cloud = settings.cloud ?? (await this.deps.workerModel());
-    if (!cloud) {
-      throw new Error(
-        'No cloud model: set "router.cloud" in pi-spore settings.json or subagents.agentOverrides.worker.model in Pi settings',
-      );
-    }
-    if (cloud === AUTO_MODEL) {
-      throw new Error(
-        `${AUTO_MODEL} cannot be its own cloud model: set "router.cloud" in ${join(this.deps.home, "settings.json")} to a real model (ADR 0120)`,
-      );
-    }
-    splitModel(cloud);
-    this.lastCloud = cloud;
-    return cloud;
   }
 
   private find(ctx: ExtensionContext, ref: string) {
@@ -399,7 +455,7 @@ export class Router {
   }
 
   private async planStates(settings: RouterSettings): Promise<Record<string, PlanState>> {
-    const names = [...new Set(Object.values(settings.plans))].sort();
+    const names = [...new Set(settings.ladders.map((ladder) => ladder.plan))].sort();
     const options = {
       maxAgeMs: settings.usageMaxAgeMinutes * 60_000,
       weekly: settings.pressure.weekly,
@@ -435,7 +491,8 @@ export class Router {
     const locks = this.deps.locks();
     const session = ctx.sessionManager.getSessionId();
     const { provider, id } = splitModel(target.model);
-    let waiting = false;
+    // The wait file tells other sessions the queue is not empty (ADR 0141).
+    let waitFile: string | undefined;
     try {
       for (;;) {
         const path = await locks.tryAcquire(target.model, target.concurrency, session);
@@ -443,15 +500,18 @@ export class Router {
           this.held.set(target.model, path);
           break;
         }
-        if (!waiting) {
-          waiting = true;
+        if (!waitFile) {
+          waitFile = await locks.joinQueue(target.model, session);
           ctx.ui.setStatus(STATUS_KEY, `Waiting for ${id}`);
           ctx.ui.notify(`Waiting for ${id}: another session is using it`, "info");
         }
         await this.deps.sleep(LOCK_POLL_MS, signal);
       }
     } finally {
-      if (waiting) ctx.ui.setStatus(STATUS_KEY, undefined);
+      if (waitFile) {
+        ctx.ui.setStatus(STATUS_KEY, undefined);
+        await locks.leaveQueue(waitFile);
+      }
     }
     try {
       await Promise.all(this.deps.announceLocal({ provider, modelId: id }, ctx));

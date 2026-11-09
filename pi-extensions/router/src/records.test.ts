@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, writeFileSync }
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { pruneRecords, routingFile } from "./records.js";
+import { appendRecord, pruneRecords, readRecords, routingFile } from "./records.js";
 
 let home: string;
 beforeEach(() => {
@@ -56,5 +56,38 @@ describe("pruneRecords", () => {
 
     const { readdirSync } = await import("node:fs");
     expect(readdirSync(dirname(routingFile(home)))).toEqual(["routing.jsonl"]);
+  });
+});
+
+describe("readRecords", () => {
+  it("reads records with rung, plan, and thinking, and lines from before ADR 0141", async () => {
+    await appendRecord(home, {
+      at: 2,
+      kind: "initial",
+      route: "cloud",
+      rung: 2,
+      plan: "claude",
+      model: "claude-bridge/claude-sonnet-5-5",
+      thinking: "high",
+      heavyThreshold: 0.7,
+      jev: {
+        bounded: 0.9,
+        explicit: 0.9,
+        visual: 0.9,
+        straightforward: 0.9,
+        foundational: 0.9,
+        design: 0.9,
+      },
+      reasons: [],
+    });
+    writeFileSync(
+      routingFile(home),
+      `${readLog()}${JSON.stringify({ at: 1, kind: "initial", route: "spill", reasons: [], jev: { bounded: 1, explicit: 1, visual: 1, straightforward: 1 } })}\n`,
+    );
+
+    const { records, skipped } = await readRecords(home, 10);
+    expect(skipped).toBe(0);
+    expect(records.map((record) => record.at)).toEqual([1, 2]);
+    expect(records[1]).toMatchObject({ rung: 2, plan: "claude", thinking: "high" });
   });
 });

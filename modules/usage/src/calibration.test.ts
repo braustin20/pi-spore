@@ -2,6 +2,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import type { Question } from "@pi-spore/router";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { CalibrationResponse, parse } from "@pi-spore/shared";
 import { afterEach, describe, expect, it } from "vitest";
@@ -12,9 +13,15 @@ let server: TestServer | undefined;
 let end: (run: FakeRun) => void;
 afterEach(() => server?.close());
 
-const ANSWERS = ["bounded", "explicit", "visual", "straightforward"] as const;
-type Answers = Record<(typeof ANSWERS)[number], number>;
-const all = (p: number): Answers => ({ bounded: p, explicit: p, visual: p, straightforward: p });
+type Answers = Record<Question, number>;
+const all = (p: number): Answers => ({
+  bounded: p,
+  explicit: p,
+  visual: p,
+  straightforward: p,
+  foundational: p,
+  design: p,
+});
 
 async function start(records: object[]): Promise<void> {
   const pipelines = fakePipelines();
@@ -30,7 +37,13 @@ async function start(records: object[]): Promise<void> {
   );
 }
 
-const decision = (agentId: string, route: "local" | "cloud", jev: Answers, at = 1000) => ({
+const decision = (
+  agentId: string,
+  route: "local" | "cloud",
+  jev: Partial<Answers>,
+  at = 1000,
+  extra: object = {},
+) => ({
   at,
   kind: "initial",
   route,
@@ -38,6 +51,7 @@ const decision = (agentId: string, route: "local" | "cloud", jev: Answers, at = 
   agentId,
   sessionId: `session-${agentId}`,
   jev,
+  ...extra,
 });
 const escalation = (agentId: string) => ({
   at: 1500,
@@ -96,6 +110,7 @@ describe("GET /api/usage/calibration", () => {
     const body = await mixed();
     expect(body).toMatchObject({
       threshold: 0.7,
+      heavyThreshold: 0.7,
       minSample: 20,
       decisions: 34,
       outcomes: 30,
@@ -105,7 +120,7 @@ describe("GET /api/usage/calibration", () => {
 
   it("buckets each question, and marks a bucket under 20 local outcomes as not enough", async () => {
     const { buckets } = await mixed();
-    for (const question of ["bounded", "explicit", "visual"] as const) {
+    for (const question of ["bounded", "explicit", "visual", "foundational", "design"] as const) {
       expect(buckets[question]).toHaveLength(10);
       // L and "late" answer 0.8; M and C answer 0.9.
       expect(buckets[question][8]).toEqual({
@@ -204,13 +219,102 @@ describe("GET /api/usage/calibration", () => {
     const poor = ids("P", 5);
     await start([
       ...good.map((id) => decision(id, "local", all(0.8))),
-      ...poor.map((id) => decision(id, "local", all(0.3))),
+      ...poor.map((id) =>
+        decision(id, "local", { ...all(0.3), visual: 0.8, foundational: 0.8, design: 0.8 }),
+      ),
     ]);
     for (const id of good) finish(id, "approve");
     for (const id of poor) finish(id, "revise");
     const body = await report();
     expect(body.bars[2]).toMatchObject({ localOutcomes: 25, passed: 20 });
     expect(body.suggestedBar).toBe(0.4);
+  });
+
+  it("buckets six questions, and leaves a record without an answer out of that question", async () => {
+    const { design: _design, ...old } = all(0.8);
+    await start([
+      decision("old", "local", old),
+      decision("new", "local", { ...all(0.8), design: 0.2 }),
+    ]);
+    finish("old", "approve");
+    finish("new", "approve");
+    const body = await report();
+    expect(Object.keys(body.buckets).sort()).toEqual(
+      ["bounded", "design", "explicit", "foundational", "straightforward", "visual"].sort(),
+    );
+    expect(body).toMatchObject({ decisions: 2, outcomes: 2 });
+    expect(body.buckets.design[2]).toMatchObject({ answers: 1, localOutcomes: 1, passed: 1 });
+    expect(body.buckets.design[8]).toMatchObject({ answers: 0, localOutcomes: 0 });
+    expect(body.buckets.bounded[8]).toMatchObject({ answers: 2, localOutcomes: 2 });
+  });
+
+  it("ignores a decision whose heavy answer is under heavyThreshold when it sweeps the bars", async () => {
+    // "design" 0.5 is under 0.7, so that decision clears no bar. "old" has no design answer and clears.
+    const { design: _design, ...old } = all(0.8);
+    await start([
+      decision("heavy", "local", { ...all(0.8), design: 0.5 }),
+      decision("old", "local", old),
+      decision("plain", "local", all(0.8)),
+    ]);
+    for (const id of ["heavy", "old", "plain"]) finish(id, "approve");
+    const body = await report();
+    expect(body.bars[0]).toMatchObject({
+      decisions: 3,
+      wouldGoLocal: 2,
+      localOutcomes: 2,
+      passed: 2,
+    });
+    expect(body.bars[8]).toMatchObject({ wouldGoLocal: 0, localOutcomes: 0 });
+  });
+
+  describe("rungs", () => {
+    const rung = (n: 1 | 2 | 3, plan?: string) => ({
+      rung: n,
+      ...(plan ? { plan } : {}),
+    });
+
+    it("counts decisions, outcomes, and passes per rung and place, and leaves out records without a rung", async () => {
+      await start([
+        decision("l1", "local", all(0.9), 1000, rung(1)),
+        decision("l2", "local", all(0.9), 1000, rung(1)),
+        decision("c2", "cloud", all(0.5), 1000, rung(2, "claude")),
+        decision("c2b", "cloud", all(0.5), 1000, rung(2, "claude")),
+        decision("x3", "cloud", all(0.1), 1000, rung(3, "codex")),
+        { ...decision("x3b", "cloud", {}, 1000, rung(3, "codex")), jev: undefined },
+        decision("old", "cloud", all(0.5)),
+        { ...decision("err", "cloud", {}, 1000, rung(3, "claude")), jev: { error: "x" } },
+        escalation("l2"),
+      ]);
+      finish("l1", "approve");
+      finish("l2", "approve");
+      finish("c2", "approve");
+      finish("c2b", "revise");
+      finish("x3", "approve");
+      finish("old", "approve");
+      finish("err", "approve");
+      const { rungs } = await report();
+      expect(rungs).toEqual([
+        { rung: 1, place: "local", decisions: 2, outcomes: 2, passed: 1 },
+        { rung: 2, place: "claude", decisions: 2, outcomes: 2, passed: 1 },
+        { rung: 3, place: "claude", decisions: 1, outcomes: 1, passed: 1 },
+        { rung: 3, place: "codex", decisions: 2, outcomes: 1, passed: 1 },
+      ]);
+    });
+
+    it("joins an outcome to the newest decision of its agent before the run ended", async () => {
+      await start([
+        decision("a", "cloud", all(0.5), 500, rung(3, "claude")),
+        decision("a", "cloud", all(0.5), 1000, rung(2, "claude")),
+        decision("a", "cloud", all(0.5), 2500, rung(1, "claude")),
+      ]);
+      finish("a", "approve");
+      const { rungs } = await report();
+      expect(rungs).toEqual([
+        { rung: 1, place: "claude", decisions: 1, outcomes: 0, passed: 0 },
+        { rung: 2, place: "claude", decisions: 1, outcomes: 1, passed: 1 },
+        { rung: 3, place: "claude", decisions: 1, outcomes: 0, passed: 0 },
+      ]);
+    });
   });
 
   it("answers 422 when the router settings are bad", async () => {

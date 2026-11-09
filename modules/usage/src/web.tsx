@@ -2,7 +2,9 @@ import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
   type CalibrationBar,
   CalibrationResponse,
+  type CalibrationRung,
   parse,
+  type RoutingDecision,
   RoutingDecisionsResponse,
   TokenUseResponse,
   type UsagePlan,
@@ -45,6 +47,10 @@ function Bar({ value, tone }: { value: number; tone: "accent" | "warn" | "fail" 
   );
 }
 
+// New lines name the plan; old lines and `wait` show the route.
+const placeOf = (decision: RoutingDecision) =>
+  decision.route === "local" ? "local" : (decision.plan ?? decision.route);
+
 const TooLittleData = () => <span className="text-muted"> too little data</span>;
 
 function BarRow({ bar, calibration }: { bar: CalibrationBar; calibration: CalibrationResponse }) {
@@ -72,6 +78,21 @@ function BarRow({ bar, calibration }: { bar: CalibrationBar; calibration: Calibr
   );
 }
 
+function RungRow({ row, minSample }: { row: CalibrationRung; minSample: number }) {
+  return (
+    <tr>
+      <TableCell className="font-mono">rung {row.rung}</TableCell>
+      <TableCell>{row.place}</TableCell>
+      <TableCell>{row.decisions}</TableCell>
+      <TableCell>{row.outcomes}</TableCell>
+      <TableCell>
+        {row.outcomes === 0 ? "no outcomes" : formatShare(row.passed, row.outcomes)}
+        {row.outcomes < minSample && <TooLittleData />}
+      </TableCell>
+    </tr>
+  );
+}
+
 function CalibrationPanel({ calibration }: { calibration: CalibrationResponse }) {
   const questions = Object.entries(calibration.buckets);
   return (
@@ -85,7 +106,7 @@ function CalibrationPanel({ calibration }: { calibration: CalibrationResponse })
         <div className="flex flex-col gap-3">
           <p className="m-0 text-sm">
             {calibration.decisions} decisions with Jev answers, {calibration.outcomes} local
-            outcomes. Bar now: {calibration.threshold}.{" "}
+            outcomes. Bar now: {calibration.threshold}, heavy bar now: {calibration.heavyThreshold}.{" "}
             {calibration.suggestedBar === undefined
               ? `No suggested bar: no bar has ${calibration.minSample} local outcomes with 90% passed.`
               : `Suggested bar: ${calibration.suggestedBar}. pi-spore never changes the bar; set router.threshold in settings.json.`}
@@ -101,6 +122,26 @@ function CalibrationPanel({ calibration }: { calibration: CalibrationResponse })
             <tbody>
               {calibration.bars.map((bar) => (
                 <BarRow key={bar.bar} bar={bar} calibration={calibration} />
+              ))}
+            </tbody>
+          </Table>
+          <Table>
+            <thead>
+              <tr>
+                <TableHead>Rung</TableHead>
+                <TableHead>Place</TableHead>
+                <TableHead>Decisions</TableHead>
+                <TableHead>Outcomes</TableHead>
+                <TableHead>Passed</TableHead>
+              </tr>
+            </thead>
+            <tbody>
+              {calibration.rungs.map((row) => (
+                <RungRow
+                  key={`${row.rung}/${row.place}`}
+                  row={row}
+                  minSample={calibration.minSample}
+                />
               ))}
             </tbody>
           </Table>
@@ -351,6 +392,7 @@ function UsagePage() {
                 <thead>
                   <tr>
                     <TableHead>When</TableHead>
+                    <TableHead>Rung</TableHead>
                     <TableHead>Route</TableHead>
                     <TableHead>Model</TableHead>
                     <TableHead>Why</TableHead>
@@ -361,6 +403,9 @@ function UsagePage() {
                     <tr key={`${decision.at}-${decision.sessionId ?? ""}-${decision.kind}`}>
                       <TableCell className="whitespace-nowrap text-xs text-muted">
                         {formatAge(data.loadedAt - decision.at)}
+                      </TableCell>
+                      <TableCell className="font-mono text-xs">
+                        {decision.rung === undefined ? "–" : `rung ${decision.rung}`}
                       </TableCell>
                       <TableCell>
                         <Chip
@@ -373,12 +418,13 @@ function UsagePage() {
                           }
                         >
                           {decision.kind === "initial"
-                            ? decision.route
-                            : `${decision.route} (${decision.kind})`}
+                            ? placeOf(decision)
+                            : `${placeOf(decision)} (${decision.kind})`}
                         </Chip>
                       </TableCell>
                       <TableCell className="font-mono text-xs">
                         {decision.model ?? "none"}
+                        {decision.thinking && ` (${decision.thinking})`}
                       </TableCell>
                       <TableCell className="text-xs">
                         {decision.reasons.join("; ")}
