@@ -29,6 +29,9 @@ the prompt it answers.
   The approval names the lane, and its choices are fix once, go on, or stop (2026-11-08).
 - **Strength.** `min_strength_over` compares tiers (ADR 0023) before a reviewer starts, and again on its report
   with the models it really used. A stage agent's model cannot change.
+- **Failed agents.** A stage agent whose turn fails (a crash, or a provider error such as a full usage window) blocks
+  its stage, and the run stays `running`. Retry starts a fresh agent for the same turn, on the model the stage or
+  the role default gives at that moment. The failed agent keeps its tab and its model (2026-11-08).
 - **Tiers.** Only `tier = "route"` (spore/auto) is built. Other tiers are an error until a tier-to-model choice is
   decided.
 

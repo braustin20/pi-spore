@@ -90,6 +90,8 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN worker_model TEXT",
   // The router's newest decision for a worker turn's agent, as JSON (R4.7). Null for a stage on a fixed model.
   "ALTER TABLE pipelines_turns ADD COLUMN routing TEXT",
+  // Why the turn's agent failed, set by Retry when it starts a fresh agent for the turn.
+  "ALTER TABLE pipelines_turns ADD COLUMN error TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -146,6 +148,7 @@ interface TurnRow {
   agent_id: string;
   report: string | null;
   routing: string | null;
+  error: string | null;
   created_at: number;
   reported_at: number | null;
 }
@@ -188,6 +191,7 @@ const turnToView = (row: TurnRow): PipelineTurn => ({
     : {}),
   createdAt: row.created_at,
   ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
+  ...(row.error === null ? {} : { error: row.error }),
 });
 
 const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): PipelineRun => ({
@@ -367,6 +371,16 @@ export const pipelinesModule: ServerModule = {
     host.jobs.onChange((job) => {
       if (job.kind === STAGE_JOB && job.key !== null) publish(job.key);
     });
+    // A failed or refused turn never reports, so the agent's status change wakes `await` to see it.
+    agents.onChange((agentId, change) => {
+      if (change !== "status" || agents.get(agentId).kind !== "stage") return;
+      const open = host.store.get<{ workspace_id: string }>(
+        `SELECT r.workspace_id FROM pipelines_turns t JOIN pipelines_runs r ON r.id = t.run_id
+         WHERE t.agent_id = ? AND t.report IS NULL AND t.error IS NULL AND r.state = 'running'`,
+        agentId,
+      );
+      if (open) host.jobs.wake(STAGE_JOB, open.workspace_id);
+    });
 
     const requireNoActiveRun = (workspaceId: string) => {
       if (
@@ -412,8 +426,9 @@ export const pipelinesModule: ServerModule = {
 
     const stageOf = (run: RunRow, stageIndex: number) =>
       (JSON.parse(run.stages) as PipelineStage[])[stageIndex] as PipelineStage;
+    // A failed turn was replaced by a fresh agent's turn, so rounds and earlier reports count only the others.
     const stageTurns = (run: RunRow, stageIndex: number) =>
-      turnRows(run.id).filter((turn) => turn.stage_index === stageIndex);
+      turnRows(run.id).filter((turn) => turn.stage_index === stageIndex && turn.error === null);
     const modelOf = (stage: PipelineStage) =>
       stage.model ?? (stage.tier === "route" ? ROUTE_MODEL : undefined);
     const rolesTitle = (role: StageRole) => (role === "reviewer" ? "Review" : "Adversarial");
@@ -430,13 +445,25 @@ export const pipelinesModule: ServerModule = {
       );
     };
 
-    /** The models the worker ran on. A worker that reported has a session, so none recorded is an error. */
+    /**
+     * The models every worker of the run ran on, failed ones too: a failed worker may have written code (R4.4). A
+     * worker that reported has a session, so none recorded is an error.
+     */
     const workerModels = async (run: RunRow): Promise<string[]> => {
-      const used = await agents.modelsUsed(run.worker_agent_id as string);
-      if (used.length === 0) {
+      const workers = [
+        ...new Set(
+          turnRows(run.id)
+            .filter((turn) => turn.role === "worker")
+            .map((turn) => turn.agent_id),
+        ),
+      ];
+      const used = new Set<string>();
+      for (const worker of workers)
+        for (const model of await agents.modelsUsed(worker)) used.add(model);
+      if (used.size === 0) {
         throw new Error(`Pi recorded no model for the worker agent ${run.worker_agent_id}`);
       }
-      return used;
+      return [...used];
     };
 
     /**
@@ -749,12 +776,57 @@ export const pipelinesModule: ServerModule = {
       if (!run) return { next: null };
       const turn = latestTurn(run.id) as TurnRow;
       if (turn.report !== null) return {};
+      if (turn.error !== null) return replaceFailed(run, subject.stageIndex, turn);
+      const failure = await agents.turnError(turn.agent_id);
+      if (failure !== undefined) {
+        throw new Error(
+          `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" failed: ${failure}. Retry starts a fresh ${turn.role} agent for this turn.`,
+        );
+      }
       if (checkpoint?.boot === bootId) return { wait: true };
       // The server restarted while the agent worked. Its process is gone, so it gets one reminder (R6.6).
       return {
         wait: true,
         checkpoint: { boot: bootId },
         commit: () => agents.deliver(turn.agent_id, restartMessage(turn.id)),
+      };
+    };
+
+    /** Retry marked the turn failed: a fresh agent of its role takes it over. The old agent stays, renamed. */
+    const replaceFailed = async (
+      run: RunRow,
+      stageIndex: number,
+      turn: TurnRow,
+    ): Promise<StepOutcome<StageCheckpoint>> => {
+      const rename = () =>
+        agents.rename(turn.agent_id, `${agents.get(turn.agent_id).title} (failed)`);
+      if (turn.kind !== "fix") return { next: "advance", commit: rename };
+      const stage = stageOf(run, stageIndex);
+      const model = run.worker_model ?? modelOf(stage);
+      const review = stageTurns(run, stageIndex).at(-1) as TurnRow;
+      return {
+        wait: true,
+        checkpoint: { boot: bootId },
+        commit: () => {
+          rename();
+          const worker = agents.createStage(run.workspace_id, {
+            role: "worker",
+            title: stage.name,
+            ...(model ? { model } : {}),
+          });
+          host.store.run(
+            "UPDATE pipelines_runs SET worker_agent_id = ? WHERE id = ?",
+            worker.id,
+            run.id,
+          );
+          startFix(
+            { ...run, worker_agent_id: worker.id },
+            stageIndex,
+            stage,
+            review,
+            lastFix(stage, review),
+          );
+        },
       };
     };
 
@@ -1110,6 +1182,12 @@ export const pipelinesModule: ServerModule = {
         .list({ kind: STAGE_JOB, key: run.workspace_id, states: ["waiting"] })
         .find((found) => (found.subject as StageSubject).runId === run.id);
       if (!job) throw new ApiError(409, "run_not_waiting", "The run has no waiting job to retry");
+      // A restart or a stray wake re-runs `await` without this mark, so the turn only blocks again. Only Retry starts
+      // a fresh agent.
+      const open = latestTurn(run.id);
+      if (job.step === "await" && job.error !== null && open?.report === null) {
+        host.store.run("UPDATE pipelines_turns SET error = ? WHERE id = ?", job.error, open.id);
+      }
       host.jobs.retry(job.id);
       publish(run.workspace_id);
       return c.json({ run: viewOf(requireRun(run.id)) });
