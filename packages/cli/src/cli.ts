@@ -21,6 +21,8 @@ import {
   DiffList,
   type FileDiff,
   HealthResponse,
+  Inbox,
+  type InboxItem,
   type Isolation,
   Job,
   JobList,
@@ -36,6 +38,7 @@ import {
   parse,
   type Run,
   RunList,
+  type RunningItem,
   Run as RunSchema,
   StartCardResponse,
   type StepReport,
@@ -57,6 +60,8 @@ export interface CliDeps {
   /** Resolves a path argument against the shell's working folder. */
   resolvePath: (path: string) => string;
   newKey: () => string;
+  /** The clock, in epoch milliseconds, for ages. */
+  now: () => number;
 }
 
 const USAGE = `Usage: pi-spore <command> [options] [--json]
@@ -98,6 +103,9 @@ Commands:
   approvals list [--all]                   Open approvals agents asked for; --all includes decided ones
   approvals approve <approval>
   approvals decline <approval> [--note <text>]
+  inbox list                               What needs you across projects: questions, approvals, dialogs,
+                                           failures, finished chats, and running work
+  inbox show <id>                          One inbox item in full. Use an id from inbox list
   jobs [--all]                             Background jobs that have not ended; --all includes ended ones
   jobs retry <job>                         Run an interrupted or waiting job again now
   jobs cancel <job>
@@ -694,6 +702,118 @@ async function approvalsCommand(
   throw usageError(`Unknown command: approvals ${args.join(" ")}`);
 }
 
+/** One row of Home: an item that needs the user, or running work. `id` is unique across kinds. */
+interface InboxEntry {
+  id: string;
+  kind: InboxItem["kind"] | "running";
+  at: number;
+  link: string;
+  item: InboxItem | RunningItem;
+}
+
+function inboxEntries({ items, running }: Inbox): InboxEntry[] {
+  const link = (entry: InboxItem | RunningItem) =>
+    `#/workspaces/${entry.workspace.id}/chats/${entry.chat.id}`;
+  return [
+    ...items.map((item): InboxEntry => {
+      const id =
+        item.kind === "question"
+          ? item.question.id
+          : item.kind === "approval"
+            ? item.approval.id
+            : item.kind === "dialog"
+              ? `${item.agentId}:${item.dialog.id}`
+              : item.agentId;
+      return { id: `${item.kind}:${id}`, kind: item.kind, at: item.at, link: link(item), item };
+    }),
+    ...running.map(
+      (item): InboxEntry => ({
+        id: `running:${item.agentId}`,
+        kind: "running",
+        at: item.since,
+        link: link(item),
+        item,
+      }),
+    ),
+  ];
+}
+
+function age(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86_400)}d`;
+}
+
+const placeOf = ({ item }: InboxEntry) => `${item.workspace.projectName} / ${item.workspace.name}`;
+
+function inboxDetails({ item }: InboxEntry): string[] {
+  if ("status" in item)
+    return [`status: ${item.status}`, ...(item.detail ? [`detail: ${item.detail}`] : [])];
+  switch (item.kind) {
+    case "question":
+      return [
+        `question: ${item.question.question}`,
+        ...(item.question.choices ? [`choices: ${item.question.choices.join(", ")}`] : []),
+      ];
+    case "approval":
+      return [
+        `gate: ${item.approval.kind}`,
+        `title: ${item.approval.title}`,
+        `reason: ${item.approval.reason}`,
+        `subject: ${JSON.stringify(item.approval.subject)}`,
+      ];
+    case "dialog": {
+      const { method, title, message, options, placeholder, prefill } = item.dialog;
+      return [
+        `dialog: ${method}`,
+        ...(title ? [`title: ${title}`] : []),
+        ...(message ? [`message: ${message}`] : []),
+        ...(options ? [`options: ${options.join(", ")}`] : []),
+        ...(placeholder ? [`placeholder: ${placeholder}`] : []),
+        ...(prefill ? [`prefill: ${prefill}`] : []),
+      ];
+    }
+    case "failed":
+      return [`error: ${item.error}`];
+    case "finished":
+      return ["The agent's last run ended. It waits for you."];
+  }
+}
+
+async function inboxCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
+  const [sub, ...rest] = args;
+  if (!(sub === "list" && rest.length === 0) && !(sub === "show" && rest.length === 1))
+    throw usageError(
+      sub === "list" ? "inbox list takes no arguments" : `Unknown command: inbox ${args.join(" ")}`,
+    );
+  const entries = inboxEntries(await api.call("GET", "attention/inbox", Inbox));
+  if (sub === "list") {
+    if (json) return deps.out(JSON.stringify(entries));
+    if (entries.length === 0) return deps.out("Nothing needs you.");
+    for (const entry of entries)
+      deps.out(
+        `${entry.id}  ${entry.kind}  ${age(deps.now() - entry.at)}  ${placeOf(entry)}  ${entry.link}`,
+      );
+    return;
+  }
+  const entry = entries.find((candidate) => candidate.id === rest[0]);
+  if (!entry) throw new CliError(`No inbox item "${rest[0]}". See: pi-spore inbox list`, 1);
+  if (json) return deps.out(JSON.stringify(entry));
+  const chat = entry.item.chat;
+  for (const line of [
+    `id: ${entry.id}`,
+    `kind: ${entry.kind}`,
+    `age: ${age(deps.now() - entry.at)}`,
+    `workspace: ${placeOf(entry)}`,
+    `chat: ${chat.title ?? chat.id} (${chat.kind})`,
+    `link: ${entry.link}`,
+    ...inboxDetails(entry),
+  ])
+    deps.out(line);
+}
+
 function jobLine(job: Job): string {
   return `${job.id}  ${job.kind}  ${job.state}  ${job.step}${job.error ? `  ${job.error}` : ""}`;
 }
@@ -1011,6 +1131,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
     else if (command === "chat") await chatCommand(new Api(deps, base), deps, rest, json);
     else if (command === "card") await cardCommand(new Api(deps, base), deps, rest, json);
     else if (command === "approvals") await approvalsCommand(new Api(deps, base), deps, rest, json);
+    else if (command === "inbox") await inboxCommand(new Api(deps, base), deps, rest, json);
     else if (command === "jobs") await jobsCommand(new Api(deps, base), deps, rest, json);
     else if (command === "pipeline") await pipelineCommand(new Api(deps, base), deps, rest, json);
     else if (command === "usage") await usageCommand(new Api(deps, base), deps, rest, json);
