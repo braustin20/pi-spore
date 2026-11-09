@@ -261,6 +261,12 @@ export interface ServerHost {
 - The web shell has a top bar (theme menu, server status dot), a left rail, and the page area. A page with
   `rail: { order, icon }` gets a rail icon, lit on its path and every path below it. Full pages wrap their content
   in `Page` from `@pi-spore/ui`; the workspace view fills the area itself.
+- Phones (ADR 0159): below 768 px (`max-md:`; `usePhone()` in `packages/ui/src/phone.ts` for JS) the rail links
+  move into the top bar, controls are at least 44 px tall, and fields use 16 px text. A page that shows one pane
+  at a time keeps the open pane in the hash, `#/<path>?pane=<name>`; the router ignores the query. `openPane`,
+  `switchPane`, and `closePane` change it, and Back closes a pane. The root follows `visualViewport` so the
+  composer stays above the on-screen keyboard. Hover-only controls also show with `touch:` (`@media (hover:
+  none)`). `packages/web/public` holds the web app manifest and icons. At 768 px and above nothing changes.
 - Confirmations use `useConfirm()` from `@pi-spore/ui`, never `window.confirm`. It returns `{ confirm, dialog }`:
   render `dialog` once, and `await confirm({ message, title?, confirmLabel?, tone?: "danger" })` for a boolean.
   The dialog is themed, focuses Cancel first, and answers false on Cancel or Escape. A test fails if
@@ -936,7 +942,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     module watches `~/.pi-spore/usage/` and calls `changed()` when a plan file changes.
   The Usage page, the PR tab, and the board keep their own displays.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
-  but not focused, each new item shows a notification. Items already there when the page loads do not.
+  but not focused, each new item shows a notification. Items already there when the page loads do not. Phone
+  browsers show notifications only from a service worker, which pi-spore does not have, so the button hides on
+  phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on.
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
   subject as JSON, state `open`, `approved`, or `declined`, outcome, times). The module that owns a gate registers
   its kind through `ApprovalsKey.register({ kind, subject, approve, decided? })` and files approvals with
@@ -1009,6 +1017,9 @@ See [ADR 0050](decisions/0050-terminals.md). Requirements R13.
   than letters, digits, spaces, `.`, `_`, and `-` is refused, and a font the browser does not have shows a
   warning. When a socket drops, the page asks the server whether the terminal still exists and
   reconnects, or drops it from the list.
+- On a phone the Terminals tab opens in the workspace sheet as it is (ADR 0159). The phone keyboard has no Esc,
+  Ctrl, or arrow keys, and Android keyboards may double text in xterm.js, so a phone terminal suits reading and
+  short commands.
 
 ## 11d. Changes
 
@@ -1325,6 +1336,9 @@ API under `/api/kanban`:
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
   --new [--mode m] [--line b] [--base b] | --workspace <id> | --run [--base b] [--blocked-ok]`.
+- On a phone the Board shows one column, chosen with a row of column buttons and kept in `?pane=<column>`. Without
+  a pane it opens the first of Ready, In progress, and Review that has cards, else Backlog (`phoneColumn`). The card
+  editor is full screen with a Back button, and the move buttons show on touch screens.
 - Overdue and due-today cards show on Home (a `kanban` Home source, ADR 0155). Not built yet: custom columns.
 
 ## 13. Settings
@@ -1513,6 +1527,11 @@ Both side panels resize by dragging their inner edge or with the arrow keys (16 
 from 200 to 480 px and the right column from 280 px to 70% of the window. The chat keeps at least 360 px. A double-click
 on the edge resets the width. Each width is stored in the browser. A wide tab shows the larger of the stored width and
 its own default (640 px, or half the window). A terminal fits once when a drag ends.
+
+On a phone the view shows one pane (`phonePane` in `modules/workspaces/src/panel-layout.ts`). The chat fills the
+screen under a bar with a menu button and one button per right tab. `?pane=list` opens the list as a drawer;
+`?pane=<tab id>` opens that tab as a full-screen sheet with a Back button. No resize handles; the stored widths and
+open flags are not touched. The archive button shows on touch screens. Diffs are always unified on a phone.
 
 ## 14. Data layout
 

@@ -231,6 +231,7 @@ not built in v1.
 
 - v2: full-text search over conversations, MCP manager UI (v1 shows the MCP servers read-only), services with
   ports, snooze and wait-on rules.
-- Not planned: Perforce or other VCS (the provider interface must not assume Git), voice input, a layout made for
-  phones (a phone may open the UI over Tailscale, ADR 0143), changelog page, multi-user, hosting, external runtime
-  plugins, other agent CLIs as workbench agents, schedules, auto-merge.
+- Not planned: Perforce or other VCS (the provider interface must not assume Git), voice input, push
+  notifications on phones, changelog page, multi-user, hosting, external runtime plugins, other agent CLIs as
+  workbench agents, schedules, auto-merge. A phone opens the UI over Tailscale (ADR 0143) in a phone layout
+  (ADR 0159).
