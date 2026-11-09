@@ -8,6 +8,7 @@ import {
   readPlan,
   readPlans,
   readStreamEvent,
+  readUsageEndpoint,
   windowViews,
   writeReading,
 } from "./usage.js";
@@ -96,6 +97,74 @@ describe("readStreamEvent", () => {
         rate_limits: { primary: { used_percent: "x" } },
       }),
     ).toThrow(/Invalid codex.rate_limits event/);
+  });
+});
+
+/** The JSON body of ChatGPT's `GET /backend-api/wham/usage`. */
+const whamBody = {
+  plan_type: "plus",
+  rate_limit: {
+    allowed: false,
+    limit_reached: true,
+    primary_window: {
+      used_percent: 100,
+      limit_window_seconds: 18_000,
+      reset_after_seconds: 10_396,
+      reset_at: 1_794_200_663,
+    },
+    secondary_window: {
+      used_percent: 27,
+      limit_window_seconds: 604_800,
+      reset_after_seconds: 152_902,
+      reset_at: 1_794_343_169,
+    },
+  },
+  additional_rate_limits: [],
+};
+
+describe("readUsageEndpoint", () => {
+  it("reads both windows as fractions with reset times in ms", () => {
+    expect(readUsageEndpoint(whamBody)).toEqual({
+      plan: "codex",
+      source: "chatgpt wham/usage",
+      windows: {
+        "5h": { utilization: 1, resetsAt: 1_794_200_663_000 },
+        "7d": { utilization: 0.27, resetsAt: 1_794_343_169_000 },
+      },
+    });
+  });
+
+  it("reads a body with only a secondary window", () => {
+    expect(
+      readUsageEndpoint({
+        rate_limit: {
+          primary_window: null,
+          secondary_window: whamBody.rate_limit.secondary_window,
+        },
+      }).windows,
+    ).toEqual({ "7d": { utilization: 0.27, resetsAt: 1_794_343_169_000 } });
+  });
+
+  it("throws when there are no windows", () => {
+    expect(() => readUsageEndpoint({ plan_type: "plus", rate_limit: null })).toThrow(
+      "wham/usage response has no rate-limit windows",
+    );
+  });
+
+  it("names the field when used_percent is not a number", () => {
+    expect(() =>
+      readUsageEndpoint({
+        rate_limit: { primary_window: { used_percent: "x", limit_window_seconds: 18_000 } },
+      }),
+    ).toThrow(/Invalid wham\/usage response.*used_percent/);
+  });
+
+  it("names an odd window length in minutes", () => {
+    expect(
+      readUsageEndpoint({
+        rate_limit: { secondary_window: { used_percent: 10, limit_window_seconds: 86_400 } },
+      }).windows,
+    ).toEqual({ "1440m": { utilization: 0.1 } });
   });
 });
 
