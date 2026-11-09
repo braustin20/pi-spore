@@ -805,7 +805,12 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
     plain one (title, reason, approve, decline with a note).
-- Not built yet: usage warnings, and a CLI command for the inbox.
+- The CLI reads the same route: `pi-spore inbox list` prints each item and each running agent with an id, its kind
+  (`question`, `approval`, `dialog`, `failed`, `finished`, `running`), age, `project / workspace`, and the chat link.
+  `pi-spore inbox show <id>` prints one in full: a question's text and choices, an approval's gate, title, reason,
+  and subject, a dialog's prompt, a failure's error. Ids are `<kind>:<id>` (a dialog is `dialog:<agent>:<dialog>`;
+  `failed`, `finished`, and `running` use the agent id). Interrupted jobs are not listed; `pi-spore jobs` shows them.
+- Not built yet: usage warnings.
 
 ## 11c. Terminals
 
