@@ -1214,8 +1214,13 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   found, such as the worktree copy list for a Unity project. It sits above the default and below every file.
 - Unknown keys, wrong types, a global key in a TOML file, and broken JSON or TOML are errors that name the key and
   the file: 422 `bad_settings` for `settings.json`, 422 `bad_project_config` for the TOML files. So is a model key
-  (`model`, `models`, `provider`, `thinking`) anywhere in a TOML file. A bad file also stops anything that reads
-  settings, such as creating a workspace. Nothing falls back to a default.
+  (`model`, `models`, `provider`, `thinking`) anywhere in `config.toml` (R17.3). `config.local.toml` and
+  `settings.json` may hold model choices, but only under a key a module declares. A bad file also stops anything
+  that reads settings, such as creating a workspace. Nothing falls back to a default.
+- Modules declare in their setup, in dependency order, and one may resolve before a later module has declared. So
+  until every module is set up, a key nobody has declared yet is not an error. Then the server calls
+  `finishDeclaring`, which checks `settings.json` against every declaration. A bad file stops startup with the error
+  above, and a declaration after that throws.
 - A section another owner reads is reserved with `host.settings.reserve("global" | "project", section)`: the
   projects module reserves `router` and `tiers` (the router extension reads them, section 10), the actions module
   reserves `actions`. Reserved sections skip the unknown-key check. `host.settings.configFiles(projectPath)` and

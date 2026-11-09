@@ -38,8 +38,11 @@ async function readText(path: string): Promise<string | undefined> {
   }
 }
 
-/** Parses TOML and applies the rules every section shares, such as no model keys. */
-async function readConfig(path: string): Promise<RawConfigFile | undefined> {
+/** Parses TOML. The committed project file never holds model keys (R17.3); the local override may. */
+async function readConfig(
+  path: string,
+  options: { models: "never" | "allowed" },
+): Promise<RawConfigFile | undefined> {
   const text = await readText(path);
   if (text === undefined) return undefined;
   let data: Record<string, unknown>;
@@ -53,12 +56,12 @@ async function readConfig(path: string): Promise<RawConfigFile | undefined> {
       `${path} is not valid TOML: ${(error as Error).message}`,
     );
   }
-  const modelKey = findModelKey(data, "");
+  const modelKey = options.models === "never" ? findModelKey(data, "") : undefined;
   if (modelKey) {
     throw new ApiError(
       422,
       "bad_project_config",
-      `${path} sets "${modelKey}". Project files never choose models; use Pi settings or a local override.`,
+      `${path} sets "${modelKey}". The project file never chooses models; use Pi settings, global settings, or a local override.`,
     );
   }
   return { path, data };
@@ -93,16 +96,21 @@ function checkSection<const S extends TSchema>(
 
 type Layer = { file: RawConfigFile; source: SettingSource; code: string };
 
-/** The settings of one install (R17, architecture 13). `home` is the pi-spore home folder. */
-export function createSettings(home: string): Settings {
+/**
+ * The settings of one install (R17, architecture 13). `home` is the pi-spore home folder. Modules declare keys in
+ * their setup, so until `finishDeclaring` runs, a key nobody declared yet is not an error. `finishDeclaring` then
+ * checks the files once against every declaration and fails startup on a bad one.
+ */
+export function createSettings(home: string): Settings & { finishDeclaring(): Promise<void> } {
+  let declaring = true;
   const defs = new Map<string, SettingDef>();
   const reserved = { global: new Set<string>(), project: new Set<string>() };
   const globalPath = join(home, "settings.json");
 
   const configFiles = async (projectPath: string): Promise<RawConfigFiles> => {
     const dir = join(projectPath, ".pi-spore");
-    const project = await readConfig(join(dir, "config.toml"));
-    const local = await readConfig(join(dir, "config.local.toml"));
+    const project = await readConfig(join(dir, "config.toml"), { models: "never" });
+    const local = await readConfig(join(dir, "config.local.toml"), { models: "allowed" });
     return { ...(project ? { project } : {}), ...(local ? { local } : {}) };
   };
 
@@ -122,7 +130,7 @@ export function createSettings(home: string): Settings {
             fail(`"${key}" is a global setting; set it in ${globalPath}`);
           found.set(key, checkSection(def.schema, child, `${file.path}: ${key}`, code));
         } else if (![...defs.keys()].some((known) => known.startsWith(`${key}.`))) {
-          fail(`unknown key "${key}"`);
+          if (!declaring) fail(`unknown key "${key}"`);
         } else if (isTable(child)) {
           walk(child, key);
         } else {
@@ -134,8 +142,9 @@ export function createSettings(home: string): Settings {
     return found;
   };
 
-  return {
+  const settings: Settings = {
     declare(def) {
+      if (!declaring) throw new Error(`Setting "${def.key}" is declared after startup`);
       if (defs.has(def.key)) throw new Error(`Setting "${def.key}" is declared twice`);
       defs.set(def.key, def);
       return def;
@@ -176,6 +185,13 @@ export function createSettings(home: string): Settings {
             .map(([key, { value, source }]) => ({ key, value, source }))
             .sort((a, b) => a.key.localeCompare(b.key)),
       };
+    },
+  };
+  return {
+    ...settings,
+    async finishDeclaring() {
+      declaring = false;
+      await settings.resolve();
     },
   };
 }

@@ -68,6 +68,8 @@ export async function setupModules(
     });
     result.push({ id: module.id, routes });
   }
+  // Every key is declared by now, so a bad settings file stops startup here.
+  await settings.finishDeclaring();
   // Every kind is defined by now, so jobs of a disabled module are the only ones left untouched.
   services.jobs.resume();
   for (const listener of startedListeners) {

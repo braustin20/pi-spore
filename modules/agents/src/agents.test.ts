@@ -424,10 +424,16 @@ describe("agents", () => {
       await setup({}, {}, { home: home() });
       const first = await makeAgent("a");
       const second = await makeAgent("b");
-      await json(await prompt(first.agentId, "slow:300"));
+      // A busy agent is never stopped for a waiting chat, so only stopping it frees the slot.
+      await json(await prompt(first.agentId, "slow:60000"));
       await until(() => status(first.agentId) === "busy");
-      void prompt(second.agentId, "two");
+
+      const pending = prompt(second.agentId, "two");
       await until(() => status(second.agentId) === "waiting");
+      expect(statuses(second.agentId)).not.toContain("busy");
+
+      await json(await server.request("POST", `/api/agents/${first.agentId}/stop`));
+      expect(await json(await pending)).toEqual({ disposition: "started" });
     });
 
     it("lists the agents keys with their source on the settings route", async () => {

@@ -123,11 +123,9 @@ function setDays(days: unknown): void {
 
 async function archivedThenRestarted(
   daysOld: number,
-  options: { failing?: boolean; settleSettings?: () => void } = {},
+  options: { failing?: boolean } = {},
 ): Promise<{ server: TestServer; workspace: Workspace; calls: Calls; folder: string }> {
   const first = await seed();
-  // A bad settings file stops workspace creation, so a test that needs one writes it after the seed.
-  options.settleSettings?.();
   expect((await archive(first.server, first.workspace.id)).status).toBe(200);
   first.server.close();
   servers.pop();
@@ -190,13 +188,19 @@ describe("retention sweep", () => {
     expect(calls).toEqual({ retention: [], deleted: [] });
   });
 
-  it("does nothing when retention.days is not valid", async () => {
-    const { server, workspace, calls } = await archivedThenRestarted(400, {
-      settleSettings: () => setDays(-1),
-    });
+  it("refuses to start when retention.days is not valid, so nothing is deleted", async () => {
+    const first = await seed();
+    expect((await archive(first.server, first.workspace.id)).status).toBe(200);
+    first.server.close();
+    servers.pop();
+    const later = { startAt: START + 400 * DAY + SLACK, firstId: 1000 };
 
-    expect(await status(server, workspace.id)).toBe(200);
-    expect(calls).toEqual({ retention: [], deleted: [] });
+    setDays(-1);
+    await expect(start(BASE, later)).rejects.toThrow(/settings\.json: retention\.days/);
+
+    setDays(0);
+    const server = await start(BASE, later);
+    expect(await status(server, first.workspace.id)).toBe(200);
   });
 
   it("keeps the row when a delete listener throws, and still runs the others", async () => {
