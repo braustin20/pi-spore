@@ -126,7 +126,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     due day, `blockedBy` card ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
     base? | run?, base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
-    `new` unless another is given; `run: true` asks for a new run.
+    `new` unless another is given; `run: true` asks for a new run. A run's coordinator gets only the list and add
+    tools (ADR 0154); see section 9.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
     `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
@@ -144,7 +145,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     classifier fails (ADR 0140).
   - Run tools (R7, ADR 0150), by `PI_SPORE_RUN_ROLE`. The coordinator gets `start_lane` `{ name, brief, wave,
     dependsOn?, pipeline?, model? }`, `revise_lane` `{ laneId, brief }`, `merge_lane` `{ laneId }`, and
-    `answer_lane` `{ questionId, answer }`, and coordinator rules in place of the orchestrator rules. A lane agent
+    `answer_lane` `{ questionId, answer }`, and coordinator rules in place of the orchestrator rules. Of the card
+    tools it gets only `kanban_list_cards` and `kanban_add_card` (ADR 0154). A lane agent
     gets `ask_coordinator` `{ question }` in place of `request_human_input`; it files the question and ends the turn
     with `terminate: true`. Lane agents get one more paragraph of rules: ask the coordinator, never the user.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
@@ -545,7 +547,8 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 
 See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-questions-up-the-chain.md),
 [ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
-[ADR 0150](decisions/0150-run-worktree-and-green-merges.md), and [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md). Requirements R7, R4.8.
+[ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md), and
+[ADR 0154](decisions/0154-coordinator-adds-cards.md). Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
@@ -555,9 +558,14 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `run/<slug>-<last 6 of the run id>` at the base, the **run workspace** on it (isolation `existing`, with the base
   stored, so its PR tab targets the base), and its orchestrator chat. That chat is the coordinator.
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
-  the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,start_lane,
-  revise_lane,merge_lane,answer_lane,open_run_pr`: no write or shell tools. Its token is not read-only, so it writes artifacts
-  and calls the run routes. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
+  the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
+  kanban_list_cards,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,open_run_pr`: no write or shell
+  tools. Its token is not read-only, so it writes artifacts and calls the run routes. Every agent in a lane workspace
+  gets `PI_SPORE_RUN_ROLE=lane`.
+- **Follow-up cards** (ADR 0154). The coordinator adds a card for follow-up work out of the lanes' scope; it never
+  changes or starts one. A card added from a run workspace goes to `backlog` with the label
+  `from-run:<slug of the run name, up to 31 characters>`; the bridge sets both. A card change or start from a run
+  workspace answers 403 `run_coordinator`. Lane agents keep all four card tools.
 - **Lanes.** `start_lane` takes a brief that is an artifact of the run workspace (404 `brief_not_found`), a wave
   (1 or more), lane ids it depends on (400 `bad_depends_on`), a pipeline (default `default`), and a model.
   - Model (R4.8, ADR 0014): no model, or one whose tier (ADR 0023) is not above the worker role default's, makes

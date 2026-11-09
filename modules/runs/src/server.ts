@@ -37,7 +37,10 @@ import { type Runs, RunsKey } from "./contract.js";
 
 export * from "./contract.js";
 
-/** The coordinator's tools (ADR 0150): read tools, artifacts, questions, and the run tools. No write or shell tool. */
+/**
+ * The coordinator's tools (ADR 0150, ADR 0154): read tools, artifacts, questions, the run tools, and the kanban tools
+ * that list and add cards. No write or shell tool, and no tool that changes or starts a card.
+ */
 export const COORDINATOR_TOOLS: readonly string[] = [
   "read",
   "grep",
@@ -47,6 +50,8 @@ export const COORDINATOR_TOOLS: readonly string[] = [
   "artifacts_list",
   "artifacts_read",
   "artifacts_write",
+  "kanban_list_cards",
+  "kanban_add_card",
   "start_lane",
   "revise_lane",
   "merge_lane",
