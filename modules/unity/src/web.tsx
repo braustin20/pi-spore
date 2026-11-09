@@ -8,7 +8,7 @@ import {
   UnityWorkspaceView,
   type Workspace,
 } from "@pi-spore/shared";
-import { Button, Chip, CollapsibleSection, Notice, type Tone } from "@pi-spore/ui";
+import { Button, Chip, CollapsibleSection, Notice, type Tone, useConfirm } from "@pi-spore/ui";
 import { Box, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
@@ -36,6 +36,7 @@ function UnityPanel({ workspace }: { workspace: Workspace }) {
   const [note, setNote] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const { confirm, dialog } = useConfirm();
 
   const load = useCallback(async () => {
     try {
@@ -85,14 +86,18 @@ function UnityPanel({ workspace }: { workspace: Workspace }) {
       }
     });
 
-  const close = (editor: OpenEditor) => {
+  const close = async (editor: OpenEditor) => {
     if (view?.unity !== true) return;
-    const yes = window.confirm(
-      `Close Unity on ${editor.path}?\n\nUnity closes WITHOUT saving. Unsaved changes to scenes, prefabs, and ` +
+    const yes = await confirm({
+      title: "Close Unity without saving?",
+      message:
+        `Close Unity on ${editor.path}?\n\nUnity closes WITHOUT saving. Unsaved changes to scenes, prefabs, and ` +
         "settings are lost. Save in Unity first if you need them.",
-    );
+      confirmLabel: "Close without saving",
+      tone: "danger",
+    });
     if (!yes) return;
-    void run(async () => {
+    await run(async () => {
       await api.send("POST", "unity/editors/close", {
         projectId: workspace.projectId,
         path: editor.path,
@@ -114,6 +119,7 @@ function UnityPanel({ workspace }: { workspace: Workspace }) {
   const elsewhere = editors.filter((editor) => editor.path !== workspace.path);
   return (
     <CollapsibleSection title="Unity">
+      {dialog}
       <div className="flex flex-col gap-3 text-sm">
         <p className="m-0 text-xs text-muted">
           Editor <span className="font-mono">{view.editorVersion}</span>. One editor per project at
@@ -141,7 +147,7 @@ function UnityPanel({ workspace }: { workspace: Workspace }) {
             </div>
             <code className="text-xs [overflow-wrap:anywhere] text-muted">{editor.path}</code>
             <div>
-              <Button size="sm" variant="danger" disabled={busy} onClick={() => close(editor)}>
+              <Button size="sm" variant="danger" disabled={busy} onClick={() => void close(editor)}>
                 Close without saving
               </Button>
             </div>

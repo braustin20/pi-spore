@@ -253,6 +253,10 @@ export interface ServerHost {
 - The web shell has a top bar (theme menu, server status dot), a left rail, and the page area. A page with
   `rail: { order, icon }` gets a rail icon, lit on its path and every path below it. Full pages wrap their content
   in `Page` from `@pi-spore/ui`; the workspace view fills the area itself.
+- Confirmations use `useConfirm()` from `@pi-spore/ui`, never `window.confirm`. It returns `{ confirm, dialog }`:
+  render `dialog` once, and `await confirm({ message, title?, confirmLabel?, tone?: "danger" })` for a boolean.
+  The dialog is themed, focuses Cancel first, and answers false on Cancel or Escape. A test fails if
+  `window.confirm` appears in `packages` or `modules`.
 - `server-core` holds everything except the registry, so module tests can use its test server without a package
   cycle (server → modules → server-core).
 - Startup validation, each failure stops the server with a clear message:

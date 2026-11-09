@@ -20,6 +20,7 @@ import {
   Table,
   TableCell,
   TableHead,
+  useConfirm,
 } from "@pi-spore/ui";
 import { FolderGit2 } from "lucide-react";
 import { type SubmitEvent, useCallback, useEffect, useState } from "react";
@@ -186,6 +187,7 @@ function ProjectsPage() {
 
 function ProjectPage({ params }: { params: Readonly<Record<string, string>> }) {
   const api = useApi();
+  const { confirm, dialog } = useConfirm();
   const id = params.id ?? "";
   const [project, setProject] = useState<Project | undefined>();
   const [config, setConfig] = useState<
@@ -204,9 +206,15 @@ function ProjectPage({ params }: { params: Readonly<Record<string, string>> }) {
       .catch((caught: unknown) => setError(String(caught)));
   }, [api, id]);
 
-  const remove = () => {
-    if (!project || !window.confirm(`Unregister ${project.name}? Its files stay where they are.`))
-      return;
+  const remove = async () => {
+    if (!project) return;
+    const yes = await confirm({
+      title: "Unregister project?",
+      message: `Unregister ${project.name}? Its files stay where they are.`,
+      confirmLabel: "Unregister",
+      tone: "danger",
+    });
+    if (!yes) return;
     api
       .send("DELETE", `projects/${project.id}`)
       .then(() => {
@@ -225,12 +233,13 @@ function ProjectPage({ params }: { params: Readonly<Record<string, string>> }) {
             <Button variant="primary" asChild>
               <a href={`#/workspaces/in/${project.id}`}>Workspaces</a>
             </Button>
-            <Button variant="danger" onClick={remove}>
+            <Button variant="danger" onClick={() => void remove()}>
               Unregister
             </Button>
           </>
         )}
       </PageHeader>
+      {dialog}
       {error && <Notice tone="fail">{error}</Notice>}
       {project && (
         <div className="flex flex-wrap items-center gap-2">
