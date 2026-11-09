@@ -238,6 +238,20 @@ function PrView({
   };
   const failing = pr.checks.filter((check) => check.state === "fail").length;
   const passing = pr.checks.filter((check) => check.state === "pass").length;
+  const merge = () => {
+    if (!window.confirm(`Merge #${pr.number} into ${pr.base} with a merge commit?`)) return;
+    void run(() => act("POST", "merge", { confirm: true, headId: pr.headId }));
+  };
+  const mergeButton = (
+    <Button
+      variant="primary"
+      size="sm"
+      disabled={busy || status.mergeBlocked !== undefined}
+      onClick={merge}
+    >
+      Merge
+    </Button>
+  );
 
   return (
     <div className="flex flex-col gap-4 p-4">
@@ -267,6 +281,20 @@ function PrView({
           {reviewChip(pr)}
           {pr.state === "open" && mergeChip(pr)}
         </div>
+        {pr.state === "open" && (
+          <div className="mt-3">
+            {status.mergeBlocked ? (
+              <Tooltip label={status.mergeBlocked}>
+                {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a disabled button gets no hover or focus, so the wrapper carries the tooltip. */}
+                <span tabIndex={0} className="inline-block">
+                  {mergeButton}
+                </span>
+              </Tooltip>
+            ) : (
+              mergeButton
+            )}
+          </div>
+        )}
       </div>
 
       {pr.state === "open" && unpushed && (
@@ -359,7 +387,7 @@ function PrView({
           </div>
           <p className="text-xs text-muted">
             pi-spore sends failed checks and review-bot comments to the worker, at most{" "}
-            {watch.maxTries} times in a row. It never merges.
+            {watch.maxTries} times in a row. It never merges by itself.
             {watch.polledAt ? ` Last look ${time(watch.polledAt)}.` : ""}
             {watch.nextPollAt && watch.state !== "off" ? ` Next ${time(watch.nextPollAt)}.` : ""}
           </p>

@@ -6,6 +6,7 @@
 //   logs:     { "<job id>": "log text" }
 //   createError: a message `gh pr create` fails with
 //   viewError:   a message `gh pr view` fails with
+//   mergeError:  a message `gh pr merge` fails with
 // It answers only the commands pi-spore may run. Anything else exits 99, so a test sees a forbidden call.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -64,6 +65,20 @@ if (group === "pr" && command === "view") {
   });
   save();
   process.stdout.write(`${url}\n`);
+} else if (
+  group === "pr" &&
+  command === "merge" &&
+  args.length === 6 &&
+  args[3] === "--merge" &&
+  args[4] === "--match-head-commit"
+) {
+  // Only the one merge form pi-spore may run (ADR 0142); any other flag falls through to the refusal below.
+  if (state.mergeError) fail(state.mergeError);
+  const pr = state.prs.find((candidate) => String(candidate.number) === args[2]);
+  if (!pr) fail(`no pull request #${args[2]}`);
+  if (pr.headRefOid !== args[5]) fail("Head branch was modified. Review and try the merge again.");
+  pr.state = "MERGED";
+  save();
 } else if (group === "run" && command === "view" && args.includes("--log-failed")) {
   const job = args[args.indexOf("--job") + 1];
   const log = state.logs?.[job];

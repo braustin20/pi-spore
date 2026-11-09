@@ -152,6 +152,7 @@ export {
   SettingSource,
 } from "./projects.js";
 export {
+  MergeRequest,
   PrCheck,
   PrCheckState,
   PrEvent,
