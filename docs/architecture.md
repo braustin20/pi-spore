@@ -786,7 +786,7 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   - Every item names its chat (`chat`: id, title, kind, active) and links to `#/workspaces/<id>/chats/<chat>`.
   - `items`, newest first: open questions; open extension dialogs of running agents; failed agents with their error;
     agents whose last run ended and that wait for the user (`finished`), unless they have an open question or a
-    running helper.
+    running helper. Pipeline stage agents are never `finished`: their pipeline reads the report and moves on.
   - `running`: agents that are busy, starting, or waiting for a slot, and idle agents with a running helper
     (`status: "helpers"`). When the helper ends, an idle agent that waits for the user is `finished` again.
 - The agents module tracks what Home needs (`AgentsKey.attention()`): when each agent entered its status, when each

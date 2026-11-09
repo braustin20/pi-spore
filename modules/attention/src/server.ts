@@ -254,6 +254,8 @@ export const attentionModule: ServerModule = {
           running.push({ ...base, status: "helpers", since });
         else if (
           waitingSince !== undefined &&
+          // A pipeline stage agent reports to its pipeline, which moves on by itself (R6).
+          agent.kind !== "stage" &&
           !asking.has(agent.id) &&
           workspace.state === "active"
         )
