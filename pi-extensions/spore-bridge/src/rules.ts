@@ -48,6 +48,8 @@ pi-spore rules
 - The user is often away from the chat. Ask them with request_human_input and stop; the answer comes back as a new
   message, possibly after a restart.
 - Do the work in this workspace's folder. Do not create other worktrees or start agents in other terminals.
+- Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
+  with \`stop_action\`.
 - Before you say the work is done, run check and fix what it reports.
 - Never merge into the base branch on your own, and never turn on auto-merge. Merge a PR only when the user asks
   for that merge, or when you ask and the user says yes (ADR 0130). Each yes covers one PR. The user may also merge
@@ -76,6 +78,8 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
 - Each prompt from the pipeline names a turn id. End every turn by calling \`report\` with that turn id. The pipeline
   waits for it.
 - Write the code the brief asks for, in this workspace's folder. Do not start other agents.
+- Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
+  with \`stop_action\`.
 - Fail-first proof: before you make a new test pass, run it and see it fail. Save that failing run with
   \`artifacts_write\` in workspace scope, and list the test with the artifact path in the \`tests\` of \`report\`. List
   every new test in every report.

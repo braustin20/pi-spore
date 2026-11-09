@@ -468,6 +468,7 @@ describe("spore-bridge", () => {
     expect(rules).toContain("before the first worker");
     expect(rules).toContain("Only one writer works in the worktree at a time");
     expect(rules).toContain("After three passes");
+    expect(rules).toContain("Never stop the pi-spore server");
     expect(rules).toContain("`async: true`, never `async: false`");
     expect(rules).toContain("request_human_input");
     expect(rules).toContain("Never merge into the base branch on your own");
@@ -495,6 +496,10 @@ describe("spore-bridge", () => {
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
     expect(options.sections[RULES_SECTION]).toBe(rules);
     expect(rules).toContain(phrase);
+  });
+
+  it("tells the implement worker never to stop the pi-spore server", () => {
+    expect(STAGE_WORKER_RULES).toContain("Never stop the pi-spore server");
   });
 
   it.each([
