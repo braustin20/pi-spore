@@ -87,6 +87,19 @@ role = "worker"
 tier = "route"
 `;
 
+/** A worker stage, then a gate stage that runs the `lint` action. */
+const LINT_PIPELINE = `id = "lint"
+
+[[stage]]
+name = "implement"
+role = "worker"
+tier = "route"
+
+[[stage]]
+name = "gates"
+gates = ["lint"]
+`;
+
 /** Pi exits at once while this file exists, so a delivery to an agent that is not running stays pending. */
 const PI_DOWN = () => join(scratch, "pi-down");
 
@@ -990,18 +1003,19 @@ describe("cancelling a run (ADR 0150)", () => {
   });
 });
 
+const newWorkerChat = async (server: TestServer, workspaceId: string) =>
+  (
+    await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
+      201,
+    )
+  ).agent.id;
+/** A chat that works cannot be replaced (409 worker_busy), so the tests stop the coordinator first. */
+const stopped = async (server: TestServer, agentId: string) => {
+  await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+};
+
 describe("a new coordinator chat (ADR 0030)", () => {
-  const newWorkerChat = async (server: TestServer, workspaceId: string) =>
-    (
-      await json<{ agent: { id: string } }>(
-        await server.request("POST", "/api/agents/chats", { workspaceId, kind: "worker" }),
-        201,
-      )
-    ).agent.id;
-  /** A chat that works cannot be replaced (409 worker_busy), so the tests stop the coordinator first. */
-  const stopped = async (server: TestServer, agentId: string) => {
-    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
-  };
   const isAsked = (message: string) =>
     message.startsWith("user: ") && message.includes("asks (question");
   const pendingOf = (server: TestServer, agentId: string) =>
@@ -1142,9 +1156,12 @@ describe("the run PR (ADR 0100, ADR 0130)", () => {
     server.request("POST", `/api/attention/approvals/${id}/${action}`, body);
 
   /** A run whose only lane is merged with green gates, in a project that has a bare `origin` for the push. */
-  async function mergedRun(name: string, options: { withoutGithubPr?: boolean } = {}) {
+  async function mergedRun(
+    name: string,
+    options: { withoutGithubPr?: boolean; gates?: Record<string, string> } = {},
+  ) {
     const server = await start(options);
-    const { projectId, folder } = await project(server, name, GREEN);
+    const { projectId, folder } = await project(server, name, options.gates ?? GREEN);
     const origin = join(scratch, `${name}-origin.git`);
     git(scratch, "init", "-q", "--bare", origin);
     git(folder, "remote", "add", "origin", origin);
@@ -1205,6 +1222,56 @@ describe("the run PR (ADR 0100, ADR 0130)", () => {
     const outcome = await deliveredWith(server, run.coordinatorAgentId, "Opened PR #1");
     expect(outcome).toContain(`from ${run.line} into main`);
     expect(outcome).toContain("never turns on auto-merge");
+  });
+
+  // The PR of a finished run can need more work, such as a conflict with its base. The chat the user starts for it
+  // becomes the coordinator, so a lane's report reaches a chat that runs.
+  it("hands a finished run to a new chat, which gets one report of a lane that failed its gate", async () => {
+    const { server, run, coordinator } = await mergedRun("pr-more", {
+      gates: { ...GREEN, lint: "fail" },
+    });
+    writeFileSync(join(server.paths.root, "pipelines", "lint.toml"), LINT_PIPELINE);
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "" });
+    await json(await decide(server, filed.id, "approve", {}));
+    await deliveredWith(server, run.coordinatorAgentId, "Opened PR #1");
+    await stopped(server, run.coordinatorAgentId);
+
+    const chatId = await newWorkerChat(server, run.workspaceId);
+
+    expect(await getRun(server, run.id)).toMatchObject({
+      state: "finished",
+      coordinatorAgentId: chatId,
+    });
+    expect(await deliveredWith(server, chatId, "coordinator of the run")).toContain(
+      "Its PR is open.",
+    );
+    const lane = await startLane(
+      run,
+      { agentId: chatId, workspaceId: run.workspaceId },
+      "conflicts",
+      { pipeline: "lint" },
+    );
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const worker = await laneWorker(server, await laneOf(server, run.id, lane.id));
+    await json(
+      await asAgent(server, worker.agentId, lane.workspaceId as string)("POST", "reports", {
+        turn: worker.turnId,
+        summary: "Done",
+      }),
+    );
+
+    const report = await deliveredWith(server, chatId, "failed its pipeline");
+    expect(report).toContain(`"conflicts" (${lane.id})`);
+    expect(report).toContain("gate lint failed");
+    expect(report).toContain("gate output: boom");
+    expect(report).toContain("revise_lane");
+    await until(() => laneJob(server, lane.id).state === "done");
+    // The fake agent echoes each message, so only the user lines count.
+    const reports = (await chat(server, chatId)).filter(
+      (line) => line.startsWith("user: ") && line.includes("failed its pipeline"),
+    );
+    expect(reports).toHaveLength(1);
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({ state: "failed" });
   });
 
   it("answers 409 pr_not_supported on approve without the github-pr module, and the approval stays open", async () => {

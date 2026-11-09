@@ -276,7 +276,7 @@ const handoverMessage = (
 ) =>
   [
     `The user started a new chat. This chat is now the coordinator of the run "${runName}" (${run.id}).`,
-    `The run line is ${run.line}. Its base is ${run.base}.`,
+    `The run line is ${run.line}. Its base is ${run.base}.${run.state === "finished" ? " Its PR is open." : ""}`,
     lanes.length === 0 ? "The run has no lanes yet." : "The lanes:",
     ...lanes.map(
       (lane) =>
@@ -1047,11 +1047,12 @@ export const runsModule: ServerModule = {
         : undefined;
     });
 
-    // A new or reactivated worker chat takes over the run (ADR 0030: the old chat is read-only history). A cancelled
-    // or finished run keeps its coordinator.
+    // A new or reactivated worker chat takes over the run (ADR 0030: the old chat is read-only history). A finished
+    // run too, as its PR can need more lanes, whose reports must reach a chat that runs (ADR 0157). A cancelled run
+    // keeps its coordinator.
     agents.afterWorkerChange((agent) => {
       const run = runByWorkspace(agent.workspaceId);
-      if (run?.state !== "running" || run.coordinator_agent_id === agent.id) return;
+      if (!run || run.state === "cancelled" || run.coordinator_agent_id === agent.id) return;
       const lanes = lanesOf(run.id);
       const questions = openQuestionsOf(run.id).map((question) => ({
         ...question,
