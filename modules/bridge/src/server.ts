@@ -16,6 +16,7 @@ import {
   type BridgeCardList,
   type BridgeRunLog,
   BridgeStartCardRequest,
+  BridgeStartPipelineRequest,
   BridgeUpdateCardRequest,
   BridgeWriteArtifactRequest,
   CARD_COLUMNS,
@@ -99,6 +100,22 @@ export const bridgeModule: ServerModule = {
           "run_coordinator",
           "A run's coordinator only lists and adds cards; the user changes and starts them",
         );
+    };
+
+    /** A brief is an artifact of the caller's workspace. A missing one is a 404 that names it. */
+    const readBrief = async (caller: BridgeCaller, path: string): Promise<string> => {
+      try {
+        const { bytes } = await artifacts.read(
+          { scope: "workspace", id: caller.workspaceId },
+          path,
+        );
+        return bytes.toString("utf8");
+      } catch (error) {
+        if (error instanceof ApiError && error.code === "file_not_found") {
+          throw new ApiError(404, "brief_not_found", `No brief artifact ${path} in the workspace`);
+        }
+        throw error;
+      }
     };
 
     const projectOf = (caller: BridgeCaller) => workspaces.get(caller.workspaceId).projectId;
@@ -251,6 +268,19 @@ export const bridgeModule: ServerModule = {
       refuseReadOnly(caller, "start lanes");
       const request = parseJsonBody(StartLaneRequest, await c.req.text(), "lane");
       return c.json({ lane: await runs.startLane(caller, request) }, 201);
+    });
+
+    host.routes.post("/pipelines", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "start pipeline runs");
+      const request = parseJsonBody(BridgeStartPipelineRequest, await c.req.text(), "pipeline run");
+      const brief = await readBrief(caller, request.brief);
+      const run = await pipelines.start(caller.workspaceId, {
+        pipeline: request.pipeline ?? "default",
+        brief,
+        askingAgentId: caller.agentId,
+      });
+      return c.json({ run }, 201);
     });
 
     host.routes.post("/lanes/revise", async (c) => {

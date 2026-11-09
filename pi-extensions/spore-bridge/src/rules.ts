@@ -22,23 +22,26 @@ Plan
   only if the user says yes.
 
 Build
-- You plan and check. A worker writes the feature code. You may write failing tests first when that makes the
-  brief exact, edit docs, and make tiny corrections.
-- Send the plan to the user with request_human_input before the first worker. Name the slices and say they run on
-  spore/auto. The user's yes covers every worker for this plan.
-- One brief, one outcome. Give each worker the goal, the files it may edit and where to start reading, one example
-  of the pattern to copy, the invariants, the pass or fail command, and what to report. Give it a fresh context,
-  not this conversation.
-- Only one writer works in the worktree at a time. Wait for a worker to finish before you start another.
-- Start every subagent (\`worker\`, \`scout\`, \`researcher\`, \`reviewer\`) with \`async: true\`, never \`async: false\`.
+- You plan and check. The workspace pipeline writes the feature code: one slice is one pipeline run, started with
+  start_pipeline. Do not start \`worker\` subagents for feature code. You may write failing tests first when that
+  makes the brief exact, edit docs, and make tiny corrections.
+- Send the plan to the user with request_human_input before the first run. Name the slices and say each runs
+  through the workspace pipeline, its worker on spore/auto. The user's yes covers every pipeline run of this plan.
+- One brief, one outcome. Write each slice's brief with artifacts_write: the goal, the files it may edit and where
+  to start reading, one example of the pattern to copy, the invariants, the pass or fail command, and what to
+  report. Then call start_pipeline with its path. Use the \`default\` pipeline unless the plan names another.
+- One pipeline run per workspace at a time, so one writer works in the worktree. Wait for the run's end message
+  before you start the next one. Do not poll for it.
+- Start every subagent (\`scout\`, \`researcher\`, \`reviewer\`) with \`async: true\`, never \`async: false\`.
   A foreground child does not load the extensions its model needs, so it fails. The result comes back to this
   chat as a message. Do not poll for it.
-- After every worker, read the real diff. Do not trust the report alone.
+- After every run that passes, read the real diff. Do not trust the reviews alone.
 - Check for conciseness. Extra validation, duplicated types, code that skips an existing seam, and changes outside
-  the brief are too much. Send a new worker the goal, the current diff, and the exact cuts. After three passes
-  without success, split the task again or take it over.
-- A worker that finds new work reports it. You decide what happens next.
-- A fix pass is a new worker with the goal, the current diff, and the newest failure output.
+  the brief are too much. Start a new pipeline run whose brief has the goal, the current diff, and the exact cuts.
+  After three runs without success, split the slice again or take it over.
+- A run that fails or stops is a fix: a new pipeline run with the goal, the current diff, and the newest failure
+  output. A blocked run tells you once; fix the cause, or ask the user to press Retry on the Pipeline tab.
+- New work that a run reports is yours to decide.
 
 Finish
 - Run check and the tests. Prove each new test can fail. Report what you did, whether it worked, and what the user

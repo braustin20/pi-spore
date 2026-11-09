@@ -16,6 +16,7 @@ import {
   RunAnswer,
 } from "./client.js";
 import { registerServerGuard } from "./guard.js";
+import { registerPipelineTool } from "./pipeline.js";
 import { registerReportTool } from "./report.js";
 import { applyRules } from "./rules.js";
 import { registerRunTools } from "./runs.js";
@@ -151,6 +152,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
   registerArtifactTools(pi, client);
   registerReportTool(pi, client, env);
   registerRunTools(pi, client, env);
+  registerPipelineTool(pi, client, env);
 
   pi.registerTool({
     name: "check",

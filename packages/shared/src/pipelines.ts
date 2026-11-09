@@ -65,6 +65,12 @@ export const StartPipelineRequest = Type.Object(
 );
 export type StartPipelineRequest = Static<typeof StartPipelineRequest>;
 
+export const BridgeStartPipelineRequest = Type.Object(
+  { brief: Type.String({ minLength: 1 }), pipeline: Type.Optional(Type.String({ minLength: 1 })) },
+  { additionalProperties: false },
+);
+export type BridgeStartPipelineRequest = Static<typeof BridgeStartPipelineRequest>;
+
 const Finding = Type.Object(
   {
     severity: Type.Union([

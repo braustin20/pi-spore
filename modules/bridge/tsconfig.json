@@ -41,6 +41,9 @@
       "path": "../agents"
     },
     {
+      "path": "../usage"
+    },
+    {
       "path": "../vcs-git"
     },
     {
