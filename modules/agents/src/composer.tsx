@@ -287,50 +287,57 @@ export function Composer({
           disabled={disabled}
           className="block w-full resize-none border-0 bg-transparent px-3.5 pt-3 text-[15px] focus-visible:outline-none"
         />
+        {/* Only the busy controls wrap above the group; the model, thinking and Send controls stay on one line. */}
         <div className="flex flex-wrap items-center gap-2 px-2.5 pb-2.5">
-          <input
-            ref={picker}
-            type="file"
-            accept={IMAGE_TYPES.join(",")}
-            multiple
-            hidden
-            onChange={(event) => {
-              addFiles([...(event.target.files ?? [])]);
-              event.target.value = "";
-            }}
-          />
-          <Button
-            variant="ghost"
-            size="icon"
-            aria-label="Add images"
-            title="Add images (or paste, or drop them here)"
-            disabled={disabled}
-            onClick={() => picker.current?.click()}
-          >
-            <ImagePlus />
-          </Button>
-          {controls}
-          <div className="flex-1" />
           {busy && (
-            <Select
-              value={whileBusy}
-              onChange={(event) => setWhileBusy(event.target.value as "steer" | "followUp")}
-              aria-label="When a message sent now goes in"
+            <div className="flex flex-wrap items-center gap-2">
+              <Select
+                value={whileBusy}
+                onChange={(event) => setWhileBusy(event.target.value as "steer" | "followUp")}
+                aria-label="When a message sent now goes in"
+              >
+                <option value="steer">Steer: after this turn</option>
+                <option value="followUp">Follow up: after the run</option>
+              </Select>
+              <Button variant="secondary" onClick={onAbort}>
+                <Square />
+                Stop
+              </Button>
+            </div>
+          )}
+          <div className="flex min-w-0 flex-[1_1_20rem] items-center gap-2">
+            <input
+              ref={picker}
+              type="file"
+              accept={IMAGE_TYPES.join(",")}
+              multiple
+              hidden
+              onChange={(event) => {
+                addFiles([...(event.target.files ?? [])]);
+                event.target.value = "";
+              }}
+            />
+            <Button
+              variant="ghost"
+              size="icon"
+              aria-label="Add images"
+              title="Add images (or paste, or drop them here)"
+              disabled={disabled}
+              onClick={() => picker.current?.click()}
             >
-              <option value="steer">Steer: after this turn</option>
-              <option value="followUp">Follow up: after the run</option>
-            </Select>
-          )}
-          {busy && (
-            <Button variant="secondary" onClick={onAbort}>
-              <Square />
-              Stop
+              <ImagePlus />
             </Button>
-          )}
-          <Button variant="primary" onClick={send} disabled={disabled || sending || empty}>
-            <ArrowUp />
-            {busy ? "Queue" : "Send"}
-          </Button>
+            {controls}
+            <Button
+              variant="primary"
+              className="ml-auto shrink-0 max-md:px-4"
+              onClick={send}
+              disabled={disabled || sending || empty}
+            >
+              <ArrowUp />
+              {busy ? "Queue" : "Send"}
+            </Button>
+          </div>
         </div>
       </div>
     </div>

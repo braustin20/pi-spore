@@ -315,7 +315,7 @@ export function MessageList({
                 return (
                   <div
                     key={key}
-                    className="flex max-w-[85%] flex-col gap-2 self-end rounded-xl border border-line bg-raised px-3.5 py-2 text-[15px]"
+                    className="flex max-w-[85%] min-w-0 flex-col gap-2 self-end max-md:max-w-[92%] rounded-xl border border-line bg-raised px-3.5 py-2 text-[15px]"
                   >
                     {text.trim() !== "" && <MarkdownText text={text} />}
                     <ImageRow images={imagesOf(message.content)} />

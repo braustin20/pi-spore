@@ -50,14 +50,14 @@ function Title({ chat, onRename }: { chat: Agent; onRename: (title: string) => P
     void onRename(title).then(() => setEditing(undefined));
   };
   return (
-    <form onSubmit={save} className="flex items-center gap-1.5">
+    <form onSubmit={save} className="flex items-center gap-1.5 max-md:w-full">
       <Input
         value={editing}
         onChange={(event) => setEditing(event.target.value)}
         onKeyDown={(event) => event.key === "Escape" && setEditing(undefined)}
         aria-label="Chat title"
         maxLength={120}
-        className="w-56"
+        className="w-56 max-md:min-w-0 max-md:flex-1"
         autoFocus
       />
       <Button size="sm" type="submit" disabled={!editing.trim()}>
@@ -93,9 +93,10 @@ export function ChatBar({
   /** Closes a chat for good (ADR 0110). */
   onClose: (chat: Agent) => void;
 }) {
+  // On a phone the tabs take the first line and the buttons wrap onto a second one.
   return (
-    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4">
-      <nav aria-label="Chats" className="min-w-0 flex-1 overflow-x-auto">
+    <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
+      <nav aria-label="Chats" className="min-w-0 flex-1 overflow-x-auto max-md:basis-full">
         <ul className="m-0 flex list-none items-center gap-1 p-0">
           {chats.map((chat) => {
             const kind = group(chat);
@@ -115,7 +116,7 @@ export function ChatBar({
                   href={`#/workspaces/${workspaceId}/chats/${chat.id}`}
                   aria-current={current ? "page" : undefined}
                   title={`${label(chat)}. ${HINTS[kind]}`}
-                  className="flex max-w-52 items-center gap-1.5 py-1 pl-2 text-inherit no-underline"
+                  className="flex max-w-52 items-center gap-1.5 py-1 pl-2 text-inherit no-underline max-md:min-h-11"
                 >
                   <Icon aria-hidden="true" className="size-3.5 shrink-0" />
                   <span className="truncate">{label(chat)}</span>
@@ -154,13 +155,13 @@ export function ChatBar({
           onClick={() => onNew("worker", false)}
         >
           <MessageSquarePlus />
-          New chat
+          <span className="max-md:sr-only">New chat</span>
         </Button>
       </Tooltip>
       <Tooltip label="A read-only chat next to the orchestrator, started empty" side="bottom">
         <Button size="sm" variant="ghost" disabled={!canStart} onClick={() => onNew("side", false)}>
           <Eye />
-          Side chat
+          <span className="max-md:sr-only">Side chat</span>
         </Button>
       </Tooltip>
       <Tooltip
@@ -168,7 +169,9 @@ export function ChatBar({
         side="bottom"
       >
         <Button size="sm" variant="ghost" disabled={!canStart} onClick={() => onNew("side", true)}>
-          Side chat with context
+          {/* Phones: short labels keep the chat buttons on one line under the tabs. */}
+          <span className="max-md:hidden">Side chat with context</span>
+          <span className="md:hidden">With context</span>
         </Button>
       </Tooltip>
     </div>
