@@ -108,7 +108,7 @@ function fakePi() {
 }
 
 const run = (status: string, extra: Record<string, unknown> = {}) => ({
-  run: { id: "r1", action: "check", status, ...extra },
+  run: { id: "r1", action: "check", status, logPath: "/logs/r1.log", ...extra },
 });
 
 describe("spore-bridge", () => {
@@ -230,6 +230,44 @@ describe("spore-bridge", () => {
     await vi.waitFor(() =>
       expect(seen.some((entry) => entry.path === "/api/bridge/runs/r1/cancel")).toBe(true),
     );
+  });
+
+  it("starts a background run, returns at once, and does not read the log", async () => {
+    reply("POST /api/bridge/runs", { status: 201, body: run("running", { action: "dev" }) });
+
+    const result = await fakePi()
+      .tool("run_action")
+      .execute("toolu_6", { name: "dev", background: true });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      method: "POST",
+      path: "/api/bridge/runs",
+      receipt: "toolu_6",
+      body: { action: "dev" },
+    });
+    expect(result.content[0]?.text).toContain("run r1");
+    expect(result.content[0]?.text).toContain("/logs/r1.log");
+    expect(result.content[0]?.text).toContain("stop_action");
+    expect(result.details).toEqual({ runId: "r1", status: "running" });
+  });
+
+  it("stops a run with the tool call id as receipt", async () => {
+    reply("POST /api/bridge/runs/r1/cancel", { body: run("cancelled", { action: "dev" }) });
+
+    const result = await fakePi().tool("stop_action").execute("toolu_7", { runId: "r1" });
+
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/runs/r1/cancel",
+        auth: "Bearer agent-token",
+        receipt: "toolu_7",
+        body: {},
+      },
+    ]);
+    expect(result.content[0]?.text).toBe('Run r1 of action "dev" is cancelled.');
+    expect(result.details).toEqual({ runId: "r1", status: "cancelled" });
   });
 
   const card = (extra: Record<string, unknown> = {}) => ({

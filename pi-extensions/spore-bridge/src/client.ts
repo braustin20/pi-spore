@@ -71,6 +71,7 @@ export const Run = Type.Object({
   id: Type.String(),
   action: Type.String(),
   status: RunStatus,
+  logPath: Type.String(),
   exitCode: Type.Optional(Type.Integer()),
   signal: Type.Optional(Type.String()),
   error: Type.Optional(Type.String()),
