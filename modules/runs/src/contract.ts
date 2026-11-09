@@ -11,6 +11,7 @@ import type {
   ReviseLaneRequest,
   Run,
   RunQuestion,
+  RunStatus,
   StartLaneRequest,
 } from "@pi-spore/shared";
 
@@ -57,6 +58,11 @@ export interface Runs {
    * none is `merged`; 409 `run_pr_asked` while an earlier request waits for the user.
    */
   requestPr(caller: BridgeCaller, request: OpenRunPrRequest): Approval;
+  /**
+   * The run's state and each lane's status, for its coordinator and lane agents, in every run state. 403 `not_in_run`
+   * when the caller's workspace is not the run's or one of its lanes'; 404 `run_not_found` for an unknown run.
+   */
+  status(caller: BridgeCaller, runId: string): RunStatus;
   /** The lane whose workspace this is. */
   laneOf(workspaceId: string): { runId: string; laneId: string } | undefined;
   /** The run whose workspace this is. */

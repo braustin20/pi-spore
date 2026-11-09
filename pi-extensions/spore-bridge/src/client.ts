@@ -18,11 +18,13 @@ export interface BridgeEnv {
   stageRole?: StageRole;
   /** Set in a run's chats (R7): the coordinator, or an agent in one of its lanes. */
   runRole?: (typeof RUN_ROLES)[number];
+  /** Set exactly when `runRole` is: the run's id. */
+  runId?: string;
 }
 
 /**
  * Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, `PI_SPORE_CHAT_KIND`, for a stage `PI_SPORE_STAGE_ROLE`, and in a run
- * `PI_SPORE_RUN_ROLE`, or names what is missing or wrong.
+ * `PI_SPORE_RUN_ROLE` and `PI_SPORE_RUN_ID`, or names what is missing or wrong.
  */
 export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): BridgeEnv {
   const url = env.PI_SPORE_URL;
@@ -37,7 +39,16 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
     throw new Error(
       `spore-bridge: PI_SPORE_RUN_ROLE must be ${RUN_ROLES.join(" or ")}, not "${env.PI_SPORE_RUN_ROLE}"`,
     );
-  const base = { url: url.replace(/\/+$/, ""), token, ...(runRole ? { runRole } : {}) };
+  const runId = env.PI_SPORE_RUN_ID;
+  if (runRole && !runId)
+    throw new Error(
+      `spore-bridge: PI_SPORE_RUN_ROLE is ${runRole}, but PI_SPORE_RUN_ID is not set`,
+    );
+  const base = {
+    url: url.replace(/\/+$/, ""),
+    token,
+    ...(runRole && runId ? { runRole, runId } : {}),
+  };
   if (kind === "worker" || kind === "side") return { ...base, chatKind: kind };
   if (kind !== "stage")
     throw new Error(

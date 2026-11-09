@@ -3,7 +3,7 @@
  * an agent in a lane asks its coordinator. The server checks who may call each route.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
-import Type from "typebox";
+import Type, { type Static } from "typebox";
 import { ApprovalAnswer } from "./cards.js";
 import { type BridgeClient, type BridgeEnv, QuestionAnswer } from "./client.js";
 
@@ -11,9 +11,68 @@ const LaneAnswer = Type.Object({
   lane: Type.Object({ id: Type.String(), name: Type.String(), state: Type.String() }),
 });
 
+const LaneStatus = Type.Object({
+  id: Type.String(),
+  name: Type.String(),
+  wave: Type.Integer(),
+  state: Type.String(),
+  workspace: Type.Optional(Type.String()),
+  stage: Type.Optional(Type.String()),
+  round: Type.Optional(Type.Integer()),
+  blocked: Type.Optional(Type.String()),
+  message: Type.Optional(Type.String()),
+  diff: Type.Optional(Type.String()),
+});
+const StatusAnswer = Type.Object({
+  status: Type.Object({
+    runId: Type.String(),
+    name: Type.String(),
+    state: Type.String(),
+    lanes: Type.Array(LaneStatus),
+  }),
+});
+
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
+const laneLine = (lane: Static<typeof LaneStatus>) =>
+  [
+    `- "${lane.name}" (${lane.id}), wave ${lane.wave}, ${lane.state}`,
+    ...(lane.workspace ? [`workspace "${lane.workspace}"`] : []),
+    ...(lane.stage ? [`stage ${lane.stage}`] : []),
+    ...(lane.round !== undefined ? [`round ${lane.round}`] : []),
+    ...(lane.diff ? [`diff ${lane.diff}`] : []),
+    ...(lane.message ? [`message: ${lane.message}`] : []),
+    ...(lane.blocked ? [`blocked: ${lane.blocked}`] : []),
+  ].join(", ");
+
 export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: BridgeEnv): void {
+  if (!env.runRole) return;
+  const runId = env.runId as string;
+  pi.registerTool({
+    name: "run_status",
+    label: "Run status",
+    description:
+      "Read the state of this run and of each lane: its stage, round, diff, and why it is blocked. It changes nothing.",
+    promptSnippet: "Read the state of this run and its lanes",
+    parameters: Type.Object({}),
+    async execute(_toolCallId, _params, signal) {
+      const { status } = await client.call(
+        StatusAnswer,
+        `run-status/${runId}`,
+        signal ? { signal } : {},
+      );
+      return {
+        content: text(
+          [
+            `Run "${status.name}" (${status.runId}) is ${status.state}.`,
+            ...status.lanes.map(laneLine),
+          ].join("\n"),
+        ),
+        details: status,
+      };
+    },
+  });
+
   if (env.runRole === "lane") {
     pi.registerTool({
       name: "ask_coordinator",

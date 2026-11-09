@@ -401,9 +401,11 @@ export const pipelinesModule: ServerModule = {
         )
         .map(viewOf);
 
+    const changeListeners: ((workspaceId: string) => void)[] = [];
     const publish = (workspaceId: string) => {
       const event: PipelineEvent = { type: "runs", runs: runsOf(workspaceId) };
       host.events.publish(`${PIPELINES_TOPIC}${workspaceId}`, event);
+      for (const listener of changeListeners) listener(workspaceId);
     };
     host.events.onSubscribe(PIPELINES_TOPIC, (topic) => {
       const workspace = workspaces.get(topic.slice(PIPELINES_TOPIC.length));
@@ -1351,6 +1353,9 @@ export const pipelinesModule: ServerModule = {
       stop,
       afterRunEnded: (listener) => {
         endListeners.push(listener);
+      },
+      onChange: (listener) => {
+        changeListeners.push(listener);
       },
       setLaneLookup: (lookup) => {
         if (laneLookup) throw new Error("The pipelines module already has a lane lookup");

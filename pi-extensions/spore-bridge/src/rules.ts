@@ -108,6 +108,8 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
   user with request_human_input first, then answer.
 - When a lane passes, read its diff artifact. Then call merge_lane, or revise_lane with a new brief.
 - A merge conflict or a failed gate comes back as a message. Use revise_lane to fix it.
+- Call run_status before you say a lane is lost or stuck, and after any user message that names a lane. A blocked
+  lane comes as a message; the user fixes the cause and presses Retry.
 - Follow-up work that is out of scope for the lanes becomes a card. Call kanban_list_cards first, so you do not
   add a duplicate. Then call kanban_add_card once per item, with the why, the steps, and how to check. Do not
   write cards as artifacts. The card goes to the backlog with a from-run label. You never start a card; the user

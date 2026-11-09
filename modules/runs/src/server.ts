@@ -20,8 +20,10 @@ import {
   CreateRunRequest,
   type Lane,
   type LaneState,
+  type LaneStatus,
   type MergeLaneRequest,
   type OpenRunPrRequest,
+  type PipelineStage,
   parseJsonBody,
   type ReviseLaneRequest,
   type Run,
@@ -29,6 +31,7 @@ import {
   RunPrSubject,
   type RunQuestion,
   type RunState,
+  type RunStatus,
   type StartLaneRequest,
   slugify,
 } from "@pi-spore/shared";
@@ -57,6 +60,7 @@ export const COORDINATOR_TOOLS: readonly string[] = [
   "merge_lane",
   "answer_lane",
   "open_run_pr",
+  "run_status",
 ];
 
 const MIGRATIONS = [
@@ -182,7 +186,8 @@ const RUN_PR = "run-pr";
 const DEFAULT_GATES = ["check", "test"];
 const DEFAULT_PIPELINE = "default";
 
-const laneToView = (row: LaneRow): Lane => ({
+/** `blocked` comes from the lane's pipeline run, which the pipelines module owns. */
+const laneToView = (row: LaneRow, blocked: string | undefined): Lane => ({
   id: row.id,
   runId: row.run_id,
   name: row.name,
@@ -194,6 +199,8 @@ const laneToView = (row: LaneRow): Lane => ({
   state: row.state,
   ...(row.workspace_id === null ? {} : { workspaceId: row.workspace_id }),
   ...(row.message === null ? {} : { message: row.message }),
+  ...(row.pipeline_run_id === null ? {} : { pipelineRunId: row.pipeline_run_id }),
+  ...(blocked === undefined ? {} : { blocked }),
   createdAt: row.created_at,
 });
 
@@ -208,11 +215,7 @@ const questionToView = (row: QuestionRow): RunQuestion => ({
   createdAt: row.created_at,
 });
 
-const runToView = (
-  row: RunRow,
-  lanes: readonly LaneRow[],
-  questions: readonly QuestionRow[],
-): Run => ({
+const runToView = (row: RunRow, lanes: Lane[], questions: readonly QuestionRow[]): Run => ({
   id: row.id,
   projectId: row.project_id,
   workspaceId: row.workspace_id,
@@ -222,7 +225,7 @@ const runToView = (
   state: row.state,
   coordinatorAgentId: row.coordinator_agent_id,
   createdAt: row.created_at,
-  lanes: lanes.map(laneToView),
+  lanes,
   questions: questions.map(questionToView),
 });
 
@@ -349,7 +352,11 @@ export const runsModule: ServerModule = {
         "SELECT * FROM runs_questions WHERE run_id = ? AND state = 'open' ORDER BY created_at, id",
         runId,
       );
-    const viewOf = (row: RunRow): Run => runToView(row, lanesOf(row.id), openQuestionsOf(row.id));
+    const blockedOf = (lane: LaneRow) =>
+      lane.pipeline_run_id === null ? undefined : pipelines.get(lane.pipeline_run_id).blocked;
+    const laneView = (lane: LaneRow) => laneToView(lane, blockedOf(lane));
+    const viewOf = (row: RunRow): Run =>
+      runToView(row, lanesOf(row.id).map(laneView), openQuestionsOf(row.id));
     const allRuns = (): Run[] =>
       host.store
         .all<RunRow>("SELECT * FROM runs_runs ORDER BY created_at DESC, id DESC")
@@ -527,7 +534,7 @@ export const runsModule: ServerModule = {
         return id;
       });
       publish();
-      return laneToView(loadLane(laneId) as LaneRow);
+      return laneView(loadLane(laneId) as LaneRow);
     };
 
     const reviseLane = async (caller: BridgeCaller, request: ReviseLaneRequest): Promise<Lane> => {
@@ -553,7 +560,7 @@ export const runsModule: ServerModule = {
         startLaneJob(lane.id);
       });
       publish();
-      return laneToView(loadLane(lane.id) as LaneRow);
+      return laneView(loadLane(lane.id) as LaneRow);
     };
 
     const mergeLane = async (caller: BridgeCaller, request: MergeLaneRequest): Promise<Lane> => {
@@ -577,7 +584,7 @@ export const runsModule: ServerModule = {
         host.jobs.start(MERGE_JOB, { laneId: lane.id } satisfies LaneSubject, { key: run.id });
       });
       publish();
-      return laneToView(loadLane(lane.id) as LaneRow);
+      return laneView(loadLane(lane.id) as LaneRow);
     };
 
     const askCoordinator = (caller: BridgeCaller, request: AskCoordinatorRequest): RunQuestion => {
@@ -884,6 +891,11 @@ export const runsModule: ServerModule = {
     ];
     host.jobs.define(LANE_JOB, steps);
 
+    // A lane's pipeline run can block or clear without a lane job change; the Runs page sees it here.
+    pipelines.onChange((workspaceId) => {
+      if (laneByWorkspace(workspaceId)) publishAfterCommit();
+    });
+
     // Runs inside the transaction that ends the pipeline run, so the lane and the run never disagree. A run may end
     // before `launch` commits `running`, so a starting lane counts too.
     pipelines.afterRunEnded((ended) => {
@@ -1154,6 +1166,49 @@ export const runsModule: ServerModule = {
       return viewOf(requireRun(id));
     };
 
+    const status = (caller: BridgeCaller, runId: string): RunStatus => {
+      const run = requireRun(runId);
+      const lanes = lanesOf(run.id);
+      if (
+        caller.workspaceId !== run.workspace_id &&
+        !lanes.some((lane) => lane.workspace_id === caller.workspaceId)
+      ) {
+        throw new ApiError(
+          403,
+          "not_in_run",
+          `Workspace ${caller.workspaceId} is not run ${run.id} or one of its lanes`,
+        );
+      }
+      return {
+        runId: run.id,
+        name: workspaces.get(run.workspace_id).name,
+        state: run.state,
+        lanes: lanes.map((lane): LaneStatus => {
+          const pipelineRun =
+            lane.pipeline_run_id === null ? undefined : pipelines.get(lane.pipeline_run_id);
+          const rounds = (pipelineRun?.turns ?? [])
+            .filter((turn) => turn.stageIndex === pipelineRun?.stageIndex)
+            .map((turn) => turn.round);
+          return {
+            id: lane.id,
+            name: lane.name,
+            wave: lane.wave,
+            state: lane.state,
+            ...(lane.workspace_id === null
+              ? {}
+              : { workspace: workspaces.get(lane.workspace_id).name }),
+            ...(pipelineRun
+              ? { stage: (pipelineRun.stages[pipelineRun.stageIndex] as PipelineStage).name }
+              : {}),
+            ...(rounds.length === 0 ? {} : { round: Math.max(...rounds) }),
+            ...(pipelineRun?.blocked === undefined ? {} : { blocked: pipelineRun.blocked }),
+            ...(lane.message === null ? {} : { message: lane.message }),
+            ...(HAS_LANE_DIFF.includes(lane.state) ? { diff: laneDiffPath(run.id, lane.id) } : {}),
+          };
+        }),
+      };
+    };
+
     const api: Runs = {
       create: createRun,
       startLane,
@@ -1162,6 +1217,7 @@ export const runsModule: ServerModule = {
       askCoordinator,
       answerLane,
       requestPr,
+      status,
       laneOf: (workspaceId) => {
         const lane = laneByWorkspace(workspaceId);
         return lane ? { runId: lane.run_id, laneId: lane.id } : undefined;

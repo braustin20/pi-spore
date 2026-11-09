@@ -81,7 +81,20 @@ function byWave(lanes: readonly Lane[]): [number, Lane[]][] {
 }
 
 function LaneRow({ lane }: { lane: Lane }) {
+  const api = useApi();
+  const [error, setError] = useState<string | undefined>();
+  const [busy, setBusy] = useState(false);
   const shown = STATES[lane.state];
+  const retry = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.send("POST", `pipelines/runs/${lane.pipelineRunId}/retry`);
+    } catch (caught) {
+      setError(message(caught));
+    }
+    setBusy(false);
+  };
   return (
     <li className="flex flex-col gap-0.5">
       <div className="flex flex-wrap items-center gap-1.5">
@@ -93,11 +106,21 @@ function LaneRow({ lane }: { lane: Lane }) {
           <span className="font-medium">{lane.name}</span>
         )}
         <Chip tone={shown.tone}>{shown.text}</Chip>
+        {lane.blocked && <Chip tone="warn">Blocked</Chip>}
         {lane.model && <Chip mono>{lane.model}</Chip>}
       </div>
       {lane.message && (
         <p className="m-0 text-xs text-muted [overflow-wrap:anywhere]">{lane.message}</p>
       )}
+      {lane.blocked && (
+        <Notice tone="warn">
+          <p className="m-0 [overflow-wrap:anywhere]">{lane.blocked}</p>
+          <Button size="sm" className="mt-2" disabled={busy} onClick={() => void retry()}>
+            Retry
+          </Button>
+        </Notice>
+      )}
+      {error && <Notice tone="fail">{error}</Notice>}
     </li>
   );
 }

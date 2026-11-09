@@ -176,6 +176,7 @@ export {
   CreateRunRequest,
   Lane,
   LaneState,
+  LaneStatus,
   MergeLaneRequest,
   OpenRunPrRequest,
   ReviseLaneRequest,
@@ -185,6 +186,7 @@ export {
   RunPrSubject,
   RunQuestion,
   RunState,
+  RunStatus,
   StartLaneRequest,
 } from "./runs.js";
 export { slugify } from "./slug.js";
