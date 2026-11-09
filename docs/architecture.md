@@ -559,8 +559,9 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 
 See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-questions-up-the-chain.md),
 [ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
-[ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md), and
-[ADR 0154](decisions/0154-coordinator-adds-cards.md). Requirements R7, R4.8.
+[ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md),
+[ADR 0154](decisions/0154-coordinator-adds-cards.md), and [ADR 0157](decisions/0157-finished-run-follows-the-active-chat.md).
+Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
@@ -610,10 +611,11 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   The `merge` and `finish` steps check the lane again after their git work and abort if it was cancelled meanwhile.
   It deletes nothing: lane workspaces, branches, the run line, and artifacts stay. It never merges, pushes, or opens
   a PR. A second cancel answers the run. The lane tools answer 409 `run_cancelled` for a cancelled run.
-- **New coordinator** (ADR 0030). `AgentsKey.afterWorkerChange` runs when a worker chat becomes a workspace's active
-  one (a new chat, an older one activated, or one `activeWorker` creates). For a `running` run whose workspace it is,
-  that chat becomes the coordinator, and in one transaction it gets a handover first (the run name, line, and base;
-  every lane with its wave, state, brief, and diff path; the open lane questions), then the old chat's pending
+- **New coordinator** (ADR 0030, ADR 0157). `AgentsKey.afterWorkerChange` runs when a worker chat becomes a
+  workspace's active one (a new chat, an older one activated, or one `activeWorker` creates). For a `running` or
+  `finished` run whose workspace it is, that chat becomes the coordinator, and in one transaction it gets a handover
+  first (the run name, line, and base; whether its PR is open; every lane with its wave, state, brief, and diff path;
+  the open lane questions), then the old chat's pending
   deliveries, in order (`AgentsKey.moveDeliveries`). Job commits read the coordinator again, so a report never goes
   to the old chat. The launch hook gives the new chat the coordinator role, as it keys on the workspace.
 - **Run PR** (ADR 0100, ADR 0130). `open_run_pr { title, body }` (bridge `POST /api/bridge/coordinator/pr`) needs
