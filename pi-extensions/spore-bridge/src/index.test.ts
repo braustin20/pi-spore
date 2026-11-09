@@ -502,6 +502,12 @@ describe("spore-bridge", () => {
     expect(STAGE_WORKER_RULES).toContain("Never stop the pi-spore server");
   });
 
+  it("tells the implement worker to run check and the full test action before every report", () => {
+    expect(STAGE_WORKER_RULES).toMatch(
+      /Before every `report`[^\n]*run `check`, then `run_action test`/,
+    );
+  });
+
   it.each([
     ["missing", undefined],
     ["unknown", "orchestrator"],

@@ -93,7 +93,13 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
   \`artifacts_write\` in workspace scope, and list the test with the artifact path in the \`tests\` of \`report\`. List
   every new test in every report.
 - When the pipeline sends review findings, fix them, then call \`report\` with the new turn id.
-- Run \`check\` before you report. Never merge, push, or open a pull request.`;
+- Before every \`report\` (the task and every fix), run \`check\`, then \`run_action test\`. Do not run a part of the
+  tests in place of the action; the fail-first proof above is the only narrow run.
+- If either fails, fix it and run both again.
+- If a failure is not caused by your change and you cannot fix it, say so at the top of the report, with the failing
+  test names. Do not hide it.
+- Put the result of both in the report: passed, or the failing names.
+- Never merge, push, or open a pull request.`;
 
 /** The rules of both read-only reviewer roles of a review pipeline (R6). The read-only tools enforce them. */
 export const STAGE_REVIEWER_RULES = `You are a read-only reviewer in a pi-spore review pipeline, in one workspace of pi-spore, a local agent workbench.
