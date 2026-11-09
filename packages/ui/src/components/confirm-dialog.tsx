@@ -56,7 +56,11 @@ export function useConfirm(): { confirm: Confirm; dialog: ReactNode } {
           <AlertDialog.Title className="m-0 shrink-0 text-sm font-medium">
             {options?.title ?? "Are you sure?"}
           </AlertDialog.Title>
-          <AlertDialog.Description className="mt-2 mb-4 min-h-0 overflow-y-auto text-sm whitespace-pre-line text-muted [overflow-wrap:anywhere]">
+          {/* Focusable so the keyboard can scroll a long message; Cancel still gets the first focus. */}
+          <AlertDialog.Description
+            tabIndex={0}
+            className="mt-2 mb-4 min-h-0 overflow-y-auto text-sm whitespace-pre-line text-muted [overflow-wrap:anywhere] focus-visible:outline-2 focus-visible:outline-accent"
+          >
             {options?.message}
           </AlertDialog.Description>
           <div className="flex shrink-0 justify-end gap-2">

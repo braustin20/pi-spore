@@ -129,4 +129,16 @@ describe("useConfirm", () => {
     expect(scroller?.querySelector("button")).toBeNull();
     expect(dialog.className).toContain("max-h-");
   });
+
+  it("lets the keyboard reach the scrolling message, while Cancel keeps the first focus", async () => {
+    const confirm = mount();
+    await act(async () => {
+      void confirm({ message: "Blocked by a very long name.\n".repeat(200) });
+    });
+    const message = document.querySelector<HTMLElement>("[role=alertdialog] .overflow-y-auto");
+    expect(message?.tabIndex).toBe(0);
+    expect(document.activeElement).toBe(button("Cancel"));
+    message?.focus();
+    expect(document.activeElement).toBe(message);
+  });
 });
