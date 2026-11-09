@@ -40,6 +40,8 @@ import {
   RunList,
   type RunningItem,
   Run as RunSchema,
+  type SettingEntry,
+  SettingsView,
   StartCardResponse,
   type StepReport,
   type Workspace,
@@ -68,6 +70,7 @@ const USAGE = `Usage: pi-spore <command> [options] [--json]
 
 Commands:
   health                                   Show whether the pi-spore server is running
+  remote                                   Tell how to reach pi-spore from a phone through tailscale serve
   project list                             List registered projects
   project add <path> [--name <name>]       Register a Git checkout or a folder
   project rm <project>                     Unregister a project (files stay)
@@ -280,6 +283,60 @@ async function health(deps: CliDeps, base: string, json: boolean): Promise<void>
   deps.out(
     `ok  version ${body.version}  up ${Math.round(body.uptimeMs / 1000)}s  modules: ${modules}`,
   );
+}
+
+/** One setting's value, checked against the type the command needs. */
+function settingList(settings: readonly SettingEntry[], key: string): string[] {
+  const entry = settings.find((entry) => entry.key === key);
+  if (!entry) throw new CliError(`pi-spore server did not report ${key}`, 1);
+  try {
+    return parse(Type.Array(Type.String({ minLength: 1 })), entry.value, key);
+  } catch (error) {
+    throw new CliError(`pi-spore server sent a bad ${key}: ${String(error)}`, 1);
+  }
+}
+
+/** Advice only: pi-spore never runs tailscale (ADR 0143). */
+async function remote(api: Api, deps: CliDeps, base: string, json: boolean): Promise<void> {
+  const { settings } = await api.call("GET", "projects/settings", SettingsView);
+  // No port means we cannot name the port to serve, so say which knob to turn.
+  const portText = new URL(base).port;
+  if (!portText) {
+    throw new CliError(
+      `PI_SPORE_URL must name the port pi-spore listens on, such as ${DEFAULT_URL}`,
+      1,
+    );
+  }
+  const port = Number(portText);
+  const hosts = settingList(settings, "server.allowedHosts");
+  const logins = settingList(settings, "server.allowedLogins");
+  const serve = `tailscale serve --bg ${port}`;
+  if (json) {
+    return deps.out(
+      JSON.stringify({
+        port,
+        allowedHosts: hosts,
+        allowedLogins: logins,
+        serve,
+        urls: hosts.map((host) => `https://${host}/`),
+      }),
+    );
+  }
+  if (hosts.length === 0) {
+    deps.out("Remote access is off.");
+    deps.out(
+      "1. Find this machine's name: tailscale status --json (Self.DNSName, without the last dot).",
+    );
+    deps.out("2. Add it and your Tailscale login to ~/.pi-spore/settings.json:");
+    deps.out('   {"server": {"allowedHosts": ["<name>"], "allowedLogins": ["<you@example.com>"]}}');
+    deps.out("3. Restart pi-spore, then run pi-spore remote again.");
+    return;
+  }
+  deps.out(`Run once (it stays on after a reboot): ${serve}`);
+  for (const host of hosts) deps.out(`Open: https://${host}/`);
+  deps.out(`Allowed logins: ${logins.join(", ")}`);
+  deps.out("Turn off: tailscale serve --https=443 off");
+  deps.out("Never use tailscale funnel: it publishes pi-spore to the internet.");
 }
 
 async function projectCommand(
@@ -1143,6 +1200,8 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
   }
   try {
     if (command === "health" && rest.length === 0) await health(deps, base, json);
+    else if (command === "remote" && rest.length === 0)
+      await remote(new Api(deps, base), deps, base, json);
     else if (command === "project") await projectCommand(new Api(deps, base), deps, rest, json);
     else if (command === "ws" || command === "workspace")
       await workspaceCommand(new Api(deps, base), deps, rest, json);

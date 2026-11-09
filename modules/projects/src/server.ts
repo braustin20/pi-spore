@@ -1,6 +1,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
+import { routerSettingEntries } from "@pi-spore/router";
 import {
   AddProjectRequest,
   type Project,
@@ -202,9 +203,19 @@ export const projectsModule: ServerModule = {
       return c.json({ project: await toProject(row) }, 201);
     });
 
-    host.routes.get("/settings", async (c) =>
-      c.json({ settings: (await host.settings.resolve()).entries() }),
-    );
+    // The router parses its own keys, so the page shows them through the router (R17.1).
+    host.routes.get("/settings", async (c) => {
+      const [resolved, routerEntries] = await Promise.all([
+        host.settings.resolve(),
+        routerSettingEntries(host.home.root).catch((error: unknown) => {
+          throw new ApiError(422, "bad_settings", (error as Error).message);
+        }),
+      ]);
+      const settings = [...resolved.entries(), ...routerEntries].sort((a, b) =>
+        a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
+      );
+      return c.json({ settings });
+    });
 
     host.routes.get("/:id", async (c) =>
       c.json({ project: await projects.get(c.req.param("id")) }),

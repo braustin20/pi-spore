@@ -75,7 +75,7 @@ const agentTokens = new AgentTokenStore();
 const sockets = new SocketRouter(log);
 const now = Date.now;
 const jobs = createJobService({ store, log, now, newId: () => newId(), timer: realTimer });
-const modules = await setupModules(serverModules, [], {
+const setUp = await setupModules(serverModules, [], {
   events,
   log,
   store,
@@ -92,7 +92,8 @@ const modules = await setupModules(serverModules, [], {
 const webDist = fileURLToPath(new URL("../../web/dist", import.meta.url));
 const app = createApp({
   version: readVersion(),
-  modules,
+  modules: setUp.modules,
+  remoteAccess: setUp.remoteAccess,
   startedAt,
   now: Date.now,
   token,
@@ -109,7 +110,7 @@ const server = serve({ fetch: app.fetch, hostname: "127.0.0.1", port }, (info) =
 });
 
 if (!(server instanceof Server)) throw new Error("pi-spore expects a plain HTTP/1 server");
-attachUpgrades(server, token, (pathname) =>
+attachUpgrades(server, token, setUp.remoteAccess, (pathname) =>
   pathname === "/api/ws" ? events.upgrade : sockets.route(pathname),
 );
 

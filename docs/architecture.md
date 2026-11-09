@@ -801,6 +801,12 @@ defaults apply to every key left out. Unknown `router` keys and wrong values are
 - `ladders` replaces the whole default list when set. A ladder's `plan` names its usage file
   (`~/.pi-spore/usage/<plan>.json`). OpenRouter sends no plan window, so its plan always has room.
 - `router.cloud` and `router.spill` are gone (ADR 0141). Either key is an error that names `router.ladders`.
+- The Settings page shows each top-level `router` key as `router.<name>`, and `tiers` as one row, with the value
+  the router uses. The source is `global` when the file sets the key, else `default`; `pressure`, `plans`, and
+  `tiers` merge with the defaults, so any value in the file makes them `global`. The projects module reads them
+  with the router's `routerSettingEntries`, so the router's parser stays the only check. A bad router key answers
+  422 `bad_settings` with the parser's message, which names the key and the file. These keys are read only from
+  `settings.json`, never from `config.toml` (R17.3).
 - `threshold` is the rung-1 bar, `heavyThreshold` the rung-3 bar for visual, design, and foundational, `large` the
   rung-3 token estimate, and `maxQueued` the most sessions that may wait for a busy local target.
 - `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes a bar; the
@@ -1359,8 +1365,8 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   `checkSection(schema, value, what)` give the owner the parsed file and the same 422 error.
 - The resolve order is a list of layers, so a run or workspace override can be added after the local override.
 
-Declared keys (`GET /api/projects/settings` lists them all with their source; the Settings page, `#/settings`, shows
-that list):
+Declared keys (`GET /api/projects/settings` lists them all with their source, plus the router keys of section 10;
+the Settings page, `#/settings`, shows that list):
 
 | Key | Scope | Type | Meaning |
 |---|---|---|---|
@@ -1371,8 +1377,29 @@ that list):
 | `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
 | `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
 | `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
+| `server.allowedHosts` | global | array of host names, default none | Tailnet hosts that `tailscale serve` forwards from (ADR 0143). |
+| `server.allowedLogins` | global | array of Tailscale logins, default none | Logins that may use those hosts (ADR 0143). Required when `server.allowedHosts` is set. |
 
-The `agents.*` keys are read when the server starts. Change them, then restart.
+The `agents.*` and `server.*` keys are read when the server starts. Change them, then restart. Core declares the
+`server.*` keys in `setupModules`.
+
+### Remote access
+
+See [ADR 0143](decisions/0143-phone-over-tailscale-serve.md).
+
+The server binds `127.0.0.1` only. A phone reaches it through `tailscale serve --bg <port>`, which the user runs
+once; it proxies `https://<machine>.<tailnet>.ts.net/` to the loopback port and sets `Tailscale-User-Login`.
+`guardRequest` (`packages/server-core/src/guards.ts`) runs first on every HTTP request and WebSocket upgrade:
+
+1. The TCP peer must be loopback, or 403 `bad_peer`.
+2. A loopback Host passes.
+3. A Host in `server.allowedHosts` needs a login in `server.allowedLogins`, or 401 `identity_required`. This
+   covers the page that holds the token.
+4. Any other Host: 403 `bad_host` (DNS rebinding guard).
+5. Upgrades only: Origin absent, loopback, or `https://<allowed host>`, or 403 `bad_origin`.
+
+The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale` and never uses Funnel.
+`pi-spore remote` prints the serve command and the URLs.
 
 Not built yet:
 
@@ -1482,6 +1509,11 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 
+Both side panels resize by dragging their inner edge or with the arrow keys (16 px, 64 px with Shift). The list runs
+from 200 to 480 px and the right column from 280 px to 70% of the window. The chat keeps at least 360 px. A double-click
+on the edge resets the width. Each width is stored in the browser. A wide tab shows the larger of the stored width and
+its own default (640 px, or half the window). A terminal fits once when a drag ends.
+
 ## 14. Data layout
 
 ```text
@@ -1531,7 +1563,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   `attention:inbox` (Home), `kanban:board` (the board), and `runs:list` (runs).
 - Modules add their own WebSocket routes with `host.sockets.add(path, open)`, under `/api/<module id>/`. `open`
   gets the path params and throws an ApiError to refuse the upgrade with its status. Every upgrade, `/api/ws`
-  included, needs a loopback Host and Origin and the user's token in `?token=` (browsers cannot set headers on a
+  included, passes `guardRequest` (Host, Origin, peer, and login; section 13, Remote access) and needs the user's
+  token in `?token=` (browsers cannot set headers on a
   WebSocket). Agent tokens are never accepted. `ApiClient.socketUrl(path)` builds the URL in the page.
 - Routes under `/api/bridge/` are for spore-bridge and take only agent tokens; all others take only the user's token
   (ADR 0032). Card routes (ADR 0100): `GET /api/bridge/cards?label=&column=`, `POST /api/bridge/cards`,
@@ -1545,6 +1578,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   cancel <id>`.
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
+- `pi-spore remote [--json]` prints the `tailscale serve` command, the URLs, and the allowed logins, or the
+  settings to add when remote access is off. It runs nothing (ADR 0143).
 - Chats (agents module, ADR 0030):
 
   | Route | Does |

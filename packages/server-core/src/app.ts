@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import type { HttpBindings } from "@hono/node-server";
 import {
   ApiError,
   BRIDGE_CALLER,
@@ -16,7 +17,7 @@ import {
 } from "@pi-spore/shared";
 import { Hono } from "hono";
 import type { AgentTokenStore } from "./agent-tokens.js";
-import { isLoopbackHost } from "./guards.js";
+import { guardRequest, type RemoteAccess } from "./guards.js";
 import type { JobService } from "./jobs.js";
 import { tokensMatch } from "./token.js";
 import { serveWeb } from "./web.js";
@@ -33,6 +34,8 @@ export interface AppOptions {
   store: Store;
   jobs: JobService;
   log: Logger;
+  /** Tailnet hosts and logins that may reach pi-spore through `tailscale serve` (ADR 0143). */
+  remoteAccess: RemoteAccess;
   /** Built web app to serve at `/`. Absent in tests and when the web app is not built. */
   webDist?: string;
 }
@@ -75,12 +78,17 @@ export function createApp(options: AppOptions): Hono {
   const app = new Hono();
 
   // DNS rebinding: a web page can point its own domain at 127.0.0.1. Its requests then carry that domain as Host.
+  // Every path goes through this, so the page that holds the token is never served to an unknown login.
   app.use("*", async (c, next) => {
-    if (!isLoopbackHost(c.req.header("host"))) {
-      return c.json(
-        { error: { code: "bad_host", message: "pi-spore answers only on loopback hosts" } },
-        403,
-      );
+    // The Node adapter always passes the bindings; a request without them has no known peer and is refused.
+    const bindings = c.env as Partial<HttpBindings> | undefined;
+    const refusal = guardRequest(options.remoteAccess, {
+      host: c.req.header("host"),
+      peer: bindings?.incoming?.socket.remoteAddress,
+      login: c.req.header("tailscale-user-login"),
+    });
+    if (refusal) {
+      return c.json({ error: { code: refusal.code, message: refusal.message } }, refusal.status);
     }
     await next();
   });

@@ -12,6 +12,7 @@ export {
   DEFAULT_TIERS,
   loadSettings,
   type RouterSettings,
+  routerSettingEntries,
   splitModel,
   sporeHome,
   TIERS,

@@ -14,7 +14,9 @@ let port: number;
 beforeEach(async () => {
   server = createServer((_request, response) => response.end());
   router = new SocketRouter(silentLog);
-  attachUpgrades(server, TEST_TOKEN, (pathname) => router.route(pathname));
+  attachUpgrades(server, TEST_TOKEN, { allowedHosts: [], allowedLogins: [] }, (pathname) =>
+    router.route(pathname),
+  );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   port = (server.address() as AddressInfo).port;

@@ -17,7 +17,9 @@ import {
   EmptyState,
   Field,
   Input,
+  isPanelResizing,
   Notice,
+  onPanelResizeEnd,
   Spinner,
   Tooltip,
   useTheme,
@@ -251,9 +253,14 @@ function Screen({
       backoff = Math.min(backoff * 2, 10_000);
     };
 
-    const observer = new ResizeObserver(() => {
+    const fitIfVisible = () => {
       if (element.clientWidth > 0 && element.clientHeight > 0) fit.fit();
+    };
+    // Dragging a panel edge resizes the terminal on every frame; fit once when the drag ends.
+    const observer = new ResizeObserver(() => {
+      if (!isPanelResizing()) fitIfVisible();
     });
+    const stopWatchingResize = onPanelResizeEnd(fitIfVisible);
     // xterm measures the font when it opens, so the web font must be there first.
     void document.fonts.load(`${FONT_SIZE}px 'JetBrains Mono Variable'`).finally(() => {
       if (stopped) return;
@@ -269,6 +276,7 @@ function Screen({
       clearTimeout(retry);
       document.removeEventListener("visibilitychange", sendVisibility);
       observer.disconnect();
+      stopWatchingResize();
       socket?.close();
       term.dispose();
       xterm.current = undefined;

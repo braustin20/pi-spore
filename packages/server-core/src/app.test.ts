@@ -10,6 +10,9 @@ import { createJobService, realTimer } from "./jobs.js";
 import { SqliteStore } from "./store.js";
 import { createTestServer, silentLog, TEST_TOKEN, type TestServer } from "./testing.js";
 
+const NO_REMOTE = { allowedHosts: [], allowedLogins: [] };
+const LOOPBACK_PEER = { incoming: { socket: { remoteAddress: "127.0.0.1" } } };
+
 let server: TestServer | undefined;
 afterEach(() => {
   server?.close();
@@ -63,9 +66,14 @@ describe("GET /api/health", () => {
         timer: realTimer,
       }),
       log: silentLog,
+      remoteAccess: NO_REMOTE,
     });
 
-    const response = await app.request("/api/health", { headers: { host: "127.0.0.1:7420" } });
+    const response = await app.request(
+      "/api/health",
+      { headers: { host: "127.0.0.1:7420" } },
+      LOOPBACK_PEER,
+    );
 
     expect(response.status).toBe(200);
     expect(parse(HealthResponse, await response.json(), "health")).toEqual({
@@ -94,6 +102,19 @@ describe("request guards", () => {
       expect((await server.request("GET", "/api/health", undefined, { host })).status).toBe(200);
     },
   );
+
+  it("rejects a non-loopback peer, even with a loopback Host, a listed login, and the token", async () => {
+    server = await createTestServer([], { home: remoteHome() });
+    const response = await server.request(
+      "GET",
+      "/api/health",
+      undefined,
+      { "tailscale-user-login": "me@example.com" },
+      "100.64.0.5",
+    );
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("bad_peer");
+  });
 
   it("rejects API requests without the right token", async () => {
     server = await createTestServer([counterModule().module]);
@@ -124,6 +145,119 @@ describe("request guards", () => {
     expect(await response.json()).toEqual({
       error: { code: "not_found", message: "No route /api/nope" },
     });
+  });
+});
+
+/** A temp home whose settings.json allows one tailnet host and one login (ADR 0143). */
+function remoteHome(server: Record<string, string[]> = REMOTE_SETTINGS): string {
+  const home = mkdtempSync(join(tmpdir(), "pi-spore-remote-"));
+  homes.push(home);
+  writeFileSync(join(home, "settings.json"), JSON.stringify({ server }));
+  return home;
+}
+const REMOTE_SETTINGS = { allowedHosts: ["box.tail.ts.net"], allowedLogins: ["me@example.com"] };
+const homes: string[] = [];
+afterEach(() => {
+  for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true });
+});
+
+async function errorCode(response: Response): Promise<string> {
+  return ((await response.json()) as { error: { code: string } }).error.code;
+}
+
+describe("remote access through tailscale serve", () => {
+  const tailnet = (login?: string) => ({
+    host: "box.tail.ts.net",
+    ...(login === undefined ? {} : { "tailscale-user-login": login }),
+  });
+
+  it("accepts an allowed host with a listed login, and still needs the token", async () => {
+    server = await createTestServer([counterModule().module], { home: remoteHome() });
+    const login = tailnet("me@example.com");
+    expect((await server.request("GET", "/api/health", undefined, login)).status).toBe(200);
+    expect((await server.request("POST", "/api/counter/bump", {}, login)).status).toBe(201);
+    const noToken = await server.request(
+      "POST",
+      "/api/counter/bump",
+      {},
+      { ...login, "x-pi-spore-token": "" },
+    );
+    expect(noToken.status).toBe(401);
+  });
+
+  it("matches the allowed host without its port and in any case", async () => {
+    server = await createTestServer([], { home: remoteHome() });
+    const response = await server.request("GET", "/api/health", undefined, {
+      host: "BOX.tail.ts.net:443",
+      "tailscale-user-login": "me@example.com",
+    });
+    expect(response.status).toBe(200);
+  });
+
+  it.each([
+    ["another login", "you@example.com"],
+    ["no login", undefined],
+  ])("refuses an allowed host with %s", async (_name, login) => {
+    server = await createTestServer([], { home: remoteHome() });
+    const response = await server.request("GET", "/api/health", undefined, tailnet(login));
+    expect(response.status).toBe(401);
+    const body = await response.text();
+    expect(body).toContain("identity_required");
+    expect(body).toContain("server.allowedLogins");
+    expect(body).not.toContain(TEST_TOKEN);
+  });
+
+  it("refuses a host that is not listed", async () => {
+    server = await createTestServer([], { home: remoteHome() });
+    const response = await server.request("GET", "/api/health", undefined, {
+      host: "other.tail.ts.net",
+      "tailscale-user-login": "me@example.com",
+    });
+    expect(response.status).toBe(403);
+    expect(await errorCode(response)).toBe("bad_host");
+  });
+
+  it("stops startup when hosts are allowed but no login is", async () => {
+    const home = remoteHome({ allowedHosts: ["box.tail.ts.net"], allowedLogins: [] });
+    const failed = createTestServer([], { home });
+    await expect(failed).rejects.toThrow("server.allowedHosts");
+    await expect(failed).rejects.toThrow("server.allowedLogins");
+  });
+
+  it("never serves the page with the token without a listed login", async () => {
+    const dist = mkdtempSync(join(tmpdir(), "pi-spore-web-"));
+    homes.push(dist);
+    writeFileSync(join(dist, "index.html"), "<html><head></head><body></body></html>");
+    const store = new SqliteStore(":memory:");
+    store.migrate("core", CORE_MIGRATIONS);
+    const app = createApp({
+      version: "0",
+      modules: [],
+      startedAt: 0,
+      now: () => 0,
+      token: TEST_TOKEN,
+      agentTokens: new AgentTokenStore(),
+      store,
+      jobs: createJobService({
+        store,
+        log: silentLog,
+        now: () => 0,
+        newId: () => "id",
+        timer: realTimer,
+      }),
+      log: silentLog,
+      webDist: dist,
+      remoteAccess: REMOTE_SETTINGS,
+    });
+    const get = (headers: Record<string, string>) => app.request("/", { headers }, LOOPBACK_PEER);
+
+    const refused = await get(tailnet());
+    expect(refused.status).toBe(401);
+    expect(await refused.text()).not.toContain(TEST_TOKEN);
+    const served = await get(tailnet("me@example.com"));
+    expect(served.status).toBe(200);
+    expect(await served.text()).toContain(TEST_TOKEN);
+    store.close();
   });
 });
 
@@ -309,8 +443,10 @@ describe("web app", () => {
       }),
       log: silentLog,
       webDist: dist,
+      remoteAccess: NO_REMOTE,
     });
-    const get = (path: string) => app.request(path, { headers: { host: "127.0.0.1:7420" } });
+    const get = (path: string) =>
+      app.request(path, { headers: { host: "127.0.0.1:7420" } }, LOOPBACK_PEER);
 
     const index = await get("/");
     expect(index.headers.get("content-type")).toContain("text/html");

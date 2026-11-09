@@ -101,7 +101,9 @@ type Layer = { file: RawConfigFile; source: SettingSource; code: string };
  * their setup, so until `finishDeclaring` runs, a key nobody declared yet is not an error. `finishDeclaring` then
  * checks the files once against every declaration and fails startup on a bad one.
  */
-export function createSettings(home: string): Settings & { finishDeclaring(): Promise<void> } {
+export function createSettings(
+  home: string,
+): Settings & { finishDeclaring(): Promise<ResolvedSettings> } {
   let declaring = true;
   const defs = new Map<string, SettingDef>();
   const reserved = { global: new Set<string>(), project: new Set<string>() };
@@ -193,7 +195,7 @@ export function createSettings(home: string): Settings & { finishDeclaring(): Pr
     ...settings,
     async finishDeclaring() {
       declaring = false;
-      await settings.resolve();
+      return await settings.resolve();
     },
   };
 }
