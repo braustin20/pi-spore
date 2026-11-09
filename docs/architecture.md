@@ -710,7 +710,7 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   and the router ignores them (R18.5).
 - v1 is passive only (ADR 0022). Active polling of the plans' usage endpoints is a v2 option. It would also
   count use from Claude Code and the Codex CLI, which the tap cannot see.
-- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, and `pipelines`) reads the
+- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, and `attention`) reads the
   router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
   table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
   the verdict of the last review of its first reviewer stage, its review rounds, and its fix passes. Retention
@@ -755,7 +755,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   - Every item names its chat (`chat`: id, title, kind, active) and links to `#/workspaces/<id>/chats/<chat>`.
   - `items`, newest first: open questions; open extension dialogs of running agents; failed agents with their error;
     agents whose last run ended and that wait for the user (`finished`), unless they have an open question or a
-    running helper.
+    running helper; and `notice` items from other modules' sources (below). A notice has no chat: it has `source`,
+    `id`, `title`, optional `detail`, and an `href` to the module's page.
   - `running`: agents that are busy, starting, or waiting for a slot, and idle agents with a running helper
     (`status: "helpers"`). When the helper ends, an idle agent that waits for the user is `finished` again.
 - The agents module tracks what Home needs (`AgentsKey.attention()`): when each agent entered its status, when each
@@ -781,6 +782,21 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   `AgentsWebKey.setUserWaits(hook)`: a React hook that returns, per chat id, why that chat waits for the user
   (`question`, `approval`, or `dialog`). The attention web module sets it from the same `attention:inbox` store, with
   `chatWaits(inbox)`. With no hook set, the list looks as before.
+- **Home sources** (ADR 0152): a module adds items to Home with `HomeItemsKey.register(name, source)`, where
+  `source()` returns the current `HomeNotice[]` (`id` stable and unique within the source, `at`, `title`, `detail?`,
+  `href`). Attention keeps no state for them. It reads every source each time it builds the inbox, so an item shows
+  while its condition holds and goes when it clears. `HomeItemsKey.changed()` builds and pushes the inbox on the next
+  tick, so a new item reaches the topic and the desktop notification path; a module calls it where its condition
+  changes. Only the newest inbox build publishes, so a slow source cannot bring back an item that has cleared. A source that throws is logged and skipped. Home shows a notice as a card with an Open link. Registered
+  sources:
+  - `github-pr`: a PR whose watch is `waiting` (`#/workspaces/<id>`), in an active workspace. It calls `changed()` on
+    every write of the PR row.
+  - `kanban`: a card past due or due today that is not in Done (`#/board/<card id>`). It calls `changed()` on every
+    board change. "Today" is the server's local day, as on the board (`localDay`, `dueState`); a card that turns
+    overdue at midnight shows on the next inbox build.
+  - `usage`: each usage warning (R18.4, `#/usage`). The router writes the plan files from any Pi process, so the
+    module watches `~/.pi-spore/usage/` and calls `changed()` when a plan file changes.
+  The Usage page, the PR tab, and the board keep their own displays.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not.
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
@@ -805,7 +821,14 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
     plain one (title, reason, approve, decline with a note).
-- Not built yet: usage warnings, and a CLI command for the inbox.
+- The CLI reads the same route: `pi-spore inbox list` prints each item and each running agent with an id, its kind
+  (`question`, `approval`, `dialog`, `failed`, `finished`, `running`, `notice`), age, `project / workspace`, and the
+  chat link. `pi-spore inbox show <id>` prints one in full: a question's text and choices, an approval's gate, title,
+  reason, and subject, a dialog's prompt, a failure's error. Ids are `<kind>:<id>` (a dialog is
+  `dialog:<agent>:<dialog>`; `failed`, `finished`, and `running` use the agent id). A notice is
+  `notice:<source>:<id>`; it has no workspace or chat, so its place column is the source name, its link is its
+  `href`, and `show` prints its source, title, and detail. Interrupted jobs are not listed; `pi-spore jobs` shows
+  them.
 
 ## 11c. Terminals
 
@@ -895,7 +918,7 @@ counts, then its hunks in unified form.
 
 See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
 
-- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `kanban`, `runs`) talks to GitHub only
+- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `attention`, `kanban`, `runs`) talks to GitHub only
   through `gh`, run with `execFile`, `GH_PROMPT_DISABLED=1`, and `--json` where gh has it. Output is checked with
   TypeBox; a value it does not know (a new check conclusion) is a 422 `gh_failed`, not a guess.
 - The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
@@ -962,8 +985,8 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
   conflicts), a Push… confirm when the workspace has commits the PR lacks, the checks with state chips and links,
   and the watch: state, tries, last and next look, the message, Resume and send again, Stop watching, and the tries
   so far. The Details panel shows the number, state, failing checks, conflicts, and "Waiting for you".
-- Not built yet: "waiting for you" on Home (the attention module has no way for other modules to add items, Q18),
-  and PR tools for agents (they come through spore-bridge).
+- "Waiting for you" is also a Home item (a `github-pr` Home source, ADR 0152). Not built yet: PR tools for agents
+  (they come through spore-bridge).
 
 ## 11f. Artifacts
 
@@ -1140,8 +1163,7 @@ API under `/api/kanban`:
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
   --new [--mode m] [--line b] [--base b] | --workspace <id> | --run [--base b] [--blocked-ok]`.
-- Not built yet: custom columns, and overdue cards on Home (the attention module has no way for
-  other modules to add items yet).
+- Overdue and due-today cards show on Home (a `kanban` Home source, ADR 0152). Not built yet: custom columns.
 
 ## 13. Settings
 

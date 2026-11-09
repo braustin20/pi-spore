@@ -58,6 +58,7 @@ export {
   BridgeRunLog,
   DeclineRequest,
   FileQuestionRequest,
+  HomeNotice,
   Inbox,
   InboxChat,
   InboxEvent,

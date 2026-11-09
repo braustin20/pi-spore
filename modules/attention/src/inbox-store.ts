@@ -11,6 +11,8 @@ export function itemKey(item: InboxItem): string {
       return `approval:${item.approval.id}`;
     case "dialog":
       return `dialog:${item.agentId}:${item.dialog.id}`;
+    case "notice":
+      return `notice:${item.source}:${item.id}`;
     default:
       return `${item.kind}:${item.agentId}:${item.at}`;
   }
@@ -18,6 +20,7 @@ export function itemKey(item: InboxItem): string {
 
 /** The title and body of a desktop notification for an item (R15.2). */
 export function notification(item: InboxItem): { title: string; body: string } {
+  if (item.kind === "notice") return { title: item.title, body: item.detail ?? "" };
   const chat = item.chat.title ? `, ${item.chat.title}` : "";
   const where = `${item.workspace.name} (${item.workspace.projectName}${chat})`;
   switch (item.kind) {

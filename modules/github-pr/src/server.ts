@@ -1,5 +1,6 @@
 import { existsSync } from "node:fs";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
+import { HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { RunsKey } from "@pi-spore/mod-runs/server";
@@ -111,7 +112,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
   const discoverInterval = options.discoverIntervalMs ?? 5 * 60_000;
   return {
     id: "github-pr",
-    requires: ["projects", "workspaces", "agents", "kanban", "runs"],
+    requires: ["projects", "workspaces", "agents", "attention", "kanban", "runs"],
     core: false,
     setup(host) {
       host.store.migrate("github-pr", MIGRATIONS);
@@ -119,6 +120,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       const workspaces = host.use(WorkspacesKey);
       const agents = host.use(AgentsKey);
       const cards = host.use(CardsKey);
+      const homeItems = host.use(HomeItemsKey);
       const gh = new Gh(host.exec, options.gh ?? { command: "gh", args: [] });
 
       const load = (workspaceId: string) =>
@@ -152,7 +154,27 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           next.interval_ms,
           workspaceId,
         );
+        homeItems.changed();
       };
+
+      // R9.2: a watch that gave up waits for the user. The PR tab explains why.
+      homeItems.register("github-pr", () =>
+        host.store
+          .all<PrRow>("SELECT * FROM github_pr_prs WHERE watch_state = 'waiting'")
+          .flatMap((row) => {
+            const workspace = workspaces.list().find((entry) => entry.id === row.workspace_id);
+            if (workspace?.state !== "active") return [];
+            return [
+              {
+                id: row.workspace_id,
+                at: row.polled_at ?? row.created_at,
+                title: `PR #${row.number} waits for you: ${workspace.name}`,
+                ...(row.message ? { detail: row.message } : {}),
+                href: `#/workspaces/${workspace.id}`,
+              },
+            ];
+          }),
+      );
 
       const activeWorker = (workspaceId: string) =>
         agents
@@ -658,6 +680,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       }
 
       workspaces.afterStateChange((workspace) => {
+        homeItems.changed();
         if (workspace.state !== "active") cancelWatchJobs(workspace.id);
         else if (["watching", "waiting"].includes(load(workspace.id)?.watch_state ?? ""))
           startWatch(workspace.id, minInterval);
