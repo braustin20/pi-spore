@@ -1,3 +1,4 @@
+import { AgentsWebKey } from "@pi-spore/mod-agents/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
@@ -41,6 +42,7 @@ import {
 import { Fragment, type SubmitEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { languageOf } from "./highlight.js";
 import { colorHunk, type ShownLine, splitRows } from "./rows.js";
+import { StagedComments } from "./staged.js";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -404,16 +406,19 @@ function CommentsBar({
   comments,
   onDelete,
   onSend,
+  onStage,
   onShow,
 }: {
   comments: readonly DiffComment[];
   onDelete: (id: string) => void;
   onSend: () => Promise<void>;
+  onStage: () => void;
   onShow: (path: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   if (comments.length === 0) return null;
+  const staged = comments.filter((comment) => comment.staged).length;
   return (
     <div className="shrink-0 border-t border-line bg-panel">
       <div className="flex items-center gap-2 px-3 py-2">
@@ -424,8 +429,15 @@ function CommentsBar({
           onClick={() => setOpen(!open)}
         >
           {comments.length} comment{comments.length === 1 ? "" : "s"} for the agent
+          {staged > 0 && ` (${staged} in the composer)`}
         </button>
         <span className="flex-1" />
+        {staged < comments.length && (
+          <Button variant="secondary" size="sm" onClick={onStage}>
+            <MessageSquarePlus />
+            Add to composer
+          </Button>
+        )}
         <Button
           variant="primary"
           size="sm"
@@ -440,7 +452,7 @@ function CommentsBar({
           }}
         >
           <Send />
-          Send to agent
+          Send now
         </Button>
       </div>
       {open && (
@@ -551,15 +563,29 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
     };
   }, [api, base, query, selected, ready, generation]);
 
-  useEffect(
-    () =>
-      api.subscribe(`changes:${workspace.id}`, (raw) => {
-        const event = parse(ChangesEvent, raw, "changes event");
-        if (event.type === "comments") setComments(event.comments);
-        else setGeneration((value) => value + 1);
-      }),
-    [api, workspace.id],
-  );
+  useEffect(() => {
+    let live = true;
+    let newer = false;
+    // The socket sends a snapshot to the first listener of a topic only, so load the comments here too. An event
+    // that comes first is newer than the load.
+    api
+      .get(`${base}/comments`)
+      .then((body) => {
+        if (live && !newer) setComments(parse(DiffCommentList, body, "comments").comments);
+      })
+      .catch((caught: unknown) => live && setError(message(caught)));
+    const unsubscribe = api.subscribe(`changes:${workspace.id}`, (raw) => {
+      const event = parse(ChangesEvent, raw, "changes event");
+      if (event.type === "comments") {
+        newer = true;
+        setComments(event.comments);
+      } else setGeneration((value) => value + 1);
+    });
+    return () => {
+      live = false;
+      unsubscribe();
+    };
+  }, [api, base, workspace.id]);
 
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
 
@@ -579,6 +605,13 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
     api
       .send("DELETE", `changes/comments/${id}`)
       .then(() => setComments((current) => current.filter((comment) => comment.id !== id)))
+      .catch((caught: unknown) => setError(message(caught)));
+  };
+
+  const stageAll = () => {
+    api
+      .send("POST", `${base}/comments/stage`, { staged: true })
+      .then((body) => setComments(parse(DiffCommentList, body, "comments").comments))
       .catch((caught: unknown) => setError(message(caught)));
   };
 
@@ -729,6 +762,7 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
         comments={comments}
         onDelete={deleteComment}
         onSend={send}
+        onStage={stageAll}
         onShow={setSelected}
       />
     </div>
@@ -737,9 +771,10 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
 
 export const changesWeb: WebModule = {
   id: "changes",
-  requires: ["workspaces"],
+  requires: ["workspaces", "agents"],
   core: false,
   setup(host) {
+    host.use(AgentsWebKey).addChatPanel("changes-comments", StagedComments);
     host.use(WorkspaceViewKey).addTab({
       id: "changes",
       title: "Changes",

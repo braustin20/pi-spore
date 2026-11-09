@@ -1,5 +1,5 @@
 import { type BridgeCaller, defineInterface } from "@pi-spore/module-api";
-import type { Approval, FileQuestionRequest, Question } from "@pi-spore/shared";
+import type { Approval, FileQuestionRequest, HomeNotice, Question } from "@pi-spore/shared";
 import type { Static, TSchema } from "typebox";
 
 /** Questions agents file for the user (R3.5, ADR 0008), for the bridge module. */
@@ -41,3 +41,16 @@ export interface Approvals {
 }
 
 export const ApprovalsKey = defineInterface<Approvals>("attention", "approvals");
+
+/** Reads the items one module adds to Home. Runs each time the inbox is built, so it returns what is true now. */
+export type HomeSource = () => HomeNotice[] | Promise<HomeNotice[]>;
+
+/** Items from other modules on Home (ADR 0155). A source has no state in attention: the module owns the condition. */
+export interface HomeItems {
+  /** `name` is the source's key in the inbox, such as `github-pr`. Registering a name twice throws. */
+  register(name: string, source: HomeSource): void;
+  /** Builds and pushes the inbox on the next tick. Call it when a source's items change. */
+  changed(): void;
+}
+
+export const HomeItemsKey = defineInterface<HomeItems>("attention", "home-items");

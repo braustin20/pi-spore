@@ -1,5 +1,5 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { Agent, AgentDialog, StageRole, Workspace } from "@pi-spore/shared";
+import type { Agent, AgentDialog, AgentRole, StageRole, Workspace } from "@pi-spore/shared";
 import type { RoleDefaults } from "./launch.js";
 
 /** What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers. */
@@ -72,6 +72,11 @@ export interface Agents {
   rename(agentId: string, title: string): void;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
+  /**
+   * The session file and role of each agent of the workspace that has a session, oldest first, so a reader of
+   * session files can tell which role used the tokens in each (R18.2).
+   */
+  sessionRoles(workspaceId: string): { sessionFile: string; role: AgentRole }[];
   /** Every agent (chat) of the workspace, closed ones too, oldest first. */
   inWorkspace(workspaceId: string): Agent[];
   /**
@@ -114,6 +119,13 @@ export interface Agents {
    * agent.
    */
   addLaunchContext(hook: LaunchHook): void;
+  /**
+   * Runs for each prompt of a chat, inside a `store.transaction`. It returns text to add to the message, or undefined,
+   * and marks what it took as taken in the same transaction. When a hook adds text, the message goes out as a durable
+   * delivery of the whole text, with the prompt's images and steer choice, so the mark and the message commit
+   * together. It must be synchronous.
+   */
+  addPromptHook(hook: (agent: Agent) => string | undefined): void;
 }
 
 export const AgentsKey = defineInterface<Agents>("agents", "agents");

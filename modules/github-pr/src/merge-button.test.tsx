@@ -84,15 +84,23 @@ describe("the Merge button", () => {
     const { button, send } = await render(status());
     expect(button.disabled).toBe(false);
 
-    // happy-dom has no confirm dialog.
-    const confirm = vi.fn(() => false);
-    window.confirm = confirm;
+    const dialogButton = (label: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>("[role=alertdialog] button")].find(
+        (candidate) => candidate.textContent === label,
+      );
     await act(async () => button.click());
-    expect(confirm).toHaveBeenCalledWith("Merge #12 into main with a merge commit?");
+    expect(document.querySelector("[role=alertdialog]")?.textContent).toContain(
+      "Merge #12 into main with a merge commit?",
+    );
+    const cancel = dialogButton("Cancel");
+    if (!cancel) throw new Error("the dialog has no Cancel button");
+    await act(async () => cancel.click());
     expect(send).not.toHaveBeenCalled();
 
-    confirm.mockReturnValue(true);
     await act(async () => button.click());
+    const merge = dialogButton("Merge");
+    if (!merge) throw new Error("the dialog has no Merge button");
+    await act(async () => merge.click());
     expect(send).toHaveBeenCalledWith("POST", "github-pr/workspaces/W1/merge", {
       confirm: true,
       headId,

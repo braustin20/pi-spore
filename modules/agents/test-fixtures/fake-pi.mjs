@@ -39,7 +39,8 @@
 // refuses to be combined with `--session`, as Pi does.
 // Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env, cwd, pid} for assertions;
 // FAKE_PI_MODELS=broken answers get_available_models with a payload that is not a model list.
-import { appendFileSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+// A `.fake-pi-hold-turn` file in the workspace holds accepted prompts before their first event until removed.
+import { appendFileSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { FAKE_PNG } from "./png.mjs";
 
@@ -371,6 +372,19 @@ async function run(text, images = []) {
   abortRun = () => {
     aborted = true;
   };
+  const gate = join(process.cwd(), ".fake-pi-hold-turn");
+  if (existsSync(gate)) {
+    await new Promise((resolve) => {
+      const released = () => {
+        if (!existsSync(gate)) {
+          watcher.close();
+          resolve();
+        }
+      };
+      const watcher = watch(process.cwd(), released);
+      released();
+    });
+  }
   write({ type: "agent_start" });
   const user = {
     role: "user",

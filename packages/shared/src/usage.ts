@@ -1,4 +1,5 @@
 import Type, { type Static } from "typebox";
+import { AgentRole } from "./agents.js";
 
 /** One plan window as the Usage screen shows it (R18.1). */
 export const UsageWindow = Type.Object({
@@ -43,12 +44,17 @@ export const UsagePlansResponse = Type.Object({
 });
 export type UsagePlansResponse = Static<typeof UsagePlansResponse>;
 
-/** Token use of one model in one workspace (R18.2). */
+/** Token use of one model by one role in one workspace, or in a plain Pi session (R18.2, R18.3). */
 export const TokenUseRow = Type.Object({
   projectId: Type.Optional(Type.String()),
   projectName: Type.String(),
-  workspaceId: Type.String(),
+  /** Missing for a plain Pi session, which belongs to no workspace. */
+  workspaceId: Type.Optional(Type.String()),
   workspaceName: Type.String(),
+  /** The agent's role from its launch record. Missing for a plain Pi session and for one whose agent is gone. */
+  role: Type.Optional(AgentRole),
+  /** Seen in a plain Pi session outside pi-spore (R18.3). */
+  external: Type.Boolean(),
   provider: Type.String(),
   model: Type.String(),
   /** A local model: free, whatever the session file says. */

@@ -10,8 +10,8 @@ import {
 } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { projectsModule } from "@pi-spore/mod-projects/server";
-import { unityModule } from "@pi-spore/mod-unity/server";
+import { ProjectsKey, projectsModule } from "@pi-spore/mod-projects/server";
+import { unityTrait } from "@pi-spore/mod-unity/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import type { ServerModule } from "@pi-spore/module-api";
@@ -30,7 +30,15 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { reduceWorkspaceList } from "./list.js";
 import { type Workspaces, WorkspacesKey, workspacesModule } from "./server.js";
 
-const ALL = [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, unityModule];
+/** Only the Unity trait: the full unity module also needs the actions, artifacts, and attention modules. */
+const unityTraitModule: ServerModule = {
+  id: "unity",
+  requires: ["projects"],
+  core: false,
+  setup: (host) => host.use(ProjectsKey).registerTrait(unityTrait),
+};
+
+const ALL = [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, unityTraitModule];
 
 let server: TestServer;
 let scratch: string;
@@ -206,7 +214,7 @@ describe("project config", () => {
   it.each([
     ['[agents.worker]\nmodel = "x"\n', 'sets "agents.worker.model"'],
     ["[worktree\n", "not valid TOML"],
-    ["[worktree]\ncopi = []\n", "Invalid"],
+    ["[worktree]\ncopi = []\n", 'unknown key "worktree.copi"'],
   ])("rejects a bad project file: %j", async (text, message) => {
     const repo = makeUnityRepo();
     mkdirSync(join(repo, ".pi-spore"));

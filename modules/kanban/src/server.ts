@@ -1,5 +1,5 @@
 import { AgentsKey } from "@pi-spore/mod-agents/server";
-import { ApprovalsKey } from "@pi-spore/mod-attention/server";
+import { ApprovalsKey, HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
@@ -26,6 +26,7 @@ import {
   UpdateCardRequest,
   type Workspace,
 } from "@pi-spore/shared";
+import { dueState, localDay } from "./board.js";
 import { type Cards, CardsKey } from "./contract.js";
 
 export * from "./contract.js";
@@ -172,6 +173,7 @@ export const kanbanModule: ServerModule = {
     const workspaces = host.use(WorkspacesKey);
     const agents = host.use(AgentsKey);
     const approvals = host.use(ApprovalsKey);
+    const homeItems = host.use(HomeItemsKey);
     const runs = host.use(RunsKey);
 
     const load = (id: string): CardRow => {
@@ -265,7 +267,25 @@ export const kanbanModule: ServerModule = {
     const publish = () => {
       const event: BoardEvent = { type: "board", cards: listCards({}) };
       host.events.publish(BOARD_TOPIC, event);
+      homeItems.changed();
     };
+    // R15.1: a card that is past due or due today waits for the user until it is done. Days are local, as on the board.
+    homeItems.register("kanban", () => {
+      const today = localDay(new Date(host.now()));
+      return listCards({}).flatMap((card) => {
+        const state = dueState(card, today);
+        if (!state || card.due === undefined) return [];
+        return [
+          {
+            id: card.id,
+            at: new Date(`${card.due}T00:00:00`).getTime(),
+            title: `${state === "overdue" ? "Overdue" : "Due today"}: ${card.title}`,
+            detail: `Due ${card.due}`,
+            href: `#/board/${card.id}`,
+          },
+        ];
+      });
+    });
     host.events.onSubscribe(BOARD_TOPIC, (): BoardEvent[] => [
       { type: "board", cards: listCards({}) },
     ]);

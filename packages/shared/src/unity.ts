@@ -1,4 +1,5 @@
 import Type, { type Static } from "typebox";
+import { ActionRunStatus } from "./actions.js";
 
 /** How pi-spore saw an editor: `unity status`, a process with `-projectpath`, the lock file, or only its own lease
  * of an editor that is still starting. */
@@ -43,12 +44,29 @@ export const ProjectEditors = Type.Object({
 });
 export type ProjectEditors = Static<typeof ProjectEditors>;
 
+export const UnityTestMode = Type.Union([Type.Literal("EditMode"), Type.Literal("PlayMode")]);
+export type UnityTestMode = Static<typeof UnityTestMode>;
+
+/** A run of a Unity test gate (R10.6). Its report is a workspace artifact once `unity test` has written one. */
+export const UnityTestRun = Type.Object({
+  /** The action run, whose log has the output. */
+  runId: Type.String(),
+  mode: UnityTestMode,
+  status: ActionRunStatus,
+  createdAt: Type.Integer(),
+  /** Workspace artifact path of the test report. */
+  report: Type.Optional(Type.String()),
+});
+export type UnityTestRun = Static<typeof UnityTestRun>;
+
 export const UnityWorkspaceView = Type.Union([
   Type.Object({ unity: Type.Literal(false) }),
   Type.Object({
     unity: Type.Literal(true),
     editorVersion: Type.String(),
     editors: ProjectEditors,
+    /** The latest gate runs in this workspace, newest first. */
+    tests: Type.Array(UnityTestRun),
   }),
 ]);
 export type UnityWorkspaceView = Static<typeof UnityWorkspaceView>;

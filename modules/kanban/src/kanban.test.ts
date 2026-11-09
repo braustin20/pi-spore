@@ -308,6 +308,59 @@ describe("cards", () => {
   });
 });
 
+describe("Home items (ADR 0155, R15.1)", () => {
+  // The test clock starts at 2023-11-14 22:13 UTC. Due dates are local days, like the board's.
+  const zone = process.env.TZ;
+  const inZone = (name: string) => {
+    process.env.TZ = name;
+  };
+  beforeEach(() => inZone("UTC"));
+  afterEach(() => {
+    if (zone === undefined) delete process.env.TZ;
+    else process.env.TZ = zone;
+  });
+  const home = async () =>
+    (
+      (await json(await server.request("GET", "/api/attention/inbox"))) as {
+        items: { kind: string; source: string; id: string; title: string; href: string }[];
+      }
+    ).items.filter((item) => item.kind === "notice" && item.source === "kanban");
+
+  it("shows overdue and due-today cards, and drops them when moved to done or re-dated", async () => {
+    const late = await addCard({ title: "Late", due: "2023-11-01" });
+    const today = await addCard({ title: "Today", due: "2023-11-14" });
+    await addCard({ title: "Later", due: "2023-11-15" });
+    await addCard({ title: "No date" });
+
+    expect(await home()).toMatchObject([
+      { id: today.id, title: "Due today: Today", href: `#/board/${today.id}` },
+      { id: late.id, title: "Overdue: Late", href: `#/board/${late.id}` },
+    ]);
+
+    await cardCall("POST", `${late.id}/move`, { column: "done" });
+    await cardCall("PATCH", today.id, { due: "2023-11-20" });
+    expect(await home()).toEqual([]);
+  });
+
+  it("counts the due day in the server's local time, as the board does", async () => {
+    // There it is already 2023-11-15 (UTC+14).
+    inZone("Pacific/Kiritimati");
+    const early = await addCard({ title: "Early", due: "2023-11-15" });
+    await addCard({ title: "Tomorrow", due: "2023-11-16" });
+    expect(await home()).toMatchObject([{ id: early.id, title: "Due today: Early" }]);
+  });
+
+  it("pushes the inbox when a card becomes overdue", async () => {
+    await addCard({ title: "Late", due: "2023-11-01" });
+    for (let tries = 0; tries < 200; tries++) {
+      const pushed = server.events.eventsOf("attention:inbox") as { inbox: { items: unknown[] } }[];
+      if (pushed.some((event) => event.inbox.items.length > 0)) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("The inbox with the overdue card was not pushed");
+  });
+});
+
 describe("blockers", () => {
   it("shows card and workspace blockers and clears them when the work ends", async () => {
     const game = await addProject("game");

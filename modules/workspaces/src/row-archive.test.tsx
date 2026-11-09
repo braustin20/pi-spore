@@ -91,15 +91,19 @@ describe("the list row archive button", () => {
     const { list, send } = await render([workspace("a", "active")]);
     const button = archiveButton(list, "Work a") as HTMLButtonElement;
 
-    // happy-dom has no confirm dialog.
-    const confirm = vi.fn(() => false);
-    window.confirm = confirm;
+    const dialogButton = (label: string) =>
+      [...document.querySelectorAll<HTMLButtonElement>("[role=alertdialog] button")].find(
+        (each) => each.textContent === label,
+      );
     await act(async () => button.click());
-    expect(confirm).toHaveBeenCalledOnce();
+    expect(document.querySelector("[role=alertdialog]")?.textContent).toContain(
+      'Archive "Work a"?',
+    );
+    await act(async () => dialogButton("Cancel")?.click());
     expect(send).not.toHaveBeenCalled();
 
-    confirm.mockReturnValue(true);
     await act(async () => button.click());
+    await act(async () => dialogButton("Archive")?.click());
     expect(send).toHaveBeenCalledWith("POST", "workspaces/a/archive", {});
   });
 });

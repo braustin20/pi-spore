@@ -1,11 +1,13 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { agentsModule } from "@pi-spore/mod-agents/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { Question } from "@pi-spore/router";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { CalibrationResponse, parse } from "@pi-spore/shared";
 import { afterEach, describe, expect, it } from "vitest";
+import { fakeAttention } from "./fake-attention.js";
 import { type FakeRun, fakePipelines } from "./fake-pipelines.js";
 import { createUsageModule } from "./server.js";
 
@@ -27,7 +29,14 @@ async function start(records: object[]): Promise<void> {
   const pipelines = fakePipelines();
   end = pipelines.end;
   server = await createTestServer(
-    [pipelines.module, projectsModule, workspacesModule, createUsageModule()],
+    [
+      pipelines.module,
+      fakeAttention,
+      projectsModule,
+      workspacesModule,
+      agentsModule,
+      createUsageModule(),
+    ],
     {},
   );
   mkdirSync(join(server.paths.root, "usage"), { recursive: true });

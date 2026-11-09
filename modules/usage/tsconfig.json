@@ -22,6 +22,12 @@
       "path": "../../pi-extensions/router"
     },
     {
+      "path": "../agents"
+    },
+    {
+      "path": "../attention"
+    },
+    {
       "path": "../pipelines"
     },
     {

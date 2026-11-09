@@ -58,6 +58,7 @@ export {
   BridgeRunLog,
   DeclineRequest,
   FileQuestionRequest,
+  HomeNotice,
   Inbox,
   InboxChat,
   InboxEvent,
@@ -87,6 +88,7 @@ export {
   DiffNote,
   FileDiff,
   SendCommentsResponse,
+  StageCommentsRequest,
 } from "./changes.js";
 export {
   applyPiEvent,
@@ -143,13 +145,14 @@ export {
 } from "./pipelines.js";
 export {
   AddProjectRequest,
-  GlobalSettingsView,
   Project,
   ProjectConfigView,
   ProjectLines,
   ProjectList,
   ProjectTrait,
+  SettingEntry,
   SettingSource,
+  SettingsView,
 } from "./projects.js";
 export {
   MergeRequest,
@@ -202,6 +205,8 @@ export {
   OpenEditor,
   OpenUnityResponse,
   ProjectEditors,
+  UnityTestMode,
+  UnityTestRun,
   UnityWorkspaceView,
 } from "./unity.js";
 export {

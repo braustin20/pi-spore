@@ -16,6 +16,7 @@ import {
   Checkbox,
   Chip,
   CollapsibleSection,
+  type Confirm,
   cn,
   EmptyState,
   Field,
@@ -32,6 +33,7 @@ import {
   TabsList,
   TabsTrigger,
   Tooltip,
+  useConfirm,
   useStoredFlag,
 } from "@pi-spore/ui";
 import {
@@ -229,10 +231,20 @@ function CreateForm({
 }
 
 /** Archives after a confirm. Returns the step notes, or undefined when the user says no. */
-async function archiveWorkspace(api: ApiClient, workspace: Workspace): Promise<Note[] | undefined> {
+async function archiveWorkspace(
+  api: ApiClient,
+  confirm: Confirm,
+  workspace: Workspace,
+): Promise<Note[] | undefined> {
   const what =
     workspace.isolation === "in-place" ? "" : " Its copy will be removed; the branch stays.";
-  if (!window.confirm(`Archive "${workspace.name}"?${what}`)) return undefined;
+  const yes = await confirm({
+    title: "Archive workspace?",
+    message: `Archive "${workspace.name}"?${what}`,
+    confirmLabel: "Archive",
+    tone: "danger",
+  });
+  if (!yes) return undefined;
   const send = async (force: boolean) =>
     parse(
       ArchiveWorkspaceResponse,
@@ -250,7 +262,13 @@ async function archiveWorkspace(api: ApiClient, workspace: Workspace): Promise<N
           ? "Archive anyway? This also deletes any uncommitted work in the copy."
           : undefined;
     if (!question) throw caught;
-    if (!window.confirm(`${(caught as Error).message}\n\n${question}`)) return undefined;
+    const force = await confirm({
+      title: "Archive failed",
+      message: `${(caught as Error).message}\n\n${question}`,
+      confirmLabel: "Archive anyway",
+      tone: "danger",
+    });
+    if (!force) return undefined;
     return (await send(true)).steps.map(stepNote);
   }
 }
@@ -431,6 +449,7 @@ function Details({
   const [renaming, setRenaming] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const { confirm, dialog } = useConfirm();
 
   const act = (promise: Promise<unknown>) => {
     setBusy(true);
@@ -456,7 +475,7 @@ function Details({
     setBusy(true);
     setError(undefined);
     try {
-      const notes = await archiveWorkspace(api, workspace);
+      const notes = await archiveWorkspace(api, confirm, workspace);
       if (notes) onNotes(notes);
     } catch (caught) {
       setError(message(caught));
@@ -469,6 +488,7 @@ function Details({
     workspace.state === "active" ? "ok" : workspace.state === "parked" ? "warn" : "neutral";
   return (
     <CollapsibleSection title="Workspace">
+      {dialog}
       <div className="flex flex-col gap-3 text-sm">
         {renaming === undefined ? (
           <div className="text-base font-medium [overflow-wrap:anywhere]">{workspace.name}</div>
@@ -638,6 +658,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
   const [workspaces, setWorkspaces] = useState<Workspace[] | undefined>();
   const [notes, setNotes] = useState<Note[]>([]);
   const [error, setError] = useState<string | undefined>();
+  const { confirm, dialog } = useConfirm();
   const [listOpen, setListOpen] = useStoredFlag("pi-spore.workspaces.list", true);
   const [rightOpen, setRightOpen] = useStoredFlag(
     "pi-spore.workspaces.details",
@@ -715,6 +736,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
 
   return (
     <div className="flex h-full min-h-0">
+      {dialog}
       {listOpen ? (
         <WorkspaceListColumn
           workspaces={workspaces}
@@ -724,7 +746,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           error={error}
           onCollapse={() => setListOpen(false)}
           onArchive={(target) =>
-            void archiveWorkspace(api, target).then(
+            void archiveWorkspace(api, confirm, target).then(
               (result) => result && setNotes(result),
               (caught: unknown) => setNotes([{ text: message(caught), error: true }]),
             )

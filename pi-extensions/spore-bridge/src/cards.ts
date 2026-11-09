@@ -4,7 +4,7 @@
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Type, { type Static } from "typebox";
-import type { BridgeClient } from "./client.js";
+import type { BridgeClient, BridgeEnv } from "./client.js";
 
 /**
  * `{ type: "string", enum: [...] }`, the enum shape every model provider accepts; a union of literals becomes
@@ -87,7 +87,7 @@ const BlockedBy = Type.Array(Type.String({ minLength: 1 }), {
   description: "Ids of cards that must be done first",
 });
 
-export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void {
+export function registerCardTools(pi: ExtensionAPI, client: BridgeClient, env: BridgeEnv): void {
   pi.registerTool({
     name: "kanban_list_cards",
     label: "List cards",
@@ -130,7 +130,9 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
       "that you added it.",
     promptSnippet: "Add a kanban card to this project",
     promptGuidelines: [
-      "Use kanban_add_card and kanban_update_card only when the user asks for cards or card changes.",
+      env.runRole === "coordinator"
+        ? "Use kanban_add_card for follow-up work that is out of scope for the lanes, once per item, after kanban_list_cards."
+        : "Use kanban_add_card and kanban_update_card only when the user asks for cards or card changes.",
       "When the user asks to turn a plan with phases into cards, call kanban_add_card once per phase, in order. Give every card the same label plan:<short name>, and set blockedBy of each phase to the id of the phase before it.",
     ],
     parameters: Type.Object({
@@ -151,6 +153,9 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient): void 
       return { content: text(`Added card ${cardLine(card)}`), details: { cardId: card.id } };
     },
   });
+
+  // ADR 0154: a run's coordinator lists and adds cards; the user changes and starts them.
+  if (env.runRole === "coordinator") return;
 
   pi.registerTool({
     name: "kanban_update_card",
