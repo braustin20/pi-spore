@@ -205,12 +205,11 @@ export const projectsModule: ServerModule = {
 
     // The router parses its own keys, so the page shows them through the router (R17.1).
     host.routes.get("/settings", async (c) => {
-      const [resolved, routerEntries] = await Promise.all([
-        host.settings.resolve(),
-        routerSettingEntries(host.home.root).catch((error: unknown) => {
-          throw new ApiError(422, "bad_settings", (error as Error).message);
-        }),
-      ]);
+      // One after the other: both parsers refuse some files, and the server's message must win every time.
+      const resolved = await host.settings.resolve();
+      const routerEntries = await routerSettingEntries(host.home.root).catch((error: unknown) => {
+        throw new ApiError(422, "bad_settings", (error as Error).message);
+      });
       const settings = [...resolved.entries(), ...routerEntries].sort((a, b) =>
         a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
       );
