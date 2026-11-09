@@ -36,11 +36,18 @@ export function usePane(): string | undefined {
   return useSyncExternalStore(subscribeHash, () => splitHash(window.location.hash).pane);
 }
 
-let openedHash: string | undefined;
+/** The path whose pane `openPane` opened, so `closePane` knows the history entry before it is ours. */
+let openedOn: string | undefined;
 
 export function openPane(pane: string): void {
-  window.location.hash = paneHref(splitHash(window.location.hash).path, pane);
-  openedHash = window.location.hash;
+  const { path } = splitHash(window.location.hash);
+  window.location.hash = paneHref(path, pane);
+  openedOn = path;
+}
+
+/** Shows another pane on the same page without a new history entry, so Back still leaves the pane in one step. */
+export function switchPane(pane: string): void {
+  window.location.replace(paneHref(splitHash(window.location.hash).path, pane));
 }
 
 /**
@@ -48,10 +55,11 @@ export function openPane(pane: string): void {
  * pane came from a link, that entry is not ours: going back could leave the site, so the hash is replaced instead.
  */
 export function closePane(): void {
-  if (openedHash !== undefined && window.location.hash === openedHash) {
-    openedHash = undefined;
+  const { path, pane } = splitHash(window.location.hash);
+  if (pane !== undefined && openedOn === path) {
+    openedOn = undefined;
     window.history.back();
     return;
   }
-  window.location.replace(paneHref(splitHash(window.location.hash).path, undefined));
+  window.location.replace(paneHref(path, undefined));
 }

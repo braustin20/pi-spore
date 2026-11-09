@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { defaultWidths, layoutPanels } from "./panel-layout.js";
+import { defaultWidths, layoutPanels, phonePane } from "./panel-layout.js";
 
 describe("layoutPanels", () => {
   it("keeps the chosen widths when they fit", () => {
@@ -58,5 +58,28 @@ describe("defaultWidths", () => {
   it("matches the old fixed widths, a step wider on large windows", () => {
     expect(defaultWidths(1279)).toEqual({ list: 256, right: 320 });
     expect(defaultWidths(1280)).toEqual({ list: 288, right: 352 });
+  });
+});
+
+describe("phonePane", () => {
+  const tabIds = ["details", "changes"];
+
+  it("shows the middle pane when no pane is open", () => {
+    expect(phonePane({ pane: undefined, tabIds, hasWorkspace: true })).toBe("main");
+  });
+
+  it("shows the list drawer for pane=list, with or without a workspace", () => {
+    expect(phonePane({ pane: "list", tabIds, hasWorkspace: true })).toBe("list");
+    expect(phonePane({ pane: "list", tabIds, hasWorkspace: false })).toBe("list");
+  });
+
+  it("shows a known tab as a sheet when a workspace is selected", () => {
+    expect(phonePane({ pane: "changes", tabIds, hasWorkspace: true })).toEqual({ tab: "changes" });
+    expect(phonePane({ pane: "details", tabIds, hasWorkspace: true })).toEqual({ tab: "details" });
+  });
+
+  it("shows the middle pane for a tab without a workspace, or for an unknown pane", () => {
+    expect(phonePane({ pane: "changes", tabIds, hasWorkspace: false })).toBe("main");
+    expect(phonePane({ pane: "nope", tabIds, hasWorkspace: true })).toBe("main");
   });
 });

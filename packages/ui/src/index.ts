@@ -34,6 +34,7 @@ export {
   PHONE_QUERY,
   paneHref,
   splitHash,
+  switchPane,
   usePane,
   usePhone,
 } from "./phone.js";

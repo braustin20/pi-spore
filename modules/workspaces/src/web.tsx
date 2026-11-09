@@ -17,30 +17,37 @@ import {
   Chip,
   CollapsibleSection,
   type Confirm,
+  closePane,
   cn,
   EmptyState,
   Field,
   Input,
   ListRow,
   Notice,
+  openPane,
   Panel,
   PanelHeader,
   ResizeHandle,
   SectionLabel,
   Select,
   StatusLine,
+  switchPane,
   Tabs,
   TabsContent,
   TabsList,
   TabsTrigger,
   Tooltip,
   useConfirm,
+  usePane,
+  usePhone,
   useStoredFlag,
   useStoredWidth,
   useWindowWidth,
 } from "@pi-spore/ui";
 import {
+  ArrowLeft,
   Layers,
+  Menu,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -50,7 +57,7 @@ import {
 } from "lucide-react";
 import { type ComponentType, type ReactNode, type SubmitEvent, useEffect, useState } from "react";
 import { ago, groupByProject, reduceWorkspaceList } from "./list.js";
-import { defaultWidths, layoutPanels, type PanelSize } from "./panel-layout.js";
+import { defaultWidths, layoutPanels, type PanelSize, phonePane } from "./panel-layout.js";
 import {
   type CreateWorkspaceFormProps,
   type UseWorkspaceStatus,
@@ -296,7 +303,7 @@ function WorkspaceRow({
       <ListRow href={`#/workspaces/${workspace.id}`} selected={selected}>
         <div className="flex items-baseline gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{workspace.name}</span>
-          <span className="shrink-0 font-mono text-[11px] text-muted group-focus-within:invisible group-hover:invisible">
+          <span className="shrink-0 font-mono text-[11px] text-muted group-focus-within:invisible group-hover:invisible touch:invisible">
             {ago(workspace.updatedAt, now)}
           </span>
         </div>
@@ -315,7 +322,7 @@ function WorkspaceRow({
             variant="ghost"
             size="icon-sm"
             aria-label={`Archive ${workspace.name}`}
-            className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100"
+            className="absolute top-1.5 right-1.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 focus-visible:opacity-100 touch:opacity-100"
             onClick={onArchive}
           >
             <X />
@@ -333,6 +340,7 @@ function WorkspaceListColumn({
   projectId,
   error,
   size,
+  phone,
   onResize,
   onResetWidth,
   onCollapse,
@@ -344,6 +352,7 @@ function WorkspaceListColumn({
   projectId: string | undefined;
   error: string | undefined;
   size: PanelSize;
+  phone: boolean;
   onResize: (width: number) => void;
   onResetWidth: () => void;
   onCollapse: () => void;
@@ -357,16 +366,21 @@ function WorkspaceListColumn({
   return (
     <aside
       aria-label="Workspaces"
-      style={{ width: size.width }}
-      className="relative flex shrink-0 flex-col border-r border-line bg-panel"
+      style={{ width: phone ? "min(20rem, 85vw)" : size.width }}
+      className={cn(
+        "relative flex shrink-0 flex-col border-r border-line bg-panel",
+        phone && "absolute inset-y-0 left-0 z-30 shadow-lg",
+      )}
     >
-      <ResizeHandle
-        label="Resize the workspace list"
-        {...size}
-        grow={1}
-        onChange={onResize}
-        onReset={onResetWidth}
-      />
+      {!phone && (
+        <ResizeHandle
+          label="Resize the workspace list"
+          {...size}
+          grow={1}
+          onChange={onResize}
+          onReset={onResetWidth}
+        />
+      )}
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
         <SectionLabel className="flex-1">Workspaces</SectionLabel>
         <Tooltip label="New workspace" side="bottom">
@@ -376,11 +390,17 @@ function WorkspaceListColumn({
             </a>
           </Button>
         </Tooltip>
-        <Tooltip label="Hide the list" side="bottom">
-          <Button variant="ghost" size="icon-sm" aria-label="Hide the list" onClick={onCollapse}>
-            <PanelLeftClose />
+        {phone ? (
+          <Button variant="ghost" size="icon-sm" aria-label="Close the list" onClick={closePane}>
+            <X />
           </Button>
-        </Tooltip>
+        ) : (
+          <Tooltip label="Hide the list" side="bottom">
+            <Button variant="ghost" size="icon-sm" aria-label="Hide the list" onClick={onCollapse}>
+              <PanelLeftClose />
+            </Button>
+          </Tooltip>
+        )}
       </div>
       {projectId && (
         <div className="flex items-center gap-1.5 px-4 pt-3">
@@ -576,12 +596,21 @@ function Details({
   );
 }
 
+/** "Details", then the module tabs in their order. */
+function orderedTabs(): { id: string; title: string }[] {
+  return [
+    { id: "details", title: "Details" },
+    ...[...tabs].sort((a, b) => a.order - b.order).map(({ id, title }) => ({ id, title })),
+  ];
+}
+
 function RightColumn({
   workspace,
   project,
   tab,
   onTab,
   size,
+  phone,
   onResize,
   onResetWidth,
   onNotes,
@@ -592,6 +621,7 @@ function RightColumn({
   tab: string;
   onTab: (tab: string) => void;
   size: PanelSize;
+  phone: boolean;
   onResize: (width: number) => void;
   onResetWidth: () => void;
   onNotes: (notes: Note[]) => void;
@@ -601,18 +631,33 @@ function RightColumn({
   return (
     <aside
       aria-label="Workspace details"
-      style={{ width: size.width }}
-      className="relative flex shrink-0 flex-col border-l border-line bg-panel"
+      style={phone ? undefined : { width: size.width }}
+      className={cn(
+        "relative flex shrink-0 flex-col border-l border-line bg-panel",
+        phone && "absolute inset-0 z-40 border-l-0",
+      )}
     >
-      <ResizeHandle
-        label="Resize the details"
-        {...size}
-        grow={-1}
-        onChange={onResize}
-        onReset={onResetWidth}
-      />
+      {!phone && (
+        <ResizeHandle
+          label="Resize the details"
+          {...size}
+          grow={-1}
+          onChange={onResize}
+          onReset={onResetWidth}
+        />
+      )}
       <Tabs value={tab} onValueChange={onTab} className="min-h-0 flex-1">
-        <div className="flex h-11 shrink-0 items-end border-b border-line pr-2">
+        <div
+          className={cn(
+            "flex h-11 shrink-0 items-end border-b border-line pr-2",
+            phone && "items-center pl-1",
+          )}
+        >
+          {phone && (
+            <Button variant="ghost" size="icon-sm" aria-label="Back" onClick={closePane}>
+              <ArrowLeft />
+            </Button>
+          )}
           <TabsList className="min-w-0 flex-1 overflow-x-auto border-b-0">
             <TabsTrigger value="details">Details</TabsTrigger>
             {sortedTabs.map((extra) => (
@@ -621,17 +666,19 @@ function RightColumn({
               </TabsTrigger>
             ))}
           </TabsList>
-          <Tooltip label="Hide details" side="bottom">
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label="Hide details"
-              onClick={onCollapse}
-              className="mb-2"
-            >
-              <PanelRightClose />
-            </Button>
-          </Tooltip>
+          {!phone && (
+            <Tooltip label="Hide details" side="bottom">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Hide details"
+                onClick={onCollapse}
+                className="mb-2"
+              >
+                <PanelRightClose />
+              </Button>
+            </Tooltip>
+          )}
         </div>
         <TabsContent value="details" className="overflow-y-auto">
           {/* Keyed by id, so a rename or error of one workspace does not carry over to the next. */}
@@ -703,6 +750,8 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
     defaults.right,
   );
   const [tab, setTab] = useState("details");
+  const phone = usePhone();
+  const pane = usePane();
 
   useEffect(() => {
     api
@@ -725,6 +774,14 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
 
   const workspace = workspaces?.find((candidate) => candidate.id === selectedId);
   const project = projects.find((candidate) => candidate.id === workspace?.projectId);
+  const paneTabs = orderedTabs();
+  const shown = phone
+    ? phonePane({
+        pane,
+        tabIds: paneTabs.map((candidate) => candidate.id),
+        hasWorkspace: workspace !== undefined,
+      })
+    : "main";
   const wide = tabs.find((candidate) => candidate.id === tab)?.wide === true;
   const layout = layoutPanels({
     window: windowWidth,
@@ -780,31 +837,64 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
     );
   }
 
+  const listColumn = (
+    <WorkspaceListColumn
+      workspaces={workspaces}
+      projects={projects}
+      selectedId={selectedId}
+      projectId={projectId}
+      error={error}
+      size={layout.list}
+      phone={phone}
+      onResize={setListWidth}
+      onResetWidth={() => setListWidth(defaults.list)}
+      onCollapse={() => setListOpen(false)}
+      onArchive={(target) =>
+        void archiveWorkspace(api, confirm, target).then(
+          (result) => result && setNotes(result),
+          (caught: unknown) => setNotes([{ text: message(caught), error: true }]),
+        )
+      }
+    />
+  );
+
   return (
-    <div className="flex h-full min-h-0">
+    <div className={cn("flex h-full min-h-0", phone && "relative")}>
       {dialog}
-      {listOpen ? (
-        <WorkspaceListColumn
-          workspaces={workspaces}
-          projects={projects}
-          selectedId={selectedId}
-          projectId={projectId}
-          error={error}
-          size={layout.list}
-          onResize={setListWidth}
-          onResetWidth={() => setListWidth(defaults.list)}
-          onCollapse={() => setListOpen(false)}
-          onArchive={(target) =>
-            void archiveWorkspace(api, confirm, target).then(
-              (result) => result && setNotes(result),
-              (caught: unknown) => setNotes([{ text: message(caught), error: true }]),
-            )
-          }
-        />
-      ) : (
-        <CollapsedColumn label="Show the list" side="left" onExpand={() => setListOpen(true)} />
-      )}
+      {!phone &&
+        (listOpen ? (
+          listColumn
+        ) : (
+          <CollapsedColumn label="Show the list" side="left" onExpand={() => setListOpen(true)} />
+        ))}
       <div className="flex min-w-0 flex-1 flex-col">
+        {phone && (
+          <div className="flex h-11 shrink-0 items-center border-b border-line">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Workspaces"
+              onClick={() => openPane("list")}
+            >
+              <Menu />
+            </Button>
+            {workspace && (
+              <div className="flex min-w-0 flex-1 gap-1 overflow-x-auto pr-2 [scrollbar-width:none]">
+                {paneTabs.map((candidate) => (
+                  <Button
+                    key={candidate.id}
+                    variant="ghost"
+                    size="sm"
+                    className="shrink-0"
+                    onClick={() => openPane(candidate.id)}
+                  >
+                    {candidate.title}
+                  </Button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
         {notes.length > 0 && (
           <div className="flex shrink-0 flex-col gap-1.5 border-b border-line px-4 py-3">
             {notes.map((note) => (
@@ -821,7 +911,33 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
         )}
         <div className="min-h-0 flex-1">{middle}</div>
       </div>
-      {workspace &&
+      {phone && shown === "list" && (
+        <>
+          <button
+            type="button"
+            aria-label="Close the list"
+            className="absolute inset-0 z-20 bg-bg/60"
+            onClick={closePane}
+          />
+          {listColumn}
+        </>
+      )}
+      {phone && workspace && typeof shown === "object" && (
+        <RightColumn
+          workspace={workspace}
+          project={project}
+          tab={shown.tab}
+          onTab={switchPane}
+          size={layout.right}
+          phone
+          onResize={setRightWidth}
+          onResetWidth={() => setRightWidth(defaults.right)}
+          onNotes={setNotes}
+          onCollapse={() => setRightOpen(false)}
+        />
+      )}
+      {!phone &&
+        workspace &&
         (rightOpen ? (
           <RightColumn
             workspace={workspace}
@@ -829,6 +945,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
             tab={tab}
             onTab={setTab}
             size={layout.right}
+            phone={false}
             onResize={setRightWidth}
             onResetWidth={() => setRightWidth(defaults.right)}
             onNotes={setNotes}
