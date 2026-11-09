@@ -419,7 +419,8 @@ interface ChangeOps {
 ## 8. Pipelines
 
 See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
-[ADR 0016](decisions/0016-fail-first-proof.md), and [ADR 0140](decisions/0140-pipeline-stage-agents.md).
+[ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md), and
+[ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md).
 Requirements R6, R4.4, R4.9.
 
 The `pipelines` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`,
@@ -457,10 +458,35 @@ gates = ["check", "test"] # action names from config.toml
 fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 ```
 
+A built-in `revise` is used the same way when no file has id `revise`. The runs module starts it for `revise_lane`
+(ADR 0158):
+
+```toml
+id = "revise"
+
+[[stage]]
+name = "fix"
+role = "worker"
+worker = "reuse"          # the worker of the previous run gets the brief; no new agent
+
+[[stage]]
+name = "review"
+role = "reviewer"
+rounds = 1
+fix_passes = 1            # a REVISE gets one last fix, with no review after it
+min_strength_over = "fix"
+
+[[stage]]
+name = "gates"
+gates = ["check", "test"]
+fail_first = "artifact"
+```
+
 - Checks: unknown keys, keys of the other stage kind, and bad values are 422 `bad_pipeline` naming the file. The
   first stage, and only it, is the `worker` stage. A stage sets `model` (`provider/id`) or `tier`, or neither (the
   role default). Only `tier = "route"` is built; other tiers are an error that says so. `model` is refused in
-  project files (R17.3). `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
+  project files (R17.3). `worker = "reuse"` is allowed only on the worker stage, and not with `model` or `tier`.
+  `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
   built (R6.1); it comes from the role default.
 - `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
   never falls back to the built-in one.
@@ -468,6 +494,14 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   stores the file's SHA-256, its parsed stages (an edit never changes a running run), the brief, and the asking chat
   (the active orchestrator chat). One run per workspace is `running` or `waiting_user` (409 `pipeline_running`).
   States: `running`, `waiting_user`, `passed`, `failed`, `stopped`.
+- **Reuse** (ADR 0158). `PipelinesKey.start` takes `previousRunId`, a run of the same workspace with a worker. A
+  pipeline whose worker stage has `worker = "reuse"` needs it (400 otherwise), refuses `workerModel`, and any other
+  pipeline refuses `previousRunId`. The run stores it and the workspace head at start (`fix_base`). Its worker stage
+  makes no agent: the previous run's worker gets the brief as its task turn. Its reviewers also get a fix diff
+  `pipelines/<run>/<stage>-<r>-fix.diff` (commits since `fix_base`, then uncommitted and untracked files) and the
+  previous run's last review, and are told to check that the brief's asks are met and nothing broke, with the same
+  REVISE rule as round 2. Runs never stop their agents, and a delivery starts a stopped one. `PipelinesKey.get`
+  returns a run's view, with `workerAgentId`.
 - **Stage jobs.** Each stage is a `pipelines.stage` job keyed by the workspace. Steps: `advance` (start the next
   turn), `await` (wait for its report), `decide` (apply the verdict), `gate`, and `finish` (start the next stage's
   job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
@@ -590,8 +624,11 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
     worker model); `await` waits; `report` writes the lane diff to `runs/<run>/lanes/<lane>.diff` in the run
     workspace and delivers it to the coordinator, or delivers the failure.
   - `afterRunEnded` moves the lane to `passed` or `failed` in the pipeline's own transaction.
-  - `revise_lane` sends a `passed` or `failed` lane back with a new brief; a new pipeline run starts in the same lane
-    workspace (409 `lane_not_revisable` otherwise). It is the answer to a conflict or a red gate.
+  - `revise_lane` sends a `passed` or `failed` lane back with a new brief (409 `lane_not_revisable` otherwise). It
+    is the answer to a conflict, a red gate, or a cut. `launch` starts the built-in `revise` pipeline with the
+    lane's last pipeline run as `previousRunId` (ADR 0158): the lane's worker chat gets the brief, then one
+    reviewer and the gates check it. When that worker chat is gone (deleted or closed) or the lane has no earlier
+    run, the lane's own pipeline runs from the first stage, and the coordinator is told why.
   - States: `approval`, `waiting`, `starting`, `running`, `passed`, `failed`, `declined`, `merging`, `merged`,
     `cancelled`.
 - **Merge** (ADR 0150). `merge_lane` takes a `passed` lane (409 `lane_not_mergeable`), makes it `merging`, and

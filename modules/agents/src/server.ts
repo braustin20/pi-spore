@@ -405,6 +405,7 @@ export function createAgentsModule(
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),
+        isClosed: (agentId) => agents.isClosed(agentId),
         inWorkspace: (workspaceId) =>
           host.store
             .all<Row>(
