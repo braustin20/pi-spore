@@ -1029,6 +1029,20 @@ describe("a stage agent whose turn failed", () => {
     expect(argv[argv.indexOf("--model") + 1]).toBe("after");
   });
 
+  it("retries a blocked run whose stage job a stray wake is running again", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] }),
+    });
+    const { workspaceId, run } = await blockedRun(server, "stray-wake", withReview());
+
+    // The job runs `await` again and still has its error, so the run shows `blocked` and Retry must work.
+    server.services.jobs.wake("pipelines.stage", workspaceId);
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1", "review1"]);
+  });
+
   it("starts a fresh worker for a crashed task turn, and the run passes", async () => {
     const server = await start({ env: scriptEnv({ worker: ["crash", DONE] }) });
     const { run } = await blockedRun(server, "crashed", IMPLEMENT);
