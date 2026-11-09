@@ -92,11 +92,17 @@ const PI_DOWN = () => join(scratch, "pi-down");
 const ghState = () => join(scratch, "gh.json");
 
 async function start(
-  options: { home?: string; firstId?: number; record?: boolean; withoutGithubPr?: boolean } = {},
+  options: {
+    home?: string;
+    firstId?: number;
+    record?: boolean;
+    withoutGithubPr?: boolean;
+    script?: Record<string, unknown[]>;
+  } = {},
 ) {
   const script = join(scratch, "script.json");
   if (!existsSync(ghState())) writeFileSync(ghState(), JSON.stringify({ prs: [] }));
-  writeFileSync(script, JSON.stringify({ worker: ["hang", "hang", "hang"] }));
+  writeFileSync(script, JSON.stringify(options.script ?? { worker: ["hang", "hang", "hang"] }));
   const wrapper = join(scratch, "pi-wrapper.mjs");
   writeFileSync(
     wrapper,
@@ -396,6 +402,35 @@ describe("a lane", () => {
     await expect(
       runs.startLane({ agentId: "a", workspaceId: "w" }, { name: "x", brief: "b.md", wave: 1 }),
     ).rejects.toMatchObject({ status: 403, code: "not_coordinator" });
+  });
+});
+
+describe("the review round limit of a lane", () => {
+  it("names the workspace, the lane, and the run in the approval", async () => {
+    const server = await start({
+      script: {
+        worker: [{ summary: "Done" }],
+        reviewer: [{ summary: "Still wrong", verdict: "revise", findings: [] }],
+      },
+    });
+    writeFileSync(
+      join(server.paths.root, "pipelines", "limit.toml"),
+      `${IMPLEMENT.replace('id = "p"', 'id = "limit"')}\n[[stage]]\nname = "review"\nrole = "reviewer"\nrounds = 1\n`,
+    );
+    const { projectId } = await project(server, "roundlimit");
+    const { run, coordinator } = await createRun(server, projectId, "roundlimit");
+    const lane = await startLane(run, coordinator, "feature", { pipeline: "limit" });
+
+    await until(async () =>
+      (await openApprovals(server)).some((entry) => entry.kind === "pipeline-round-limit"),
+    );
+
+    const approval = (await openApprovals(server)).find(
+      (entry) => entry.kind === "pipeline-round-limit",
+    );
+    expect(approval?.title).toBe(
+      `Review round limit in workspace "feature", lane "feature" (${lane.id}) of run "roundlimit": stage "review" of pipeline limit`,
+    );
   });
 });
 

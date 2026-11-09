@@ -26,6 +26,7 @@ the prompt it answers.
   review after it. Jev never adds a round (ADR 0015).
 - **Round limit.** A REVISE on the last round asks the user through an approval on Home, unless the stage has
   `fix_passes = 1`. The decision is stored on the run in the transaction that stores the approval's decision.
+  The approval names the lane, and its choices are fix once, go on, or stop (2026-11-08).
 - **Strength.** `min_strength_over` compares tiers (ADR 0023) before a reviewer starts, and again on its report
   with the models it really used. A stage agent's model cannot change.
 - **Tiers.** Only `tier = "route"` (spore/auto) is built. Other tiers are an error until a tier-to-model choice is

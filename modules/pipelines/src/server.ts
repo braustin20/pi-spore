@@ -95,7 +95,11 @@ const MIGRATIONS = [
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
 const ROUND_LIMIT = "pipeline-round-limit";
 const RoundLimitSubject = Type.Object(
-  { runId: Type.String(), stage: Type.String() },
+  {
+    runId: Type.String(),
+    stage: Type.String(),
+    action: Type.Union([Type.Literal("fix"), Type.Literal("accept")]),
+  },
   { additionalProperties: false },
 );
 type RoundLimitSubject = Static<typeof RoundLimitSubject>;
@@ -237,6 +241,7 @@ const reviewPrompt = (
   turnId: string,
   paths: { brief: string; diff: string },
   tests: readonly TestProof[],
+  earlier?: { review: StageReport; fix: StageReport },
 ) =>
   [
     stage.role === "adversarial-reviewer"
@@ -251,6 +256,20 @@ const reviewPrompt = (
     "The worker listed these new tests, each with the artifact that proves it failed before the code:",
     ...bullets(tests),
     "Open each proof and check that it shows the test failing for the right reason. Check that every test the change adds is in this list; a test that is not listed is a finding.",
+    ...(earlier
+      ? [
+          `Round ${round - 1} reviewer summary: ${earlier.review.summary}`,
+          `Round ${round - 1} findings:`,
+          ...(findingLines(earlier.review).length > 0
+            ? findingLines(earlier.review)
+            : ["(none listed)"]),
+          `The worker's fix report: ${earlier.fix.summary}`,
+          "First check that each earlier finding is fixed.",
+          "Answer revise only for a finding that is a bug, a missing or wrong test, a regression, or a break of the brief.",
+          "List anything else (style, naming, wording, taste) as minor.",
+          `A new finding that round ${round - 1} could have raised is important at most, not blocking.`,
+        ]
+      : []),
     `When you are done, call report with turn ${turnId}, a short summary, a verdict (approve or revise), and findings, each with a severity (blocking, important, or minor). Do not send tests.`,
     "Your turn ends only with that report.",
   ].join("\n");
@@ -299,6 +318,7 @@ export const pipelinesModule: ServerModule = {
     const actions = host.use(ActionsKey);
     const userDir = join(host.home.root, "pipelines");
     const bootId = host.newId();
+    let laneLookup: Parameters<Pipelines["setLaneLookup"]>[0] | undefined;
 
     const loadRun = (id: string) =>
       host.store.get<RunRow>("SELECT * FROM pipelines_runs WHERE id = ?", id);
@@ -381,6 +401,13 @@ export const pipelinesModule: ServerModule = {
     const runOf = (subject: StageSubject): RunRow | undefined => {
       const run = loadRun(subject.runId);
       return run?.state === "running" && run.stage_index === subject.stageIndex ? run : undefined;
+    };
+
+    /** How an approval names the run's workspace: a lane also names its lane and run. */
+    const workspaceLabel = (workspaceId: string) => {
+      const name = `workspace "${workspaces.get(workspaceId).name}"`;
+      const lane = laneLookup?.(workspaceId);
+      return lane ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${lane.run}"` : name;
     };
 
     const stageOf = (run: RunRow, stageIndex: number) =>
@@ -539,6 +566,19 @@ export const pipelinesModule: ServerModule = {
       return turnId;
     };
 
+    /** Starts the worker's fix turn for a review. `last` tells the worker no review follows. */
+    const startFix = (
+      run: RunRow,
+      stageIndex: number,
+      stage: PipelineStage,
+      review: TurnRow,
+      last: boolean,
+    ) => {
+      const worker = run.worker_agent_id as string;
+      const turnId = insertTurn(run, stageIndex, stage, review.round, "fix", "worker", worker);
+      agents.deliver(worker, fixPrompt(stage, reportOf(review), turnId, last));
+    };
+
     /** The diff artifact: commits since the workspace's base, plus uncommitted and untracked files. */
     const writeDiff = async (run: RunRow, path: string) => {
       const workspace = workspaces.get(run.workspace_id);
@@ -571,7 +611,13 @@ export const pipelinesModule: ServerModule = {
           );
         }
       }
-      const round = stageTurns(run, stageIndex).filter((turn) => turn.kind === "review").length + 1;
+      const turns = stageTurns(run, stageIndex);
+      const round = turns.filter((turn) => turn.kind === "review").length + 1;
+      // Round 2 and later: the last two turns are the previous review and the worker's fix for it.
+      const earlier =
+        round > 1
+          ? { review: reportOf(turns.at(-2) as TurnRow), fix: reportOf(turns.at(-1) as TurnRow) }
+          : undefined;
       const paths = {
         brief: `pipelines/${run.id}/brief.md`,
         diff: `pipelines/${run.id}/${stage.name}-${round}.diff`,
@@ -588,7 +634,7 @@ export const pipelinesModule: ServerModule = {
             ...(model ? { model } : {}),
           });
           const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id);
-          agents.deliver(agent.id, reviewPrompt(stage, round, turnId, paths, tests));
+          agents.deliver(agent.id, reviewPrompt(stage, round, turnId, paths, tests, earlier));
         },
       };
     };
@@ -756,6 +802,8 @@ export const pipelinesModule: ServerModule = {
       const stage = stageOf(run, subject.stageIndex);
       const turns = stageTurns(run, subject.stageIndex);
       const last = turns.at(-1) as TurnRow;
+      // The user chose a last fix at the round limit: its turn is open.
+      if (last.report === null) return { next: "await", checkpoint: { boot: bootId } };
       if (last.kind === "task") return { next: "finish" };
       if (last.kind === "fix") {
         const review = turns.at(-2) as TurnRow;
@@ -775,19 +823,7 @@ export const pipelinesModule: ServerModule = {
         return {
           next: "await",
           checkpoint: { boot: bootId },
-          commit: () => {
-            const worker = run.worker_agent_id as string;
-            const turnId = insertTurn(
-              run,
-              subject.stageIndex,
-              stage,
-              last.round,
-              "fix",
-              "worker",
-              worker,
-            );
-            agents.deliver(worker, fixPrompt(stage, report, turnId, lastFix(stage, last)));
-          },
+          commit: () => startFix(run, subject.stageIndex, stage, last, lastFix(stage, last)),
         };
       }
       return {
@@ -798,9 +834,18 @@ export const pipelinesModule: ServerModule = {
             { agentId: run.asking_agent_id, workspaceId: run.workspace_id },
             {
               kind: ROUND_LIMIT,
-              title: `Review round limit in stage "${stage.name}" of pipeline ${run.pipeline_id}`,
-              reason: `${message}. Reviewer: ${report.summary}`,
-              subject: { runId: run.id, stage: stage.name },
+              title: `Review round limit in ${workspaceLabel(run.workspace_id)}: stage "${stage.name}" of pipeline ${run.pipeline_id}`,
+              reason: [
+                `${message}.`,
+                `Reviewer: ${report.summary}`,
+                "Findings:",
+                ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
+                "",
+                "Fix: the worker makes one last fix for these findings, with no review after it, and the run goes on.",
+                "Accept: the run goes on without a fix.",
+                "Decline: the run stops.",
+              ].join("\n"),
+              subject: { runId: run.id, stage: stage.name, action: "fix" },
             },
           );
           host.store.run(
@@ -912,12 +957,24 @@ export const pipelinesModule: ServerModule = {
       kind: ROUND_LIMIT,
       subject: RoundLimitSubject,
       // All effects are in `decided`, in the transaction that stores the decision.
-      approve: async (subject) => `The pipeline goes on after stage ${subject.stage}.`,
+      approve: async (subject) =>
+        subject.action === "fix"
+          ? `The user chose fix: the worker makes one last fix for stage ${subject.stage}, with no review after it; then the run goes on.`
+          : `The user chose accept: the run goes on after stage ${subject.stage} without a fix.`,
       decided: (subject: RoundLimitSubject, approval, approved) => {
         const run = loadRun(subject.runId);
         // A run that was stopped or moved on ignores the decision.
         if (run?.state !== "waiting_user" || run.approval_id !== approval.id) return;
-        if (approved) {
+        if (approved && subject.action === "fix") {
+          // The fix turn is open when the job wakes; `decide` sends it to `await`, and the fix report ends the stage.
+          const stage = stageOf(run, run.stage_index);
+          const review = stageTurns(run, run.stage_index).at(-1) as TurnRow;
+          startFix(run, run.stage_index, stage, review, true);
+          host.store.run(
+            "UPDATE pipelines_runs SET state = 'running', message = NULL, approval_id = NULL WHERE id = ?",
+            run.id,
+          );
+        } else if (approved) {
           host.store.run(
             "UPDATE pipelines_runs SET state = 'running', message = NULL WHERE id = ?",
             run.id,
@@ -1018,6 +1075,10 @@ export const pipelinesModule: ServerModule = {
       stop,
       afterRunEnded: (listener) => {
         endListeners.push(listener);
+      },
+      setLaneLookup: (lookup) => {
+        if (laneLookup) throw new Error("The pipelines module already has a lane lookup");
+        laneLookup = lookup;
       },
     };
     host.provide(PipelinesKey, api);

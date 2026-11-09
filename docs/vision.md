@@ -103,11 +103,14 @@ not built in v1.
   the same id wins.
 - R6.3 The default pipeline:
   1. `implement`: the worker.
-  2. `review`: a fresh read-only reviewer each round, at most 2 rounds back to the worker.
+  2. `review`: a fresh read-only reviewer each round, at most 2 rounds. A REVISE on round 2 gets one last fix pass,
+     with no review after it.
   3. `adversarial`: an adversarial reviewer, one fix pass on REVISE.
   4. `gates`: the project's checks, plus a recorded fail-first proof for each new test.
-- R6.4 Round limits are hard. A Jev check after each review round may stop early when the remaining findings are
-  minor. It can never add rounds.
+- R6.4 Round limits are hard: no stage runs more review rounds than it declares. A stage may declare one last fix
+  pass after its last round. A Jev check after each review round may stop early when the remaining findings are
+  minor. It can never add rounds. A stage with no last fix pass asks the user at its limit: fix once, go on, or
+  stop.
 - R6.5 Fail-first proof: the worker records the failing run of each new test as an artifact. The reviewer checks it.
   The gate stage re-runs only the final passing suite.
 - R6.6 Stages survive a server restart and resume from their last committed step.
