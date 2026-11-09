@@ -3,7 +3,7 @@
 - Date: 2026-11-08
 - Unity CLI 1.0.0-beta.11, editor 6000.3.10f1, Linux (Wayland session)
 - Question: can `unity close <path>` close an editor whose project has no Pipeline package, or does it need
-  `--force`? (ADR 0028, ADR 0153)
+  `--force`? (ADR 0028, ADR 0156)
 - Method: a new throwaway project in a temp folder (`ProjectVersion.txt`, an empty `Assets/`, a `manifest.json`
   with no Pipeline package). I started one editor on it with `unity open`, waited for `Temp/UnityLockfile`, and
   confirmed by its command line that the pid had `-projectpath` on that folder. I touched no other editor. Then I
@@ -41,4 +41,4 @@ I read `unity test --help` on the same CLI to check the arguments the gates use.
 - `--timeout <seconds>`: "Kill the Unity process after this many seconds" (off by default).
 
 The gate passes all four, plus `--no-banner --non-interactive`. Because I did not run it, pi-spore also stops the
-process itself if it has not exited a minute after the CLI timeout (ADR 0153).
+process itself if it has not exited a minute after the CLI timeout (ADR 0156).

@@ -740,6 +740,31 @@ describe("spore-bridge run tools", () => {
     expect(COORDINATOR_RULES).toContain("open_run_pr");
   });
 
+  it("gives the coordinator kanban_list_cards and kanban_add_card, never update or start (ADR 0154)", async () => {
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    const pi = fakePi();
+
+    expect(pi.tools.has("kanban_list_cards")).toBe(true);
+    expect(pi.tools.has("kanban_add_card")).toBe(true);
+    expect(pi.tools.has("kanban_update_card")).toBe(false);
+    expect(pi.tools.has("kanban_start_card")).toBe(false);
+    expect(COORDINATOR_RULES).toContain("kanban_list_cards");
+    expect(COORDINATOR_RULES).toContain("kanban_add_card");
+    expect(COORDINATOR_RULES).toContain("never start a card");
+  });
+
+  it("keeps all four card tools for an agent outside a run and for a lane agent", () => {
+    const CARD_TOOLS = [
+      "kanban_list_cards",
+      "kanban_add_card",
+      "kanban_update_card",
+      "kanban_start_card",
+    ];
+    for (const name of CARD_TOOLS) expect(fakePi().tools.has(name)).toBe(true);
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "lane");
+    for (const name of CARD_TOOLS) expect(fakePi().tools.has(name)).toBe(true);
+  });
+
   it("sends each run tool to its route with the tool call id as receipt, and ends no turn", async () => {
     vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
     const lane = (state: string) => ({ body: { lane: { id: "l1", name: "api", state } } });

@@ -145,6 +145,10 @@ export const PipelineTurn = Type.Object({
   ),
   createdAt: Type.Integer(),
   reportedAt: Type.Optional(Type.Integer()),
+  /** Why the turn's agent failed. Retry started a fresh agent in its place. */
+  error: Type.Optional(Type.String()),
+  /** Why a review turn's agent runs on another model than its role default: the default's plan was full. */
+  modelNote: Type.Optional(Type.String()),
 });
 export type PipelineTurn = Static<typeof PipelineTurn>;
 

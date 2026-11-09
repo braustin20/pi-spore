@@ -4,11 +4,9 @@
  *
  *   pi -e <repo>/pi-extensions/router --model spore/auto
  */
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { isContextOverflow } from "@earendil-works/pi-ai";
-import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { LocalLocks, lockDir } from "./lock.js";
 import { Router, type RouterState } from "./router.js";
 import { sporeHome } from "./settings.js";
@@ -17,28 +15,6 @@ import { sporeHome } from "./settings.js";
 export const LOCAL_ROUTE_EVENT = "pi-spore:local-route";
 
 const HEALTH_TIMEOUT_MS = 3_000;
-
-/** `subagents.agentOverrides.worker.model` from Pi's settings, the default cloud model (ADR 0013). */
-async function workerModel(): Promise<string | undefined> {
-  const path = join(getAgentDir(), "settings.json");
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  let settings: unknown;
-  try {
-    settings = JSON.parse(text);
-  } catch {
-    throw new Error(`${path} is not valid JSON`);
-  }
-  const model = (
-    settings as { subagents?: { agentOverrides?: { worker?: { model?: unknown } } } } | null
-  )?.subagents?.agentOverrides?.worker?.model;
-  return typeof model === "string" && model.includes("/") ? model : undefined;
-}
 
 export default function sporeRouter(pi: ExtensionAPI) {
   let locks: LocalLocks | undefined;
@@ -75,7 +51,6 @@ export default function sporeRouter(pi: ExtensionAPI) {
       });
       return waits;
     },
-    workerModel,
     isOverflow: isContextOverflow,
   });
 

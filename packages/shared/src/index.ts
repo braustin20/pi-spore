@@ -155,6 +155,7 @@ export {
   SettingsView,
 } from "./projects.js";
 export {
+  MergeRequest,
   PrCheck,
   PrCheckState,
   PrEvent,
@@ -212,6 +213,7 @@ export {
   CalibrationBar,
   CalibrationBucket,
   CalibrationResponse,
+  CalibrationRung,
   RoutingDecision,
   RoutingDecisionsResponse,
   TokenUseResponse,

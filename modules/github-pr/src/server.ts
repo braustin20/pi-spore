@@ -8,6 +8,8 @@ import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule, type StepOutcome } from "@pi-spore/module-api";
 import {
   type AgentStatus,
+  MergeRequest,
+  type PrCheckState,
   type PrEvent,
   type PrStatus,
   type PrTry,
@@ -94,6 +96,27 @@ export interface GithubPrModuleOptions {
   maxIntervalMs?: number;
   /** Time between looks for PRs opened outside pi-spore, at all active workspaces. */
   discoverIntervalMs?: number;
+}
+
+/** The first reason Merge is off, or undefined when the PR can merge (ADR 0142). */
+function mergeBlocked(workspace: Workspace, pr: PullRequest): string | undefined {
+  const names = (state: PrCheckState[]) =>
+    pr.checks
+      .filter((check) => state.includes(check.state))
+      .map((check) => check.name)
+      .join(", ");
+  if (workspace.state !== "active") return `The workspace is ${workspace.state}`;
+  if (pr.state !== "open") return `PR #${pr.number} is ${pr.state}`;
+  if (pr.draft) return `PR #${pr.number} is a draft`;
+  if (pr.mergeable === "conflicting") return `PR #${pr.number} has conflicts with ${pr.base}`;
+  if (pr.mergeable === "unknown") return `GitHub is still checking PR #${pr.number} for conflicts`;
+  const failed = names(["fail", "cancelled"]);
+  if (failed) return `Checks did not pass: ${failed}`;
+  const pending = names(["pending"]);
+  if (pending) return `Checks are still running: ${pending}`;
+  if (pr.review === "review_required") return `PR #${pr.number} needs a review`;
+  if (pr.review === "changes_requested") return `PR #${pr.number} has changes requested`;
+  return undefined;
 }
 
 /** A short, single-line form of a check list, to see whether anything changed between polls. */
@@ -215,6 +238,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             workspace.id,
           )
           .map((entry): PrTry => ({ at: entry.at, headId: entry.head_id, summary: entry.summary }));
+        const pr = row ? viewOf(row) : undefined;
+        const blocked = pr ? mergeBlocked(workspace, pr) : undefined;
         return {
           workspaceId: workspace.id,
           publishable: reason === undefined,
@@ -224,7 +249,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             body: card?.body ?? "",
             ...(base ? { base: base.replace(/^origin\//, "") } : {}),
           },
-          ...(row ? { pr: viewOf(row) } : {}),
+          ...(pr ? { pr } : {}),
+          ...(blocked ? { mergeBlocked: blocked } : {}),
           watch: {
             state: row?.watch_state ?? "off",
             tries: row?.tries ?? 0,
@@ -723,6 +749,31 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         await push({ path: workspace.path, line }, line);
         const row = load(workspace.id);
         if (row) await refreshView(workspace, row);
+        return c.json(await status(workspace.id));
+      });
+
+      host.routes.post("/workspaces/:id/merge", async (c) => {
+        const request = parseJsonBody(MergeRequest, await c.req.text(), "merge request");
+        const workspace = workspaces.get(c.req.param("id"));
+        const row = load(workspace.id);
+        if (!row) throw new ApiError(404, "no_pr", "The workspace has no PR to merge");
+        if (workspace.state !== "active") {
+          throw new ApiError(409, "pr_not_mergeable", `The workspace is ${workspace.state}`);
+        }
+        const fresh = await gh.view(workspace.path, String(row.number));
+        if (!fresh) throw new ApiError(404, "pr_not_found", `PR #${row.number} is gone`);
+        const blocked = mergeBlocked(workspace, fresh);
+        if (blocked) throw new ApiError(409, "pr_not_mergeable", blocked);
+        if (fresh.headId !== request.headId) {
+          throw new ApiError(
+            409,
+            "pr_changed",
+            `PR #${row.number} has new commits since you looked. Look again.`,
+          );
+        }
+        await gh.merge(workspace.path, row.number, request.headId);
+        host.log.info("PR merged by the user", { workspace: workspace.id, number: row.number });
+        await refreshView(workspace, row);
         return c.json(await status(workspace.id));
       });
 

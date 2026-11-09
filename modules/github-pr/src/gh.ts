@@ -187,8 +187,9 @@ export function tail(text: string, lines: number, chars: number): string {
 }
 
 /**
- * The only gh commands pi-spore runs: read a PR, open one, read a failed job's log, and GET comment lists. Nothing
- * here merges, closes, enables auto-merge, or pushes (R9.3).
+ * The only gh commands pi-spore runs: read a PR, open one, merge one, read a failed job's log, and GET comment
+ * lists. It merges only from the merge route, only in the one form of `merge` below (ADR 0142). Nothing here closes,
+ * enables auto-merge, deletes a branch, or pushes (R9.3).
  */
 export class Gh {
   constructor(
@@ -275,6 +276,11 @@ export class Gh {
     if (!number)
       throw new ApiError(422, "gh_failed", `gh pr create did not print a PR URL: ${output.trim()}`);
     return Number(number);
+  }
+
+  /** Merges with a merge commit if the PR head is still `headId`; the branch stays (ADR 0142). */
+  async merge(cwd: string, number: number, headId: string): Promise<void> {
+    await this.ok(cwd, ["pr", "merge", String(number), "--merge", "--match-head-commit", headId]);
   }
 
   /** The failed steps' log of a job, or the reason it could not be read. */

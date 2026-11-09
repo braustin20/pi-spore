@@ -1,6 +1,6 @@
 # 0150. The coordinator works in the run's worktree; a merge commits only after its gates pass
 
-- Status: Accepted
+- Status: Accepted; coordinator card tools in [0154](0154-coordinator-adds-cards.md)
 - Date: 2026-11-08
 - Requirements: R7.1 to R7.6, R4.8, R9.3
 

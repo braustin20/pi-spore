@@ -308,7 +308,7 @@ describe("cards", () => {
   });
 });
 
-describe("Home items (ADR 0152, R15.1)", () => {
+describe("Home items (ADR 0155, R15.1)", () => {
   // The test clock starts at 2023-11-14 22:13 UTC. Due dates are local days, like the board's.
   const zone = process.env.TZ;
   const inZone = (name: string) => {

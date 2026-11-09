@@ -35,4 +35,12 @@
   `<minutes>m`. If the user logs in to `openai-codex`, numbers appear with no code change.
 - Until then Codex has no fresh numbers. The router treats it as having room and records "codex usage unknown,
   treated as room" (ADR 0024).
-- Polling `/backend-api/wham/usage`, or reading Codex CLI session files, stays a v2 option (ADR 0022).
+- Polling `/backend-api/wham/usage` was a v2 option; ADR 0153 builds it (see the result below). Reading Codex CLI
+  session files stays unbuilt.
+
+## Result (2026-11-08)
+
+- Pi's `openai` login gets 401 on `/backend-api/wham/usage`. Its token is for `api.openai.com/v1`.
+- The Codex CLI login (`~/.codex/auth.json`, with `Authorization: Bearer` and `ChatGPT-Account-ID`) gets 200.
+- Fields used: `rate_limit.primary_window` and `rate_limit.secondary_window`, each with `used_percent`,
+  `limit_window_seconds`, and `reset_at` (epoch seconds). Windows are named by length: 18000 s is `5h`, 604800 s is `7d`.

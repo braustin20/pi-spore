@@ -21,6 +21,9 @@
 // Each prompt takes the next entry for the agent's PI_SPORE_STAGE_ROLE. A cursor file `<file>.<role>.cursor` keeps the
 // position, so a new process (a fresh reviewer, or after a restart) continues the script. An entry is
 //   "hang"    replies with plain text and sends no report
+//   "crash"   after Pi accepted the prompt, writes to stderr and exits with code 3, as the "crash" prompt does
+//   { "error": "<text>" }  ends the turn as Pi does when the provider refused it: the last assistant message has
+//             stopReason "error", errorMessage <text>, and no text. No report is sent.
 //   {...}     a report: the fake first writes an assistant message with a tool call, as Pi does before a tool runs, so
 //             the session already records the model. An entry field `model: "<provider>/<id>"` switches the model
 //             first, as `set_model` does; the field is not sent. A field `routing: { route, model, reasons }` is not
@@ -312,6 +315,11 @@ async function scripted(text) {
   }
   writeFileSync(cursorFile, String(position + 1));
   if (entry === "hang") return `waiting (${role} ${position})`;
+  if (entry === "crash") {
+    process.stderr.write("boom: the fake agent crashed\n");
+    process.exit(3);
+  }
+  if (entry.error !== undefined) return { error: entry.error };
   const turn = /^Turn: (\S+)$/m.exec(text)?.[1];
   if (!turn) return "no turn id in the prompt";
   const { model: switchTo, routing, ...fields } = entry;
@@ -394,8 +402,15 @@ async function run(text, images = []) {
   }
   if (text === "tools") reply = `tools: ${arg("--tools") ?? "read,bash,edit,write"}`;
   if (text.startsWith("ask:")) reply = await ask(text.slice(4), `toolu_${entryCount}`);
-  if (process.env.FAKE_PI_SCRIPT && process.env.PI_SPORE_CHAT_KIND === "stage")
-    reply = await scripted(text);
+  let refusal;
+  if (process.env.FAKE_PI_SCRIPT && process.env.PI_SPORE_CHAT_KIND === "stage") {
+    const scriptedReply = await scripted(text);
+    if (typeof scriptedReply === "string") reply = scriptedReply;
+    else {
+      refusal = scriptedReply.error;
+      reply = "";
+    }
+  }
   if (text === "/dialog") {
     const answer = await new Promise((resolve) => {
       dialogs.set("dlg-1", resolve);
@@ -427,10 +442,12 @@ async function run(text, images = []) {
   }
   const final = {
     role: "assistant",
-    content: [{ type: "text", text: aborted ? reply.slice(0, 3) : reply }],
+    content:
+      refusal === undefined ? [{ type: "text", text: aborted ? reply.slice(0, 3) : reply }] : [],
     provider: model.provider,
     model: model.id,
-    stopReason: aborted ? "aborted" : "stop",
+    stopReason: refusal === undefined ? (aborted ? "aborted" : "stop") : "error",
+    ...(refusal === undefined ? {} : { errorMessage: refusal }),
     timestamp,
   };
   write({ type: "message_end", message: final });

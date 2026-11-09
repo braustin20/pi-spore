@@ -82,7 +82,11 @@ export const RoutingDecision = Type.Object({
   at: Type.Number(),
   kind: Type.String(),
   route: Type.String(),
+  /** Absent in lines from before ADR 0141. */
+  rung: Type.Optional(Type.Integer()),
+  plan: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
+  thinking: Type.Optional(Type.String()),
   reasons: Type.Array(Type.String()),
   sessionId: Type.Optional(Type.String()),
   cwd: Type.Optional(Type.String()),
@@ -92,6 +96,7 @@ export const RoutingDecision = Type.Object({
   budget: Type.Optional(Type.Number()),
   jev: Type.Optional(Type.Record(Type.String(), Type.Union([Type.Number(), Type.String()]))),
   threshold: Type.Optional(Type.Number()),
+  heavyThreshold: Type.Optional(Type.Number()),
   pressure: Type.Optional(Type.Boolean()),
   usage: Type.Optional(Type.Array(Type.String())),
 });
@@ -122,7 +127,7 @@ export type CalibrationBucket = Static<typeof CalibrationBucket>;
 export const CalibrationBar = Type.Object({
   bar: Type.Number(),
   decisions: Type.Integer(),
-  /** Decisions whose four answers are all at or above the bar. */
+  /** Decisions whose cheap answers are all at or above the bar and whose heavy answers reach `heavyThreshold`. */
   wouldGoLocal: Type.Integer(),
   localOutcomes: Type.Integer(),
   passed: Type.Integer(),
@@ -130,11 +135,25 @@ export const CalibrationBar = Type.Object({
 });
 export type CalibrationBar = Static<typeof CalibrationBar>;
 
+/** Decisions on one rung that went to one place, and how the runs that followed them ended (ADR 0141). */
+export const CalibrationRung = Type.Object({
+  rung: Type.Integer(),
+  /** `local`, else the ladder plan (`wait` when no plan had room). */
+  place: Type.String(),
+  decisions: Type.Integer(),
+  /** Runs with a verdict that joined these decisions. */
+  outcomes: Type.Integer(),
+  passed: Type.Integer(),
+});
+export type CalibrationRung = Static<typeof CalibrationRung>;
+
 export const CalibrationResponse = Type.Object({
   /** `router.threshold` now. */
   threshold: Type.Number(),
+  /** `router.heavyThreshold` now. */
+  heavyThreshold: Type.Number(),
   minSample: Type.Integer(),
-  /** Router decisions with four Jev answers. */
+  /** Router decisions with Jev answers. */
   decisions: Type.Integer(),
   /** Local decisions that a pipeline run with a verdict joined. */
   outcomes: Type.Integer(),
@@ -143,8 +162,11 @@ export const CalibrationResponse = Type.Object({
     explicit: Type.Array(CalibrationBucket),
     visual: Type.Array(CalibrationBucket),
     straightforward: Type.Array(CalibrationBucket),
+    foundational: Type.Array(CalibrationBucket),
+    design: Type.Array(CalibrationBucket),
   }),
   bars: Type.Array(CalibrationBar),
+  rungs: Type.Array(CalibrationRung),
   /** The lowest bar with enough local outcomes and at least 90% passed. Absent when none qualifies. */
   suggestedBar: Type.Optional(Type.Number()),
   /** Lines of the decision file that did not parse. */

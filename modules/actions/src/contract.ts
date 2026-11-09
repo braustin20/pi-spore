@@ -2,7 +2,7 @@ import { defineInterface } from "@pi-spore/module-api";
 import type { ActionLog, ActionRun, ActionTrigger, ActionView, Workspace } from "@pi-spore/shared";
 
 /**
- * An action a module adds for projects with a trait, such as the Unity test gates (ADR 0153). It runs like a project
+ * An action a module adds for projects with a trait, such as the Unity test gates (ADR 0156). It runs like a project
  * action (a process, a log, cancel, exclusive per folder), but the module decides when it may start and what it
  * runs. A project action of the same name replaces it.
  */

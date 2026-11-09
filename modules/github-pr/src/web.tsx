@@ -23,6 +23,7 @@ import {
   Textarea,
   type Tone,
   Tooltip,
+  useConfirm,
 } from "@pi-spore/ui";
 import { ArrowRight, ExternalLink, GitPullRequest, RefreshCw } from "lucide-react";
 import { type SubmitEvent, useCallback, useEffect, useState } from "react";
@@ -226,6 +227,7 @@ function PrView({
   pr: PullRequest;
   act: (method: "POST", suffix: string, body: unknown) => Promise<boolean>;
 }) {
+  const { confirm, dialog } = useConfirm();
   const [confirmPush, setConfirmPush] = useState(false);
   const [busy, setBusy] = useState(false);
   const { watch } = status;
@@ -238,9 +240,29 @@ function PrView({
   };
   const failing = pr.checks.filter((check) => check.state === "fail").length;
   const passing = pr.checks.filter((check) => check.state === "pass").length;
+  const merge = async () => {
+    const yes = await confirm({
+      title: "Merge pull request?",
+      message: `Merge #${pr.number} into ${pr.base} with a merge commit?`,
+      confirmLabel: "Merge",
+    });
+    if (!yes) return;
+    await run(() => act("POST", "merge", { confirm: true, headId: pr.headId }));
+  };
+  const mergeButton = (
+    <Button
+      variant="primary"
+      size="sm"
+      disabled={busy || status.mergeBlocked !== undefined}
+      onClick={() => void merge()}
+    >
+      Merge
+    </Button>
+  );
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      {dialog}
       <div className="rounded-xl border border-line bg-raised/40 p-3">
         <div className="flex items-start gap-2">
           <a
@@ -267,6 +289,20 @@ function PrView({
           {reviewChip(pr)}
           {pr.state === "open" && mergeChip(pr)}
         </div>
+        {pr.state === "open" && (
+          <div className="mt-3">
+            {status.mergeBlocked ? (
+              <Tooltip label={status.mergeBlocked}>
+                {/* biome-ignore lint/a11y/noNoninteractiveTabindex: a disabled button gets no hover or focus, so the wrapper carries the tooltip. */}
+                <span tabIndex={0} className="inline-block">
+                  {mergeButton}
+                </span>
+              </Tooltip>
+            ) : (
+              mergeButton
+            )}
+          </div>
+        )}
       </div>
 
       {pr.state === "open" && unpushed && (
@@ -359,7 +395,7 @@ function PrView({
           </div>
           <p className="text-xs text-muted">
             pi-spore sends failed checks and review-bot comments to the worker, at most{" "}
-            {watch.maxTries} times in a row. It never merges.
+            {watch.maxTries} times in a row. It never merges by itself.
             {watch.polledAt ? ` Last look ${time(watch.polledAt)}.` : ""}
             {watch.nextPollAt && watch.state !== "off" ? ` Next ${time(watch.nextPollAt)}.` : ""}
           </p>

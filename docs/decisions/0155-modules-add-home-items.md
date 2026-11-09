@@ -1,4 +1,4 @@
-# 0152. Modules add items to Home through sources
+# 0155. Modules add items to Home through sources
 
 - Status: Accepted
 - Date: 2026-11-08

@@ -1,4 +1,4 @@
-# 0153. Unity test gates run in batch mode behind the editor lease, and close falls back to `--force`
+# 0156. Unity test gates run in batch mode behind the editor lease, and close falls back to `--force`
 
 - Status: Accepted
 - Date: 2026-11-08

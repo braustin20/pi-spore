@@ -54,7 +54,20 @@ export function workspaceStatus(
   return BY_STATUS[agent.status];
 }
 
-/** Status lines for all workspaces. They follow the active worker chat (ADR 0030). */
+const isLive = (agent: Agent) =>
+  agent.status === "busy" || agent.status === "starting" || agent.status === "waiting";
+
+/** A pipeline stage agent's work, named by its title, which carries the stage and round. */
+function stageStatus(workspace: Workspace, stage: Agent): StatusText {
+  const status = workspaceStatus(workspace, stage);
+  if (stage.status === "waiting" || stage.routerStatus || !stage.title) return status;
+  return { text: `${status.text}: ${stage.title}`, tone: status.tone };
+}
+
+/**
+ * Status lines for all workspaces. A busy, starting, or waiting stage agent wins, since in a pipeline or a run lane
+ * the worker chat sits stopped while stages work. Otherwise the line follows the active worker chat (ADR 0030).
+ */
 export function workspaceStatuses(
   workspaces: readonly Workspace[],
   agents: readonly Agent[],
@@ -65,8 +78,18 @@ export function workspaceStatuses(
       .filter((agent) => agent.kind === "worker" && agent.active)
       .map((agent) => [agent.workspaceId, agent]),
   );
+  // A stage that works beats one that waits for a slot.
+  const stages = new Map<string, Agent>();
+  for (const agent of agents) {
+    if (agent.kind !== "stage" || !isLive(agent)) continue;
+    const current = stages.get(agent.workspaceId);
+    if (!current || current.status === "waiting") stages.set(agent.workspaceId, agent);
+  }
   return new Map(
     workspaces.map((workspace) => {
+      const stage = stages.get(workspace.id);
+      if (stage && workspace.state === "active")
+        return [workspace.id, stageStatus(workspace, stage)];
       const worker = workers.get(workspace.id);
       return [workspace.id, workspaceStatus(workspace, worker, worker && waits.get(worker.id))];
     }),
@@ -75,7 +98,5 @@ export function workspaceStatuses(
 
 /** Whether any agent is transitioning or working. */
 export function needsRefresh(agents: readonly Agent[]): boolean {
-  return agents.some(
-    (agent) => agent.status === "busy" || agent.status === "starting" || agent.status === "waiting",
-  );
+  return agents.some(isLive);
 }

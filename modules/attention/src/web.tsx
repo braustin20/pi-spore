@@ -242,7 +242,7 @@ const TONES = {
   notice: "warn",
 } as const;
 
-/** An item a module added to Home (ADR 0152): a title, what is wrong, and a link to where to fix it. */
+/** An item a module added to Home (ADR 0155): a title, what is wrong, and a link to where to fix it. */
 function NoticeCard({ item }: { item: Extract<InboxItem, { kind: "notice" }> }) {
   return (
     <Panel aria-label={`${TITLES.notice}: ${item.title}`}>

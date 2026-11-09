@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentsModule } from "@pi-spore/mod-agents/server";
+import { type Agents, AgentsKey, createAgentsModule } from "@pi-spore/mod-agents/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
@@ -35,6 +35,7 @@ let broken: boolean;
 /** The test source answers its next reads from here before it answers from `notices`, so a test can hold a read. */
 let heldReads: Promise<HomeNotice[]>[];
 let sourceReads: number;
+let agentsApi: Agents;
 /** What the test gate was asked to carry out; `fail` makes it throw. `decided` lists its decided() calls. */
 let gate: {
   approved: unknown[];
@@ -48,9 +49,10 @@ let gate: {
 /** Another module with its own gate, as a model upgrade or "close Unity?" would register one (ADR 0100). */
 const gateModule: ServerModule = {
   id: "gate",
-  requires: ["attention"],
+  requires: ["agents", "attention"],
   core: false,
   setup(host) {
+    agentsApi = host.use(AgentsKey);
     approvals = host.use(ApprovalsKey);
     approvals.register({
       kind: "test-gate",
@@ -69,7 +71,7 @@ const gateModule: ServerModule = {
   },
 };
 
-/** Another module that adds items to Home, as github-pr, kanban, and usage do (ADR 0152). */
+/** Another module that adds items to Home, as github-pr, kanban, and usage do (ADR 0155). */
 const sourceModule: ServerModule = {
   id: "source",
   requires: ["attention"],
@@ -198,6 +200,17 @@ describe("Home inbox", () => {
     expect(item.error).toContain("boom: the fake agent crashed");
   });
 
+  it("does not show a pipeline stage agent as finished: the pipeline reads its report", async () => {
+    const { workspaceId } = await makeAgent("lane");
+    const stage = server.store.transaction(() => {
+      const agent = agentsApi.createStage(workspaceId, { role: "reviewer", title: "Review 1" });
+      agentsApi.deliver(agent.id, "one");
+      return agent;
+    });
+    await until(async () => agentsApi.get(stage.id).status === "idle");
+    expect(await kinds()).toEqual([]);
+  });
+
   it("shows a finished agent newest first, and drops it when seen or messaged", async () => {
     const first = await makeAgent("first");
     const second = await makeAgent("second");
@@ -311,7 +324,7 @@ describe("Home inbox", () => {
   });
 });
 
-describe("Home sources (ADR 0152)", () => {
+describe("Home sources (ADR 0155)", () => {
   const overdue: HomeNotice = {
     id: "card-1",
     at: 5_000,

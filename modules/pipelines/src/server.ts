@@ -14,6 +14,7 @@ import {
 } from "@pi-spore/module-api";
 import {
   loadSettings,
+  type PlanSnapshot,
   planState,
   type RouterSettings,
   readPlans,
@@ -90,12 +91,20 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN worker_model TEXT",
   // The router's newest decision for a worker turn's agent, as JSON (R4.7). Null for a stage on a fixed model.
   "ALTER TABLE pipelines_turns ADD COLUMN routing TEXT",
+  // Why the turn's agent failed, set by Retry when it starts a fresh agent for the turn.
+  "ALTER TABLE pipelines_turns ADD COLUMN error TEXT",
+  // Why a review turn's agent runs on another model than the role default: the default's plan was full (R4.10).
+  "ALTER TABLE pipelines_turns ADD COLUMN model_note TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
 const ROUND_LIMIT = "pipeline-round-limit";
 const RoundLimitSubject = Type.Object(
-  { runId: Type.String(), stage: Type.String() },
+  {
+    runId: Type.String(),
+    stage: Type.String(),
+    action: Type.Union([Type.Literal("fix"), Type.Literal("accept")]),
+  },
   { additionalProperties: false },
 );
 type RoundLimitSubject = Static<typeof RoundLimitSubject>;
@@ -142,6 +151,8 @@ interface TurnRow {
   agent_id: string;
   report: string | null;
   routing: string | null;
+  error: string | null;
+  model_note: string | null;
   created_at: number;
   reported_at: number | null;
 }
@@ -184,6 +195,8 @@ const turnToView = (row: TurnRow): PipelineTurn => ({
     : {}),
   createdAt: row.created_at,
   ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
+  ...(row.error === null ? {} : { error: row.error }),
+  ...(row.model_note === null ? {} : { modelNote: row.model_note }),
 });
 
 const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): PipelineRun => ({
@@ -237,6 +250,7 @@ const reviewPrompt = (
   turnId: string,
   paths: { brief: string; diff: string },
   tests: readonly TestProof[],
+  earlier?: { review: StageReport; fix: StageReport },
 ) =>
   [
     stage.role === "adversarial-reviewer"
@@ -251,6 +265,20 @@ const reviewPrompt = (
     "The worker listed these new tests, each with the artifact that proves it failed before the code:",
     ...bullets(tests),
     "Open each proof and check that it shows the test failing for the right reason. Check that every test the change adds is in this list; a test that is not listed is a finding.",
+    ...(earlier
+      ? [
+          `Round ${round - 1} reviewer summary: ${earlier.review.summary}`,
+          `Round ${round - 1} findings:`,
+          ...(findingLines(earlier.review).length > 0
+            ? findingLines(earlier.review)
+            : ["(none listed)"]),
+          `The worker's fix report: ${earlier.fix.summary}`,
+          "First check that each earlier finding is fixed.",
+          "Answer revise only for a finding that is a bug, a missing or wrong test, a regression, or a break of the brief.",
+          "List anything else (style, naming, wording, taste) as minor.",
+          `A new finding that round ${round - 1} could have raised is important at most, not blocking.`,
+        ]
+      : []),
     `When you are done, call report with turn ${turnId}, a short summary, a verdict (approve or revise), and findings, each with a severity (blocking, important, or minor). Do not send tests.`,
     "Your turn ends only with that report.",
   ].join("\n");
@@ -299,6 +327,7 @@ export const pipelinesModule: ServerModule = {
     const actions = host.use(ActionsKey);
     const userDir = join(host.home.root, "pipelines");
     const bootId = host.newId();
+    let laneLookup: Parameters<Pipelines["setLaneLookup"]>[0] | undefined;
 
     const loadRun = (id: string) =>
       host.store.get<RunRow>("SELECT * FROM pipelines_runs WHERE id = ?", id);
@@ -347,6 +376,16 @@ export const pipelinesModule: ServerModule = {
     host.jobs.onChange((job) => {
       if (job.kind === STAGE_JOB && job.key !== null) publish(job.key);
     });
+    // A failed or refused turn never reports, so the agent's status change wakes `await` to see it.
+    agents.onChange((agentId, change) => {
+      if (change !== "status" || agents.get(agentId).kind !== "stage") return;
+      const open = host.store.get<{ workspace_id: string }>(
+        `SELECT r.workspace_id FROM pipelines_turns t JOIN pipelines_runs r ON r.id = t.run_id
+         WHERE t.agent_id = ? AND t.report IS NULL AND t.error IS NULL AND r.state = 'running'`,
+        agentId,
+      );
+      if (open) host.jobs.wake(STAGE_JOB, open.workspace_id);
+    });
 
     const requireNoActiveRun = (workspaceId: string) => {
       if (
@@ -383,36 +422,110 @@ export const pipelinesModule: ServerModule = {
       return run?.state === "running" && run.stage_index === subject.stageIndex ? run : undefined;
     };
 
+    /** How an approval names the run's workspace: a lane also names its lane and run. */
+    const workspaceLabel = (workspaceId: string) => {
+      const name = `workspace "${workspaces.get(workspaceId).name}"`;
+      const lane = laneLookup?.(workspaceId);
+      return lane ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${lane.run}"` : name;
+    };
+
     const stageOf = (run: RunRow, stageIndex: number) =>
       (JSON.parse(run.stages) as PipelineStage[])[stageIndex] as PipelineStage;
+    // A failed turn was replaced by a fresh agent's turn, so rounds and earlier reports count only the others.
     const stageTurns = (run: RunRow, stageIndex: number) =>
-      turnRows(run.id).filter((turn) => turn.stage_index === stageIndex);
+      turnRows(run.id).filter((turn) => turn.stage_index === stageIndex && turn.error === null);
     const modelOf = (stage: PipelineStage) =>
       stage.model ?? (stage.tier === "route" ? ROUTE_MODEL : undefined);
     const rolesTitle = (role: StageRole) => (role === "reviewer" ? "Review" : "Adversarial");
 
-    /** The model a reviewer stage will run on: the stage's, else the role default. No model is an error. */
-    const reviewerModel = async (stage: PipelineStage): Promise<string> => {
-      const chosen = modelOf(stage);
-      if (chosen) return chosen;
+    /** The plan a model draws on (`router.plans`) and its usage now. A provider with no plan has none. */
+    const planOf = (
+      settings: RouterSettings,
+      snapshots: readonly PlanSnapshot[],
+      model: string,
+    ): { plan: string; state: ReturnType<typeof planState> } | undefined => {
+      const plan = settings.plans[splitModel(model).provider];
+      if (!plan) return undefined;
+      const snapshot = snapshots.find((entry) => entry.plan === plan);
+      return {
+        plan,
+        state: planState(plan, snapshot, host.now(), {
+          maxAgeMs: settings.usageMaxAgeMinutes * 60_000,
+          weekly: settings.pressure.weekly,
+          fiveHour: settings.pressure.fiveHour,
+        }),
+      };
+    };
+
+    /**
+     * The model a reviewer stage will run on: the stage's, else the role default, else none (the agent's own
+     * default). A role default whose plan is full gives way to the first ladder model of its tier or higher whose
+     * plan is not full (R4.10, ADR 0141); `note` says so. A started agent keeps its model (ADR 0140).
+     */
+    const reviewerModel = async (
+      stage: PipelineStage,
+      settings: RouterSettings,
+    ): Promise<{ model?: string; note?: string }> => {
+      const pinned = modelOf(stage);
+      if (pinned) return { model: pinned };
       const role = stage.role as StageRole;
       const defaults = await agents.roleDefaults(role);
-      if (defaults.provider && defaults.modelId) return `${defaults.provider}/${defaults.modelId}`;
-      throw new Error(
-        `stage ${stage.name}: min_strength_over needs the ${role} model, but the stage sets no model and the ${role} role has no default; set "model" in the stage or the ${role} model in the pi-subagents settings`,
-      );
+      if (!defaults.provider || !defaults.modelId) return {};
+      const model = `${defaults.provider}/${defaults.modelId}`;
+      const snapshots = (await readPlans(host.home.root)).plans;
+      const own = planOf(settings, snapshots, model);
+      // No fresh numbers count as room, as in the router.
+      if (own?.state.room !== "full") return { model };
+      const tier = tierOf(settings, model);
+      // Settings allow a ladder model with no tier. It cannot be shown strong enough, so it ranks below every tier.
+      const rank = (candidate: string) => {
+        const candidateTier = settings.tiers[candidate];
+        return candidateTier ? TIERS.indexOf(candidateTier) : -1;
+      };
+      const chosen = [
+        ...new Set(settings.ladders.flatMap((ladder) => ladder.rungs.map((rung) => rung.model))),
+      ]
+        .filter((candidate) => candidate !== model && rank(candidate) >= TIERS.indexOf(tier))
+        .sort((a, b) => rank(a) - rank(b))
+        .find((candidate) => planOf(settings, snapshots, candidate)?.state.room !== "full");
+      const until =
+        own.state.resetsAt === undefined
+          ? ""
+          : ` until ${new Date(own.state.resetsAt).toISOString()}`;
+      if (!chosen) {
+        throw new Error(
+          `stage ${stage.name}: the ${role} default ${model} is on plan ${own.plan}, which is full${until}; no ladder model of tier ${tier} or higher has room. Retry after the reset, or set another ${role} model in the pi-subagents settings.`,
+        );
+      }
+      return { model: chosen, note: `${model}: plan ${own.plan} is full${until}; took ${chosen}` };
     };
 
-    /** The models the worker ran on. A worker that reported has a session, so none recorded is an error. */
+    /**
+     * The models every worker of the run ran on, failed ones too: a failed worker may have written code (R4.4). A
+     * worker that reported has a session, so none recorded is an error.
+     */
     const workerModels = async (run: RunRow): Promise<string[]> => {
-      const used = await agents.modelsUsed(run.worker_agent_id as string);
-      if (used.length === 0) {
+      const workers = [
+        ...new Set(
+          turnRows(run.id)
+            .filter((turn) => turn.role === "worker")
+            .map((turn) => turn.agent_id),
+        ),
+      ];
+      const used = new Set<string>();
+      for (const worker of workers)
+        for (const model of await agents.modelsUsed(worker)) used.add(model);
+      if (used.size === 0) {
         throw new Error(`Pi recorded no model for the worker agent ${run.worker_agent_id}`);
       }
-      return used;
+      return [...used];
     };
 
-    /** R4.4 with the tier list (ADR 0023): the first reviewer model not strictly above a worker model, as a sentence. */
+    /**
+     * R4.4 with the tier list (ADR 0023, 0152): the first reviewer model that may not review a worker model, as a
+     * sentence. A worker of the `local` tier needs a reviewer of a strictly higher tier; any other worker accepts a
+     * reviewer of its own tier, the same model included.
+     */
     const notStronger = (
       settings: RouterSettings,
       reviewers: readonly string[],
@@ -422,8 +535,9 @@ export const pipelinesModule: ServerModule = {
         const reviewerTier = tierOf(settings, reviewer);
         for (const worker of workers) {
           const workerTier = tierOf(settings, worker);
-          if (TIERS.indexOf(reviewerTier) <= TIERS.indexOf(workerTier)) {
-            return `${reviewer} (tier ${reviewerTier}) is not stronger than ${worker} (tier ${workerTier})`;
+          const gap = TIERS.indexOf(reviewerTier) - TIERS.indexOf(workerTier);
+          if (gap < (workerTier === "local" ? 1 : 0)) {
+            return `${reviewer} (tier ${reviewerTier}) is not above ${worker} (tier ${workerTier})`;
           }
         }
       }
@@ -450,15 +564,8 @@ export const pipelinesModule: ServerModule = {
       } catch {
         return undefined;
       }
-      const plan = settings.plans[splitModel(model).provider];
-      if (!plan) return undefined;
-      const snapshot = (await readPlans(host.home.root)).plans.find((entry) => entry.plan === plan);
-      const state = planState(plan, snapshot, host.now(), {
-        maxAgeMs: settings.usageMaxAgeMinutes * 60_000,
-        weekly: settings.pressure.weekly,
-        fiveHour: settings.pressure.fiveHour,
-      });
-      return state.pressure ? { model, notes: state.notes } : undefined;
+      const used = planOf(settings, (await readPlans(host.home.root)).plans, model);
+      return used?.state.pressure ? { model, notes: used.state.notes } : undefined;
     };
 
     const advanceWorker = async (
@@ -521,11 +628,12 @@ export const pipelinesModule: ServerModule = {
       kind: PipelineTurnKind,
       role: StageRole,
       agentId: string,
+      modelNote?: string,
     ): string => {
       const turnId = host.newId();
       host.store.run(
-        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, model_note, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         turnId,
         run.id,
         stageIndex,
@@ -534,9 +642,23 @@ export const pipelinesModule: ServerModule = {
         kind,
         role,
         agentId,
+        modelNote ?? null,
         host.now(),
       );
       return turnId;
+    };
+
+    /** Starts the worker's fix turn for a review. `last` tells the worker no review follows. */
+    const startFix = (
+      run: RunRow,
+      stageIndex: number,
+      stage: PipelineStage,
+      review: TurnRow,
+      last: boolean,
+    ) => {
+      const worker = run.worker_agent_id as string;
+      const turnId = insertTurn(run, stageIndex, stage, review.round, "fix", "worker", worker);
+      agents.deliver(worker, fixPrompt(stage, reportOf(review), turnId, last));
     };
 
     /** The diff artifact: commits since the workspace's base, plus uncommitted and untracked files. */
@@ -560,24 +682,34 @@ export const pipelinesModule: ServerModule = {
       stageIndex: number,
     ): Promise<StepOutcome<StageCheckpoint>> => {
       const role = stage.role as StageRole;
+      const settings = await loadSettings(host.home.root);
+      const { model, note } = await reviewerModel(stage, settings);
       if (stage.min_strength_over) {
         // Checked before the reviewer exists, so a refused model creates no agent. A throw waits for a settings fix.
-        const settings = await loadSettings(host.home.root);
-        const reviewer = await reviewerModel(stage);
-        const problem = notStronger(settings, [reviewer], await workerModels(run));
+        if (!model) {
+          throw new Error(
+            `stage ${stage.name}: min_strength_over needs the ${role} model, but the stage sets no model and the ${role} role has no default; set "model" in the stage or the ${role} model in the pi-subagents settings`,
+          );
+        }
+        const problem = notStronger(settings, [model], await workerModels(run));
         if (problem) {
           throw new Error(
-            `stage ${stage.name} (min_strength_over ${stage.min_strength_over}): reviewer model ${problem}; set a stronger model in the stage or fix "tiers" in settings.json, then retry`,
+            `stage ${stage.name} (min_strength_over ${stage.min_strength_over}): reviewer model ${problem}; set a reviewer model of a high enough tier in the stage or fix "tiers" in settings.json, then retry`,
           );
         }
       }
-      const round = stageTurns(run, stageIndex).filter((turn) => turn.kind === "review").length + 1;
+      const turns = stageTurns(run, stageIndex);
+      const round = turns.filter((turn) => turn.kind === "review").length + 1;
+      // Round 2 and later: the last two turns are the previous review and the worker's fix for it.
+      const earlier =
+        round > 1
+          ? { review: reportOf(turns.at(-2) as TurnRow), fix: reportOf(turns.at(-1) as TurnRow) }
+          : undefined;
       const paths = {
         brief: `pipelines/${run.id}/brief.md`,
         diff: `pipelines/${run.id}/${stage.name}-${round}.diff`,
       };
       await writeDiff(run, paths.diff);
-      const model = modelOf(stage);
       const tests = JSON.parse(run.tests) as TestProof[];
       return {
         checkpoint: { boot: bootId },
@@ -587,8 +719,8 @@ export const pipelinesModule: ServerModule = {
             title: `${rolesTitle(role)} ${round}`,
             ...(model ? { model } : {}),
           });
-          const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id);
-          agents.deliver(agent.id, reviewPrompt(stage, round, turnId, paths, tests));
+          const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id, note);
+          agents.deliver(agent.id, reviewPrompt(stage, round, turnId, paths, tests, earlier));
         },
       };
     };
@@ -698,12 +830,57 @@ export const pipelinesModule: ServerModule = {
       if (!run) return { next: null };
       const turn = latestTurn(run.id) as TurnRow;
       if (turn.report !== null) return {};
+      if (turn.error !== null) return replaceFailed(run, subject.stageIndex, turn);
+      const failure = await agents.turnError(turn.agent_id);
+      if (failure !== undefined) {
+        throw new Error(
+          `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" failed: ${failure}. Retry starts a fresh ${turn.role} agent for this turn.`,
+        );
+      }
       if (checkpoint?.boot === bootId) return { wait: true };
       // The server restarted while the agent worked. Its process is gone, so it gets one reminder (R6.6).
       return {
         wait: true,
         checkpoint: { boot: bootId },
         commit: () => agents.deliver(turn.agent_id, restartMessage(turn.id)),
+      };
+    };
+
+    /** Retry marked the turn failed: a fresh agent of its role takes it over. The old agent stays, renamed. */
+    const replaceFailed = async (
+      run: RunRow,
+      stageIndex: number,
+      turn: TurnRow,
+    ): Promise<StepOutcome<StageCheckpoint>> => {
+      const rename = () =>
+        agents.rename(turn.agent_id, `${agents.get(turn.agent_id).title} (failed)`);
+      if (turn.kind !== "fix") return { next: "advance", commit: rename };
+      const stage = stageOf(run, stageIndex);
+      const model = run.worker_model ?? modelOf(stage);
+      const review = stageTurns(run, stageIndex).at(-1) as TurnRow;
+      return {
+        wait: true,
+        checkpoint: { boot: bootId },
+        commit: () => {
+          rename();
+          const worker = agents.createStage(run.workspace_id, {
+            role: "worker",
+            title: stage.name,
+            ...(model ? { model } : {}),
+          });
+          host.store.run(
+            "UPDATE pipelines_runs SET worker_agent_id = ? WHERE id = ?",
+            worker.id,
+            run.id,
+          );
+          startFix(
+            { ...run, worker_agent_id: worker.id },
+            stageIndex,
+            stage,
+            review,
+            lastFix(stage, review),
+          );
+        },
       };
     };
 
@@ -726,7 +903,7 @@ export const pipelinesModule: ServerModule = {
     const lastFix = (stage: PipelineStage, review: TurnRow) =>
       review.round >= rounds(stage) || stopsEarly(stage, review);
 
-    /** R4.4 on the report: the models the reviewer really ran on must be above the worker's. */
+    /** R4.4 on the report: the models the reviewer really ran on must be allowed to review the worker's. */
     const reviewerWeakness = async (
       run: RunRow,
       stage: PipelineStage,
@@ -756,6 +933,8 @@ export const pipelinesModule: ServerModule = {
       const stage = stageOf(run, subject.stageIndex);
       const turns = stageTurns(run, subject.stageIndex);
       const last = turns.at(-1) as TurnRow;
+      // The user chose a last fix at the round limit: its turn is open.
+      if (last.report === null) return { next: "await", checkpoint: { boot: bootId } };
       if (last.kind === "task") return { next: "finish" };
       if (last.kind === "fix") {
         const review = turns.at(-2) as TurnRow;
@@ -775,19 +954,7 @@ export const pipelinesModule: ServerModule = {
         return {
           next: "await",
           checkpoint: { boot: bootId },
-          commit: () => {
-            const worker = run.worker_agent_id as string;
-            const turnId = insertTurn(
-              run,
-              subject.stageIndex,
-              stage,
-              last.round,
-              "fix",
-              "worker",
-              worker,
-            );
-            agents.deliver(worker, fixPrompt(stage, report, turnId, lastFix(stage, last)));
-          },
+          commit: () => startFix(run, subject.stageIndex, stage, last, lastFix(stage, last)),
         };
       }
       return {
@@ -798,9 +965,18 @@ export const pipelinesModule: ServerModule = {
             { agentId: run.asking_agent_id, workspaceId: run.workspace_id },
             {
               kind: ROUND_LIMIT,
-              title: `Review round limit in stage "${stage.name}" of pipeline ${run.pipeline_id}`,
-              reason: `${message}. Reviewer: ${report.summary}`,
-              subject: { runId: run.id, stage: stage.name },
+              title: `Review round limit in ${workspaceLabel(run.workspace_id)}: stage "${stage.name}" of pipeline ${run.pipeline_id}`,
+              reason: [
+                `${message}.`,
+                `Reviewer: ${report.summary}`,
+                "Findings:",
+                ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
+                "",
+                "Fix: the worker makes one last fix for these findings, with no review after it, and the run goes on.",
+                "Accept: the run goes on without a fix.",
+                "Decline: the run stops.",
+              ].join("\n"),
+              subject: { runId: run.id, stage: stage.name, action: "fix" },
             },
           );
           host.store.run(
@@ -912,12 +1088,24 @@ export const pipelinesModule: ServerModule = {
       kind: ROUND_LIMIT,
       subject: RoundLimitSubject,
       // All effects are in `decided`, in the transaction that stores the decision.
-      approve: async (subject) => `The pipeline goes on after stage ${subject.stage}.`,
+      approve: async (subject) =>
+        subject.action === "fix"
+          ? `The user chose fix: the worker makes one last fix for stage ${subject.stage}, with no review after it; then the run goes on.`
+          : `The user chose accept: the run goes on after stage ${subject.stage} without a fix.`,
       decided: (subject: RoundLimitSubject, approval, approved) => {
         const run = loadRun(subject.runId);
         // A run that was stopped or moved on ignores the decision.
         if (run?.state !== "waiting_user" || run.approval_id !== approval.id) return;
-        if (approved) {
+        if (approved && subject.action === "fix") {
+          // The fix turn is open when the job wakes; `decide` sends it to `await`, and the fix report ends the stage.
+          const stage = stageOf(run, run.stage_index);
+          const review = stageTurns(run, run.stage_index).at(-1) as TurnRow;
+          startFix(run, run.stage_index, stage, review, true);
+          host.store.run(
+            "UPDATE pipelines_runs SET state = 'running', message = NULL, approval_id = NULL WHERE id = ?",
+            run.id,
+          );
+        } else if (approved) {
           host.store.run(
             "UPDATE pipelines_runs SET state = 'running', message = NULL WHERE id = ?",
             run.id,
@@ -1019,6 +1207,10 @@ export const pipelinesModule: ServerModule = {
       afterRunEnded: (listener) => {
         endListeners.push(listener);
       },
+      setLaneLookup: (lookup) => {
+        if (laneLookup) throw new Error("The pipelines module already has a lane lookup");
+        laneLookup = lookup;
+      },
     };
     host.provide(PipelinesKey, api);
 
@@ -1044,6 +1236,12 @@ export const pipelinesModule: ServerModule = {
         .list({ kind: STAGE_JOB, key: run.workspace_id, states: ["waiting"] })
         .find((found) => (found.subject as StageSubject).runId === run.id);
       if (!job) throw new ApiError(409, "run_not_waiting", "The run has no waiting job to retry");
+      // A restart or a stray wake re-runs `await` without this mark, so the turn only blocks again. Only Retry starts
+      // a fresh agent.
+      const open = latestTurn(run.id);
+      if (job.step === "await" && job.error !== null && open?.report === null) {
+        host.store.run("UPDATE pipelines_turns SET error = ? WHERE id = ?", job.error, open.id);
+      }
       host.jobs.retry(job.id);
       publish(run.workspace_id);
       return c.json({ run: viewOf(requireRun(run.id)) });

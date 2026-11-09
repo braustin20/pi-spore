@@ -29,6 +29,7 @@ import {
   StageReport,
   StartBridgeRunRequest,
   StartLaneRequest,
+  slugify,
 } from "@pi-spore/shared";
 
 /** Longest a request may wait for a run to change, so clients do not time out. Same as the actions routes. */
@@ -78,6 +79,16 @@ export const bridgeModule: ServerModule = {
         throw new ApiError(403, "read_only_chat", `A side chat is read-only and cannot ${what}`);
     };
 
+    /** ADR 0154: a run's coordinator lists and adds cards; the user changes and starts them. */
+    const refuseCoordinator = (caller: BridgeCaller) => {
+      if (runs.runOf(caller.workspaceId))
+        throw new ApiError(
+          403,
+          "run_coordinator",
+          "A run's coordinator only lists and adds cards; the user changes and starts them",
+        );
+    };
+
     const projectOf = (caller: BridgeCaller) => workspaces.get(caller.workspaceId).projectId;
 
     /** A card of the caller's project. Other cards look like they do not exist (ADR 0100). */
@@ -124,6 +135,13 @@ export const bridgeModule: ServerModule = {
       const request = parseJsonBody(BridgeAddCardRequest, await c.req.text(), "card");
       const { blockedBy: ids, ...fields } = request;
       const blockedBy = blockers(caller, ids);
+      // ADR 0154: a coordinator's card waits in the backlog, marked with its run, until the user moves it.
+      const run = runs.runOf(caller.workspaceId);
+      if (run) {
+        const label = `from-run:${slugify(workspaces.get(run.workspaceId).name, 31)}`;
+        fields.column = "backlog";
+        if (!fields.labels?.includes(label)) fields.labels = [...(fields.labels ?? []), label];
+      }
       const card = await cards.create(
         { ...fields, projectId: projectOf(caller), ...(blockedBy ? { blockedBy } : {}) },
         author(caller),
@@ -134,6 +152,7 @@ export const bridgeModule: ServerModule = {
     host.routes.post("/cards/:id", async (c) => {
       const caller = bridgeCaller(c);
       refuseReadOnly(caller, "change cards");
+      refuseCoordinator(caller);
       const request = parseJsonBody(BridgeUpdateCardRequest, await c.req.text(), "card change");
       const card = ownCard(caller, c.req.param("id"));
       const { blockedBy: ids, ...fields } = request;
@@ -149,6 +168,7 @@ export const bridgeModule: ServerModule = {
     host.routes.post("/cards/:id/start", async (c) => {
       const caller = bridgeCaller(c);
       refuseReadOnly(caller, "start work");
+      refuseCoordinator(caller);
       const request = parseJsonBody(BridgeStartCardRequest, await c.req.text(), "start request");
       const approval = cards.requestStart(caller, c.req.param("id"), request);
       return c.json({ approval }, 201);

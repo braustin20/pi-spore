@@ -56,6 +56,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
   for (const { server, agents } of servers) {
+    // A job could start an agent after stopAll; it would exit after the store closed.
+    server.services.jobs.stop();
     await agents.manager().stopAll();
     server.close();
   }
@@ -92,11 +94,17 @@ const PI_DOWN = () => join(scratch, "pi-down");
 const ghState = () => join(scratch, "gh.json");
 
 async function start(
-  options: { home?: string; firstId?: number; record?: boolean; withoutGithubPr?: boolean } = {},
+  options: {
+    home?: string;
+    firstId?: number;
+    record?: boolean;
+    withoutGithubPr?: boolean;
+    script?: Record<string, unknown[]>;
+  } = {},
 ) {
   const script = join(scratch, "script.json");
   if (!existsSync(ghState())) writeFileSync(ghState(), JSON.stringify({ prs: [] }));
-  writeFileSync(script, JSON.stringify({ worker: ["hang", "hang", "hang"] }));
+  writeFileSync(script, JSON.stringify(options.script ?? { worker: ["hang", "hang", "hang"] }));
   const wrapper = join(scratch, "pi-wrapper.mjs");
   writeFileSync(
     wrapper,
@@ -323,6 +331,11 @@ describe("launch context", () => {
     const { argv, env } = coordinatorLaunch as NonNullable<typeof coordinatorLaunch>;
     expect(env).toMatchObject({ PI_SPORE_RUN_ID: run.id, PI_SPORE_RUN_ROLE: "coordinator" });
     expect(argv[argv.indexOf("--tools") + 1]).toBe(COORDINATOR_TOOLS.join(","));
+    expect(COORDINATOR_TOOLS).toEqual(
+      expect.arrayContaining(["kanban_list_cards", "kanban_add_card"]),
+    );
+    expect(COORDINATOR_TOOLS).not.toContain("kanban_update_card");
+    expect(COORDINATOR_TOOLS).not.toContain("kanban_start_card");
     expect(launchOf(worker.agentId)?.env).toMatchObject({
       PI_SPORE_RUN_ID: run.id,
       PI_SPORE_RUN_ROLE: "lane",
@@ -396,6 +409,35 @@ describe("a lane", () => {
     await expect(
       runs.startLane({ agentId: "a", workspaceId: "w" }, { name: "x", brief: "b.md", wave: 1 }),
     ).rejects.toMatchObject({ status: 403, code: "not_coordinator" });
+  });
+});
+
+describe("the review round limit of a lane", () => {
+  it("names the workspace, the lane, and the run in the approval", async () => {
+    const server = await start({
+      script: {
+        worker: [{ summary: "Done" }],
+        reviewer: [{ summary: "Still wrong", verdict: "revise", findings: [] }],
+      },
+    });
+    writeFileSync(
+      join(server.paths.root, "pipelines", "limit.toml"),
+      `${IMPLEMENT.replace('id = "p"', 'id = "limit"')}\n[[stage]]\nname = "review"\nrole = "reviewer"\nrounds = 1\n`,
+    );
+    const { projectId } = await project(server, "roundlimit");
+    const { run, coordinator } = await createRun(server, projectId, "roundlimit");
+    const lane = await startLane(run, coordinator, "feature", { pipeline: "limit" });
+
+    await until(async () =>
+      (await openApprovals(server)).some((entry) => entry.kind === "pipeline-round-limit"),
+    );
+
+    const approval = (await openApprovals(server)).find(
+      (entry) => entry.kind === "pipeline-round-limit",
+    );
+    expect(approval?.title).toBe(
+      `Review round limit in workspace "feature", lane "feature" (${lane.id}) of run "roundlimit": stage "review" of pipeline limit`,
+    );
   });
 });
 
@@ -1242,5 +1284,70 @@ describe("the run PR (ADR 0100, ADR 0130)", () => {
     expect(await response.json()).toMatchObject({ error: { code: "approval_run_changed" } });
     expect((await openApprovals(server)).map((approval) => approval.id)).toEqual([filed.id]);
     expect(ghCalls()).toEqual([]);
+  });
+});
+
+describe("cards from a run's coordinator (ADR 0154)", () => {
+  it("adds a card to the run's project in backlog with a from-run label, and lists only that project", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "cards");
+    const other = await project(server, "elsewhere");
+    const { run, coordinator } = await createRun(server, projectId, "Settings Page");
+    const foreign = (
+      await json<{ card: { id: string } }>(
+        await server.request("POST", "/api/kanban/cards", {
+          title: "Not yours",
+          projectId: other.projectId,
+        }),
+        201,
+      )
+    ).card;
+    const call = asAgent(server, coordinator.agentId, coordinator.workspaceId);
+
+    const { card } = await json<{ card: { id: string; labels: string[]; column: string } }>(
+      await call("POST", "cards", {
+        title: "Flaky staged comments test",
+        body: "Why, steps, check",
+        labels: ["plan:settings"],
+        column: "ready",
+      }),
+      201,
+    );
+
+    expect(card.labels).toEqual(["plan:settings", "from-run:settings-page"]);
+    expect(card.column).toBe("backlog");
+    const { cards } = await json<{ cards: { id: string }[] }>(await call("GET", "cards"));
+    expect(cards.map((entry) => entry.id)).toEqual([card.id]);
+    expect(cards.map((entry) => entry.id)).not.toContain(foreign.id);
+    expect(
+      (
+        await json<{ card: { projectId: string } }>(
+          await server.request("GET", `/api/kanban/cards/${card.id}`),
+        )
+      ).card.projectId,
+    ).toBe(run.projectId);
+  });
+
+  it("answers 403 when the coordinator changes or starts a card", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "no-change");
+    const { coordinator } = await createRun(server, projectId, "nochange");
+    const call = asAgent(server, coordinator.agentId, coordinator.workspaceId);
+    const { card } = await json<{ card: { id: string } }>(
+      await call("POST", "cards", { title: "Follow-up" }),
+      201,
+    );
+
+    const change = await call("POST", `cards/${card.id}`, { title: "Renamed" });
+    const begin = await call("POST", `cards/${card.id}/start`, {
+      target: { kind: "new", isolation: "new" },
+      reason: "Go",
+    });
+
+    for (const response of [change, begin]) {
+      expect(response.status).toBe(403);
+      expect(await response.json()).toMatchObject({ error: { code: "run_coordinator" } });
+    }
+    expect(await openApprovals(server)).toEqual([]);
   });
 });
