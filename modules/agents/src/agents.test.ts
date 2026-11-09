@@ -17,8 +17,9 @@ import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { ServerModule } from "@pi-spore/module-api";
+import { TIERS } from "@pi-spore/router";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
+import { type Agent, type ChatState, MODEL_TIERS, type Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FAKE_PNG } from "../test-fixtures/png.mjs";
 import type { Agents, LaunchHook } from "./contract.js";
@@ -578,6 +579,52 @@ describe("agents", () => {
       );
       expect(body.error.message).toContain("model list");
       await until(() => gone(launches()[0]?.pid as number));
+    });
+  });
+
+  describe("model tiers from settings.json", () => {
+    type Listed = { models: { id: string; tier?: string }[]; tierError?: string };
+    const writeSettings = (text: string) =>
+      writeFileSync(join(server.paths.root, "settings.json"), text);
+    const tiersOf = (body: Listed) => body.models.map((model) => [model.id, model.tier]);
+
+    it("gives a model in tiers its tier, and leaves the other without one", async () => {
+      await setup();
+      writeSettings(JSON.stringify({ tiers: { "fake/fake-2": "heavy" } }));
+      const body = await json<Listed>(await server.request("GET", "/api/agents/models"));
+      expect(tiersOf(body)).toEqual([
+        ["fake-1", undefined],
+        ["fake-2", "heavy"],
+      ]);
+      expect(body.models[0]).not.toHaveProperty("tier");
+      expect(body).not.toHaveProperty("tierError");
+    });
+
+    it("gives a chat's models their tiers", async () => {
+      await setup();
+      writeSettings(JSON.stringify({ tiers: { "fake/fake-1": "light" } }));
+      const { agentId } = await makeAgent();
+      const body = await json<Listed>(await server.request("GET", `/api/agents/${agentId}/models`));
+      expect(tiersOf(body)).toEqual([
+        ["fake-1", "light"],
+        ["fake-2", undefined],
+      ]);
+    });
+
+    it("still lists the models when settings.json is broken, and names the error", async () => {
+      await setup();
+      writeSettings("{ not json");
+      const body = await json<Listed>(await server.request("GET", "/api/agents/models"));
+      expect(tiersOf(body)).toEqual([
+        ["fake-1", undefined],
+        ["fake-2", undefined],
+      ]);
+      expect(body.tierError).toContain("settings.json");
+    });
+
+    it("keeps the shared tier list equal to the router's", async () => {
+      await setup();
+      expect(MODEL_TIERS).toEqual(TIERS);
     });
   });
 

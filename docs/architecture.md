@@ -1382,13 +1382,14 @@ API under `/api/kanban`:
   project's active workspaces), and "Start a run" (a base line, a model, and a git project when the card has none). Cards made or changed by an agent show an agent chip, and the card panel names the
   agent's workspace with a link to its chat. Home shows a `card-start` approval with the card, whether it is
   blocked, the reason, and a target picker.
-- A Model dropdown (ADR 0120) sits in the "new workspace" form (through `CreateForm`'s `children`), in the card
-  editor, and in the `card-start` approval. Its list comes from `GET /api/agents/models`, loaded once per dropdown.
-  Its first option sends no model: in a start it is "Card's model (…)" when the card has one, else "Default
-  (orchestrator setting)"; in the editor it clears the card's model. The start forms begin on that first option;
-  the approval begins on the subject's model. A model that the list does not hold stays an option, so loading
-  never changes the selection. A list that fails to load shows a notice and never blocks a start. For an existing
-  workspace the dropdown is disabled with "This workspace's chat keeps its model." and no model is sent. Approving
+- A Model picker (ADR 0120) sits in the "new workspace" form (through `CreateForm`'s `children`), in the card
+  editor, and in the `card-start` approval. Its list comes from `GET /api/agents/models`, loaded once per picker.
+  It is the shared `ModelPicker` from `@pi-spore/ui`: a search box, a Suggested group (`spore/auto`, then tiered
+  models low to high), and the other models folded under their provider. Its first item sends no model: in a start
+  it is "Card's model (…)" when the card has one, else "Default (orchestrator setting)"; in the editor it clears the
+  card's model. The start forms begin on that first item; the approval begins on the subject's model. A model that
+  the list does not hold still shows on the button, so loading never changes the selection. A list that fails to load shows a notice and never blocks a start. For an existing
+  workspace the picker is disabled with "This workspace's chat keeps its model." and no model is sent. Approving
   with a changed model sends the changed subject.
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
@@ -1682,7 +1683,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 
   | Route | Does |
   |---|---|
-  | `GET /api/agents/models` | The models Pi offers, `{ models }`, for the start dropdowns when no chat runs (ADR 0120). Starts a short-lived Pi process that counts against `agents.maxLive`; cached for 60 s. 502 `models_unavailable` if Pi fails or answers badly. |
+  | `GET /api/agents/models` | The models Pi offers, `{ models }`, for the start dropdowns when no chat runs (ADR 0120). Starts a short-lived Pi process that counts against `agents.maxLive`; cached for 60 s. 502 `models_unavailable` if Pi fails or answers badly. A model listed in `tiers` in `settings.json` has its router `tier`. The tiers are read on each call, not cached. If `settings.json` is bad, the models still list without tiers, and `tierError` names the problem. |
+  | `GET /api/agents/:id/models` | The chat's models and thinking levels, `{ models, thinkingLevels }`, asked of its Pi process. Models get `tier` and the answer gets `tierError` the same way as above. |
   | `GET /api/agents?workspaceId=` | The workspace's chats: the active orchestrator chat, side chats, then older orchestrator chats, newest first in each group. |
   | `POST /api/agents` `{ workspaceId, model? }` | The active orchestrator chat; the first call creates it (201), on `model` when given (ADR 0120). |
   | `POST /api/agents/chats` `{ workspaceId, kind, fork?, model? }` | Starts an orchestrator chat (replaces the active one, on `model` when given) or a side chat; `fork` copies the orchestrator chat's context. |

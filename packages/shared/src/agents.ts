@@ -98,6 +98,11 @@ export const Agent = Type.Object({
 });
 export type Agent = Static<typeof Agent>;
 
+/** The router's tiers, low to high. Same order as the router's `TIERS`; the web cannot import the router (it reads files). */
+export const MODEL_TIERS = ["local", "light", "medium", "heavy", "top"] as const;
+export const ModelTier = Type.Enum(MODEL_TIERS);
+export type ModelTier = Static<typeof ModelTier>;
+
 export const AgentModel = Type.Object({
   provider: Type.String(),
   id: Type.String(),
@@ -106,6 +111,8 @@ export const AgentModel = Type.Object({
   reasoning: Type.Optional(Type.Boolean()),
   /** What the model takes, such as `["text", "image"]`. Pi sends a placeholder for an image to a text-only model. */
   input: Type.Optional(Type.Array(Type.String())),
+  /** The model's router tier from settings.json, when it has one. */
+  tier: Type.Optional(ModelTier),
 });
 export type AgentModel = Static<typeof AgentModel>;
 
@@ -297,12 +304,17 @@ export const DialogAnswer = Type.Object(
 export type DialogAnswer = Static<typeof DialogAnswer>;
 
 /** Pi's `get_available_models` data, and the answer of `GET /api/agents/models` (ADR 0120). */
-export const ModelChoices = Type.Object({ models: Type.Array(AgentModel) });
+export const ModelChoices = Type.Object({
+  models: Type.Array(AgentModel),
+  /** The router settings error when settings.json is bad; the models still list, without tiers. */
+  tierError: Type.Optional(Type.String()),
+});
 export type ModelChoices = Static<typeof ModelChoices>;
 
 export const ModelList = Type.Object({
   models: Type.Array(AgentModel),
   thinkingLevels: Type.Array(ThinkingLevel),
+  tierError: Type.Optional(Type.String()),
 });
 export type ModelList = Static<typeof ModelList>;
 

@@ -2,7 +2,7 @@ import { ChevronDown } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import { cn } from "../cn.js";
 
-const control =
+export const control =
   "rounded-lg border border-line bg-raised text-fg text-sm placeholder:text-muted disabled:cursor-default disabled:opacity-50";
 
 /** A label above its control. */

@@ -4,8 +4,10 @@ import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { removeInside } from "@pi-spore/module-api/node";
+import { loadSettings } from "@pi-spore/router";
 import {
   type Agent,
+  type AgentModel,
   type AgentRole,
   type ChatKind,
   CreateAgentRequest,
@@ -135,6 +137,27 @@ export interface AgentsModuleOptions {
 
 const MIB = 1024 * 1024;
 const REF = /^[0-9a-f]{64}$/;
+
+/**
+ * Each model with its router tier from settings.json, read per answer because the settings can change. A model
+ * without a tier is normal here. A bad settings.json leaves the models without tiers and names the error.
+ */
+async function withTiers(
+  home: string,
+  models: readonly AgentModel[],
+): Promise<{ models: AgentModel[]; tierError?: string }> {
+  try {
+    const { tiers } = await loadSettings(home);
+    return {
+      models: models.map((model) => {
+        const tier = tiers[`${model.provider}/${model.id}`];
+        return tier ? { ...model, tier } : model;
+      }),
+    };
+  } catch (error) {
+    return { models: [...models], tierError: (error as Error).message };
+  }
+}
 
 /** Limits come from the settings (`agents.*`, read at startup); options override them, for tests. */
 export function createAgentsModule(
@@ -645,7 +668,9 @@ export function createAgentsModule(
       });
 
       // Before "/:id", or "models" is read as an agent id.
-      host.routes.get("/models", async (c) => c.json({ models: await agents.availableModels() }));
+      host.routes.get("/models", async (c) =>
+        c.json(await withTiers(host.home.root, await agents.availableModels())),
+      );
 
       host.routes.get("/:id", (c) => c.json({ agent: agents.view(c.req.param("id")) }));
 
@@ -768,7 +793,10 @@ export function createAgentsModule(
         }),
       );
 
-      host.routes.get("/:id/models", async (c) => c.json(await agents.models(c.req.param("id"))));
+      host.routes.get("/:id/models", async (c) => {
+        const list = await agents.models(c.req.param("id"));
+        return c.json({ ...list, ...(await withTiers(host.home.root, list.models)) });
+      });
 
       host.routes.get("/:id/commands", async (c) =>
         c.json({ commands: await agents.commands(c.req.param("id")) }),
