@@ -32,6 +32,7 @@
   on a temp `PI_SPORE_HOME` and a free port, without `PI_SPORE_URL`, `PI_SPORE_TOKEN`, or `PI_SPORE_SERVER_PID`.
   Actions inherit the real server's env, so the script sets these on purpose. On SIGTERM it waits for the server,
   then removes the temp home. It needs no shell.
+  [ADR 0161](0161-dev-server-for-the-user.md) replaces the temp home with a kept home and a sample project.
 - The orchestrator and the stage worker rules say: never stop the pi-spore server; use `run_action dev` with
   `background: true` and `stop_action`.
 

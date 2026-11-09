@@ -13,6 +13,7 @@ export default defineConfig({
       "packages/*/src/**/*.test.{ts,tsx}",
       "modules/*/**/*.test.{ts,tsx}",
       "pi-extensions/*/src/**/*.test.ts",
+      "scripts/**/*.test.ts",
     ],
   },
 });

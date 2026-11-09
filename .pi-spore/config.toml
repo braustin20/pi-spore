@@ -25,9 +25,10 @@ run = [
 description = "Vitest"
 exclusive = true
 
-# A test server for agents that work on pi-spore: it builds, then runs on a temp PI_SPORE_HOME and a free port
-# (printed in the log), with the real server's PI_SPORE_URL, PI_SPORE_TOKEN, and PI_SPORE_SERVER_PID removed.
-# Start it with run_action { name: "dev", background: true } and stop it with stop_action.
+# A workspace's own server, for the user (Run, then Open in the Actions panel) and for agents (ADR 0161). It builds,
+# then runs on <worktree>/.pi-spore-dev/home, kept between runs, and a free port (printed in the log), without the
+# real server's PI_SPORE_URL, PI_SPORE_TOKEN, and PI_SPORE_SERVER_PID. Agents start it with
+# run_action { name: "dev", background: true } and stop it with stop_action.
 [actions.dev]
 run = ["node", "scripts/dev-server.mjs"]
-description = "Build, then run a throwaway server on a temp home and a free port"
+description = "Build, then run this workspace's server on a free port (delete .pi-spore-dev/ to reset)"
