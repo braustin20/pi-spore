@@ -37,7 +37,7 @@ import {
   withModel,
 } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
-import { readTranscript } from "./transcript.js";
+import { readTranscript, type Transcript } from "./transcript.js";
 
 export interface AgentRecord {
   id: string;
@@ -212,6 +212,20 @@ const asContextUsage = (value: unknown): ContextUsage | undefined => {
  * Runs workspace agents as `pi --mode rpc` processes (ADR 0002): at most `maxLive` at once (others wait in order),
  * stops idle ones after `idleStopMs` (ADR 0026), and keeps each agent's chat state for browser snapshots.
  */
+/**
+ * The messages Pi has written to a session file. Pi names the file before its first reply writes it, so a missing
+ * file means no turn has ended yet.
+ */
+const writtenMessages = async (file: string | null): Promise<Transcript["messages"]> => {
+  if (!file) return [];
+  try {
+    return (await readTranscript(file)).messages;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
+    throw error;
+  }
+};
+
 export class AgentManager {
   private readonly agents = new Map<string, Live>();
   private readonly waiting: (() => void)[] = [];
@@ -409,10 +423,8 @@ export class AgentManager {
    * agent too.
    */
   async modelsUsed(id: string): Promise<string[]> {
-    const { sessionFile } = this.get(id).record;
-    if (!sessionFile) return [];
     const used = new Set<string>();
-    for (const message of (await readTranscript(sessionFile)).messages) {
+    for (const message of await writtenMessages(this.get(id).record.sessionFile)) {
       if (
         message.role === "assistant" &&
         typeof message.provider === "string" &&
@@ -428,8 +440,7 @@ export class AgentManager {
     const { status, error, record } = this.get(id);
     if (status === "failed") return error;
     if (status === "busy" || status === "starting" || status === "waiting") return undefined;
-    if (!record.sessionFile) return undefined;
-    const last = (await readTranscript(record.sessionFile)).messages.findLast(
+    const last = (await writtenMessages(record.sessionFile)).findLast(
       (message) => message.role === "assistant",
     );
     if (last?.stopReason !== "error") return undefined;

@@ -1902,6 +1902,21 @@ describe("stage agents (R6)", () => {
       expect(await api.turnError(stage.id)).toContain("boom: the fake agent crashed");
     });
 
+    it("is undefined, and no models are used, while Pi has named a session file it has not written yet", async () => {
+      await setupStages();
+      const { agentId } = await makeAgent();
+      await json(await prompt(agentId, "one"));
+      await replied(agentId, 1);
+      const file = server.store.get<{ session_file: string }>(
+        "SELECT session_file FROM agents_agents WHERE id = ?",
+        agentId,
+      )?.session_file;
+      // Pi reports the path before its first reply writes the file.
+      rmSync(file as string);
+      expect(await api.turnError(agentId)).toBeUndefined();
+      expect(await api.modelsUsed(agentId)).toEqual([]);
+    });
+
     it("throws a 404 for an unknown agent", async () => {
       await setupStages();
       await expect(api.turnError("nope")).rejects.toMatchObject({ status: 404 });
