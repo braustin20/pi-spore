@@ -19,6 +19,7 @@ import {
   Panel,
   PanelHeader,
   Textarea,
+  usePhone,
 } from "@pi-spore/ui";
 import { Bell, CheckCheck, House } from "lucide-react";
 import { type ComponentType, type ReactNode, useMemo, useState, useSyncExternalStore } from "react";
@@ -49,11 +50,23 @@ function ago(at: number, now: number): string {
   return new Date(at).toLocaleString();
 }
 
+let notificationFailureWarned = false;
+
 function showNotification(item: InboxItem): void {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
   if (document.hasFocus()) return;
   const { title, body } = notification(item);
-  const shown = new Notification(title, { body, tag: itemKey(item) });
+  let shown: Notification;
+  try {
+    shown = new Notification(title, { body, tag: itemKey(item) });
+  } catch (caught) {
+    // Some phone browsers only allow notifications from a service worker. The inbox must still work.
+    if (!notificationFailureWarned) {
+      notificationFailureWarned = true;
+      console.warn(`Desktop notification failed: ${message(caught)}`);
+    }
+    return;
+  }
   shown.onclick = () => {
     window.focus();
     window.location.hash = "#/";
@@ -169,7 +182,7 @@ function PlainApprovalView({ approval, busy, approve, decline }: ApprovalViewPro
       <p className="m-0 text-sm font-medium">{approval.title}</p>
       <p className="m-0 text-sm whitespace-pre-wrap">{approval.reason}</p>
       <DeclineNote note={note} onChange={setNote} />
-      <div className="flex gap-2">
+      <div className="flex gap-2 max-md:flex-wrap">
         <Button variant="primary" disabled={busy} onClick={() => approve()}>
           Approve
         </Button>
@@ -402,9 +415,10 @@ function InterruptedJob({ job, onError }: { job: Job; onError: (text: string) =>
 
 /** Asks for permission only when the user clicks, never on load (R15.2). */
 function NotificationButton() {
+  const phone = usePhone();
   const supported = typeof Notification !== "undefined";
   const [permission, setPermission] = useState(supported ? Notification.permission : "denied");
-  if (!supported) return null;
+  if (phone || !supported) return null;
   if (permission === "granted") return <Chip tone="ok">Desktop notifications on</Chip>;
   if (permission === "denied")
     return (
@@ -468,23 +482,26 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
             <PanelHeader title="Running" />
             <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
               {inbox.running.map((run) => (
-                <li key={run.agentId} className="flex items-center gap-2 text-sm">
-                  <a href={`#/workspaces/${run.workspace.id}`} className="min-w-0 flex-1 truncate">
+                <li key={run.agentId} className="flex items-center gap-2 text-sm max-md:flex-wrap">
+                  <a
+                    href={`#/workspaces/${run.workspace.id}`}
+                    className="min-w-0 flex-1 truncate max-md:basis-full"
+                  >
                     {run.workspace.name}
                   </a>
-                  <span className="w-24 shrink-0 truncate text-muted">
+                  <span className="w-24 shrink-0 truncate text-muted max-md:w-auto">
                     {run.workspace.projectName}
                   </span>
                   <a
                     href={chatHref(run.workspace, run.chat)}
-                    className="w-56 shrink-0 truncate text-muted"
+                    className="w-56 shrink-0 truncate text-muted max-md:w-auto max-md:max-w-full"
                   >
                     {chatName(run.chat)}
                   </a>
                   <Chip tone={run.status === "waiting" || run.detail ? "warn" : "run"}>
                     {run.detail ?? RUNNING_TEXT[run.status]}
                   </Chip>
-                  <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted">
+                  <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted max-md:w-auto">
                     since {ago(run.since, Date.now())}
                   </span>
                 </li>

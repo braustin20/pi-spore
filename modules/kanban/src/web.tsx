@@ -37,9 +37,12 @@ import {
   Notice,
   SectionLabel,
   Select,
+  switchPane,
   Textarea,
   Tooltip,
   useConfirm,
+  usePane,
+  usePhone,
 } from "@pi-spore/ui";
 import {
   ArrowDown,
@@ -73,6 +76,7 @@ import {
   filterCards,
   labelsOf,
   localDay,
+  phoneColumn,
   type Step,
   stepTarget,
 } from "./board.js";
@@ -241,7 +245,7 @@ function CardTile({
         </div>
       )}
       {/* Buttons for keyboard and touch users; drag and drop does the same with a mouse. */}
-      <div className="flex gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100">
+      <div className="flex gap-0.5 opacity-0 group-focus-within:opacity-100 group-hover:opacity-100 touch:opacity-100">
         {STEPS.map(({ step, label, Icon }) => {
           const target = stepTarget(card, step, columns);
           return (
@@ -301,7 +305,7 @@ function ColumnView({
       }}
       onDragLeave={() => setOver(false)}
       onDrop={(event) => dropped(event, undefined)}
-      className={`flex w-72 shrink-0 flex-col rounded-xl border bg-panel ${over ? "border-accent" : "border-line"}`}
+      className={`flex w-72 shrink-0 flex-col max-md:w-full rounded-xl border bg-panel ${over ? "border-accent" : "border-line"}`}
     >
       <SectionLabel className="px-3 pt-3 pb-2">
         {COLUMN_TITLES[column]}
@@ -897,9 +901,20 @@ function CardEditor({
     <div className="flex flex-col">
       {dialog}
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
+        <Button variant="ghost" size="icon-sm" aria-label="Back" className="md:hidden" asChild>
+          <a href="#/board">
+            <ArrowLeft />
+          </a>
+        </Button>
         <SectionLabel className="flex-1">{isNew ? "New card" : "Card"}</SectionLabel>
         <Tooltip label="Close" side="bottom">
-          <Button variant="ghost" size="icon-sm" aria-label="Close the card" asChild>
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Close the card"
+            className="max-md:hidden"
+            asChild
+          >
             <a href="#/board">
               <X />
             </a>
@@ -1065,9 +1080,12 @@ function BoardPage({ params }: { params: Readonly<Record<string, string>> }) {
   const [error, setError] = useState<string | undefined>();
   const selectedId = params.cardId;
   const today = localDay(new Date());
+  const phone = usePhone();
+  const pane = usePane();
 
   const cards = filterCards(all ?? [], filter);
   const columns = byColumn(cards);
+  const shownColumns = phone ? [phoneColumn(pane, columns)] : CARD_COLUMNS;
   const projectName = (id: string | undefined) =>
     id === undefined
       ? undefined
@@ -1094,9 +1112,9 @@ function BoardPage({ params }: { params: Readonly<Record<string, string>> }) {
   };
 
   return (
-    <div className="flex h-full min-h-0">
+    <div className={`flex h-full min-h-0 ${phone ? "relative" : ""}`}>
       <div className="flex min-w-0 flex-1 flex-col">
-        <header className="flex shrink-0 flex-wrap items-end gap-3 px-6 pt-5 pb-3">
+        <header className="flex shrink-0 flex-wrap items-end gap-3 px-6 pt-5 pb-3 max-md:px-4">
           <h1 className="m-0 flex-1 text-xl font-semibold">Board</h1>
           <Field label="Project">
             <Select
@@ -1140,33 +1158,54 @@ function BoardPage({ params }: { params: Readonly<Record<string, string>> }) {
           </Button>
         </header>
         {(error ?? lookupError) && (
-          <div className="px-6 pb-3">
+          <div className="px-6 pb-3 max-md:px-4">
             <Notice tone="fail">{error ?? lookupError}</Notice>
           </div>
         )}
         {all === undefined ? (
-          <p className="m-0 px-6 text-sm text-muted">Loading...</p>
+          <p className="m-0 px-6 text-sm text-muted max-md:px-4">Loading...</p>
         ) : (
-          <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-6 pb-6">
-            {CARD_COLUMNS.map((column) => (
-              <ColumnView
-                key={column}
-                column={column}
-                cards={columns[column]}
-                columns={columns}
-                projectName={projectName}
-                selectedId={selectedId}
-                today={today}
-                onMove={move}
-              />
-            ))}
-          </div>
+          <>
+            {phone && (
+              <nav
+                aria-label="Columns"
+                className="flex shrink-0 gap-2 overflow-x-auto px-4 pb-3 [scrollbar-width:none]"
+              >
+                {CARD_COLUMNS.map((column) => (
+                  <Button
+                    key={column}
+                    size="sm"
+                    variant={column === shownColumns[0] ? "primary" : "secondary"}
+                    aria-pressed={column === shownColumns[0]}
+                    className="shrink-0"
+                    onClick={() => switchPane(column)}
+                  >
+                    {COLUMN_TITLES[column]} {columns[column].length}
+                  </Button>
+                ))}
+              </nav>
+            )}
+            <div className="flex min-h-0 flex-1 gap-3 overflow-x-auto px-6 pb-6 max-md:px-4 max-md:pb-4">
+              {shownColumns.map((column) => (
+                <ColumnView
+                  key={column}
+                  column={column}
+                  cards={columns[column]}
+                  columns={columns}
+                  projectName={projectName}
+                  selectedId={selectedId}
+                  today={today}
+                  onMove={move}
+                />
+              ))}
+            </div>
+          </>
         )}
       </div>
       {selectedId && all !== undefined && (
         <aside
           aria-label="Card"
-          className="flex w-96 shrink-0 flex-col overflow-y-auto border-l border-line bg-panel"
+          className="flex w-96 shrink-0 flex-col overflow-y-auto border-l border-line bg-panel max-md:absolute max-md:inset-0 max-md:z-10 max-md:w-full max-md:border-l-0"
         >
           {/* Keyed by id, so a draft of one card does not carry over to the next. */}
           <CardEditor

@@ -28,6 +28,7 @@ import {
   Spinner,
   Textarea,
   Tooltip,
+  usePhone,
   useStoredFlag,
 } from "@pi-spore/ui";
 import {
@@ -105,7 +106,7 @@ function CommentButton({ shown, onOpen }: { shown: ShownLine; onOpen: (key: stri
       aria-label={label}
       title={label}
       onClick={() => onOpen(anchorKey(anchor.side, anchor.line))}
-      className="absolute top-0.5 left-0.5 cursor-pointer rounded bg-accent text-on-accent opacity-0 group-hover:opacity-100 focus-visible:opacity-100"
+      className="absolute top-0.5 left-0.5 cursor-pointer rounded bg-accent text-on-accent opacity-0 group-hover:opacity-100 touch:opacity-100 focus-visible:opacity-100"
     >
       <MessageSquarePlus className="size-3.5" />
     </button>
@@ -500,7 +501,10 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | undefined>();
   const [note, setNote] = useState<string | undefined>();
-  const [split, setSplit] = useStoredFlag("pi-spore.changes.split", false);
+  const phone = usePhone();
+  const [splitSetting, setSplit] = useStoredFlag("pi-spore.changes.split", false);
+  // The split view is too wide for a phone, so it is never used there.
+  const split = splitSetting && !phone;
   /** Bumped to reload the files and the open diff. */
   const [generation, setGeneration] = useState(0);
   const base = `changes/workspaces/${workspace.id}`;
@@ -674,16 +678,18 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
         )}
         <span className="flex-1" />
         {loading && <Spinner />}
-        <Tooltip label={split ? "Unified view" : "Split view"} side="bottom">
-          <Button
-            size="icon-sm"
-            variant="ghost"
-            aria-label={split ? "Unified view" : "Split view"}
-            onClick={() => setSplit(!split)}
-          >
-            {split ? <Rows3 /> : <Columns2 />}
-          </Button>
-        </Tooltip>
+        {!phone && (
+          <Tooltip label={split ? "Unified view" : "Split view"} side="bottom">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label={split ? "Unified view" : "Split view"}
+              onClick={() => setSplit(!splitSetting)}
+            >
+              {split ? <Rows3 /> : <Columns2 />}
+            </Button>
+          </Tooltip>
+        )}
         <Tooltip label="Refresh" side="bottom">
           <Button size="icon-sm" variant="ghost" aria-label="Refresh" onClick={refresh}>
             <RefreshCw />

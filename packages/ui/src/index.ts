@@ -28,5 +28,15 @@ export {
   useWindowWidth,
   writeWidth,
 } from "./panel-width.js";
+export {
+  closePane,
+  openPane,
+  PHONE_QUERY,
+  paneHref,
+  splitHash,
+  switchPane,
+  usePane,
+  usePhone,
+} from "./phone.js";
 export { readFlag, useStoredFlag } from "./stored-flag.js";
 export { initTheme, readTheme, setTheme, THEMES, type Theme, useTheme } from "./themes.js";

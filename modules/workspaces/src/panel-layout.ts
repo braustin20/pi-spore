@@ -55,3 +55,18 @@ export function layoutPanels(input: {
 export function defaultWidths(window: number): { list: number; right: number } {
   return window >= 1280 ? { list: 288, right: 352 } : { list: 256, right: 320 };
 }
+
+/**
+ * What a phone shows: the middle pane, the workspace list drawer, or one tab of the right column as a sheet.
+ * A tab pane needs a workspace; without one, or with an unknown pane, the middle pane shows.
+ */
+export function phonePane(input: {
+  pane: string | undefined;
+  tabIds: readonly string[];
+  hasWorkspace: boolean;
+}): "main" | "list" | { tab: string } {
+  if (input.pane === "list") return "list";
+  if (input.pane !== undefined && input.hasWorkspace && input.tabIds.includes(input.pane))
+    return { tab: input.pane };
+  return "main";
+}

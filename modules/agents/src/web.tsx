@@ -331,7 +331,7 @@ function ChatView({
             void call("POST", "model", { provider, modelId: rest.join("/") });
           }}
           disabled={!active}
-          className="w-48 min-w-0 xl:w-96"
+          className="min-w-0 flex-1"
           aria-label="Model for the next message"
           title="Model for the next message"
         >
@@ -350,7 +350,7 @@ function ChatView({
         onFocus={loadModels}
         onChange={(event) => void call("POST", "thinking", { level: event.target.value })}
         disabled={!active}
-        className="w-24"
+        className="w-24 shrink-0"
         aria-label="Thinking level"
         title="Thinking level"
       >
@@ -368,7 +368,7 @@ function ChatView({
 
   return (
     <section aria-label="Chat" className="flex h-full min-h-0 flex-col">
-      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4">
+      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
         <h1 className="m-0 min-w-0 truncate text-sm font-semibold">{workspace.name}</h1>
         {workspace.line && (
           <Chip mono title={workspace.line} className="hidden max-w-48 xl:inline-block">

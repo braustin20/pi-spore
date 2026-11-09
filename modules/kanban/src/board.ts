@@ -61,6 +61,22 @@ export function dropIndex(
   return index === -1 ? others.length : index;
 }
 
+/**
+ * The one column a phone shows. A pane that names a column wins. Without one, the first active column that has
+ * cards, else backlog: work in flight matters more than the backlog.
+ */
+export function phoneColumn(
+  pane: string | undefined,
+  columns: Readonly<Record<CardColumn, readonly Card[]>>,
+): CardColumn {
+  const named = CARD_COLUMNS.find((column) => column === pane);
+  if (named) return named;
+  return (
+    (["ready", "in-progress", "review"] as const).find((column) => columns[column].length > 0) ??
+    "backlog"
+  );
+}
+
 export type Step = "left" | "right" | "up" | "down";
 
 /** Where a keyboard move sends a card, or undefined at the edge of the board. */
