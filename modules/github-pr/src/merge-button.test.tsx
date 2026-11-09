@@ -92,11 +92,15 @@ describe("the Merge button", () => {
     expect(document.querySelector("[role=alertdialog]")?.textContent).toContain(
       "Merge #12 into main with a merge commit?",
     );
-    await act(async () => dialogButton("Cancel")?.click());
+    const cancel = dialogButton("Cancel");
+    if (!cancel) throw new Error("the dialog has no Cancel button");
+    await act(async () => cancel.click());
     expect(send).not.toHaveBeenCalled();
 
     await act(async () => button.click());
-    await act(async () => dialogButton("Merge")?.click());
+    const merge = dialogButton("Merge");
+    if (!merge) throw new Error("the dialog has no Merge button");
+    await act(async () => merge.click());
     expect(send).toHaveBeenCalledWith("POST", "github-pr/workspaces/W1/merge", {
       confirm: true,
       headId,

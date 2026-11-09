@@ -794,9 +794,10 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   never refreshes it. `readUsageEndpoint` (router) turns the body into `5h` and `7d` windows and `writeReading` merges
   them into `codex.json`. A failed poll sets a message that `GET /api/usage/plans` returns in `errors`
   (`Codex usage: ...`) and the job goes on. It also counts use from the Codex CLI, which the tap cannot see.
-- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, `attention`, and `agents`) reads the
-  router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
-  table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
+- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, `attention`, and
+  `agents`) reads the router's files on each request through `@pi-spore/router`, so file formats have one
+  definition. It owns one table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker
+  agent stores its state,
   the verdict of the last review of its first reviewer stage, its review rounds, and its fix passes. Retention
   deletes rows with the same cutoff as `routing.jsonl`.
   - `GET /api/usage/plans`: each plan's windows with age and staleness, warnings, the thresholds, and plan files that
@@ -825,8 +826,9 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     rung and place (`local` or the plan), for every decision with a rung.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
-  warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions with their rung, plan, model, thinking level, and reasons; and
-  the routing calibration (the bars table with "now" and "suggested" chips, the per-rung table, and the buckets). It loads on open and on Refresh.
+  warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions
+  with their rung, plan, model, thinking level, and reasons; and the routing calibration (the bars table with "now"
+  and "suggested" chips, the per-rung table, and the buckets). It loads on open and on Refresh.
 - CLI: `pi-spore usage calibration [--json]` prints the same report.
 
 ## 11b. Home and questions (attention module)
@@ -1097,8 +1099,9 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
   the push is visible to others. With a PR it shows a header card (number, title, state, branch → base, review,
   conflicts), a Push… confirm when the workspace has commits the PR lacks, the checks with state chips and links,
   and the watch: state, tries, last and next look, the message, Resume and send again, Stop watching, and the tries
-  so far. A Merge button asks `Merge #n into <base> with a merge commit?` (`window.confirm`); while
-  `mergeBlocked` is set it is off, with the reason in its tooltip. The Details panel shows the number, state, failing checks, conflicts, and "Waiting for you".
+  so far. A Merge button asks `Merge #n into <base> with a merge commit?` in the `useConfirm` dialog; while
+  `mergeBlocked` is set it is off, with the reason in its tooltip. The Details panel shows the number, state,
+  failing checks, conflicts, and "Waiting for you".
 - "Waiting for you" is also a Home item (a `github-pr` Home source, ADR 0155). Not built yet: PR tools for agents
   (they come through spore-bridge).
 
