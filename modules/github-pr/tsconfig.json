@@ -52,6 +52,9 @@
       "path": "../runs"
     },
     {
+      "path": "../bridge"
+    },
+    {
       "path": "../../packages/server-core"
     }
   ]

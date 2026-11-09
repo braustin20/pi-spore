@@ -6,6 +6,7 @@ import { actionsModule } from "@pi-spore/mod-actions/server";
 import { createAgentsModule } from "@pi-spore/mod-agents/server";
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
+import { bridgeModule } from "@pi-spore/mod-bridge/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
@@ -63,6 +64,7 @@ async function start(startAt: number, firstId = 0): Promise<TestServer> {
       artifactsModule,
       pipelinesModule,
       runsModule,
+      bridgeModule,
       kanbanModule,
       createGithubPrModule({ gh: { command: process.execPath, args: ["unused"] } }),
     ],

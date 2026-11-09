@@ -7,6 +7,7 @@ import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
+import { bridgeModule } from "@pi-spore/mod-bridge/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
@@ -90,6 +91,7 @@ async function makeServer(home?: string, startAt?: number, firstId = 1000) {
       artifactsModule,
       pipelinesModule,
       runsModule,
+      bridgeModule,
       kanbanModule,
       createGithubPrModule({
         gh: { command: process.execPath, args: [FAKE_GH, ghState] },
