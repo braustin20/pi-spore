@@ -112,13 +112,31 @@ const itemBase = {
   chat: InboxChat,
 };
 
-/** One thing that needs the user on Home (R15.1). `finished`: the agent's last run ended and it waits for the user. */
+/**
+ * What a module's Home source reports (ADR 0152). `id` is stable while the condition lasts and unique within the
+ * source. `href` is a web route (`#/board`) that opens the thing that needs the user. `at` is when it began to.
+ */
+const noticeFields = {
+  id: Type.String(),
+  at: Type.Integer(),
+  title: Type.String(),
+  detail: Type.Optional(Type.String()),
+  href: Type.String(),
+};
+export const HomeNotice = Type.Object(noticeFields);
+export type HomeNotice = Static<typeof HomeNotice>;
+
+/**
+ * One thing that needs the user on Home (R15.1). `finished`: the agent's last run ended and it waits for the user.
+ * `notice`: a module's own item, such as a PR that waits or a card that is overdue. It has no chat.
+ */
 export const InboxItem = Type.Union([
   Type.Object({ kind: Type.Literal("question"), ...itemBase, question: Question }),
   Type.Object({ kind: Type.Literal("approval"), ...itemBase, approval: Approval }),
   Type.Object({ kind: Type.Literal("dialog"), ...itemBase, dialog: AgentDialog }),
   Type.Object({ kind: Type.Literal("failed"), ...itemBase, error: Type.String() }),
   Type.Object({ kind: Type.Literal("finished"), ...itemBase }),
+  Type.Object({ kind: Type.Literal("notice"), source: Type.String(), ...noticeFields }),
 ]);
 export type InboxItem = Static<typeof InboxItem>;
 

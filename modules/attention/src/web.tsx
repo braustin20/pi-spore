@@ -230,6 +230,7 @@ const TITLES: Record<InboxItem["kind"], string> = {
   dialog: "Waiting for an answer",
   failed: "Agent failed",
   finished: "Finished, waits for you",
+  notice: "Needs you",
 };
 
 const TONES = {
@@ -238,14 +239,40 @@ const TONES = {
   dialog: "warn",
   failed: "fail",
   finished: "ok",
+  notice: "warn",
 } as const;
+
+/** An item a module added to Home (ADR 0152): a title, what is wrong, and a link to where to fix it. */
+function NoticeCard({ item }: { item: Extract<InboxItem, { kind: "notice" }> }) {
+  return (
+    <Panel aria-label={`${TITLES.notice}: ${item.title}`}>
+      <div className="flex flex-col gap-2.5">
+        <div className="flex flex-wrap items-center gap-2 text-sm">
+          <Chip tone={TONES.notice}>{TITLES.notice}</Chip>
+          <span className="font-semibold">{item.title}</span>
+          <span className="ml-auto text-xs text-muted" title={new Date(item.at).toLocaleString()}>
+            {ago(item.at, Date.now())}
+          </span>
+        </div>
+        {item.detail && <p className="m-0 text-sm text-muted">{item.detail}</p>}
+        <div>
+          <Button size="sm" asChild>
+            <a href={item.href} className="no-underline">
+              Open
+            </a>
+          </Button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
 
 function ItemCard({
   item,
   DialogCard,
   onError,
 }: {
-  item: InboxItem;
+  item: Exclude<InboxItem, { kind: "notice" }>;
   DialogCard: AgentsWeb["DialogCard"];
   onError: (text: string) => void;
 }) {
@@ -415,13 +442,17 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
         {inbox === undefined && <p className="m-0 text-sm text-muted">Loading...</p>}
         {inbox && inbox.items.length === 0 && inbox.interrupted.length === 0 && (
           <EmptyState icon={CheckCheck} title="Nothing needs you">
-            Questions, approvals, dialogs, failures, and finished work from every workspace show up
-            here.
+            Questions, approvals, dialogs, failures, finished work, waiting PRs, due cards, and
+            usage warnings show up here.
           </EmptyState>
         )}
-        {inbox?.items.map((item) => (
-          <ItemCard key={itemKey(item)} item={item} DialogCard={DialogCard} onError={setError} />
-        ))}
+        {inbox?.items.map((item) =>
+          item.kind === "notice" ? (
+            <NoticeCard key={itemKey(item)} item={item} />
+          ) : (
+            <ItemCard key={itemKey(item)} item={item} DialogCard={DialogCard} onError={setError} />
+          ),
+        )}
         {inbox && inbox.interrupted.length > 0 && (
           <Panel aria-label="Interrupted work">
             <PanelHeader title="Interrupted work" />

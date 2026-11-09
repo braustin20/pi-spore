@@ -87,6 +87,20 @@ describe("the inbox store", () => {
       }),
     ).toEqual({ title: "Agent failed in Colors (game, Pick colors)", body: "Pi exited" });
   });
+
+  it("keys and words a notice from a module's Home source", () => {
+    const notice: InboxItem = {
+      kind: "notice",
+      source: "kanban",
+      id: "card-1",
+      at: 1,
+      title: "Overdue: Ship it",
+      detail: "Due 2026-11-01",
+      href: "#/board/card-1",
+    };
+    expect(itemKey(notice)).toBe("notice:kanban:card-1");
+    expect(notification(notice)).toEqual({ title: "Overdue: Ship it", body: "Due 2026-11-01" });
+  });
 });
 
 describe("chatAsks", () => {
