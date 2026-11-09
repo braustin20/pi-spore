@@ -1451,6 +1451,11 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 
+Both side panels resize by dragging their inner edge or with the arrow keys (16 px, 64 px with Shift). The list runs
+from 200 to 480 px and the right column from 280 px to 70% of the window. The chat keeps at least 360 px. A double-click
+on the edge resets the width. Each width is stored in the browser. A wide tab shows the larger of the stored width and
+its own default (640 px, or half the window). A terminal fits once when a drag ends.
+
 ## 14. Data layout
 
 ```text
