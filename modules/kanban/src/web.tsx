@@ -17,6 +17,7 @@ import {
   type CardStartTarget,
   COLUMN_TITLES,
   type CreateWorkspaceResponse,
+  MODEL_TIERS,
   ModelChoices,
   type Project,
   ProjectList,
@@ -34,6 +35,7 @@ import {
   EmptyState,
   Field,
   Input,
+  ModelPicker,
   Notice,
   SectionLabel,
   Select,
@@ -346,39 +348,33 @@ function ModelSelect({
   disabled?: boolean;
 }) {
   const api = useApi();
-  const [models, setModels] = useState<ModelChoices["models"]>([]);
+  const [choices, setChoices] = useState<ModelChoices>({ models: [] });
   const [error, setError] = useState<string | undefined>();
 
   useEffect(() => {
     if (disabled) return;
     api
       .get("agents/models")
-      .then((body) => setModels(parse(ModelChoices, body, "models").models))
+      .then((body) => setChoices(parse(ModelChoices, body, "models")))
       .catch((caught: unknown) => setError(message(caught)));
   }, [api, disabled]);
 
-  const options = models.map((model) => ({
-    key: `${model.provider}/${model.id}`,
-    label: model.name ?? `${model.provider}/${model.id}`,
-  }));
-  if (value !== "" && !options.some((option) => option.key === value)) {
-    options.push({ key: value, label: value });
-  }
+  const listed = choices.models.find((model) => `${model.provider}/${model.id}` === value);
+  const label = value === "" ? defaultLabel : listed ? (listed.name ?? value) : value;
   return (
     <>
       <Field label="Model">
-        <Select
+        <ModelPicker
           value={value}
-          onChange={(event) => onChange(event.target.value)}
+          label={label}
+          models={choices.models}
+          tiers={MODEL_TIERS}
+          onChange={onChange}
+          defaultLabel={defaultLabel}
+          tierError={choices.tierError}
           disabled={disabled}
-        >
-          <option value="">{defaultLabel}</option>
-          {options.map((option) => (
-            <option key={option.key} value={option.key}>
-              {option.label}
-            </option>
-          ))}
-        </Select>
+          aria-label="Model"
+        />
       </Field>
       {error && <Notice tone="warn">Could not load the model list: {error}.</Notice>}
     </>

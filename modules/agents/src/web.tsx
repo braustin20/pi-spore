@@ -3,8 +3,8 @@ import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
   type Agent,
   AgentList,
-  type AgentModel,
   CommandList,
+  MODEL_TIERS,
   ModelList,
   parse,
   type Workspace,
@@ -13,6 +13,7 @@ import {
   Button,
   Chip,
   EmptyState,
+  ModelPicker,
   Notice,
   Select,
   Spinner,
@@ -251,9 +252,7 @@ function ChatView({
 }) {
   const api = useApi();
   const [state, dispatch] = useReducer(reducePage, undefined, emptyPage);
-  const [models, setModels] = useState<
-    { models: AgentModel[]; thinkingLevels: string[] } | undefined
-  >();
+  const [models, setModels] = useState<ModelList | undefined>();
   const [error, setError] = useState<string | undefined>();
   const scroller = useRef<HTMLDivElement>(null);
   const stick = useRef(true);
@@ -319,31 +318,29 @@ function ChatView({
   // A virtual model such as spore/auto answers through another model; the picker names it (ADR 0009).
   const routed = routedModel(state);
   const routedTo = routed && modelKey(routed) !== currentModel ? routed : undefined;
+  const current = modelOptions.find((model) => modelKey(model) === currentModel) ?? state.model;
+  const currentLabel = current
+    ? `${current.name ?? current.id} (${current.provider})${routedTo ? ` → ${routedTo.id}` : ""}`
+    : "Model";
 
   const controls = (
     <>
       {agent?.kind !== "stage" && (
-        <Select
+        <ModelPicker
           value={currentModel}
-          onFocus={loadModels}
-          onChange={(event) => {
-            const [provider, ...rest] = event.target.value.split("/");
+          label={currentLabel}
+          models={modelOptions}
+          tiers={MODEL_TIERS}
+          onOpen={loadModels}
+          onChange={(value) => {
+            const [provider, ...rest] = value.split("/");
             void call("POST", "model", { provider, modelId: rest.join("/") });
           }}
+          tierError={models?.tierError}
           disabled={!active}
           className="min-w-0 flex-1"
           aria-label="Model for the next message"
-          title="Model for the next message"
-        >
-          {!currentModel && <option value="">Model</option>}
-          {modelOptions.map((model) => (
-            <option key={modelKey(model)} value={modelKey(model)}>
-              {`${model.name ?? model.id} (${model.provider})${
-                routedTo && modelKey(model) === currentModel ? ` → ${routedTo.id}` : ""
-              }`}
-            </option>
-          ))}
-        </Select>
+        />
       )}
       <Select
         value={state.thinkingLevel ?? ""}
