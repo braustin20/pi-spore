@@ -62,6 +62,8 @@ describe("GET /api/projects/settings", () => {
     const { settings } = parse(SettingsView, await response.json(), "settings");
     expect(settings).toEqual([
       { key: "retention.days", value: 7, source: "global" },
+      { key: "server.allowedHosts", value: [], source: "default" },
+      { key: "server.allowedLogins", value: [], source: "default" },
       { key: "worktree.branch_prefix", value: "spore", source: "default" },
       { key: "worktree.copy", value: [], source: "default" },
     ]);

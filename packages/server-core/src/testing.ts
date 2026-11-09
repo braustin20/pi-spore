@@ -58,12 +58,13 @@ export interface TestServer {
   agentTokens: AgentTokenStore;
   /** The base URL agents get. It answers only when the server was created with `listen`. */
   url: string;
-  /** Sends a request as the CLI would: loopback host, the token, JSON. */
+  /** Sends a request as the CLI would: loopback host, the token, JSON. `peer` is the socket's remote address. */
   request(
     method: string,
     path: string,
     body?: unknown,
     headers?: Record<string, string>,
+    peer?: string,
   ): Promise<Response>;
   close(): void;
 }
@@ -116,7 +117,6 @@ export async function createTestServer(
   const url = `http://127.0.0.1:${port}`;
   const agentTokens = new AgentTokenStore();
   const sockets = new SocketRouter(silentLog);
-  if (http) attachUpgrades(http, TEST_TOKEN, (pathname) => sockets.route(pathname));
   const now = () => clock++;
   const newId = () => `01TEST${String(++counter).padStart(20, "0")}`;
   const jobs = createJobService({
@@ -140,9 +140,13 @@ export async function createTestServer(
     jobs,
   };
   const setUp = await setupModules(modules, [], services);
+  if (http) {
+    attachUpgrades(http, TEST_TOKEN, setUp.remoteAccess, (pathname) => sockets.route(pathname));
+  }
   const created = createApp({
     version: "0.0.0-test",
-    modules: setUp,
+    modules: setUp.modules,
+    remoteAccess: setUp.remoteAccess,
     startedAt: 0,
     now: services.now,
     token: TEST_TOKEN,
@@ -159,17 +163,21 @@ export async function createTestServer(
     events,
     agentTokens,
     url,
-    request: async (method, path, body, headers = {}) =>
-      await created.request(path, {
-        method,
-        headers: {
-          host: "127.0.0.1:7420",
-          "x-pi-spore-token": TEST_TOKEN,
-          ...(body === undefined ? {} : { "content-type": "application/json" }),
-          ...headers,
+    request: async (method, path, body, headers = {}, peer = "127.0.0.1") =>
+      await created.request(
+        path,
+        {
+          method,
+          headers: {
+            host: "127.0.0.1:7420",
+            "x-pi-spore-token": TEST_TOKEN,
+            ...(body === undefined ? {} : { "content-type": "application/json" }),
+            ...headers,
+          },
+          ...(body === undefined ? {} : { body: JSON.stringify(body) }),
         },
-        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
-      }),
+        { incoming: { socket: { remoteAddress: peer } } },
+      ),
     close: () => {
       jobs.stop();
       sockets.close();
