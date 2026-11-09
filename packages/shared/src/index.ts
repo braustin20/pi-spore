@@ -127,6 +127,7 @@ export {
   UpdateCardRequest,
 } from "./kanban.js";
 export {
+  BridgeStartPipelineRequest,
   PIPELINE_ID_PATTERN,
   PipelineEvent,
   PipelineFile,

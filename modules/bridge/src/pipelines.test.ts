@@ -30,6 +30,7 @@ import {
 } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { runsModule } from "@pi-spore/mod-runs/server";
+import { createUsageModule } from "@pi-spore/mod-usage/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
@@ -2114,5 +2115,98 @@ describe("a revise run", () => {
       status: 404,
       code: "run_not_found",
     });
+  });
+});
+
+describe("starting a run from the orchestrator chat (ADR 0162)", () => {
+  /** The chat's own call, with the tool call id as its receipt. */
+  const startAsChat = (
+    server: TestServer,
+    ids: { agentId: string; workspaceId: string },
+    body: unknown,
+    receipt: string,
+  ) => {
+    const token = server.agentTokens.issue(ids);
+    return server.request("POST", "/api/bridge/pipelines", body, {
+      "x-pi-spore-token": "",
+      authorization: `Bearer ${token}`,
+      "idempotency-key": receipt,
+    });
+  };
+
+  const writeBrief = async (server: TestServer, ids: { agentId: string; workspaceId: string }) =>
+    json(
+      await asAgent(server, ids.agentId, ids.workspaceId)("POST", "artifacts", {
+        scope: "workspace",
+        path: "briefs/slice.md",
+        content: "Build the slice",
+      }),
+    );
+
+  it("starts one run for a replayed receipt, defaults to the default pipeline, and refuses a missing brief", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const ids = await workspace(server, "chatstart");
+    await writeBrief(server, ids);
+
+    const first = await json<{ run: PipelineRun }>(
+      await startAsChat(server, ids, { brief: "briefs/slice.md" }, "call-1"),
+      201,
+    );
+    const second = await json<{ run: PipelineRun }>(
+      await startAsChat(server, ids, { brief: "briefs/slice.md" }, "call-1"),
+      201,
+    );
+
+    expect(second.run.id).toBe(first.run.id);
+    expect(first.run).toMatchObject({
+      pipelineId: "default",
+      brief: "Build the slice",
+      askingAgentId: ids.agentId,
+    });
+    const { runs } = await json<{ runs: PipelineRun[] }>(
+      await server.request("GET", `/api/pipelines/workspaces/${ids.workspaceId}/runs`),
+    );
+    expect(runs).toHaveLength(1);
+
+    const other = await workspace(server, "chatmissing");
+    const missing = await json<{ error: { code: string; message: string } }>(
+      await startAsChat(server, other, { brief: "briefs/none.md" }, "call-2"),
+      404,
+    );
+    expect(missing.error).toMatchObject({ code: "brief_not_found" });
+    expect(missing.error.message).toContain("briefs/none.md");
+  });
+
+  it("tells the asking chat once when the run passes, and gives usage_outcomes one row", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE] }),
+      extraModules: [createUsageModule()],
+    });
+    const ids = await workspace(server, "chatend");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    await writeBrief(server, ids);
+
+    const { run } = await json<{ run: PipelineRun }>(
+      await startAsChat(server, ids, { brief: "briefs/slice.md", pipeline: "p" }, "call-1"),
+      201,
+    );
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    await until(async () =>
+      (await chat(server, ids.agentId)).some((message) => message.includes("ended passed")),
+    );
+
+    // The fake Pi echoes each prompt, so only the user's messages count.
+    const messages = (await chat(server, ids.agentId)).filter(
+      (message) => message.startsWith("user: ") && message.includes("ended passed"),
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toContain(`Pipeline run ${run.id}`);
+    expect(messages[0]).toContain("Read the diff before the next slice.");
+    expect(
+      server.store.all<{ run_id: string }>(
+        "SELECT run_id FROM usage_outcomes WHERE run_id = ?",
+        run.id,
+      ),
+    ).toHaveLength(1);
   });
 });

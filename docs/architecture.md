@@ -151,7 +151,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
     chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033). Stage agents get stage worker or stage
     reviewer rules: end every turn with `report`, and record fail-first proofs. The orchestrator rules say to start
-    every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120).
+    every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120),
+    and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162).
+  - `start_pipeline` `{ brief, pipeline? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
+    posts `POST /api/bridge/pipelines` with the tool call id as receipt and ends the turn with `terminate: true`.
+    The run's end arrives later as a message (section 8).
   - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
     `terminate: true` through `POST /api/bridge/reports` (open to read-only reviewers). Reviewers give a verdict
     (`approve`, `revise`) and findings (`blocking`, `important`, `minor`); the worker lists each new test with the
@@ -433,8 +437,8 @@ interface ChangeOps {
 ## 8. Pipelines
 
 See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
-[ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md), and
-[ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md).
+[ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md),
+[ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md), and [ADR 0162](decisions/0162-orchestrator-starts-pipeline-runs.md).
 Requirements R6, R4.4, R4.9.
 
 The `pipelines` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`,
@@ -508,6 +512,14 @@ fail_first = "artifact"
   stores the file's SHA-256, its parsed stages (an edit never changes a running run), the brief, and the asking chat
   (the active orchestrator chat). One run per workspace is `running` or `waiting_user` (409 `pipeline_running`).
   States: `running`, `waiting_user`, `passed`, `failed`, `stopped`.
+- **From the orchestrator** (ADR 0162). The bridge route `POST /api/bridge/pipelines` `{ brief, pipeline? }` reads
+  `brief` as an artifact path of the caller's workspace (404 `brief_not_found`) and calls `PipelinesKey.start` with
+  `pipeline` (default `default`) and the caller as the asking chat. Side chats are refused (403 `read_only_chat`).
+  The tool call id is its Idempotency-Key, so a replayed call starts no second run.
+- **End message** (ADR 0162). When a run that is not a lane ends (`passed`, `failed`, or `stopped`), its asking chat
+  gets one message in the transaction that ends it: the run, its workspace, the state, the failure or stop text, and
+  the last review's verdict and findings. A passed run's message says to read the diff. A lane run gets none: the
+  runs module tells its coordinator (section 9).
 - **Reuse** (ADR 0158). `PipelinesKey.start` takes `previousRunId`, a run of the same workspace with a worker. A
   pipeline whose worker stage has `worker = "reuse"` needs it (400 otherwise), refuses `workerModel`, and any other
   pipeline refuses `previousRunId`. The run stores it and the workspace head at start (`fix_base`). Its worker stage
@@ -610,8 +622,8 @@ fail_first = "artifact"
   `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
   uses it to record outcomes (section 11a). `onChange(listener)` runs with the workspace id whenever its runs
   change, as the topic does; the runs module uses it to show a lane's `blocked`.
-- Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
-  card when a run passes, and a tool for the orchestrator to start a run.
+- Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, and moving the
+  card when a run passes.
 
 ## 9. Runs and lanes
 
@@ -744,7 +756,8 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
      straightforward reach `router.threshold` (`router.pressureThreshold` under usage pressure). Else rung 2.
      Explore (ADR 0144): when "straightforward" is the only rung-1 blocker, the session is a pipeline worker stage
      (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), the local target can take the task, and a
-     random draw is below `router.explore`, the task goes local anyway. The record has `explore: true`.
+     random draw is below `router.explore`, the task goes local anyway. The record has `explore: true`. Workspace
+     slices reach it too, because the orchestrator sends them through the pipeline (ADR 0162).
   4. Pick the plan: the first ladder plan that is not full. A plan with no fresh numbers counts as having room; the
      reason says "usage unknown". If every plan is full, the route is `wait`: the request ends with an error that
      names the first reset, and no state is stored, so the next message routes again.
@@ -844,7 +857,8 @@ defaults apply to every key left out. Unknown `router` keys and wrong values are
 - `threshold` is the rung-1 bar, `heavyThreshold` the rung-3 bar for visual, design, and foundational, `large` the
   rung-3 token estimate, and `maxQueued` the most sessions that may wait for a busy local target.
 - `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes a bar; the
-  calibration report (section 11a) only suggests a `threshold`.
+  calibration report (section 11a) only suggests a `threshold`. Its outcomes come from pipeline runs: lanes, and
+  workspace slices that the orchestrator starts with `start_pipeline` (ADR 0162).
 - `plans` maps a provider to the subscription plan it draws on, for pipeline pressure checks (section 8). `tiers`
   entries are added to the built-in tier list, `local < light < medium < heavy < top` (ADR 0023, 0141).
 

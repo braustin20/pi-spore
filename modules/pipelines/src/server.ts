@@ -454,8 +454,10 @@ export const pipelinesModule: ServerModule = {
         host.now(),
         runId,
       );
-      const ended = viewOf(requireRun(runId));
+      const row = requireRun(runId);
+      const ended = viewOf(row);
       for (const listener of endListeners) listener(ended);
+      if (!laneLookup?.(ended.workspaceId)) agents.deliver(row.asking_agent_id, endMessage(ended));
     };
 
     /** The run this step belongs to, or undefined when the run was stopped or has moved on: the job just ends. */
@@ -469,6 +471,28 @@ export const pipelinesModule: ServerModule = {
       const name = `workspace "${workspaces.get(workspaceId).name}"`;
       const lane = laneLookup?.(workspaceId);
       return lane ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${lane.run}"` : name;
+    };
+
+    /** What the asking chat reads when its run ends: the state, the stop or failure text, and the last review. */
+    const endMessage = (ended: PipelineRun): string => {
+      const lines = [
+        `Pipeline run ${ended.id} on ${workspaceLabel(ended.workspaceId)} ended ${ended.state}.`,
+      ];
+      if (ended.message) lines.push(ended.message);
+      const report = ended.turns.findLast(
+        (turn) => turn.kind === "review" && turn.report?.verdict,
+      )?.report;
+      if (report) {
+        lines.push(`Last review: ${report.verdict}`);
+        for (const finding of report.findings ?? []) {
+          const where = finding.file
+            ? ` (${finding.file}${finding.line ? `:${finding.line}` : ""})`
+            : "";
+          lines.push(`- ${finding.severity}: ${finding.title}${where}`);
+        }
+      }
+      if (ended.state === "passed") lines.push("Read the diff before the next slice.");
+      return lines.join("\n");
     };
 
     /**

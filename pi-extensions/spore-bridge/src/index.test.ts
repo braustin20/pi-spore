@@ -465,9 +465,9 @@ describe("spore-bridge", () => {
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
     const rules = options.sections[RULES_SECTION] ?? "";
     expect(rules).toContain("You are the orchestrator of this workspace");
-    expect(rules).toContain("before the first worker");
-    expect(rules).toContain("Only one writer works in the worktree at a time");
-    expect(rules).toContain("After three passes");
+    expect(rules).toContain("before the first run");
+    expect(rules).toContain("One pipeline run per workspace at a time");
+    expect(rules).toContain("After three runs without success");
     expect(rules).toContain("Never stop the pi-spore server");
     expect(rules).toContain("`async: true`, never `async: false`");
     expect(rules).toContain("request_human_input");
@@ -929,6 +929,46 @@ describe("spore-bridge run tools", () => {
     expect(result.content[0]?.text).toContain("question q1");
     expect(await rulesOf(pi)).toBe(`${STAGE_WORKER_RULES}\n\n${LANE_RULES}`);
     expect(LANE_RULES).toContain("never the user");
+  });
+
+  it("gives the orchestrator start_pipeline and the rules that use it", () => {
+    expect(fakePi().tools.has("start_pipeline")).toBe(true);
+    expect(RULES).toContain("start_pipeline");
+    expect(RULES).toContain("Do not start `worker` subagents for feature code");
+  });
+
+  it("keeps start_pipeline from coordinators, lane agents, side chats, and stage chats", () => {
+    const without = (env: Record<string, string>) => {
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      expect(fakePi().tools.has("start_pipeline")).toBe(false);
+      for (const key of Object.keys(env)) vi.stubEnv(key, undefined);
+    };
+    without({ PI_SPORE_RUN_ROLE: "coordinator", PI_SPORE_RUN_ID: "U1" });
+    without({ PI_SPORE_RUN_ROLE: "lane", PI_SPORE_RUN_ID: "U1" });
+    without({ PI_SPORE_CHAT_KIND: "side" });
+    without({ PI_SPORE_CHAT_KIND: "stage", PI_SPORE_STAGE_ROLE: "worker" });
+  });
+
+  it("posts start_pipeline with the tool call id as receipt and ends the turn", async () => {
+    reply("POST /api/bridge/pipelines", {
+      status: 201,
+      body: { run: { id: "pr1", pipelineId: "default", state: "running" } },
+    });
+    const pi = fakePi();
+
+    const first = await pi.tool("start_pipeline").execute("t1", { brief: "briefs/a.md" });
+    await pi.tool("start_pipeline").execute("t1", { brief: "briefs/a.md" });
+    await pi.tool("start_pipeline").execute("t2", { brief: "briefs/a.md", pipeline: "p" });
+
+    expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
+      ["/api/bridge/pipelines", "t1", { brief: "briefs/a.md" }],
+      ["/api/bridge/pipelines", "t1", { brief: "briefs/a.md" }],
+      ["/api/bridge/pipelines", "t2", { brief: "briefs/a.md", pipeline: "p" }],
+    ]);
+    expect(first.content[0]?.text).toContain("Pipeline run pr1");
+    expect(first.content[0]?.text).toContain("do not poll");
+    expect(first.details).toEqual({ runId: "pr1" });
+    expect(first.terminate).toBe(true);
   });
 
   it("gives a plain worker neither the run tools nor ask_coordinator", async () => {
