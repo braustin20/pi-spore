@@ -29,6 +29,7 @@ import {
   formatShare,
   formatTokens,
   formatUntil,
+  type RoleSum,
   roleLabel,
   sumByRole,
   windowTitle,
@@ -208,7 +209,7 @@ function PlanPanel({
   );
 }
 
-const modelCells = (row: { provider: string; model: string; local: boolean }) => (
+const modelCells = (row: Omit<RoleSum, "label">) => (
   <TableCell className="font-mono text-xs">
     {row.provider}/{row.model}
     {row.local && (
@@ -219,18 +220,7 @@ const modelCells = (row: { provider: string; model: string; local: boolean }) =>
   </TableCell>
 );
 
-function NumberCells({
-  row,
-}: {
-  row: {
-    requests: number;
-    input: number;
-    output: number;
-    cacheRead: number;
-    cost: number;
-    local: boolean;
-  };
-}) {
+function NumberCells({ row }: { row: Omit<RoleSum, "label"> }) {
   return (
     <>
       <TableCell className="text-right font-mono">{row.requests}</TableCell>

@@ -43,17 +43,10 @@ export function roleLabel(row: TokenUseRow): string {
   return row.external ? "outside pi-spore" : (row.role ?? "unknown");
 }
 
-export interface RoleSum {
-  label: string;
-  provider: string;
-  model: string;
-  local: boolean;
-  requests: number;
-  input: number;
-  output: number;
-  cacheRead: number;
-  cost: number;
-}
+export type RoleSum = Pick<
+  TokenUseRow,
+  "provider" | "model" | "local" | "requests" | "input" | "output" | "cacheRead" | "cost"
+> & { label: string };
 
 /** Sums token rows per role and model, for the "by role" view. */
 export function sumByRole(rows: readonly TokenUseRow[]): RoleSum[] {
