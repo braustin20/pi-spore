@@ -1,6 +1,6 @@
 # 0140. Pipeline stages run on stage agents; Jev answers inside the report tool
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [0152](0152-equal-tier-reviews.md)
 - Date: 2026-11-07
 - Requirements: R4.4, R4.9, R6.1 to R6.8
 
@@ -26,8 +26,15 @@ the prompt it answers.
   review after it. Jev never adds a round (ADR 0015).
 - **Round limit.** A REVISE on the last round asks the user through an approval on Home, unless the stage has
   `fix_passes = 1`. The decision is stored on the run in the transaction that stores the approval's decision.
+  The approval names the lane, and its choices are fix once, go on, or stop (2026-11-08).
 - **Strength.** `min_strength_over` compares tiers (ADR 0023) before a reviewer starts, and again on its report
   with the models it really used. A stage agent's model cannot change.
+- **Failed agents.** A stage agent whose turn fails (a crash, or a provider error such as a full usage window) blocks
+  its stage, and the run stays `running`. Retry starts a fresh agent for the same turn, on the model the stage or
+  the role default gives at that moment. The failed agent keeps its tab and its model (2026-11-08).
+- **Reviewer plan.** A reviewer role default whose plan is full is swapped, before the agent starts, for the first
+  ladder model of the same or a higher tier whose plan has room. A pinned stage model is kept. The user approved
+  this model change (2026-11-09).
 - **Tiers.** Only `tier = "route"` (spore/auto) is built. Other tiers are an error until a tier-to-model choice is
   decided.
 

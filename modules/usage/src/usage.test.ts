@@ -138,7 +138,7 @@ const writePlan = (plan: string, body: unknown) => {
   writeFileSync(join(server.paths.root, "usage", `${plan}.json`), JSON.stringify(body));
 };
 
-describe("Home items (ADR 0152, R18.4)", () => {
+describe("Home items (ADR 0155, R18.4)", () => {
   const usageItems = async () =>
     (
       (await json(await server.request("GET", "/api/attention/inbox"))) as {
@@ -170,7 +170,7 @@ describe("Home items (ADR 0152, R18.4)", () => {
   });
 });
 
-describe("Home items follow plan files live (ADR 0152, R18.4)", () => {
+describe("Home items follow plan files live (ADR 0155, R18.4)", () => {
   const noticeTitles = () =>
     (
       server.events.eventsOf("attention:inbox") as {

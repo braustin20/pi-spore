@@ -113,7 +113,7 @@ const itemBase = {
 };
 
 /**
- * What a module's Home source reports (ADR 0152). `id` is stable while the condition lasts and unique within the
+ * What a module's Home source reports (ADR 0155). `id` is stable while the condition lasts and unique within the
  * source. `href` is a web route (`#/board`) that opens the thing that needs the user. `at` is when it began to.
  */
 const noticeFields = {

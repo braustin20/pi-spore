@@ -13,7 +13,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
-import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
+import {
+  type AgentEvent,
+  type AgentsModuleOptions,
+  createAgentsModule,
+} from "@pi-spore/mod-agents/server";
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { createGithubPrModule } from "@pi-spore/mod-github-pr/server";
@@ -53,6 +57,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
   for (const { server, agents } of servers) {
+    // A job could start an agent after stopAll; it would exit after the store closed.
+    server.services.jobs.stop();
     await agents.manager().stopAll();
     server.close();
   }
@@ -73,12 +79,13 @@ async function start(
     firstId?: number;
     env?: Record<string, string>;
     extraModules?: readonly ServerModule[];
+    roleDefaults?: AgentsModuleOptions["roleDefaults"];
   } = {},
 ) {
   const agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
-    roleDefaults: async () => ({}),
+    roleDefaults: options.roleDefaults ?? (async () => ({})),
     baseEnv: { PATH: process.env.PATH, ...options.env },
     idleStopMs: 60_000,
     startTimeoutMs: 1_000,
@@ -520,6 +527,16 @@ async function stageAgent(server: TestServer, agentId: string) {
   return { agent, tools: argv[argv.indexOf("--tools") + 1] };
 }
 
+/** The `provider/id` an agent's process was launched with. */
+const modelOf = (agentId: string) => {
+  const { argv } = readFileSync(join(scratch, "record.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
+    .find((entry) => entry.env.PI_SPORE_AGENT_ID === agentId) as { argv: string[] };
+  return `${argv[argv.indexOf("--provider") + 1]}/${argv[argv.indexOf("--model") + 1]}`;
+};
+
 /** Starts a run on a fresh workspace and waits for the run to end in `state`. */
 async function runUntil(
   server: TestServer,
@@ -571,6 +588,30 @@ describe("a review stage", () => {
     expect(one.agent).toMatchObject({ role: "reviewer", kind: "stage", title: "Review 1" });
     expect(two.agent).toMatchObject({ role: "reviewer", kind: "stage", title: "Review 2" });
     expect(one.tools).not.toMatch(/bash|edit|write/);
+  });
+
+  it("tells the round 2 reviewer what round 1 found and when to answer revise", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        reviewer: [
+          { summary: "Not yet", verdict: "revise", findings: [FINDING] },
+          { summary: "Good", verdict: "approve" },
+        ],
+      }),
+    });
+    const { run } = await runUntil(server, "converge", withReview("rounds = 2"), "passed");
+
+    const [first, second] = [run.turns[1], run.turns[3]] as [PipelineTurn, PipelineTurn];
+    const round1 = (await chat(server, first.agentId))[0] as string;
+    const round2 = (await chat(server, second.agentId))[0] as string;
+    expect(round1).not.toContain("Answer revise only");
+    expect(round2).toContain("Round 1 reviewer summary: Not yet");
+    expect(round2).toContain("Round 1 findings:\n1. [important] Missing null check (a.txt:2)");
+    expect(round2).toContain("The worker's fix report: Fixed the findings");
+    expect(round2).toContain("First check that each earlier finding is fixed.");
+    expect(round2.split("\n").some((line) => line.startsWith("Answer revise only"))).toBe(true);
+    expect(round2).toContain("A new finding that round 1 could have raised is important at most");
   });
 
   it("asks the reviewer to check each proof, and names the brief, the diff, and the tests", async () => {
@@ -630,8 +671,9 @@ describe("a review stage", () => {
   });
 });
 
+const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
+
 describe("the round limit", () => {
-  const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
   const limited = () => scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE, REVISE] });
 
   const openApprovals = async (server: TestServer) =>
@@ -641,7 +683,7 @@ describe("the round limit", () => {
       )
     ).approvals;
 
-  it("waits on a pipeline-round-limit approval after two REVISEs, and approve passes the run", async () => {
+  it("waits on a pipeline-round-limit approval after two REVISEs, and accept passes the run", async () => {
     const server = await start({ env: limited() });
     const { run } = await runUntil(server, "limit", withReview("rounds = 2"), "waiting_user");
 
@@ -649,14 +691,76 @@ describe("the round limit", () => {
     const [approval] = await openApprovals(server);
     expect(approval).toMatchObject({
       kind: "pipeline-round-limit",
-      subject: { runId: run.id, stage: "review" },
+      subject: { runId: run.id, stage: "review", action: "fix" },
       agentId: run.askingAgentId,
     });
     await json(
-      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {
+        subject: { ...(approval?.subject as object), action: "accept" },
+      }),
     );
     await until(async () => (await getRun(server, run.id)).state === "passed");
     expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
+    await until(async () =>
+      (await chat(server, run.askingAgentId as string)).some((message) =>
+        message.includes(
+          "The user chose accept: the run goes on after stage review without a fix.",
+        ),
+      ),
+    );
+  });
+
+  it("names the workspace and lists the findings and the three choices", async () => {
+    const server = await start({ env: limited() });
+    const { run } = await runUntil(server, "named", withReview("rounds = 2"), "waiting_user");
+
+    const [approval] = await openApprovals(server);
+
+    const title = 'Review round limit in workspace "named": stage "review" of pipeline p';
+    expect(approval?.title).toBe(title);
+    expect(approval?.reason).toContain("Reviewer: Still wrong");
+    expect(approval?.reason).toContain("Findings:\n1. [important] Missing null check (a.txt:2)");
+    expect(approval?.reason).toContain(
+      "\nFix: the worker makes one last fix for these findings, with no review after it, and the run goes on.\nAccept: the run goes on without a fix.\nDecline: the run stops.",
+    );
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+    );
+    await until(async () =>
+      (await chat(server, run.askingAgentId as string)).some((message) =>
+        message.includes(`Request: ${title}`),
+      ),
+    );
+  });
+
+  it("fix starts one last worker fix with the findings, and the run passes with no review after it", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE, FIX, FIX], reviewer: [REVISE, REVISE] }),
+    });
+    const { run } = await runUntil(server, "fixlast", withReview("rounds = 2"), "waiting_user");
+    const [approval] = await openApprovals(server);
+
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+    );
+
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    const done = await getRun(server, run.id);
+    expect(kinds(done)).toEqual(["task1", "review1", "fix1", "review2", "fix2"]);
+    const lastFix = done.turns.at(-1) as PipelineTurn;
+    const prompt = (await chat(server, lastFix.agentId)).find((message) =>
+      message.includes(`Turn: ${lastFix.id}`),
+    );
+    expect(prompt).toContain("[important] Missing null check (a.txt:2)");
+    expect(prompt).toContain("This is the last fix: no review follows it.");
+    expect(done.message).toBeUndefined();
+    await until(async () =>
+      (await chat(server, run.askingAgentId as string)).some((message) =>
+        message.includes(
+          "The user chose fix: the worker makes one last fix for stage review, with no review after it; then the run goes on.",
+        ),
+      ),
+    );
   });
 
   it("stops the run when the user declines", async () => {
@@ -704,15 +808,17 @@ describe("the round limit", () => {
 });
 
 describe("min_strength_over (R4.4)", () => {
-  const STRONG = withReview('model = "fake/weak"', 'min_strength_over = "implement"');
+  const WEAK_REVIEW = withReview('model = "fake/weak"', 'min_strength_over = "implement"');
+  const SAME_MODEL_REVIEW = withReview('model = "spore/auto"', 'min_strength_over = "implement"');
 
-  it("starts no reviewer on a model that is not stronger, and a settings fix plus a retry starts it", async () => {
+  it("starts no reviewer of a local worker's own tier, and a settings fix plus a retry starts it", async () => {
+    // A local worker still needs a strictly higher tier (R4.4, ADR 0152).
     const server = await start({
       env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
     });
     writeTiers(server.paths.root, TIERS);
     const { workspaceId } = await workspace(server, "weak");
-    userPipeline(server.paths.root, "p", STRONG);
+    userPipeline(server.paths.root, "p", WEAK_REVIEW);
     const { run: started } = await json<{ run: PipelineRun }>(
       await startRun(server, workspaceId),
       201,
@@ -731,6 +837,68 @@ describe("min_strength_over (R4.4)", () => {
     await json(await server.request("POST", `/api/pipelines/runs/${started.id}/retry`));
     await until(async () => (await getRun(server, started.id)).state === "passed");
     expect((await getRun(server, started.id)).blocked).toBeUndefined();
+  });
+
+  it("starts a reviewer on the worker's own cloud model", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    writeTiers(server.paths.root, { "spore/auto": "medium" });
+
+    const { run } = await runUntil(server, "same-model", SAME_MODEL_REVIEW, "passed");
+
+    expect(kinds(run)).toEqual(["task1", "review1"]);
+  });
+
+  it("starts a reviewer on another model of the worker's cloud tier", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    writeTiers(server.paths.root, { "spore/auto": "medium", "fake/mid": "medium" });
+
+    const { run } = await runUntil(
+      server,
+      "same-tier",
+      withReview('model = "fake/mid"', 'min_strength_over = "implement"'),
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1"]);
+  });
+
+  it("starts no reviewer on a lower cloud tier", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    writeTiers(server.paths.root, { "spore/auto": "medium", "fake/weak": "light" });
+    const { workspaceId } = await workspace(server, "lower-tier");
+    userPipeline(server.paths.root, "p", WEAK_REVIEW);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    expect((await getRun(server, run.id)).blocked).toContain(
+      "fake/weak (tier light) is not above spore/auto (tier medium)",
+    );
+  });
+
+  it("accepts a reviewer that really ran on the worker's cloud tier", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE],
+        reviewer: [{ summary: "Good", verdict: "approve", model: "fake/mid" }],
+      }),
+    });
+    writeTiers(server.paths.root, { ...TIERS, "spore/auto": "medium" });
+
+    const { run } = await runUntil(
+      server,
+      "equal-used",
+      withReview('model = "fake/strong"', 'min_strength_over = "implement"'),
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1"]);
   });
 
   it("answers 409 to a retry of a run with no waiting job", async () => {
@@ -775,8 +943,149 @@ describe("min_strength_over (R4.4)", () => {
     );
 
     expect(run.message).toContain("R4.4");
-    expect(run.message).toContain(
-      "fake/weak (tier local) is not stronger than spore/auto (tier light)",
+    expect(run.message).toContain("fake/weak (tier local) is not above spore/auto (tier light)");
+  });
+});
+
+describe("a stage agent whose turn failed", () => {
+  const LIMIT = "The ChatGPT user has reached their Subscription Sharing usage limit";
+  const APPROVE = { summary: "Good", verdict: "approve" };
+
+  const launches = () =>
+    readFileSync(join(scratch, "record.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> });
+
+  const agentOf = async (server: TestServer, agentId: string) =>
+    (
+      await json<{ agent: { title: string } }>(
+        await server.request("GET", `/api/agents/${agentId}`),
+      )
+    ).agent;
+
+  /** Starts a run of `pipeline` and waits until a stage blocks it. */
+  async function blockedRun(server: TestServer, name: string, pipeline: string) {
+    const { workspaceId } = await workspace(server, name);
+    userPipeline(server.paths.root, "p", pipeline);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+    return { workspaceId, run: await getRun(server, run.id) };
+  }
+
+  const retry = async (server: TestServer, runId: string) =>
+    json(await server.request("POST", `/api/pipelines/runs/${runId}/retry`));
+
+  it("blocks the stage on a reviewer turn the provider refused", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }] }),
+    });
+
+    const { run } = await blockedRun(server, "refused", withReview());
+
+    const review = run.turns[1] as PipelineTurn;
+    expect(run.state).toBe("running");
+    expect(run.blocked).toBe(
+      `stage review: the reviewer agent "Review 1" failed: ${LIMIT}. Retry starts a fresh reviewer agent for this turn.`,
+    );
+    expect(review).toMatchObject({ kind: "review", round: 1 });
+    expect(review.report).toBeUndefined();
+    expect(review.error).toBeUndefined();
+  });
+
+  it("starts a fresh reviewer on the role default of the retry for the same round, and passes", async () => {
+    let reviewerModel = "before";
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] }),
+      roleDefaults: async (role) =>
+        role === "reviewer" ? { provider: "fake", modelId: reviewerModel } : {},
+    });
+    const { workspaceId, run } = await blockedRun(server, "fresh-reviewer", withReview());
+    const failed = run.turns[1] as PipelineTurn;
+
+    reviewerModel = "after";
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(passed.blocked).toBeUndefined();
+    expect(kinds(passed)).toEqual(["task1", "review1", "review1"]);
+    const fresh = passed.turns[2] as PipelineTurn;
+    expect(fresh.agentId).not.toBe(failed.agentId);
+    expect(fresh.report?.verdict).toBe("approve");
+    expect(passed.turns[1]?.error).toBe(run.blocked);
+    expect((await agentOf(server, failed.agentId)).title).toBe("Review 1 (failed)");
+    const { agents } = await json<{ agents: { id: string }[] }>(
+      await server.request("GET", `/api/agents?workspaceId=${workspaceId}`),
+    );
+    expect(agents.map((agent) => agent.id)).toContain(failed.agentId);
+    const argv = launches().find((entry) => entry.env.PI_SPORE_AGENT_ID === fresh.agentId)
+      ?.argv as string[];
+    expect(argv[argv.indexOf("--model") + 1]).toBe("after");
+  });
+
+  it("starts a fresh worker for a crashed task turn, and the run passes", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["crash", DONE] }) });
+    const { run } = await blockedRun(server, "crashed", IMPLEMENT);
+    const failed = run.turns[0] as PipelineTurn;
+    expect(run.blocked).toContain("boom");
+    expect(run.workerAgentId).toBe(failed.agentId);
+
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(kinds(passed)).toEqual(["task1", "task1"]);
+    expect(passed.turns[1]?.agentId).not.toBe(failed.agentId);
+    expect(passed.workerAgentId).toBe(passed.turns[1]?.agentId);
+    expect((await agentOf(server, failed.agentId)).title).toBe("implement (failed)");
+  });
+
+  it("gives a refused fix turn to a fresh worker, and the next review round runs", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, { error: LIMIT }, FIX],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
+      }),
+    });
+    const { run } = await blockedRun(server, "refused-fix", withReview("rounds = 2"));
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(kinds(passed)).toEqual(["task1", "review1", "fix1", "fix1", "review2"]);
+    const [task, , failedFix, fix] = passed.turns as PipelineTurn[];
+    expect(failedFix?.error).toContain(LIMIT);
+    expect(fix?.agentId).not.toBe(task?.agentId);
+    expect(passed.workerAgentId).toBe(fix?.agentId);
+    expect(fix?.report?.summary).toBe(FIX.summary);
+  });
+
+  it("stays blocked after a restart and starts no new stage agent", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] });
+    const first = await start({ home, env });
+    const { workspaceId, run } = await blockedRun(first, "restart-blocked", withReview());
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+    const stageJob = () =>
+      second.services.jobs.list({
+        kind: "pipelines.stage",
+        key: workspaceId,
+        states: ["running", "waiting"],
+      })[0] as JobView;
+    await until(() => stageJob().state === "waiting" && stageJob().error !== null);
+
+    const after = await getRun(second, run.id);
+    expect(after.blocked).toBe(run.blocked);
+    expect(after.turns).toEqual(run.turns);
+    expect(launches().filter((launch) => launch.env.PI_SPORE_CHAT_KIND === "stage")).toHaveLength(
+      2,
     );
   });
 });
@@ -811,15 +1120,6 @@ model = "claude-bridge/claude-sonnet-5-5"
         await server.request("GET", "/api/attention/approvals?state=open"),
       )
     ).approvals;
-
-  const modelOf = (agentId: string) => {
-    const { argv } = readFileSync(join(scratch, "record.jsonl"), "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
-      .find((entry) => entry.env.PI_SPORE_AGENT_ID === agentId) as { argv: string[] };
-    return `${argv[argv.indexOf("--provider") + 1]}/${argv[argv.indexOf("--model") + 1]}`;
-  };
 
   const decide = async (server: TestServer, how: "approve" | "decline") => {
     const [approval] = await openApprovals(server);
@@ -901,6 +1201,205 @@ model = "claude-bridge/claude-sonnet-5-5"
 
     expect(modelOf(run.workerAgentId as string)).toBe("spore/auto");
     expect(await openApprovals(server)).toHaveLength(0);
+  });
+});
+
+describe("a reviewer default on a full plan", () => {
+  const NOW = 1_700_000_000_000;
+  const RESETS = NOW + 3_600_000;
+  const APPROVE = { summary: "Good", verdict: "approve" };
+
+  /** Three ladders. Plan `gamma` has no usage file unless a test writes one, so it reads as room. */
+  const writeSettings = (home: string, tiers: Record<string, string> = {}) =>
+    writeFileSync(
+      join(home, "settings.json"),
+      JSON.stringify({
+        tiers: {
+          "spore/auto": "local",
+          "alpha/low": "light",
+          "alpha/mid": "medium",
+          "alpha/high": "heavy",
+          "beta/low": "light",
+          "beta/mid": "medium",
+          "beta/high": "heavy",
+          "gamma/low": "light",
+          "gamma/high": "heavy",
+          ...tiers,
+        },
+        router: {
+          plans: { alpha: "alpha", beta: "beta", gamma: "gamma" },
+          ladders: ["alpha", "beta", "gamma"].map((plan) => ({
+            plan,
+            rungs: (plan === "gamma" ? ["low", "high", "high"] : ["low", "mid", "high"]).map(
+              (rung) => ({ model: `${plan}/${rung}`, thinking: "high" }),
+            ),
+          })),
+        },
+      }),
+    );
+
+  /** A plan's 5-hour window seen now by the test clock; `utilization` 1 is full. */
+  const writeUsage = (home: string, plan: string, utilization: number) => {
+    mkdirSync(join(home, "usage"), { recursive: true });
+    writeFileSync(
+      join(home, "usage", `${plan}.json`),
+      JSON.stringify({
+        plan,
+        source: "test",
+        seenAt: NOW,
+        windows: { "5h": { utilization, resetsAt: RESETS, seenAt: NOW } },
+      }),
+    );
+  };
+
+  const reviewerDefault = (model: string): AgentsModuleOptions["roleDefaults"] => {
+    const [provider, modelId] = model.split("/") as [string, string];
+    return async (role) => (role === "reviewer" ? { provider, modelId } : {});
+  };
+
+  const reviewTurn = (run: PipelineRun) => run.turns.find((turn) => turn.kind === "review");
+
+  it("starts the reviewer on the next same-tier ladder model and notes the swap", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 0.5);
+    const settings = readFileSync(join(server.paths.root, "settings.json"), "utf8");
+
+    const { run } = await runUntil(server, "swap", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("beta/mid");
+    expect(review.modelNote).toBe(
+      `alpha/mid: plan alpha is full until ${new Date(RESETS).toISOString()}; took beta/mid`,
+    );
+    expect(readFileSync(join(server.paths.root, "settings.json"), "utf8")).toBe(settings);
+  });
+
+  it("takes a higher tier when every same-tier model is full, in ladder order", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 1);
+
+    const { run } = await runUntil(server, "higher", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("gamma/high");
+    expect(review.modelNote).toContain("took gamma/high");
+  });
+
+  it("takes a same-tier model of a later ladder before a higher tier of an earlier one", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root, { "beta/mid": "heavy", "gamma/low": "medium" });
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 0.5);
+
+    const { run } = await runUntil(server, "same-tier-first", withReview(), "passed");
+
+    expect(modelOf((reviewTurn(run) as PipelineTurn).agentId)).toBe("gamma/low");
+  });
+
+  it("keeps the default when its plan has room", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 0.5);
+
+    const { run } = await runUntil(server, "room", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("alpha/mid");
+    expect(review.modelNote).toBeUndefined();
+  });
+
+  it("keeps the default when its plan has no usage file", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("gamma/high"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+
+    const { run } = await runUntil(server, "unknown", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("gamma/high");
+    expect(review.modelNote).toBeUndefined();
+  });
+
+  it("keeps a stage model on a full plan", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("beta/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+
+    const { run } = await runUntil(server, "pinned", withReview('model = "alpha/mid"'), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("alpha/mid");
+    expect(review.modelNote).toBeUndefined();
+  });
+
+  it("blocks with the plan and its reset when no candidate has room, and Retry reads usage again", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    for (const plan of ["alpha", "beta", "gamma"]) writeUsage(server.paths.root, plan, 1);
+    const { workspaceId } = await workspace(server, "all-full");
+    userPipeline(server.paths.root, "p", withReview());
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    const blocked = await getRun(server, run.id);
+    expect(blocked.state).toBe("running");
+    expect(blocked.blocked).toBe(
+      `stage review: the reviewer default alpha/mid is on plan alpha, which is full until ${new Date(RESETS).toISOString()}; no ladder model of tier medium or higher has room. Retry after the reset, or set another reviewer model in the pi-subagents settings.`,
+    );
+    expect(kinds(blocked)).toEqual(["task1"]);
+
+    writeUsage(server.paths.root, "alpha", 0.5);
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const review = reviewTurn(await getRun(server, run.id)) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("alpha/mid");
+  });
+
+  it("checks min_strength_over against the swapped model", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/low"),
+    });
+    // The default (light) is below the worker (medium); the swap (medium) is not.
+    writeSettings(server.paths.root, { "spore/auto": "medium", "gamma/low": "medium" });
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 1);
+
+    const { run } = await runUntil(
+      server,
+      "strength",
+      withReview('min_strength_over = "implement"'),
+      "passed",
+    );
+
+    expect(modelOf((reviewTurn(run) as PipelineTurn).agentId)).toBe("gamma/low");
   });
 });
 

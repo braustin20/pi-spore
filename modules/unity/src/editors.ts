@@ -334,7 +334,7 @@ export function createEditors(deps: EditorsDeps): UnityEditors & {
       }
       const project = await deps.projects.get(projectId);
       let result = await runUnity(["close", "--json", target], project.path, 90_000);
-      // Q17, ADR 0153: without the Pipeline package the editor has no graceful channel. The caller already has the
+      // Q17, ADR 0156: without the Pipeline package the editor has no graceful channel. The caller already has the
       // user's yes, and a graceful close would not save either, so --force changes only how the process ends.
       if (result.code !== 0 && pipelineMissing(result.stdout)) {
         result = await runUnity(["close", "--json", target, "--force"], project.path, 90_000);

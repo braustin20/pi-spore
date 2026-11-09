@@ -145,7 +145,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
 
   // ADR 0033: side chats get only request_human_input and the two read-only artifact tools (the launch allowlist),
   // so the card tools and artifacts_write stay off there.
-  registerCardTools(pi, client);
+  registerCardTools(pi, client, env);
   registerArtifactTools(pi, client);
   registerReportTool(pi, client, env);
   registerRunTools(pi, client, env);

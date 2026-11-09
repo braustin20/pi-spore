@@ -9,7 +9,7 @@ import type { UnityTestMode, UnityTestRun, Workspace } from "@pi-spore/shared";
 import Type from "typebox";
 import type { createEditors, UnityCommand } from "./editors.js";
 
-/** The Unity batch-mode test gates (R10.6, ADR 0153): `unity-test-editmode` and `unity-test-playmode`. */
+/** The Unity batch-mode test gates (R10.6, ADR 0156): `unity-test-editmode` and `unity-test-playmode`. */
 const MODES: UnityTestMode[] = ["EditMode", "PlayMode"];
 const gateName = (mode: UnityTestMode) => `unity-test-${mode.toLowerCase()}`;
 const reportPath = (runId: string) => `unity-tests/${runId}.xml`;

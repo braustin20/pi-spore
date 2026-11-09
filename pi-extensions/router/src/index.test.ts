@@ -6,7 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import sporeRouter, { LOCAL_ROUTE_EVENT } from "./index.js";
 import { readRecords } from "./records.js";
 import type { RouterState } from "./router.js";
-import { fakeContext, SONNET, STRATA, userRequest } from "./test-fakes.js";
+import { fakeContext, STRATA, userRequest } from "./test-fakes.js";
 import { readPlan } from "./usage.js";
 
 let root: string;
@@ -21,8 +21,9 @@ beforeEach(() => {
     join(root, "home", "settings.json"),
     JSON.stringify({
       router: {
-        cloud: SONNET,
-        localTargets: [{ model: STRATA, contextWindow: 131072, budget: 0.5, concurrency: 1 }],
+        localTargets: [
+          { model: STRATA, thinking: "high", contextWindow: 131072, budget: 0.5, concurrency: 1 },
+        ],
       },
     }),
   );
@@ -111,7 +112,12 @@ describe("router extension", () => {
     });
     expect(settled).toBe(false);
     ready();
-    expect((await routing).state).toMatchObject({ route: "local", model: STRATA });
+    expect((await routing).state).toMatchObject({
+      route: "local",
+      rung: 1,
+      model: STRATA,
+      thinking: "high",
+    });
 
     const { records } = await readRecords(join(root, "home"), 5);
     expect(records[0]).toMatchObject({ route: "local", model: STRATA });

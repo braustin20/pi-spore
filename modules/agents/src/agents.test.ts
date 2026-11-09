@@ -1505,9 +1505,8 @@ describe("deliveries on the job runner", () => {
     await until(() => delivery()?.attempts === 1);
     rmSync(flag);
     deliver(agentId, "second");
-    await until(
-      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
-    );
+    // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+    await until(async () => texts(await chat(agentId)).includes("assistant: echo: second"));
     expect(texts(await chat(agentId))).toEqual([
       "user: first",
       "assistant: echo: first",
@@ -1530,8 +1529,9 @@ describe("deliveries on the job runner", () => {
         whileBusy: "followUp",
       }),
     );
-    await until(
-      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
+    // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+    await until(async () =>
+      texts(await chat(agentId)).includes("assistant: echo: second [1 images]"),
     );
     const lines = texts(await chat(agentId));
     expect(lines.slice(0, 2)).toEqual(["user: first", "assistant: echo: first"]);
@@ -1815,6 +1815,56 @@ describe("stage agents (R6)", () => {
       { sessionFile: files(agentId), role: "orchestrator" },
       { sessionFile: files(stage.id), role: "reviewer" },
     ]);
+  });
+
+  describe("turnError", () => {
+    /** A stage agent whose turns follow a fake Pi script, started the way a pipeline does. */
+    const scripted = async (entries: unknown[]) => {
+      const script = join(scratch, "script.json");
+      writeFileSync(script, JSON.stringify({ worker: entries }));
+      await setup(
+        { roleDefaults: async () => ({ provider: "fake", modelId: "fake-1", thinking: "high" }) },
+        { FAKE_PI_SCRIPT: script },
+        {},
+        [probe],
+      );
+      const { workspaceId } = await makeAgent();
+      return start(workspaceId, { role: "worker", title: "Implement" }, "go");
+    };
+
+    it("is undefined before a session and after a normal turn", async () => {
+      await setupStages();
+      const { agentId } = await makeAgent();
+      expect(await api.turnError(agentId)).toBeUndefined();
+      await json(await prompt(agentId, "one"));
+      await replied(agentId, 1);
+      expect(await api.turnError(agentId)).toBeUndefined();
+    });
+
+    it("returns the error text of a turn the provider refused", async () => {
+      const stage = await scripted([{ error: "usage limit reached" }]);
+      // The first idle is the start-up one, so wait for the turn's own end.
+      await until(async () => (await api.turnError(stage.id)) !== undefined);
+      expect(await api.turnError(stage.id)).toBe("usage limit reached");
+    });
+
+    it("returns the status error after a crash", async () => {
+      const stage = await scripted(["crash"]);
+      await until(() => status(stage.id) === "failed");
+      expect(await api.turnError(stage.id)).toContain("boom: the fake agent crashed");
+    });
+
+    it("throws a 404 for an unknown agent", async () => {
+      await setupStages();
+      await expect(api.turnError("nope")).rejects.toMatchObject({ status: 404 });
+    });
+  });
+
+  it("renames an agent", async () => {
+    await setupStages();
+    const { agentId } = await makeAgent();
+    api.rename(agentId, "New title");
+    expect(api.get(agentId).title).toBe("New title");
   });
 
   it("exposes the role defaults", async () => {

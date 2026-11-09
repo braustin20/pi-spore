@@ -98,7 +98,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     from their history when first read; side chats never take it from the copied history. The user can rename.
 - **Stage agents** (R6, [ADR 0140](decisions/0140-pipeline-stage-agents.md)). A pipeline runs each stage on its own
   agent: kind `stage`, with a role (`worker`, `reviewer`, or `adversarial-reviewer`), a title (`implement`,
-  `Review 1`, ...), and a fixed model. They show as chat tabs after side chats.
+  `Review 1`, ...), and a fixed model. They show as chat tabs after side chats. A busy, starting, or waiting stage
+  agent sets the workspace's status line (section 13).
   - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
     pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
     `subagents.agentOverrides.<role>`; `modelsUsed(agentId)` lists the physical models Pi recorded on the agent's
@@ -109,7 +110,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
     `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
   - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
-    picker), because the pipeline judges a reviewer by the model it ran on (R4.4).
+    picker), because the pipeline judges a reviewer by the model it ran on (R4.4). A stage whose agent failed gets a
+    fresh agent on Retry instead (section 8, "Failed turns").
+  - `turnError(agentId)` says why the agent's last run failed: the error of a `failed` status, or the
+    `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a provider that
+    refused, such as a full usage window). `rename(agentId, title)` sets the title.
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
   CLI with `pi --session <path>`.
 - Extension dialogs (`extension_ui_request`) become pending prompts on the chat and on Home. The answer goes back as
@@ -129,7 +134,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     due day, `blockedBy` card ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
     base? | run?, base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
-    `new` unless another is given; `run: true` asks for a new run.
+    `new` unless another is given; `run: true` asks for a new run. A run's coordinator gets only the list and add
+    tools (ADR 0154); see section 9.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
     `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
@@ -147,7 +153,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     classifier fails (ADR 0140).
   - Run tools (R7, ADR 0150), by `PI_SPORE_RUN_ROLE`. The coordinator gets `start_lane` `{ name, brief, wave,
     dependsOn?, pipeline?, model? }`, `revise_lane` `{ laneId, brief }`, `merge_lane` `{ laneId }`, and
-    `answer_lane` `{ questionId, answer }`, and coordinator rules in place of the orchestrator rules. A lane agent
+    `answer_lane` `{ questionId, answer }`, and coordinator rules in place of the orchestrator rules. Of the card
+    tools it gets only `kanban_list_cards` and `kanban_add_card` (ADR 0154). A lane agent
     gets `ask_coordinator` `{ question }` in place of `request_human_input`; it files the question and ends the turn
     with `terminate: true`. Lane agents get one more paragraph of rules: ask the coordinator, never the user.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
@@ -287,7 +294,7 @@ export interface ServerHost {
 | Lane | A workspace inside a run | id, run, name, wave, depends on, brief artifact, pipeline, model, state, workspace, approval, message |
 | Pipeline | A declared stage list (file) | id, source (user, project, or built-in), stages |
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
-| Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer) |
+| Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer), error (the agent failed and Retry replaced it), model note (a reviewer default on a full plan was swapped) |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state; a lane's question is a `runs_questions` row |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, `unity-close-editor`, pipeline gates), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
@@ -435,7 +442,8 @@ name = "review"
 role = "reviewer"
 rounds = 2                # the most reviewer runs; a fresh read-only agent each round
 early_stop = "jev"        # Jev may end the review early; it never adds a round
-min_strength_over = "implement"   # the reviewer's tier must be above every model the worker used
+fix_passes = 1            # a REVISE on round 2 gets one fix, with no review after it
+min_strength_over = "implement"   # a cloud worker may be reviewed by its own tier; a local worker needs a higher tier
 
 [[stage]]
 name = "adversarial"
@@ -471,24 +479,51 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   later report never drops a test.
 - **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
   one and tells the agent once to continue and call `report`. There are no other automatic reminders.
+- **Failed turns** (ADR 0140). The pipeline listens to the stage agents' status. When the open turn's agent fails
+  (`turnError`: a crash, or a turn that ended with `stopReason: "error"`), the `await` step throws
+  `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The
+  job waits with that error, so the run stays `running` and shows it as `blocked`. The old agent may still report
+  while the run is blocked. Retry (`POST /api/pipelines/runs/:id/retry`) writes the error on the turn, and `await`
+  then replaces it in one commit: the old agent is renamed `<title> (failed)` and keeps its tab, and a fresh agent
+  takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
+  is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The
+  fresh agent has the stage's or run's model, else the role default read when it starts, so a settings fix works.
+  A restart or another wake does not mark the turn, so it only blocks again. Failed turns do not count as rounds.
 - **Review rounds** (R6.3, R6.4). Round r starts a fresh reviewer with the brief, the manifest with proof paths, and
   a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
-  from the provider's `changes`). APPROVE ends the stage. REVISE sends the findings to the same worker as a fix
+  from the provider's `changes`). From round 2 on, the prompt also has the previous round's summary and findings and
+  the worker's fix report. It tells the reviewer to check each earlier finding first, to answer REVISE only for a
+  bug, a missing or wrong test, a regression, or a break of the brief, to list style, naming, wording, and taste as
+  `minor`, and to rate a new finding the previous round could have raised `important` at most. APPROVE ends the
+  stage. REVISE sends the findings to the same worker as a fix
   turn, then round r + 1. Jev ends the stage after that fix instead when the stage has `early_stop = "jev"`, the
   report's `earlyStop.stop` is true, and no finding is blocking. A REVISE on the last round gets one last fix with
   `fix_passes = 1`; otherwise the run is `waiting_user` with a `pipeline-round-limit` approval on Home for the asking
-  chat. Its `decided` hook, in the decision's transaction, moves the run on (approve) or stops it (decline).
-- **min_strength_over** (R4.4, ADR 0023). Before a reviewer starts, its model (stage `model`, `spore/auto` for
-  `route`, else the role default) must have a tier strictly above every model in `modelsUsed` of the worker. A
-  missing model or tier, or a weaker model, throws: the job waits with the error, shown on the run as `blocked`,
-  and Retry checks again after the user fixes the settings. When the report comes, the reviewer's own `modelsUsed`
-  is checked the same way; a failure ends the run `failed`.
+  chat. Its title names the workspace, and for a lane the run and the lane id; the runs module gives pipelines that
+  lookup through `Pipelines.setLaneLookup`, because runs requires pipelines. The reason lists the findings with their
+  severity. The subject is `{ runId, stage, action }`, filed with `action: "fix"`. Its `decided` hook, in the
+  decision's transaction, acts on the choice: `fix` starts one last fix turn with no review after it, then the stage
+  ends; `accept` ends the stage without a fix; decline stops the run. Home shows the three as buttons, fix first.
+- **min_strength_over** (R4.4, ADR 0023, 0152). Before a reviewer starts, its model (stage `model`, `spore/auto`
+  for `route`, else the role default) must have a tier at or above every model in `modelsUsed` of the worker, and
+  strictly above it when that model's tier is `local`. A cloud model may be reviewed by its own tier, the same model
+  included, because the review runs in a fresh read-only chat. A missing model or tier, or a tier below, throws: the
+  job waits with the error, shown on the run as `blocked`, and Retry checks again after the user fixes the settings.
+  When the report comes, the reviewer's own `modelsUsed` is checked the same way; a failure ends the run `failed`.
+  The worker's models are those of every worker agent of the run, a failed one included.
 - **Local implementer** (R4.10, R3.4). Before the worker starts, its model is the stage `model`, else the worker role
   default. If that model is not `spore/auto`, its tier is not `local`, and its plan (`router.plans`) has fresh usage
   pressure (the router's thresholds), the run is `waiting_user` with a `pipeline-local-implementer` approval on Home
   for the asking chat, and no worker starts. Approve runs this run's worker on `spore/auto`; decline keeps the pinned
   model. The answer is stored on the run (`worker_model`), so a run asks once. Settings never change. A model with no
   tier or a provider with no plan is not asked about.
+- **Reviewer plan** (R4.4, R4.10, ADR 0140, 0141). Before a reviewer starts on its role default (the stage sets no
+  `model` and no `tier`), the default's plan (`router.plans`) is read. When it is `full` (a fresh window at 100%),
+  the reviewer takes another model: the rung models of `router.ladders`, same tier first, then each higher tier, in
+  ladder order, and the first whose plan is not full. A model with no plan (OpenRouter) or with no fresh numbers
+  counts as having room, as in the router. The review turn stores the swap as `modelNote`, and the Runs page shows
+  it. min_strength_over checks the chosen model. When no candidate has room, the step throws with the plan and its
+  reset, so the run is `blocked` until Retry. A pinned stage model is never swapped. Settings never change.
 - **Route** (R4.7). A worker report stores the newest `routing.jsonl` record for the worker agent on its turn
   (`routing`: route, model, reasons). A stage on a fixed model has none.
 - **Gates** (R6.5, ADR 0016). With `fail_first = "artifact"`, each test in the manifest needs a non-empty proof
@@ -503,7 +538,7 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 | `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }` | Starts a run (201). |
 | `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
 | `GET /api/pipelines/runs/:id` | `{ run }` |
-| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). |
+| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed gets a fresh agent. |
 | `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
 
 - Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.
@@ -524,7 +559,8 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 
 See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-questions-up-the-chain.md),
 [ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
-[ADR 0150](decisions/0150-run-worktree-and-green-merges.md), and [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md). Requirements R7, R4.8.
+[ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md), and
+[ADR 0154](decisions/0154-coordinator-adds-cards.md). Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
@@ -534,9 +570,14 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `run/<slug>-<last 6 of the run id>` at the base, the **run workspace** on it (isolation `existing`, with the base
   stored, so its PR tab targets the base), and its orchestrator chat. That chat is the coordinator.
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
-  the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,start_lane,
-  revise_lane,merge_lane,answer_lane,open_run_pr`: no write or shell tools. Its token is not read-only, so it writes artifacts
-  and calls the run routes. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
+  the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
+  kanban_list_cards,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,open_run_pr`: no write or shell
+  tools. Its token is not read-only, so it writes artifacts and calls the run routes. Every agent in a lane workspace
+  gets `PI_SPORE_RUN_ROLE=lane`.
+- **Follow-up cards** (ADR 0154). The coordinator adds a card for follow-up work out of the lanes' scope; it never
+  changes or starts one. A card added from a run workspace goes to `backlog` with the label
+  `from-run:<slug of the run name, up to 31 characters>`; the bridge sets both. A card change or start from a run
+  workspace answers 403 `run_coordinator`. Lane agents keep all four card tools.
 - **Lanes.** `start_lane` takes a brief that is an artifact of the run workspace (404 `brief_not_found`), a wave
   (1 or more), lane ids it depends on (400 `bad_depends_on`), a pipeline (default `default`), and a model.
   - Model (R4.8, ADR 0014): no model, or one whose tier (ADR 0023) is not above the worker role default's, makes
@@ -605,101 +646,128 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 ## 10. Model routing
 
 See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local-model-queue.md),
-[ADR 0023](decisions/0023-model-tiers.md), [ADR 0024](decisions/0024-routing-thresholds.md), and
-[ADR 0144](decisions/0144-routing-calibration.md).
+[ADR 0023](decisions/0023-model-tiers.md), [ADR 0024](decisions/0024-routing-thresholds.md),
+[ADR 0141](decisions/0141-router-ladders.md), and [ADR 0144](decisions/0144-routing-calibration.md).
 
 - `pi-extensions/router/` (package `@pi-spore/router`) registers the virtual model `spore/auto` with
   `pi.registerVirtualModel`. pi-spore agents load it with one more `-e` (section 2). Plain `pi` loads it with
   `pi -e <repo>/pi-extensions/router` or by adding the folder to Pi's `packages`.
-- On a session's first request (no router state yet):
-  1. Pick the first local target that is in Pi's model catalog.
-  2. Estimate tokens at about 4 characters per token: the conversation so far (system prompt and brief) plus the
-     size of every existing file the brief names. Above the target's budget (default 50% of its context), the task
-     goes to cloud and Jev is not asked.
-  3. Ask the classifier (`router.classifier`, default `openrouter/~typesafe/jev-latest`) four choice questions about
-     the brief: bounded, explicit requirements, visual, straightforward.
-  4. Go local only if every "good" answer is at least the threshold (0.7, or 0.55 under usage pressure; the visual
-     question always needs 0.7). Otherwise use the cloud model: `router.cloud`, else the pi-subagents `worker`
-     model from Pi's settings. If that model is `spore/auto`, the router throws an error that names `router.cloud`
-     and `settings.json`. It does not fall back (ADR 0120). Explore (ADR 0144): when "straightforward" is the only blocker, the session is a pipeline worker stage
-     (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), and a random draw is below `router.explore`,
-     the task goes local anyway. The reasons say `explore`, and the record has `explore: true`. Over-budget, visual,
-     and classifier-error tasks never explore.
-  5. If the cloud model's plan is full, spill (below).
-  6. Store the choice as router state on the session branch. Later requests stay on it, to keep the prompt cache.
-     Requests outside the agent loop (`direct`, such as compaction) go to the model that answered last.
-- Escalation: a local session moves to the cloud model at once on a context overflow, or on the second failed
-  request in a row. A `queue_wait_timeout` error (Strata busy, spike Q3) does not count as a failure.
-- The router never crashes a session. If it fails itself (bad settings, missing model), it routes to the cloud
-  model, pins the session there, records `kind: "error"` with the message, and shows a warning.
+- On every request the router loads the settings and checks each ladder entry and local target against Pi's catalog:
+  the model must be in it and must take the entry's thinking level (`getSupportedThinkingLevels`). A local target
+  missing from the catalog is allowed. A wrong setting ends the request with an error that names it, such as
+  `router.ladders[2].rungs[1].thinking`. It does not fall back.
+- Ladders (ADR 0141): `router.ladders` lists plans in order (default `claude`, `codex`, `openrouter`). Each plan has
+  three rungs, cheapest first, and each rung has a model and a thinking level. The router sends the entry's level,
+  never the level the user picked for `spore/auto`. Rung 1 tries the local target first. The router never routes to
+  a model of tier `top` (Fable) or to `spore/auto`.
+- On a session's first request (no router state yet, or a state from before ADR 0141):
+  1. Estimate tokens at about 4 characters per token: the conversation so far (system prompt and brief) plus the
+     size of every existing file the brief names.
+  2. Ask the classifier (`router.classifier`, default `openrouter/~typesafe/jev-latest`) six choice questions about
+     the brief in one call: bounded, explicit requirements, visual, straightforward, foundational (core, foundational,
+     or novel work), and design (design judgment, planning, or feel).
+  3. Pick the rung. Rung 3 if the good answer of visual, design, or foundational is below `router.heavyThreshold`,
+     the estimate is above `router.large`, or the classifier failed. Else rung 1 if bounded, explicit, and
+     straightforward reach `router.threshold` (`router.pressureThreshold` under usage pressure). Else rung 2.
+     Explore (ADR 0144): when "straightforward" is the only rung-1 blocker, the session is a pipeline worker stage
+     (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), the local target can take the task, and a
+     random draw is below `router.explore`, the task goes local anyway. The record has `explore: true`.
+  4. Pick the plan: the first ladder plan that is not full. A plan with no fresh numbers counts as having room; the
+     reason says "usage unknown". If every plan is full, the route is `wait`: the request ends with an error that
+     names the first reset, and no state is stored, so the next message routes again.
+  5. Rung 1 goes local when the first local target is in the catalog, the estimate fits its budget (default 50% of
+     its context), and the queue is short (below). Otherwise it goes to the plan's rung-1 cloud model.
+  6. Store the choice (rung, plan, model, thinking level) as router state on the session branch. Later requests stay
+     on it, to keep the prompt cache. Requests outside the agent loop (`direct`, such as compaction) go to the model
+     that answered last, at its level.
+- Escalation is the only move: on any rung below 3, a context overflow or the second failed request in a row moves
+  the session up one rung, on the first plan with room. A `queue_wait_timeout` error (Strata busy, spike Q3) does not
+  count as a failure. Rung 3 does not escalate.
+- If the router fails itself in another way, it routes to the first ladder's rung 3, pins the session there, records
+  `kind: "error"` with the message, and shows a warning.
 - Every decision is appended to `~/.pi-spore/usage/routing.jsonl`: time, kind (`initial`, `escalation`, `error`),
-  route (`local`, `cloud`, `spill`, `wait`), model, reasons, Jev's good-answer probabilities, the estimate and budget,
-  the threshold, `explore`, the plan windows it saw, and the session id, file, and folder. Inside pi-spore it also has the agent
-  and workspace ids. The chat shows each decision as a notice, which is live only. A new `info` notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. The model picker names the model
-  that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical model Pi records on each
-  assistant message, so it survives reloads and reconnects. The router state on the session holds the route and
-  reasons too.
-- Local targets are a list in settings: `{ model, contextWindow, budget, concurrency, healthUrl? }`. Default: Strata
-  `strata/qwen3.8-flash-next-unsloth-ud-iq2_xs`, 131072 tokens, budget 0.5, concurrency 1, health URL
-  `http://127.0.0.1:8080/health`. A second local server is one more entry.
-- Queue (ADR 0010): a session routed local takes a slot through a lock file,
+  route (`local`, `cloud`, `wait`; old lines may say `spill`), rung, plan, model, thinking level, reasons, Jev's
+  good-answer probabilities, the estimate and budget, `threshold` and `heavyThreshold`, `explore`, the plan windows it
+  saw, and the session id, file, and folder. Inside pi-spore it also has the agent and workspace ids. The chat shows
+  each decision as a notice (`spore/auto: rung 2 claude → <model> (high) (...)`), which is live only. A new `info`
+  notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. The model
+  picker names the model that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical
+  model Pi records on each assistant message, so it survives reloads and reconnects.
+- Local targets are a list in settings: `{ model, thinking, contextWindow, budget, concurrency, healthUrl? }`.
+  Default: Strata `strata/qwen3.8-flash-next-unsloth-ud-iq2_xs`, level `high`, 131072 tokens, budget 0.5,
+  concurrency 1, health URL `http://127.0.0.1:8080/health`. A second local server is one more entry.
+- Queue (ADR 0010, 0141): a session routed local takes a slot through a lock file,
   `$XDG_RUNTIME_DIR/pi-spore/<target>.<n>.lock`, one per slot up to `concurrency`. The file holds the pid; a lock of a
-  dead process is taken over. A busy target makes the request wait, with a "Waiting for <model>" status and notice.
-  In pi-spore the agents module forwards that status (key `pi-spore-router`) as the agent view's `routerStatus`,
-  cleared when the run settles or the process exits. The workspace list and Home's running list show it (tone
-  `warn`) while the agent is busy (R4.5).
-  The slot is held for the agent run and freed on `agent_settled`, on session shutdown, and on escalation. The same
-  files work in pi-spore and in plain `pi`. Without `XDG_RUNTIME_DIR` the router cannot lock and routes to cloud.
+  dead process is taken over. A busy target makes the request wait, with a "Waiting for <model>" status and notice,
+  and a wait file `<target>.wait.<pid>.lock` that other sessions count. When every slot is busy and
+  `router.maxQueued` sessions already wait, a new rung-1 task goes to the plan's rung-1 cloud model instead. Wait
+  files of dead processes do not count. In pi-spore the agents module forwards the status (key `pi-spore-router`) as
+  the agent view's `routerStatus`, cleared when the run settles or the process exits. The workspace list and Home's
+  running list show it (tone `warn`) while the agent is busy (R4.5). The slot is held for the agent run and freed on
+  `agent_settled`, on session shutdown, and on escalation. The same files work in pi-spore and in plain `pi`.
+  Without `XDG_RUNTIME_DIR` the router cannot lock, and rung 1 goes to the cloud model.
 - Starting a local target: before the first local request of a run, the router emits `pi-spore:local-route` on
   `pi.events` with `{ provider, modelId, ctx, wait(promise) }`. The extension that runs the target starts it and passes
   its "ready" promise to `wait`; the router awaits it. The user's `strata-model.ts` does this for Strata. Then the
-  router checks `healthUrl`. A failure frees the slot and routes to cloud. The router never starts or stops a server
-  itself.
-- Usage pressure (R4.10): the router reads the plan snapshots (section 11a). If the cloud model's plan has a fresh
-  weekly window above 75% or a 5-hour window at 100%, it lowers the threshold. It never relaxes the visual and
-  context-fit checks.
-- Spill (ADR 0024): when a fresh window of the cloud model's plan is at 100% and the task does not go local, the
-  router uses the first model in `router.spill` that is on another plan and in the same tier. A plan with no fresh
-  numbers counts as having room; the reason says "usage unknown". If the spill plan is full too, the route is `wait`:
-  the request ends with an error that names the first reset, and no state is stored, so the next message routes
-  again.
+  router checks `healthUrl`. A failure frees the slot; a new task goes to the rung-1 cloud model, a pinned session
+  escalates. The router never starts or stops a server itself.
+- Usage pressure (R4.10): the router reads the plan snapshots (section 11a). If the chosen plan has a fresh weekly
+  window above 75% or a 5-hour window at 100%, it lowers the rung-1 bar. It never lowers `heavyThreshold`, so the
+  visual check never relaxes.
 - Pipelines use the router through `tier = "route"`, the built-in default's implement stage (section 8, R4.9). A
   worker pinned to a cloud model under usage pressure gets the `pipeline-local-implementer` approval (section 8,
   R4.10).
 
 ### Router settings
 
-In `~/.pi-spore/settings.json` (or `$PI_SPORE_HOME/settings.json`), read by the extension on each routing decision.
-Built-in defaults apply to every key left out. Unknown `router` keys and wrong values are an error, which the router
-records and routes to cloud.
+In `~/.pi-spore/settings.json` (or `$PI_SPORE_HOME/settings.json`), read by the extension on each request. Built-in
+defaults apply to every key left out. Unknown `router` keys and wrong values are an error that ends the request.
 
 ```json
 {
   "router": {
     "classifier": "openrouter/~typesafe/jev-latest",
-    "cloud": "claude-bridge/claude-sonnet-5-5",
+    "ladders": [
+      { "plan": "claude", "rungs": [
+        { "model": "claude-bridge/claude-haiku-5-5", "thinking": "high" },
+        { "model": "claude-bridge/claude-sonnet-5-5", "thinking": "high" },
+        { "model": "claude-bridge/claude-opus-5-5", "thinking": "high" } ] },
+      { "plan": "codex", "rungs": [
+        { "model": "openai/gpt-6-luna", "thinking": "xhigh" },
+        { "model": "openai/gpt-6.1-sol", "thinking": "high" },
+        { "model": "openai/gpt-6-astra", "thinking": "high" } ] },
+      { "plan": "openrouter", "rungs": [
+        { "model": "openrouter/openai/gpt-6-luna", "thinking": "xhigh" },
+        { "model": "openrouter/deepseek/deepseek-v4.1-flash-1017", "thinking": "high" },
+        { "model": "openrouter/openai/gpt-6.1-sol", "thinking": "high" } ] }
+    ],
     "localTargets": [
-      { "model": "strata/qwen3.8-flash-next-unsloth-ud-iq2_xs", "contextWindow": 131072, "budget": 0.5,
-        "concurrency": 1, "healthUrl": "http://127.0.0.1:8080/health" }
+      { "model": "strata/qwen3.8-flash-next-unsloth-ud-iq2_xs", "thinking": "high", "contextWindow": 131072,
+        "budget": 0.5, "concurrency": 1, "healthUrl": "http://127.0.0.1:8080/health" }
     ],
     "threshold": 0.7,
+    "heavyThreshold": 0.7,
+    "large": 100000,
+    "maxQueued": 1,
     "explore": 0,
     "pressureThreshold": 0.55,
     "pressure": { "weekly": 0.75, "fiveHour": 1 },
     "usageMaxAgeMinutes": 60,
-    "spill": ["openai/gpt-6-luna", "openai/gpt-6.1-terra", "openai/gpt-6.1-sol"],
     "plans": { "claude-bridge": "claude", "anthropic": "claude", "openai": "codex", "openai-codex": "codex" }
   },
   "tiers": { "llama-cpp/qwen3.8-27b-m": "local" }
 }
 ```
 
-- `cloud` has no built-in default: unset means the pi-subagents `worker` model. `cloud` must not be `spore/auto`
-  (ADR 0120); set it when `worker` is `spore/auto`.
-- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes `threshold`; the
-  calibration report (section 11a) only suggests a value.
-- `plans` maps a provider to the subscription plan it draws on. `tiers` entries are added to the built-in tier list
-  (ADR 0023).
+- `ladders` replaces the whole default list when set. A ladder's `plan` names its usage file
+  (`~/.pi-spore/usage/<plan>.json`). OpenRouter sends no plan window, so its plan always has room.
+- `router.cloud` and `router.spill` are gone (ADR 0141). Either key is an error that names `router.ladders`.
+- `threshold` is the rung-1 bar, `heavyThreshold` the rung-3 bar for visual, design, and foundational, `large` the
+  rung-3 token estimate, and `maxQueued` the most sessions that may wait for a busy local target.
+- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes a bar; the
+  calibration report (section 11a) only suggests a `threshold`.
+- `plans` maps a provider to the subscription plan it draws on, for pipeline pressure checks (section 8). `tiers`
+  entries are added to the built-in tier list, `local < light < medium < heavy < top` (ADR 0023, 0141).
 
 ## 11a. Usage module
 
@@ -720,11 +788,16 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 - Headers arrive only when a request is made, so a snapshot can be old. A window is stale when its reset time has
   passed or it was seen longer ago than `router.usageMaxAgeMinutes` (default 60). Stale windows are shown as stale
   and the router ignores them (R18.5).
-- v1 is passive only (ADR 0022). Active polling of the plans' usage endpoints is a v2 option. It would also
-  count use from Claude Code and the Codex CLI, which the tap cannot see.
-- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, `attention`, and `agents`) reads the
-  router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
-  table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
+- Claude is passive (ADR 0022). Codex is polled (ADR 0153), because the `openai` login sends no headers. The `usage`
+  module's job `usage.codex-poll` asks `GET https://chatgpt.com/backend-api/wham/usage` once a minute, started in
+  `onStarted`. It reads the Codex CLI login from `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) read-only and
+  never refreshes it. `readUsageEndpoint` (router) turns the body into `5h` and `7d` windows and `writeReading` merges
+  them into `codex.json`. A failed poll sets a message that `GET /api/usage/plans` returns in `errors`
+  (`Codex usage: ...`) and the job goes on. It also counts use from the Codex CLI, which the tap cannot see.
+- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, `attention`, and
+  `agents`) reads the router's files on each request through `@pi-spore/router`, so file formats have one
+  definition. It owns one table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker
+  agent stores its state,
   the verdict of the last review of its first reviewer stage, its review rounds, and its fix passes. Retention
   deletes rows with the same cutoff as `routing.jsonl`.
   - `GET /api/usage/plans`: each plan's windows with age and staleness, warnings, the thresholds, and plan files that
@@ -745,13 +818,17 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   - `GET /api/usage/calibration`: the routing calibration report (ADR 0144). It joins each outcome to the newest
     `initial` decision of its worker agent before the run ended. A `local` decision passed when the verdict is
     `approve` and no `escalation` record has its session id. The report has Jev's answers per question in ten
-    buckets (answers, local outcomes, passed), and for bars 0.1 to 0.9 how many decisions would have gone local and
-    how many of those passed. A share under 20 local outcomes has `enough: false`. `suggestedBar` is the lowest bar
-    with 20 local outcomes and 90% passed. It is only a suggestion.
+    buckets (answers, local outcomes, passed; old lines lack `foundational` and `design`), and for bars 0.1 to 0.9
+    how many decisions would have gone local and how many of those passed. A decision clears a bar when its bounded,
+    explicit, and straightforward answers reach it and its visual, design, and foundational answers reach
+    `heavyThreshold` (ADR 0141). A share under 20 local outcomes has `enough: false`. `suggestedBar` is the lowest bar
+    with 20 local outcomes and 90% passed. It is only a suggestion. `rungs` counts decisions, outcomes, and passes per
+    rung and place (`local` or the plan), for every decision with a rung.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
-  warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions with their reasons; and the routing calibration (the
-  bars table with "now" and "suggested" chips, and the buckets). It loads on open and on Refresh.
+  warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions
+  with their rung, plan, model, thinking level, and reasons; and the routing calibration (the bars table with "now"
+  and "suggested" chips, the per-rung table, and the buckets). It loads on open and on Refresh.
 - CLI: `pi-spore usage calibration [--json]` prints the same report.
 
 ## 11b. Home and questions (attention module)
@@ -770,8 +847,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   - Every item names its chat (`chat`: id, title, kind, active) and links to `#/workspaces/<id>/chats/<chat>`.
   - `items`, newest first: open questions; open extension dialogs of running agents; failed agents with their error;
     agents whose last run ended and that wait for the user (`finished`), unless they have an open question or a
-    running helper; and `notice` items from other modules' sources (below). A notice has no chat: it has `source`,
-    `id`, `title`, optional `detail`, and an `href` to the module's page.
+    running helper. Pipeline stage agents are never `finished`: their pipeline reads the report and moves on. `notice` items
+    come from other modules' sources (below). A notice has no chat: it has `source`, `id`, `title`, optional `detail`, and
+    an `href` to the module's page.
   - `running`: agents that are busy, starting, or waiting for a slot, and idle agents with a running helper
     (`status: "helpers"`). When the helper ends, an idle agent that waits for the user is `finished` again.
 - The agents module tracks what Home needs (`AgentsKey.attention()`): when each agent entered its status, when each
@@ -797,7 +875,7 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   `AgentsWebKey.setUserWaits(hook)`: a React hook that returns, per chat id, why that chat waits for the user
   (`question`, `approval`, or `dialog`). The attention web module sets it from the same `attention:inbox` store, with
   `chatWaits(inbox)`. With no hook set, the list looks as before.
-- **Home sources** (ADR 0152): a module adds items to Home with `HomeItemsKey.register(name, source)`, where
+- **Home sources** (ADR 0155): a module adds items to Home with `HomeItemsKey.register(name, source)`, where
   `source()` returns the current `HomeNotice[]` (`id` stable and unique within the source, `at`, `title`, `detail?`,
   `href`). Attention keeps no state for them. It reads every source each time it builds the inbox, so an item shows
   while its condition holds and goes when it clears. `HomeItemsKey.changed()` builds and pushes the inbox on the next
@@ -830,7 +908,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     decision; a throw rolls it back and leaves the approval open. Pipelines use it for `pipeline-round-limit` and
     `pipeline-local-implementer`; runs for `lane-model` and `run-pr`.
   - Kinds now: `card-start` (kanban), `lane-model` and `run-pr` (runs, section 9), `pipeline-round-limit` and
-    `pipeline-local-implementer` (pipelines). A `run-pr` subject is `{ runId, title, body, base, head }`; approve
+    `pipeline-local-implementer` (pipelines). A `pipeline-round-limit` subject is `{ runId, stage, action }` with
+    `action` `fix` or `accept` (section 8). A `run-pr` subject is `{ runId, title, body, base, head }`; approve
     may change the title and body, and opens the run's PR through the opener the github-pr module sets (section 11e).
   - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
     its own request.
@@ -941,15 +1020,25 @@ counts, then its hunks in unified form.
 
 ## 11e. Pull requests
 
-See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
+See [ADR 0090](decisions/0090-changes-and-pull-requests.md) and [ADR 0142](decisions/0142-merge-button.md).
+Requirements R9.
 
 - The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `attention`, `kanban`, `runs`) talks to GitHub only
   through `gh`, run with `execFile`, `GH_PROMPT_DISABLED=1`, and `--json` where gh has it. Output is checked with
   TypeBox; a value it does not know (a new check conclusion) is a 422 `gh_failed`, not a guess.
 - The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
   --body= [--draft]` (the `=` form keeps a title starting with `-` a value), `gh run view --job <id>
-  --log-failed`, and `gh api --method=GET --paginate --slurp` for the PR's comments, reviews, and line comments.
-  It never merges, closes, enables auto-merge, or force-pushes (R9.3). The tests fail on any other gh command.
+  --log-failed`, `gh api --method=GET --paginate --slurp` for the PR's comments, reviews, and line comments, and
+  `gh pr merge <number> --merge --match-head-commit <sha>` from the merge route only. It never closes, enables
+  auto-merge, deletes a branch, merges with `--admin`, or force-pushes (R9.3). The tests fail on any other gh
+  command.
+- Merge (ADR 0142), `confirm: true` and the head the user saw: reads the PR fresh and refuses with 409
+  `pr_not_mergeable` and the reason when the workspace is not active, or the PR is not open, is a draft, is not
+  known to be free of conflicts, has a check that failed, was cancelled, or still runs, or waits for a review.
+  A head other than the one the user saw is 409 `pr_changed`. The same reason is the status's `mergeBlocked`, so
+  the tab shows why the button is off. After the merge it reads the PR once, as a refresh does, so the merged state
+  moves the card to Done and ends the watch; the route does not move the card. It logs one line: workspace and
+  number. Only the user's token reaches it (ADR 0032).
 - Publish (`confirm: true` required): pushes the branch through the provider's `publish` (section 7), opens the
   PR, stores it, turns the watch on, and moves the workspace's card to Review (`CardsKey.workChanged`). The form
   starts with the workspace name as title, the card's body as body, and the workspace's base. A base like
@@ -998,6 +1087,7 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
 | `POST /api/github-pr/workspaces/:id/publish` `{ title, body, base, draft?, confirm: true }` | Pushes and opens the PR (201). An open PR is 409 `pr_exists`. |
 | `POST /api/github-pr/workspaces/:id/push` `{ confirm: true }` | Pushes new commits to the PR's branch. |
 | `POST /api/github-pr/workspaces/:id/watch` `{ on }` | Turns the watch on (a new run of tries) or off. |
+| `POST /api/github-pr/workspaces/:id/merge` `{ confirm: true, headId }` | Merges the PR with a merge commit (ADR 0142). |
 
 CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t] [--body b] [--base branch]
 [--draft]` (the form defaults fill what is not given), `pi-spore pr push <workspace>`, and `pi-spore pr watch
@@ -1009,8 +1099,10 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
   the push is visible to others. With a PR it shows a header card (number, title, state, branch → base, review,
   conflicts), a Push… confirm when the workspace has commits the PR lacks, the checks with state chips and links,
   and the watch: state, tries, last and next look, the message, Resume and send again, Stop watching, and the tries
-  so far. The Details panel shows the number, state, failing checks, conflicts, and "Waiting for you".
-- "Waiting for you" is also a Home item (a `github-pr` Home source, ADR 0152). Not built yet: PR tools for agents
+  so far. A Merge button asks `Merge #n into <base> with a merge commit?` in the `useConfirm` dialog; while
+  `mergeBlocked` is set it is off, with the reason in its tooltip. The Details panel shows the number, state,
+  failing checks, conflicts, and "Waiting for you".
+- "Waiting for you" is also a Home item (a `github-pr` Home source, ADR 0155). Not built yet: PR tools for agents
   (they come through spore-bridge).
 
 ## 11f. Artifacts
@@ -1060,7 +1152,7 @@ See [ADR 0011](decisions/0011-unity-support.md).
   - `unity status --json` to see open editors, their project paths, and pids;
   - `unity close --json <path>` to close (exits without saving, so it is only run after an explicit yes). Without the
     Pipeline package it fails with `PROJECTS_CLOSE_PIPELINE_MISSING`; pi-spore then runs it again with `--force`
-    (SIGTERM, then SIGKILL; [ADR 0153](decisions/0153-unity-test-gates.md), spike `spikes/q17-unity-close.md`);
+    (SIGTERM, then SIGKILL; [ADR 0156](decisions/0156-unity-test-gates.md), spike `spikes/q17-unity-close.md`);
   - `unity test <folder> --mode <EditMode|PlayMode> --output <file> --timeout <s>` for the test gates.
 - Finding open editors (ADR 0028). For the main checkout and each workspace folder of the project, an editor is
   open when one of these sees it:
@@ -1080,7 +1172,7 @@ See [ADR 0011](decisions/0011-unity-support.md).
     `close(projectId, path)`.
   - Later: an agent that needs the editor (for unity-mcp work) creates an Approval and opens Unity only after a
     yes. If another agent holds the lease, it waits. If the user holds it, the Approval asks to share or close it.
-- Test gates (R10.6, [ADR 0153](decisions/0153-unity-test-gates.md)). The module provides the actions
+- Test gates (R10.6, [ADR 0156](decisions/0156-unity-test-gates.md)). The module provides the actions
   `unity-test-editmode` and `unity-test-playmode` for Unity projects (section 13, provided actions). A pipeline
   gate stage lists them like any action. A run:
   1. Looks every 5 s at the editors on the workspace's folder (other folders of the project do not block). With
@@ -1188,7 +1280,7 @@ API under `/api/kanban`:
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
   --new [--mode m] [--line b] [--base b] | --workspace <id> | --run [--base b] [--blocked-ok]`.
-- Overdue and due-today cards show on Home (a `kanban` Home source, ADR 0152). Not built yet: custom columns.
+- Overdue and due-today cards show on Home (a `kanban` Home source, ADR 0155). Not built yet: custom columns.
 
 ## 13. Settings
 
@@ -1295,7 +1387,7 @@ See [ADR 0027](decisions/0027-actions.md). The `actions` module reads `[actions.
 - Triggers: `user`, `agent`, `create`, `archive`, `pipeline`. `ActionsKey.start(workspace, name, trigger, { key })`
   with a key the workspace used before returns that run and starts nothing, so a pipeline gate never runs a check
   twice.
-- Provided actions ([ADR 0153](decisions/0153-unity-test-gates.md)). `ActionsKey.provide(action)` adds an action
+- Provided actions ([ADR 0156](decisions/0156-unity-test-gates.md)). `ActionsKey.provide(action)` adds an action
   for projects with a trait; the unity module's test gates are the first. It is listed with source `default` and
   is exclusive per folder. A run is an ordinary run, except that the module's `prepare` step runs first (wait, then
   name the argv and an optional deadline `timeoutMs`) and its `after` step runs when the process has exited, also after
@@ -1323,8 +1415,8 @@ The workspaces module calls other modules around a copy through its contract: `a
 every park, resume, and archive; a listener that throws is logged and does not undo the change. `create` makes a
 workspace as `POST /api/workspaces` does, for modules that start work, such as kanban.
 
-The workspace view has three panes: the workspace list (grouped active, parked, then archived behind a toggle,
-newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
+The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
+and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
 panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<project>` (filtered to a project),
 `#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. The list
 follows the topic `workspaces:list`: a snapshot of every workspace on subscribe and after a reconnect, then one
@@ -1340,7 +1432,10 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   passes `chatId`; without it the pane shows the active orchestrator chat.
 - `setStatus` sets a React hook that returns one status line per workspace. The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
-  supplies a fresh snapshot. The status line follows the active orchestrator chat. When that chat is idle or
+  supplies a fresh snapshot. A busy, starting, or waiting stage agent of the workspace wins first: "Working:
+  <title>" (tone `run`), or "Waiting for a free agent slot" (tone `warn`), since the worker chat of a pipeline or a
+  run lane sits stopped while stages work. A stage that works beats one that waits. An idle, stopped, or failed
+  stage agent never shows. Otherwise the status line follows the active orchestrator chat. When that chat is idle or
   stopped and waits for the user (`AgentsWebKey.setUserWaits`, section 11b), the line says "Waiting for your
   answer". Otherwise an idle chat with a running helper (`helpersRunning`, section 2) says "Working (helper
   running)", tone `run`. A busy chat whose router waits for a local model shows its `routerStatus` ("Waiting for

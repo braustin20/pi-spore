@@ -103,11 +103,14 @@ not built in v1.
   the same id wins.
 - R6.3 The default pipeline:
   1. `implement`: the worker.
-  2. `review`: a fresh read-only reviewer each round, at most 2 rounds back to the worker.
+  2. `review`: a fresh read-only reviewer each round, at most 2 rounds. A REVISE on round 2 gets one last fix pass,
+     with no review after it.
   3. `adversarial`: an adversarial reviewer, one fix pass on REVISE.
   4. `gates`: the project's checks, plus a recorded fail-first proof for each new test.
-- R6.4 Round limits are hard. A Jev check after each review round may stop early when the remaining findings are
-  minor. It can never add rounds.
+- R6.4 Round limits are hard: no stage runs more review rounds than it declares. A stage may declare one last fix
+  pass after its last round. A Jev check after each review round may stop early when the remaining findings are
+  minor. It can never add rounds. A stage with no last fix pass asks the user at its limit: fix once, go on, or
+  stop.
 - R6.5 Fail-first proof: the worker records the failing run of each new test as an artifact. The reviewer checks it.
   The gate stage re-runs only the final passing suite.
 - R6.6 Stages survive a server restart and resume from their last committed step.
@@ -141,7 +144,8 @@ not built in v1.
 - R9.2 pi-spore watches checks and conflicts with the base. It sends failures (with log tails) back to the worker,
   at most 3 tries in a row, then stops and waits for the user.
 - R9.3 pi-spore never merges on its own and never enables auto-merge. An agent merges a PR only when the user asks
-  for that merge, or when it asks and the user says yes (ADR 0130).
+  for that merge, or when it asks and the user says yes (ADR 0130). pi-spore merges a PR only when the user clicks
+  Merge in the PR tab and confirms (ADR 0142).
 
 ## R10. Unity support
 
@@ -220,6 +224,7 @@ not built in v1.
 - R18.3 Usage seen by any Pi process counts, including plain `pi` in a terminal, not only pi-spore agents.
 - R18.4 Home warns when a window crosses a threshold. The router reads the same numbers (R4.10).
 - R18.5 Stale numbers are shown as stale and are not used for routing.
+- R18.6 Codex usage is polled with the Codex CLI login, because the `openai` login reports none (ADR 0153).
 
 ## Out of scope for v1
 

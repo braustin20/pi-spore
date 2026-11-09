@@ -7,7 +7,15 @@ import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
-import { loadSettings, pruneRecords, readPlans, readRecords, windowViews } from "@pi-spore/router";
+import {
+  loadSettings,
+  pruneRecords,
+  readPlans,
+  readRecords,
+  readUsageEndpoint,
+  windowViews,
+  writeReading,
+} from "@pi-spore/router";
 import type {
   AgentRole,
   CalibrationResponse,
@@ -19,11 +27,15 @@ import type {
   UsageWarning,
 } from "@pi-spore/shared";
 import { calibration, type Outcome } from "./calibration.js";
+import { fetchCodexUsage, readCodexLogin } from "./codex.js";
 import { SessionIndex } from "./tokens.js";
 
 export interface UsageModuleOptions {
   /** Pi's agent folder, whose `sessions/` holds plain `pi` sessions (R18.3). Default: `PI_CODING_AGENT_DIR` or `~/.pi/agent`. */
   agentDir?: string;
+  /** The Codex CLI's folder, whose `auth.json` is the login the poll uses (ADR 0153). Default: `CODEX_HOME` or `~/.codex`. */
+  codexHome?: string;
+  fetch?: typeof fetch;
 }
 
 const isInside = (folder: string, path: string): boolean =>
@@ -61,6 +73,11 @@ export function warningsFor(
   });
 }
 
+const CODEX_POLL_JOB = "usage.codex-poll";
+/** ChatGPT's usage endpoint is asked once a minute (ADR 0153). */
+const CODEX_POLL_MS = 60_000;
+const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
+
 const MIGRATIONS = [
   `CREATE TABLE usage_outcomes (
     run_id TEXT PRIMARY KEY,
@@ -85,8 +102,11 @@ interface OutcomeRow {
  * pi-spore's session files, and the router's decisions. The router extension writes those files in any Pi process,
  * so this module reads them on each request. It owns one table, `usage_outcomes` (ADR 0144): how each pipeline run
  * with a worker ended, to judge the router's local choices against its decisions.
+ * Codex windows are polled instead: the user's `openai` login reports none (ADR 0153).
  */
 export function createUsageModule(options: UsageModuleOptions = {}): ServerModule {
+  const codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
+  const fetchFn = options.fetch ?? globalThis.fetch;
   return {
     id: "usage",
     requires: ["projects", "workspaces", "pipelines", "attention", "agents"],
@@ -135,6 +155,36 @@ export function createUsageModule(options: UsageModuleOptions = {}): ServerModul
         if (count > 0) host.log.info("Retention deleted routing decisions", { count });
       });
 
+      /** The last poll failure, shown on `/plans`; undefined once a poll answers. */
+      let codexError: string | undefined;
+      // ADR 0153: the Codex CLI login works on ChatGPT's usage endpoint, where the user's Pi `openai` login gets 401.
+      host.jobs.define<Record<string, never>, never>(CODEX_POLL_JOB, [
+        {
+          name: "poll",
+          run: async () => {
+            try {
+              const body = await fetchCodexUsage(readCodexLogin(codexHome), fetchFn);
+              await writeReading(host.home.root, readUsageEndpoint(body), host.now());
+              codexError = undefined;
+            } catch (error) {
+              // A failed poll never ends the job: an expired login should not stop the router seeing usage.
+              const message = error instanceof Error ? error.message : String(error);
+              if (message !== codexError) host.log.warn("Codex usage poll failed", { message });
+              codexError = message;
+            }
+            return { next: "poll", after: CODEX_POLL_MS };
+          },
+        },
+      ]);
+
+      // The server polls once at start, then every interval. Jobs from before the restart give way to the new one.
+      host.onStarted(() => {
+        for (const job of host.jobs.list({ kind: CODEX_POLL_JOB, key: "all", states: NOT_ENDED })) {
+          host.jobs.cancel(job.id);
+        }
+        host.jobs.start(CODEX_POLL_JOB, {}, { key: "all", after: 0 });
+      });
+
       const plansView = async (): Promise<UsagePlansResponse> => {
         const { pressure, usageMaxAgeMinutes } = await settings();
         const now = host.now();
@@ -160,7 +210,7 @@ export function createUsageModule(options: UsageModuleOptions = {}): ServerModul
           warnings,
           thresholds: pressure,
           maxAgeMinutes: usageMaxAgeMinutes,
-          errors,
+          errors: [...errors, ...(codexError === undefined ? [] : [`Codex usage: ${codexError}`])],
         };
       };
 
@@ -291,14 +341,20 @@ export function createUsageModule(options: UsageModuleOptions = {}): ServerModul
       });
 
       host.routes.get("/calibration", async (c) => {
-        const { threshold } = await settings();
+        const { threshold, heavyThreshold } = await settings();
         const { records, skipped } = await readRecords(host.home.root, Number.POSITIVE_INFINITY);
         const outcomes = host.store
           .all<OutcomeRow>(
             "SELECT agent_id, verdict, ended_at FROM usage_outcomes WHERE verdict IS NOT NULL",
           )
           .map((row) => ({ agentId: row.agent_id, verdict: row.verdict, endedAt: row.ended_at }));
-        const body: CalibrationResponse = calibration(records, outcomes, threshold, skipped);
+        const body: CalibrationResponse = calibration(
+          records,
+          outcomes,
+          threshold,
+          heavyThreshold,
+          skipped,
+        );
         return c.json(body);
       });
     },

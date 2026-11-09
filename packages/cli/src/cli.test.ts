@@ -1136,6 +1136,7 @@ describe("pi-spore usage calibration", () => {
   }));
   const report = {
     threshold: 0.7,
+    heavyThreshold: 0.7,
     minSample: 20,
     decisions: 34,
     outcomes: 30,
@@ -1143,6 +1144,8 @@ describe("pi-spore usage calibration", () => {
       bounded: emptyBuckets,
       explicit: emptyBuckets,
       visual: emptyBuckets,
+      foundational: emptyBuckets,
+      design: emptyBuckets,
       straightforward: emptyBuckets.map((bucket, index) =>
         index === 0 ? { ...bucket, answers: 3 } : bucket,
       ),
@@ -1151,6 +1154,7 @@ describe("pi-spore usage calibration", () => {
       { bar: 0.1, decisions: 34, wouldGoLocal: 34, localOutcomes: 30, passed: 23, enough: true },
       { bar: 0.9, decisions: 34, wouldGoLocal: 3, localOutcomes: 0, passed: 0, enough: false },
     ],
+    rungs: [{ rung: 1, place: "local", decisions: 30, outcomes: 30, passed: 23 }],
     skipped: 0,
   };
 

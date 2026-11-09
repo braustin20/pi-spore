@@ -29,6 +29,6 @@ editor showed:
 ## Consequences
 
 - An editor opened outside pi-spore is seen as long as it runs, with or without the Pipeline package.
-- Whether `unity close` can close an editor without the Pipeline package was open as Q17. ADR 0153 answers it:
+- Whether `unity close` can close an editor without the Pipeline package was open as Q17. ADR 0156 answers it:
   only with `--force`.
 - On another platform, a stale lock file blocks until the user deletes it.

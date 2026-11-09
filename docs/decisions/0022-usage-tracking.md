@@ -1,6 +1,6 @@
 # 0022. Track subscription usage and use it in routing
 
-- Status: Accepted
+- Status: Accepted; Codex polling in [0153](0153-poll-codex-usage.md)
 - Date: 2026-11-06
 - Requirements: R18, R4.9, R4.10
 

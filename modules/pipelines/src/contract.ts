@@ -35,6 +35,13 @@ export interface Pipelines {
    * role's rules. A repeat for the latest turn returns the stored turn.
    */
   report(caller: BridgeCaller, report: StageReport): Promise<{ turn: PipelineTurn }>;
+  /**
+   * Sets how a run's approvals name a lane workspace. The runs module sets it, because runs requires pipelines. At
+   * most one.
+   */
+  setLaneLookup(
+    lookup: (workspaceId: string) => { run: string; laneId: string; lane: string } | undefined,
+  ): void;
 }
 
 export const PipelinesKey = defineInterface<Pipelines>("pipelines", "pipelines");
