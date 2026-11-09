@@ -1,5 +1,4 @@
-import type { Projects } from "@pi-spore/mod-projects/server";
-import { ApiError } from "@pi-spore/module-api";
+import { ApiError, type Settings } from "@pi-spore/module-api";
 import type { ActionView, Project } from "@pi-spore/shared";
 import Type from "typebox";
 
@@ -25,12 +24,12 @@ const ActionsSection = Type.Object(
 const NAME = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
 function readSection(
-  projects: Projects,
+  settings: Settings,
   file: { path: string; data: Record<string, unknown> } | undefined,
   source: "project file" | "local override",
 ): ActionView[] {
   if (!file) return [];
-  const section = projects.checkConfigSection(ActionsSection, file.data, file.path);
+  const section = settings.checkSection(ActionsSection, file.data, file.path);
   return Object.entries(section.actions ?? {}).map(([name, table]) => {
     const where = `${file.path}: action "${name}"`;
     if (!NAME.test(name)) {
@@ -68,12 +67,12 @@ function readSection(
 }
 
 /** The project's actions, sorted by name. The local override replaces a whole action of the same name. */
-export async function readActions(projects: Projects, project: Project): Promise<ActionView[]> {
-  const files = await projects.configFiles(project);
+export async function readActions(settings: Settings, project: Project): Promise<ActionView[]> {
+  const files = await settings.configFiles(project.path);
   const byName = new Map<string, ActionView>();
-  for (const action of readSection(projects, files.project, "project file"))
+  for (const action of readSection(settings, files.project, "project file"))
     byName.set(action.name, action);
-  for (const action of readSection(projects, files.local, "local override"))
+  for (const action of readSection(settings, files.local, "local override"))
     byName.set(action.name, action);
   return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
 }

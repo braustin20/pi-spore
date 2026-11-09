@@ -214,7 +214,7 @@ describe("project config", () => {
   it.each([
     ['[agents.worker]\nmodel = "x"\n', 'sets "agents.worker.model"'],
     ["[worktree\n", "not valid TOML"],
-    ["[worktree]\ncopi = []\n", "Invalid"],
+    ["[worktree]\ncopi = []\n", 'unknown key "worktree.copi"'],
   ])("rejects a bad project file: %j", async (text, message) => {
     const repo = makeUnityRepo();
     mkdirSync(join(repo, ".pi-spore"));

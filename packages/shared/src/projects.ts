@@ -48,11 +48,18 @@ export const ProjectConfigView = Type.Object({
 });
 export type ProjectConfigView = Static<typeof ProjectConfigView>;
 
-/** Settings that apply to the whole install, from `~/.pi-spore/settings.json`. */
-export const GlobalSettingsView = Type.Object({
-  retentionDays: Type.Object({ value: Type.Integer({ minimum: 0 }), source: SettingSource }),
+/** One resolved setting and where its value came from (R17.1). */
+export const SettingEntry = Type.Object({
+  /** Dotted path, the same in every file: `agents.maxLive`. */
+  key: Type.String(),
+  value: Type.Unknown(),
+  source: SettingSource,
 });
-export type GlobalSettingsView = Static<typeof GlobalSettingsView>;
+export type SettingEntry = Static<typeof SettingEntry>;
+
+/** Every setting with its source, from `~/.pi-spore/settings.json` and the defaults. */
+export const SettingsView = Type.Object({ settings: Type.Array(SettingEntry) });
+export type SettingsView = Static<typeof SettingsView>;
 
 export const ProjectLines = Type.Object({
   lines: Type.Array(Type.String()),

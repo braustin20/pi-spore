@@ -10,7 +10,7 @@ import {
   parseJsonBody,
   slugify,
 } from "@pi-spore/shared";
-import { checkConfigSection, readConfigFiles, resolveConfig } from "./config.js";
+import { resolveConfig } from "./config.js";
 import {
   type Projects,
   ProjectsKey,
@@ -19,7 +19,7 @@ import {
   type TraitDefinition,
   type VcsProvider,
 } from "./contract.js";
-import { readGlobalSettings } from "./settings.js";
+import { declareSettings } from "./settings.js";
 
 export * from "./contract.js";
 
@@ -49,6 +49,7 @@ export const projectsModule: ServerModule = {
   core: true,
   setup(host) {
     host.store.migrate("projects", MIGRATIONS);
+    const keys = declareSettings(host.settings);
     const providers: VcsProvider[] = [];
     const traits: TraitDefinition[] = [];
     const guards: RemovalGuard[] = [];
@@ -113,6 +114,8 @@ export const projectsModule: ServerModule = {
       },
       async config(project): Promise<ResolvedProjectConfig> {
         const view = await resolveConfig(
+          host.settings,
+          keys,
           project.path,
           project.traits,
           (id) => traits.find((trait) => trait.id === id)?.worktreeCopy,
@@ -130,9 +133,7 @@ export const projectsModule: ServerModule = {
           },
         };
       },
-      configFiles: (project) => readConfigFiles(project.path),
-      checkConfigSection,
-      globalSettings: () => readGlobalSettings(host.home.root),
+      retentionDays: async () => (await host.settings.resolve()).get(keys.retentionDays).value,
     };
     host.provide(ProjectsKey, projects);
 
@@ -202,7 +203,7 @@ export const projectsModule: ServerModule = {
     });
 
     host.routes.get("/settings", async (c) =>
-      c.json({ settings: await projects.globalSettings() }),
+      c.json({ settings: (await host.settings.resolve()).entries() }),
     );
 
     host.routes.get("/:id", async (c) =>

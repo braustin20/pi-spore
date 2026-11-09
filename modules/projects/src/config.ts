@@ -1,136 +1,25 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
-import { ApiError } from "@pi-spore/module-api";
-import type { ProjectConfigView, ProjectTrait, SettingSource } from "@pi-spore/shared";
-import { parse, ValidationError } from "@pi-spore/shared";
-import { parse as parseToml } from "smol-toml";
-import Type, { type Static, type TSchema } from "typebox";
-import type { RawConfigFile, RawConfigFiles } from "./contract.js";
-
-/** The parts of `<project>/.pi-spore/config.toml` this module reads. Other modules own other sections. */
-const ConfigFile = Type.Object(
-  {
-    worktree: Type.Optional(
-      Type.Object(
-        {
-          copy: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
-          branch_prefix: Type.Optional(Type.String({ pattern: "^[a-zA-Z0-9._-]+$" })),
-        },
-        { additionalProperties: false },
-      ),
-    ),
-  },
-  { additionalProperties: true },
-);
-
-// R17.3: the project file may be committed and never chooses models.
-const MODEL_KEYS = new Set(["model", "models", "provider", "thinking"]);
-
-function findModelKey(value: unknown, path: string): string | undefined {
-  if (typeof value !== "object" || value === null) return undefined;
-  for (const [key, child] of Object.entries(value)) {
-    const here = path ? `${path}.${key}` : key;
-    if (MODEL_KEYS.has(key)) return here;
-    const found = findModelKey(child, here);
-    if (found) return found;
-  }
-  return undefined;
-}
-
-/** Parses TOML and applies the rules every section shares, such as no model keys. Sections are checked by the
- * modules that own them. */
-function parseRawConfig(text: string, file: string): Record<string, unknown> {
-  let raw: Record<string, unknown>;
-  // smol-toml returns a plain table for any valid document.
-  try {
-    raw = parseToml(text);
-  } catch (error) {
-    throw new ApiError(
-      422,
-      "bad_project_config",
-      `${file} is not valid TOML: ${(error as Error).message}`,
-    );
-  }
-  const modelKey = findModelKey(raw, "");
-  if (modelKey) {
-    throw new ApiError(
-      422,
-      "bad_project_config",
-      `${file} sets "${modelKey}". Project files never choose models; use Pi settings or a local override.`,
-    );
-  }
-  return raw;
-}
-
-/** Checks one section of a config file against its schema; a mismatch answers 422 `bad_project_config`. */
-export function checkConfigSection<const S extends TSchema>(
-  schema: S,
-  value: unknown,
-  what: string,
-): Static<S> {
-  try {
-    return parse(schema, value, what);
-  } catch (error) {
-    if (error instanceof ValidationError)
-      throw new ApiError(422, "bad_project_config", error.message);
-    throw error;
-  }
-}
-
-async function readRawConfig(path: string): Promise<RawConfigFile | undefined> {
-  let text: string;
-  try {
-    text = await readFile(path, "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
-    throw error;
-  }
-  return { path, data: parseRawConfig(text, path) };
-}
-
-/** The project file and the local override of a project, parsed but with sections not yet checked. */
-export async function readConfigFiles(projectPath: string): Promise<RawConfigFiles> {
-  const dir = join(projectPath, ".pi-spore");
-  const project = await readRawConfig(join(dir, "config.toml"));
-  const local = await readRawConfig(join(dir, "config.local.toml"));
-  return { ...(project ? { project } : {}), ...(local ? { local } : {}) };
-}
-
-export const DEFAULT_BRANCH_PREFIX = "spore";
+import type { Settings } from "@pi-spore/module-api";
+import type { ProjectConfigView, ProjectTrait } from "@pi-spore/shared";
+import type { ProjectSettings } from "./settings.js";
 
 /**
  * Resolves the worktree settings of a project (R17.2): defaults, then values detected from traits, then the
- * project file, then the local override. Each value carries its source.
+ * files. Each value carries its source.
  */
 export async function resolveConfig(
+  settings: Settings,
+  keys: ProjectSettings,
   projectPath: string,
   traits: readonly ProjectTrait[],
   traitCopy: (traitId: string) => readonly string[] | undefined,
 ): Promise<ProjectConfigView> {
-  const files = await readConfigFiles(projectPath);
-  const projectFile =
-    files.project && checkConfigSection(ConfigFile, files.project.data, files.project.path);
-  const localFile =
-    files.local && checkConfigSection(ConfigFile, files.local.data, files.local.path);
-
-  let worktreeCopy: { value: string[]; source: SettingSource } = { value: [], source: "default" };
-  const detected = [...new Set(traits.flatMap((trait) => traitCopy(trait.id) ?? []))];
-  if (detected.length > 0) worktreeCopy = { value: detected, source: "detected" };
-  if (projectFile?.worktree?.copy)
-    worktreeCopy = { value: projectFile.worktree.copy, source: "project file" };
-  if (localFile?.worktree?.copy)
-    worktreeCopy = { value: localFile.worktree.copy, source: "local override" };
-
-  let branchPrefix: { value: string; source: SettingSource } = {
-    value: DEFAULT_BRANCH_PREFIX,
-    source: "default",
+  const copy = [...new Set(traits.flatMap((trait) => traitCopy(trait.id) ?? []))];
+  const resolved = await settings.resolve({
+    projectPath,
+    ...(copy.length > 0 ? { detected: { [keys.worktreeCopy.key]: copy } } : {}),
+  });
+  return {
+    worktreeCopy: resolved.get(keys.worktreeCopy),
+    branchPrefix: resolved.get(keys.branchPrefix),
   };
-  if (projectFile?.worktree?.branch_prefix) {
-    branchPrefix = { value: projectFile.worktree.branch_prefix, source: "project file" };
-  }
-  if (localFile?.worktree?.branch_prefix) {
-    branchPrefix = { value: localFile.worktree.branch_prefix, source: "local override" };
-  }
-
-  return { worktreeCopy, branchPrefix };
 }

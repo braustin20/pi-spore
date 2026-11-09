@@ -11,6 +11,7 @@ import {
 import { Hono } from "hono";
 import type { AgentTokenStore } from "./agent-tokens.js";
 import type { JobService } from "./jobs.js";
+import { createSettings } from "./settings.js";
 import type { SocketRouter } from "./sockets.js";
 
 export interface HostServices {
@@ -46,6 +47,7 @@ export async function setupModules(
   const ordered = resolveModules(registry, disabled);
   const broker = createInterfaceBroker();
   const result: SetUpModule[] = [];
+  const settings = createSettings(services.home.root);
   const startedListeners: (() => Promise<void> | void)[] = [];
   // Core owns core_idempotency, so modules prune it through the host and never query it.
   const pruneResponses = (before: number): number =>
@@ -58,6 +60,7 @@ export async function setupModules(
       routes,
       sockets: services.sockets.forModule(module.id),
       jobs: services.jobs.forModule(module.id),
+      settings,
       onStarted: (listener) => {
         startedListeners.push(listener);
       },

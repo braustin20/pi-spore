@@ -123,9 +123,11 @@ function setDays(days: unknown): void {
 
 async function archivedThenRestarted(
   daysOld: number,
-  options: { failing?: boolean } = {},
+  options: { failing?: boolean; settleSettings?: () => void } = {},
 ): Promise<{ server: TestServer; workspace: Workspace; calls: Calls; folder: string }> {
   const first = await seed();
+  // A bad settings file stops workspace creation, so a test that needs one writes it after the seed.
+  options.settleSettings?.();
   expect((await archive(first.server, first.workspace.id)).status).toBe(200);
   first.server.close();
   servers.pop();
@@ -189,8 +191,9 @@ describe("retention sweep", () => {
   });
 
   it("does nothing when retention.days is not valid", async () => {
-    setDays(-1);
-    const { server, workspace, calls } = await archivedThenRestarted(400);
+    const { server, workspace, calls } = await archivedThenRestarted(400, {
+      settleSettings: () => setDays(-1),
+    });
 
     expect(await status(server, workspace.id)).toBe(200);
     expect(calls).toEqual({ retention: [], deleted: [] });

@@ -1,11 +1,5 @@
 import { useApi, type WebModule } from "@pi-spore/module-api";
-import {
-  GlobalSettingsView,
-  Project,
-  ProjectConfigView,
-  ProjectList,
-  parse,
-} from "@pi-spore/shared";
+import { Project, ProjectConfigView, ProjectList, parse, SettingsView } from "@pi-spore/shared";
 import {
   Button,
   Chip,
@@ -22,13 +16,12 @@ import {
   TableHead,
   useConfirm,
 } from "@pi-spore/ui";
-import { FolderGit2 } from "lucide-react";
+import { FolderGit2, Settings } from "lucide-react";
 import { type SubmitEvent, useCallback, useEffect, useState } from "react";
 import Type from "typebox";
 
 const ConfigBody = Type.Object({ config: ProjectConfigView, warnings: Type.Array(Type.String()) });
 const ProjectBody = Type.Object({ project: Project });
-const GlobalSettingsBody = Type.Object({ settings: GlobalSettingsView });
 
 function TraitChips({ project }: { project: Project }) {
   return (
@@ -49,18 +42,6 @@ function ProjectsPage() {
   const [path, setPath] = useState("");
   const [name, setName] = useState("");
   const [busy, setBusy] = useState(false);
-  const [settings, setSettings] = useState<GlobalSettingsView | undefined>();
-  const [settingsError, setSettingsError] = useState<string | undefined>();
-
-  useEffect(() => {
-    api
-      .get("projects/settings")
-      .then((body) => setSettings(parse(GlobalSettingsBody, body, "global settings").settings))
-      .catch((caught: unknown) =>
-        setSettingsError(caught instanceof Error ? caught.message : String(caught)),
-      );
-  }, [api]);
-
   const load = useCallback(() => {
     api
       .get("projects")
@@ -110,35 +91,6 @@ function ProjectsPage() {
             Add project
           </Button>
         </form>
-      </Panel>
-      <Panel>
-        <PanelHeader title="Global settings" />
-        <div className="flex flex-col gap-3">
-          {settingsError && <Notice tone="fail">{settingsError}</Notice>}
-          {settings && (
-            <Table>
-              <tbody>
-                <tr>
-                  <TableHead className="w-56">Delete finished work after</TableHead>
-                  <TableCell>
-                    <code>
-                      {settings.retentionDays.value === 0
-                        ? "never"
-                        : `${settings.retentionDays.value} days`}
-                    </code>
-                  </TableCell>
-                  <TableCell className="w-24 text-right">
-                    <Chip>{settings.retentionDays.source}</Chip>
-                  </TableCell>
-                </tr>
-              </tbody>
-            </Table>
-          )}
-          <p className="m-0 text-sm text-muted">
-            Change it in <code>~/.pi-spore/settings.json</code> (<code>retention.days</code>, 0
-            keeps everything).
-          </p>
-        </div>
       </Panel>
       {error && <Notice tone="fail">{error}</Notice>}
       {projects === undefined && !error && <p className="text-muted">Loading...</p>}
@@ -290,6 +242,65 @@ function ProjectPage({ params }: { params: Readonly<Record<string, string>> }) {
   );
 }
 
+function showValue(value: unknown): string {
+  return typeof value === "string" ? value : JSON.stringify(value);
+}
+
+function SettingsPage() {
+  const api = useApi();
+  const [view, setView] = useState<SettingsView | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    api
+      .get("projects/settings")
+      .then((body) => setView(parse(SettingsView, body, "settings")))
+      .catch((caught: unknown) =>
+        setError(caught instanceof Error ? caught.message : String(caught)),
+      );
+  }, [api]);
+
+  return (
+    <Page>
+      <PageHeader title="Settings" />
+      <Panel>
+        <PanelHeader title="Global settings" />
+        <div className="flex flex-col gap-3">
+          {error && <Notice tone="fail">{error}</Notice>}
+          {!view && !error && <p className="text-muted">Loading...</p>}
+          {view && (
+            <Table>
+              <tbody>
+                {view.settings.map((entry) => (
+                  <tr key={entry.key}>
+                    <TableHead className="w-72">
+                      <code>{entry.key}</code>
+                    </TableHead>
+                    <TableCell>
+                      <code>{showValue(entry.value)}</code>
+                    </TableCell>
+                    <TableCell className="w-32 text-right">
+                      <Chip>{entry.source}</Chip>
+                    </TableCell>
+                  </tr>
+                ))}
+              </tbody>
+            </Table>
+          )}
+          <p className="m-0 text-sm text-muted">
+            Set a value in <code>~/.pi-spore/settings.json</code>, in nested form such as{" "}
+            <code>{'{ "agents": { "maxLive": 4 } }'}</code>. Settings that a project can set also go
+            in <code>.pi-spore/config.toml</code> (committed) and{" "}
+            <code>.pi-spore/config.local.toml</code> (yours only); a later source wins. The{" "}
+            <code>agents.*</code> keys apply after a server restart. Model choices never go in{" "}
+            <code>config.toml</code>.
+          </p>
+        </div>
+      </Panel>
+    </Page>
+  );
+}
+
 export const projectsWeb: WebModule = {
   id: "projects",
   requires: [],
@@ -302,5 +313,11 @@ export const projectsWeb: WebModule = {
       component: ProjectsPage,
     });
     host.addPage({ path: "/projects/:id", title: "Project", component: ProjectPage });
+    host.addPage({
+      path: "/settings",
+      title: "Settings",
+      rail: { order: 90, icon: Settings },
+      component: SettingsPage,
+    });
   },
 };

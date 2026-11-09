@@ -312,7 +312,7 @@ export const workspacesModule: ServerModule = {
       if (sweeping) return;
       sweeping = true;
       try {
-        const days = (await projects.globalSettings()).retentionDays.value;
+        const days = await projects.retentionDays();
         if (days === 0) return;
         const cutoff = host.now() - days * DAY_MS;
         for (const listener of retentionListeners) {
