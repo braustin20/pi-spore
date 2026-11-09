@@ -102,7 +102,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
     pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
     `subagents.agentOverrides.<role>`; `modelsUsed(agentId)` lists the physical models Pi recorded on the agent's
-    assistant messages.
+    assistant messages; `sessionRoles(workspaceId)` lists the session file and role of each agent that has a session,
+    so the `usage` module can split token use per role.
   - The thinking level comes from the role default. Env adds `PI_SPORE_CHAT_KIND=stage` and `PI_SPORE_STAGE_ROLE`.
   - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,request_human_input,artifacts_list,
     artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
@@ -721,7 +722,7 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   and the router ignores them (R18.5).
 - v1 is passive only (ADR 0022). Active polling of the plans' usage endpoints is a v2 option. It would also
   count use from Claude Code and the Codex CLI, which the tap cannot see.
-- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, and `attention`) reads the
+- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, `attention`, and `agents`) reads the
   router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
   table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
   the verdict of the last review of its first reviewer stage, its review rounds, and its fix passes. Retention
@@ -729,11 +730,16 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   - `GET /api/usage/plans`: each plan's windows with age and staleness, warnings, the thresholds, and plan files that
     did not read. A warning is a fresh window that is full, a weekly window above `router.pressure.weekly`, or a
     5-hour window at or above `router.pressure.fiveHour` (R18.4).
-  - `GET /api/usage/tokens`: token use per project, workspace, and model, summed from the `usage` of every assistant
-    message in `~/.pi-spore/sessions/<workspace id>/*.jsonl`. Sums are cached per file by size and modification
-    time. Models in the `local` tier show as free (R18.2). Lines that are not JSON are counted, not fatal. A forked
-    session (a side chat) skips the entries copied from its parent, which are older than its header, so they count
-    once.
+  - `GET /api/usage/tokens`: token use per project, workspace, role, and model, summed from the `usage` of every
+    assistant message in two folders (R18.2, R18.3). Both have the layout `<folder>/<name>/*.jsonl`:
+    `~/.pi-spore/sessions/<workspace id>/`, and Pi's own `<agent dir>/sessions/<encoded folder>/` (the agent dir is
+    `PI_CODING_AGENT_DIR` or `~/.pi/agent`), where a plain `pi` in a terminal writes. A row from a plain session has
+    `external: true`, no workspace, and no role; its project is the registered project or workspace folder that holds
+    the session's `cwd` (from its header), else the folder's own name. A pi-spore row gets its `role` from
+    `AgentsKey.sessionRoles(workspaceId)`, which maps session files to the agent's role. A session whose agent row is
+    gone has no role. Sums are cached per file by size and content hash (a file can change and keep its size and time). Models in the `local` tier show as
+    free (R18.2). Lines that are not JSON are counted, not fatal. A forked session (a side chat) skips the entries
+    copied from its parent, which are older than its header, so they count once.
   - `GET /api/usage/routing?limit=<1-500>`: the newest routing decisions (default 50), and how many lines did not
     parse.
   - `GET /api/usage/calibration`: the routing calibration report (ADR 0144). It joins each outcome to the newest
@@ -744,11 +750,9 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     with 20 local outcomes and 90% passed. It is only a suggestion.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
-  warnings at the top; the token table; the routing decisions with their reasons; and the routing calibration (the
+  warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions with their reasons; and the routing calibration (the
   bars table with "now" and "suggested" chips, and the buckets). It loads on open and on Refresh.
 - CLI: `pi-spore usage calibration [--json]` prints the same report.
-- Not built yet: token use per role (every agent is a worker today), scanning `~/.pi/agent/sessions/` for plain `pi`
-  work, and a warning on Home (Home has no module slots yet).
 
 ## 11b. Home and questions (attention module)
 

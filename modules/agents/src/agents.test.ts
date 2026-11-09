@@ -1754,6 +1754,30 @@ describe("stage agents (R6)", () => {
     expect(await api.modelsUsed(stage.id)).toEqual([]);
   });
 
+  it("lists the session file and role of each agent that has a session, for one workspace", async () => {
+    await setupStages();
+    const { agentId, workspaceId } = await makeAgent();
+    const other = await makeAgent("other");
+    expect(api.sessionRoles(workspaceId)).toEqual([]);
+    await json(await prompt(agentId, "one"));
+    await replied(agentId, 1);
+    const stage = start(workspaceId, { role: "reviewer", title: "R" });
+    await replied(stage.id, 1);
+    api.createStage(workspaceId, { role: "worker", title: "No session yet" });
+    await json(await prompt(other.agentId, "one"));
+    await replied(other.agentId, 1);
+
+    const files = (id: string) =>
+      server.store.get<{ session_file: string }>(
+        "SELECT session_file FROM agents_agents WHERE id = ?",
+        id,
+      )?.session_file;
+    expect(api.sessionRoles(workspaceId)).toEqual([
+      { sessionFile: files(agentId), role: "orchestrator" },
+      { sessionFile: files(stage.id), role: "reviewer" },
+    ]);
+  });
+
   it("exposes the role defaults", async () => {
     await setupStages();
     expect(await api.roleDefaults("reviewer")).toEqual({

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -14,7 +15,11 @@ export interface ModelUse {
 }
 
 export interface SessionUse {
-  workspaceId: string;
+  path: string;
+  /** The pi-spore workspace the session belongs to. Missing for a plain Pi session (R18.3). */
+  workspaceId?: string;
+  /** The folder the session ran in, from its header. */
+  cwd?: string;
   models: ModelUse[];
   skippedLines: number;
 }
@@ -28,22 +33,32 @@ const count = (value: unknown): number =>
  * A forked session (a side chat, ADR 0030) starts with copies of its parent's entries, written before its header's
  * time; those requests were counted in the parent's file, so they are skipped here.
  */
-export function sumSession(text: string, workspaceId: string): SessionUse {
+export function sumSession(text: string): Omit<SessionUse, "path" | "workspaceId"> {
   const models = new Map<string, ModelUse>();
   let skippedLines = 0;
   let forkedAt: number | undefined;
+  let cwd: string | undefined;
   for (const line of text.split("\n")) {
     if (!line.trim()) continue;
-    let entry: { type?: unknown; message?: unknown; timestamp?: unknown; parentSession?: unknown };
+    let entry: {
+      type?: unknown;
+      message?: unknown;
+      timestamp?: unknown;
+      parentSession?: unknown;
+      cwd?: unknown;
+    };
     try {
       entry = JSON.parse(line) as typeof entry;
     } catch {
       skippedLines++;
       continue;
     }
-    if (entry.type === "session" && typeof entry.parentSession === "string") {
-      const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
-      if (!Number.isNaN(at)) forkedAt = at;
+    if (entry.type === "session") {
+      if (typeof entry.cwd === "string") cwd = entry.cwd;
+      if (typeof entry.parentSession === "string") {
+        const at = typeof entry.timestamp === "string" ? Date.parse(entry.timestamp) : Number.NaN;
+        if (!Number.isNaN(at)) forkedAt = at;
+      }
       continue;
     }
     if (entry.type !== "message" || typeof entry.message !== "object" || entry.message === null)
@@ -89,34 +104,42 @@ export function sumSession(text: string, workspaceId: string): SessionUse {
     use.cost += count(message.usage?.cost?.total);
     models.set(key, use);
   }
-  return { workspaceId, models: [...models.values()], skippedLines };
+  return { ...(cwd === undefined ? {} : { cwd }), models: [...models.values()], skippedLines };
 }
 
 /**
- * Reads pi-spore's session files, `<sessions>/<workspace id>/*.jsonl`, and keeps each file's sums until its size or
- * modification time changes, so a page load does not re-read every transcript.
+ * Reads session files from two folders laid out the same way, `<folder>/<name>/*.jsonl`: pi-spore's own, where the
+ * name is a workspace id, and Pi's default one, where it is the encoded folder a plain `pi` ran in (R18.3). It keeps
+ * each file's sums while its size and content hash stay the same, so a page load does not parse every transcript again.
+ * The hash, not the modification time, decides: a file can change and keep both its size and its time.
  */
 export class SessionIndex {
-  private readonly cache = new Map<string, { size: number; mtimeMs: number; use: SessionUse }>();
+  private readonly cache = new Map<string, { size: number; hash: string; use: SessionUse }>();
 
-  constructor(private readonly sessionsDir: string) {}
+  constructor(
+    private readonly sessionsDir: string,
+    private readonly plainSessionsDir: string,
+  ) {}
 
   async scan(): Promise<SessionUse[]> {
-    const result: SessionUse[] = [];
     const seen = new Set<string>();
-    for (const workspaceId of await listDir(this.sessionsDir)) {
-      const dir = join(this.sessionsDir, workspaceId);
+    const result = [
+      ...(await this.scanFolder(this.sessionsDir, true, seen)),
+      ...(await this.scanFolder(this.plainSessionsDir, false, seen)),
+    ];
+    for (const path of this.cache.keys()) if (!seen.has(path)) this.cache.delete(path);
+    return result;
+  }
+
+  private async scanFolder(root: string, named: boolean, seen: Set<string>): Promise<SessionUse[]> {
+    const result: SessionUse[] = [];
+    for (const folder of await listDir(root)) {
+      const dir = join(root, folder);
       for (const name of await listDir(dir)) {
         if (!name.endsWith(".jsonl")) continue;
         const path = join(dir, name);
         const info = await stat(path).catch(() => undefined);
         if (!info?.isFile()) continue;
-        const cached = this.cache.get(path);
-        if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
-          seen.add(path);
-          result.push(cached.use);
-          continue;
-        }
         // Retention can delete the file between the stat and the read.
         const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return undefined;
@@ -124,12 +147,22 @@ export class SessionIndex {
         });
         if (text === undefined) continue;
         seen.add(path);
-        const use = sumSession(text, workspaceId);
-        this.cache.set(path, { size: info.size, mtimeMs: info.mtimeMs, use });
+        const size = Buffer.byteLength(text);
+        const hash = createHash("sha256").update(text).digest("hex");
+        const cached = this.cache.get(path);
+        if (cached && cached.size === size && cached.hash === hash) {
+          result.push(cached.use);
+          continue;
+        }
+        const use: SessionUse = {
+          path,
+          ...(named ? { workspaceId: folder } : {}),
+          ...sumSession(text),
+        };
+        this.cache.set(path, { size, hash, use });
         result.push(use);
       }
     }
-    for (const path of this.cache.keys()) if (!seen.has(path)) this.cache.delete(path);
     return result;
   }
 }

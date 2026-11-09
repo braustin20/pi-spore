@@ -1,9 +1,17 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  appendFileSync,
+  mkdirSync,
+  mkdtempSync,
+  realpathSync,
+  rmSync,
+  utimesSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentsModule } from "@pi-spore/mod-agents/server";
+import { type Agents, AgentsKey, createAgentsModule } from "@pi-spore/mod-agents/server";
 import { attentionModule, HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
@@ -16,11 +24,12 @@ import {
   parse,
   RoutingDecisionsResponse,
   TokenUseResponse,
+  type TokenUseRow,
   UsagePlansResponse,
 } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fakePipelines } from "./fake-pipelines.js";
-import { formatAge, formatTokens, formatUntil } from "./format.js";
+import { formatAge, formatTokens, formatUntil, roleLabel, sumByRole } from "./format.js";
 import { createUsageModule, warningsFor } from "./server.js";
 
 const START = 1_800_000_000_000;
@@ -30,14 +39,16 @@ let agents: ReturnType<typeof createAgentsModule>;
 let scratch: string;
 /** Pushes the inbox, as any other module's change would. */
 let nudgeHome: () => void;
+let agentsApi: Agents;
 
 /** Another module that changes Home for its own reasons. */
 const otherModule: ServerModule = {
   id: "other",
-  requires: ["attention"],
+  requires: ["attention", "agents"],
   core: false,
   setup(host) {
     nudgeHome = host.use(HomeItemsKey).changed;
+    agentsApi = host.use(AgentsKey);
   },
 };
 
@@ -60,7 +71,7 @@ beforeEach(async () => {
       workspacesModule,
       agents,
       attentionModule,
-      createUsageModule(),
+      createUsageModule({ agentDir: join(scratch, "pi-agent") }),
       otherModule,
     ],
     { startAt: START },
@@ -370,6 +381,141 @@ describe("GET /api/usage/tokens", () => {
   });
 });
 
+describe("GET /api/usage/tokens: plain Pi sessions (R18.3)", () => {
+  const plainSession = (folder: string, cwd: string, ...lines: string[]) => {
+    const dir = join(scratch, "pi-agent", "sessions", folder);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "2026-11-07T10-00-00-000Z_abc.jsonl"),
+      [JSON.stringify({ type: "session", cwd }), ...lines].join("\n"),
+    );
+  };
+  const tokens = async () =>
+    parse(TokenUseResponse, await json(await server.request("GET", "/api/usage/tokens")), "tokens");
+
+  it("counts a plain pi session as outside pi-spore, with its project from the cwd folder", async () => {
+    await workspace();
+    plainSession("--game--", join(scratch, "game"), assistant("openai", "gpt-6.1-terra", 40, 4));
+    plainSession("--cli--", "/home/me/Tools/cli", assistant("openai", "gpt-6.1-terra", 7, 1));
+    const body = await tokens();
+    expect(body.sessions).toBe(2);
+    expect(body.rows.map((row) => [row.projectName, row.external, row.role, row.input])).toEqual([
+      ["cli", true, undefined, 7],
+      ["Game", true, undefined, 40],
+    ]);
+    expect(body.rows[1]).toMatchObject({ workspaceName: "(outside pi-spore)" });
+    expect(body.rows[1]?.workspaceId).toBeUndefined();
+  });
+
+  it("adds a plain session to the totals next to a workspace session of the same model", async () => {
+    const ws = await workspace();
+    const dir = join(server.paths.sessions, ws.id);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "a.jsonl"), assistant("openai", "gpt-6.1-terra", 50, 5));
+    plainSession("--game--", join(scratch, "game"), assistant("openai", "gpt-6.1-terra", 40, 4));
+    const body = await tokens();
+    expect(body.rows.map((row) => [row.external, row.input])).toEqual([
+      [false, 50],
+      [true, 40],
+    ]);
+  });
+
+  it("keeps plain sessions of different projects apart, even with the same name or folder name", async () => {
+    const other = join(scratch, "other", "game");
+    mkdirSync(other, { recursive: true });
+    await json(await server.request("POST", "/api/projects", { path: other, name: "Game" }), 201);
+    await workspace();
+    plainSession("--one--", join(scratch, "game"), assistant("openai", "gpt-6.1-terra", 40, 4));
+    plainSession("--two--", other, assistant("openai", "gpt-6.1-terra", 7, 1));
+    plainSession("--three--", "/a/x/cli", assistant("openai", "gpt-6.1-terra", 3, 1));
+    const second = join(scratch, "pi-agent", "sessions", "--four--");
+    mkdirSync(second, { recursive: true });
+    writeFileSync(
+      join(second, "s.jsonl"),
+      [
+        JSON.stringify({ type: "session", cwd: "/b/y/cli" }),
+        assistant("openai", "gpt-6.1-terra", 5, 1),
+      ].join("\n"),
+    );
+    const body = await tokens();
+    expect(body.rows.map((row) => [row.projectName, row.input])).toEqual([
+      ["cli", 5],
+      ["cli", 3],
+      ["Game", 40],
+      ["Game", 7],
+    ]);
+    const ids = body.rows.filter((row) => row.projectName === "Game").map((row) => row.projectId);
+    expect(new Set(ids).size).toBe(2);
+  });
+
+  it("shows no plain sessions when Pi's session folder does not exist", async () => {
+    expect((await tokens()).rows).toEqual([]);
+  });
+});
+
+describe("GET /api/usage/tokens: cache (R18.2)", () => {
+  it("re-sums a file that changed with the same size and modification time", async () => {
+    const ws = await workspace();
+    const dir = join(server.paths.sessions, ws.id);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "a.jsonl");
+    const at = new Date(START);
+    writeFileSync(file, assistant("openai", "gpt-6.1-terra", 40, 4));
+    utimesSync(file, at, at);
+    const input = async () =>
+      parse(
+        TokenUseResponse,
+        await json(await server.request("GET", "/api/usage/tokens")),
+        "tokens",
+      ).rows[0]?.input;
+    expect(await input()).toBe(40);
+    writeFileSync(file, assistant("openai", "gpt-6.1-terra", 41, 4));
+    utimesSync(file, at, at);
+    expect(await input()).toBe(41);
+  });
+});
+
+describe("GET /api/usage/tokens: per role (R18.2)", () => {
+  const untilSessions = async (workspaceId: string, count: number) => {
+    for (let tries = 0; tries < 500; tries++) {
+      if (agentsApi.sessionRoles(workspaceId).length >= count) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error("The agents did not start their sessions");
+  };
+
+  it("splits the tokens of an orchestrator chat and a reviewer stage", async () => {
+    const ws = await workspace();
+    await json(await server.request("POST", "/api/agents", { workspaceId: ws.id }), 201).then(
+      async (body) => {
+        const { agent } = body as { agent: { id: string } };
+        await json(
+          await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "hi" }),
+        );
+      },
+    );
+    server.store.transaction(() => {
+      const stage = agentsApi.createStage(ws.id, { role: "reviewer", title: "Review" });
+      agentsApi.deliver(stage.id, "review it");
+    });
+    await untilSessions(ws.id, 2);
+    const [chatFile, reviewFile] = agentsApi.sessionRoles(ws.id).map((entry) => entry.sessionFile);
+    appendFileSync(chatFile as string, `\n${assistant("role-test", "same-model", 100, 10)}\n`);
+    appendFileSync(reviewFile as string, `\n${assistant("role-test", "same-model", 30, 3)}\n`);
+
+    const body = parse(
+      TokenUseResponse,
+      await json(await server.request("GET", "/api/usage/tokens")),
+      "tokens",
+    );
+    const mine = body.rows.filter((row) => row.provider === "role-test");
+    expect(mine.map((row) => [row.role, row.model, row.input, row.external])).toEqual([
+      ["orchestrator", "same-model", 100, false],
+      ["reviewer", "same-model", 30, false],
+    ]);
+  });
+});
+
 describe("GET /api/usage/routing", () => {
   it("returns the newest decisions first and counts lines that do not parse", async () => {
     mkdirSync(join(server.paths.root, "usage"), { recursive: true });
@@ -414,5 +560,43 @@ describe("format", () => {
     expect(formatUntil(10 + 90 * 60_000, 10)).toBe("in 1 h 30 min");
     expect(formatUntil(5, 10)).toBe("passed");
     expect(formatTokens(12_345)).toBe("12.3k");
+  });
+});
+
+describe("token rows by role (R18.2)", () => {
+  const row = (over: Partial<TokenUseRow>): TokenUseRow => ({
+    projectName: "Game",
+    workspaceName: "Fix jump",
+    external: false,
+    provider: "p",
+    model: "m",
+    local: false,
+    requests: 1,
+    input: 10,
+    output: 1,
+    cacheRead: 0,
+    cacheWrite: 0,
+    cost: 0.5,
+    ...over,
+  });
+
+  it("names the role, a plain session, and an agent that is gone", () => {
+    expect(roleLabel(row({ role: "reviewer" }))).toBe("reviewer");
+    expect(roleLabel(row({ external: true }))).toBe("outside pi-spore");
+    expect(roleLabel(row({}))).toBe("unknown");
+  });
+
+  it("sums rows of the same role and model across workspaces", () => {
+    const sums = sumByRole([
+      row({ role: "worker", workspaceId: "a" }),
+      row({ role: "worker", workspaceId: "b", input: 5 }),
+      row({ role: "reviewer", workspaceId: "a" }),
+      row({ external: true }),
+    ]);
+    expect(sums.map((sum) => [sum.label, sum.input, sum.requests])).toEqual([
+      ["outside pi-spore", 10, 1],
+      ["reviewer", 10, 1],
+      ["worker", 15, 2],
+    ]);
   });
 });

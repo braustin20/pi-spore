@@ -1,5 +1,5 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { Agent, AgentDialog, StageRole, Workspace } from "@pi-spore/shared";
+import type { Agent, AgentDialog, AgentRole, StageRole, Workspace } from "@pi-spore/shared";
 import type { RoleDefaults } from "./launch.js";
 
 /** What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers. */
@@ -63,6 +63,11 @@ export interface Agents {
   modelsUsed(agentId: string): Promise<string[]>;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
+  /**
+   * The session file and role of each agent of the workspace that has a session, oldest first, so a reader of
+   * session files can tell which role used the tokens in each (R18.2).
+   */
+  sessionRoles(workspaceId: string): { sessionFile: string; role: AgentRole }[];
   /** Every agent (chat) of the workspace, closed ones too, oldest first. */
   inWorkspace(workspaceId: string): Agent[];
   /**

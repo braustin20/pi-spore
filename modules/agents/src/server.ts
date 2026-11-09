@@ -407,6 +407,13 @@ export function createAgentsModule(
               workspaceId,
             )
             .map((row) => agents.view(row.id)),
+        sessionRoles: (workspaceId) =>
+          host.store
+            .all<Row>(
+              "SELECT * FROM agents_agents WHERE workspace_id = ? AND session_file IS NOT NULL ORDER BY created_at, id",
+              workspaceId,
+            )
+            .map((row) => ({ sessionFile: row.session_file as string, role: row.role })),
         stop: async (agentId) => {
           agents.view(agentId);
           await agents.stop(agentId);

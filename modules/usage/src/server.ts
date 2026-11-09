@@ -1,5 +1,7 @@
 import { mkdirSync, watch } from "node:fs";
-import { join } from "node:path";
+import { homedir } from "node:os";
+import { basename, join, sep } from "node:path";
+import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
@@ -7,6 +9,7 @@ import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { loadSettings, pruneRecords, readPlans, readRecords, windowViews } from "@pi-spore/router";
 import type {
+  AgentRole,
   CalibrationResponse,
   HomeNotice,
   RoutingDecisionsResponse,
@@ -17,6 +20,14 @@ import type {
 } from "@pi-spore/shared";
 import { calibration, type Outcome } from "./calibration.js";
 import { SessionIndex } from "./tokens.js";
+
+export interface UsageModuleOptions {
+  /** Pi's agent folder, whose `sessions/` holds plain `pi` sessions (R18.3). Default: `PI_CODING_AGENT_DIR` or `~/.pi/agent`. */
+  agentDir?: string;
+}
+
+const isInside = (folder: string, path: string): boolean =>
+  path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
 
 const WINDOW_NAMES: Readonly<Record<string, string>> = { "5h": "5-hour", "7d": "weekly" };
 const planTitle = (plan: string): string =>
@@ -75,17 +86,20 @@ interface OutcomeRow {
  * so this module reads them on each request. It owns one table, `usage_outcomes` (ADR 0144): how each pipeline run
  * with a worker ended, to judge the router's local choices against its decisions.
  */
-export function createUsageModule(): ServerModule {
+export function createUsageModule(options: UsageModuleOptions = {}): ServerModule {
   return {
     id: "usage",
-    requires: ["projects", "workspaces", "pipelines", "attention"],
+    requires: ["projects", "workspaces", "pipelines", "attention", "agents"],
     core: false,
     setup(host) {
       const projects = host.use(ProjectsKey);
       const workspaces = host.use(WorkspacesKey);
       const pipelines = host.use(PipelinesKey);
       const homeItems = host.use(HomeItemsKey);
-      const sessions = new SessionIndex(host.home.sessions);
+      const agents = host.use(AgentsKey);
+      const agentDir =
+        options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+      const sessions = new SessionIndex(host.home.sessions, join(agentDir, "sessions"));
       const settings = () =>
         loadSettings(host.home.root).catch((error: unknown) => {
           throw new ApiError(422, "bad_settings", (error as Error).message);
@@ -178,25 +192,58 @@ export function createUsageModule(): ServerModule {
       host.routes.get("/tokens", async (c) => {
         const { tiers } = await settings();
         const known = new Map(workspaces.list().map((workspace) => [workspace.id, workspace]));
-        const projectNames = new Map(
-          (await projects.list()).map((project) => [project.id, project.name]),
-        );
+        const used = await sessions.scan();
+        const allProjects = await projects.list();
+        const projectNames = new Map(allProjects.map((project) => [project.id, project.name]));
+        // A plain session has no workspace, so its folder names its project: the workspace or project folder that
+        // holds it (the deepest one), else the folder's own name.
+        const folders = [
+          ...allProjects.map((project) => ({ path: project.path, projectId: project.id })),
+          ...[...known.values()].map((workspace) => ({
+            path: workspace.path,
+            projectId: workspace.projectId,
+          })),
+        ].sort((a, b) => b.path.length - a.path.length);
+        const roles = new Map<string, AgentRole>();
+        for (const workspaceId of new Set(used.flatMap((s) => s.workspaceId ?? []))) {
+          for (const entry of agents.sessionRoles(workspaceId))
+            roles.set(entry.sessionFile, entry.role);
+        }
         const rows = new Map<string, TokenUseRow>();
         let skippedLines = 0;
-        const used = await sessions.scan();
         for (const session of used) {
           skippedLines += session.skippedLines;
-          const workspace = known.get(session.workspaceId);
+          const workspace = session.workspaceId ? known.get(session.workspaceId) : undefined;
+          const role = roles.get(session.path);
+          const folder = session.cwd
+            ? folders.find((candidate) => isInside(candidate.path, session.cwd as string))
+            : undefined;
+          const projectId =
+            workspace?.projectId ?? (session.workspaceId ? undefined : folder?.projectId);
+          const projectName = session.workspaceId
+            ? workspace
+              ? (projectNames.get(workspace.projectId) ?? "(removed project)")
+              : "(unknown)"
+            : (folder && projectNames.get(folder.projectId)) ||
+              basename(session.cwd ?? "") ||
+              "(unknown)";
           for (const model of session.models) {
-            const key = `${session.workspaceId}\u0000${model.provider}/${model.model}`;
+            const key = [
+              // A plain session's identity is its project, else its folder: names can repeat.
+              session.workspaceId ?? `outside:${projectId ?? session.cwd ?? ""}`,
+              role ?? "",
+              `${model.provider}/${model.model}`,
+            ].join("\u0000");
             const local = tiers[`${model.provider}/${model.model}`] === "local";
             const row = rows.get(key) ?? {
-              ...(workspace ? { projectId: workspace.projectId } : {}),
-              projectName: workspace
-                ? (projectNames.get(workspace.projectId) ?? "(removed project)")
-                : "(unknown)",
-              workspaceId: session.workspaceId,
-              workspaceName: workspace?.name ?? "(removed workspace)",
+              ...(projectId ? { projectId } : {}),
+              projectName,
+              ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+              workspaceName: session.workspaceId
+                ? (workspace?.name ?? "(removed workspace)")
+                : "(outside pi-spore)",
+              ...(role ? { role } : {}),
+              external: !session.workspaceId,
               provider: model.provider,
               model: model.model,
               local,
@@ -221,7 +268,9 @@ export function createUsageModule(): ServerModule {
           rows: [...rows.values()].sort(
             (a, b) =>
               a.projectName.localeCompare(b.projectName) ||
+              Number(a.external) - Number(b.external) ||
               a.workspaceName.localeCompare(b.workspaceName) ||
+              (a.role ?? "").localeCompare(b.role ?? "") ||
               b.input + b.output - (a.input + a.output),
           ),
           sessions: used.length,
