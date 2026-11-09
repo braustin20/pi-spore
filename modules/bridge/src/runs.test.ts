@@ -1468,9 +1468,10 @@ describe("revising a lane (ADR 0158)", () => {
       );
       await runs.reviseLane(coordinator, { laneId: lane.id, brief: "briefs/fix.md" });
       let revised: PipelineRun | undefined;
+      // The run row comes first; its first stage step gives it a worker and a task turn later.
       await until(async () => {
         revised = (await pipelineRuns()).find((entry) => entry.id !== first.id);
-        return revised !== undefined;
+        return revised?.workerAgentId !== undefined;
       });
       return revised as PipelineRun;
     };
