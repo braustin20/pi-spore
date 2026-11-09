@@ -1340,12 +1340,17 @@ export const pipelinesModule: ServerModule = {
 
     host.routes.get("/runs/:id", (c) => c.json({ run: viewOf(requireRun(c.req.param("id"))) }));
 
-    // Runs the waiting stage job's step now: the way to continue after the user fixed what blocked it.
+    // Runs the waiting stage job's step now: the way to continue after the user fixed what blocked it. A stray wake may
+    // be running a blocked job's step again, with its error kept; the run shows `blocked` then too, so Retry takes it.
     host.routes.post("/runs/:id/retry", (c) => {
       const run = requireRun(c.req.param("id"));
       const job = host.jobs
-        .list({ kind: STAGE_JOB, key: run.workspace_id, states: ["waiting"] })
-        .find((found) => (found.subject as StageSubject).runId === run.id);
+        .list({ kind: STAGE_JOB, key: run.workspace_id, states: ["running", "waiting"] })
+        .find(
+          (found) =>
+            (found.subject as StageSubject).runId === run.id &&
+            (found.state === "waiting" || found.error !== null),
+        );
       if (!job) throw new ApiError(409, "run_not_waiting", "The run has no waiting job to retry");
       // A restart or a stray wake re-runs `await` without this mark, so the turn only blocks again. Only Retry starts
       // a fresh agent.
@@ -1353,7 +1358,9 @@ export const pipelinesModule: ServerModule = {
       if (job.step === "await" && job.error !== null && open?.report === null) {
         host.store.run("UPDATE pipelines_turns SET error = ? WHERE id = ?", job.error, open.id);
       }
-      host.jobs.retry(job.id);
+      // A wake during a running step applies when it settles, so a step that read the turn before the mark runs again.
+      if (job.state === "waiting") host.jobs.retry(job.id);
+      else host.jobs.wake(STAGE_JOB, run.workspace_id);
       publish(run.workspace_id);
       return c.json({ run: viewOf(requireRun(run.id)) });
     });
