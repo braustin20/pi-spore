@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentsModule } from "@pi-spore/mod-agents/server";
+import { AgentsKey, createAgentsModule } from "@pi-spore/mod-agents/server";
 import { type Approvals, ApprovalsKey, attentionModule } from "@pi-spore/mod-attention/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
@@ -22,13 +22,20 @@ let server: TestServer;
 let scratch: string;
 let agents: ReturnType<typeof createAgentsModule>;
 let approvals: Approvals;
+let dialogOpened: Promise<void>;
 
 /** A module with a gate, as the model upgrade or "close Unity?" modules register theirs (ADR 0100). */
 const gateModule: ServerModule = {
   id: "gate",
-  requires: ["attention"],
+  requires: ["attention", "agents"],
   core: false,
   setup(host) {
+    // The public hook says when the fake agent has a dialog open, so the test needs no polling.
+    dialogOpened = new Promise((resolve) => {
+      host.use(AgentsKey).onChange((_agentId, change) => {
+        if (change === "dialog") resolve();
+      });
+    });
     approvals = host.use(ApprovalsKey);
     approvals.register({
       kind: "test-gate",
@@ -111,7 +118,7 @@ function cli() {
     readToken: () => "test",
     resolvePath: (path) => path,
     newKey: () => "key",
-    now: () => Date.now(),
+    now: server.services.now,
   };
   return { deps, out, err };
 }
@@ -126,15 +133,9 @@ it("lists a waiting dialog and an open approval from the running server, and sho
   const { deps, out, err } = cli();
   const link = `#/workspaces/${workspaceId}/chats/${agentId}`;
 
-  const end = Date.now() + 2_000;
-  let lines: string[] = [];
-  while (!lines.some((line) => line.startsWith("dialog:"))) {
-    if (Date.now() > end) throw new Error("The dialog never reached the inbox");
-    out.length = 0;
-    expect(await run(["inbox", "list"], deps)).toBe(0);
-    lines = [...out];
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
+  await dialogOpened;
+  expect(await run(["inbox", "list"], deps)).toBe(0);
+  const lines = [...out];
 
   expect(lines.map((line) => line.split("  ").slice(0, 2)).sort()).toEqual([
     [`approval:${approval.id}`, "approval"],
