@@ -13,7 +13,7 @@ import {
   type Workspace,
 } from "@pi-spore/shared";
 import { readActions } from "./config.js";
-import { type Actions, ActionsKey } from "./contract.js";
+import { type Actions, ActionsKey, type ProvidedAction } from "./contract.js";
 import { ActionRunner, hasEnded, MIGRATIONS } from "./runner.js";
 
 export * from "./contract.js";
@@ -53,8 +53,25 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
         baseEnv: options.baseEnv ?? process.env,
       });
 
-      const actionsOf = async (workspace: Workspace): Promise<ActionView[]> =>
-        readActions(projects, await projects.get(workspace.projectId));
+      const provided = new Map<string, ProvidedAction>();
+
+      const actionsOf = async (workspace: Workspace): Promise<ActionView[]> => {
+        const project = await projects.get(workspace.projectId);
+        const byName = new Map<string, ActionView>();
+        for (const action of provided.values()) {
+          if (!project.traits.some((trait) => trait.id === action.trait)) continue;
+          byName.set(action.name, {
+            name: action.name,
+            run: [`(built in for ${action.trait} projects)`],
+            shell: false,
+            exclusive: true,
+            description: action.description,
+            source: "default",
+          });
+        }
+        for (const action of await readActions(projects, project)) byName.set(action.name, action);
+        return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+      };
 
       const start = async (
         workspace: Workspace,
@@ -86,11 +103,18 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
             PI_SPORE_PROJECT_ROOT: project.path,
           },
           key,
+          action.source === "default" ? provided.get(name) : undefined,
         );
       };
 
       const actions: Actions = {
         list: (workspaceId) => actionsOf(workspaces.get(workspaceId)),
+        provide: (action) => {
+          if (provided.has(action.name))
+            throw new Error(`Action "${action.name}" is provided twice`);
+          provided.set(action.name, action);
+        },
+        runs: (workspaceId, options) => runner.list(workspaceId, options),
         start: async (workspaceId, name, trigger, options) =>
           (await start(workspaces.get(workspaceId), name, trigger, options?.key)).run,
         wait: (runId) => runner.wait(runId),

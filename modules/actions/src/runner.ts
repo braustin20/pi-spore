@@ -10,6 +10,9 @@ import type {
   ActionView,
   Workspace,
 } from "@pi-spore/shared";
+import type { ProvidedAction } from "./contract.js";
+
+type Prepared = Awaited<ReturnType<ProvidedAction["prepare"]>>;
 
 /** Retention deletes old logs (ADR 0121), so a vanished log file is a 404, not a server error. */
 function logGone(error: unknown): never {
@@ -79,6 +82,10 @@ interface Live {
   workspace: Workspace;
   action: ActionView;
   env: Record<string, string>;
+  /** The module that decides when this run starts and what it runs, for a provided action. */
+  provided?: ProvidedAction;
+  /** Aborts when the run is cancelled, so a provided action stops waiting. */
+  abort: AbortController;
   child?: ChildProcess;
   cancelled: boolean;
   /** Called on every change: new output or a new status. */
@@ -159,12 +166,17 @@ export class ActionRunner {
     return toRun(row);
   }
 
-  list(workspaceId: string, limit = 50): ActionRun[] {
+  /** Newest first. `actions` keeps only runs of those actions; the limit applies after that. */
+  list(workspaceId: string, options: { actions?: string[]; limit?: number } = {}): ActionRun[] {
+    const names = options.actions ?? [];
     return this.options.store
       .all<Row>(
-        "SELECT * FROM actions_runs WHERE workspace_id = ? ORDER BY created_at DESC LIMIT ?",
+        `SELECT * FROM actions_runs WHERE workspace_id = ?
+         ${names.length === 0 ? "" : `AND action IN (${names.map(() => "?").join(", ")})`}
+         ORDER BY created_at DESC LIMIT ?`,
         workspaceId,
-        limit,
+        ...names,
+        options.limit ?? 50,
       )
       .map(toRun);
   }
@@ -196,6 +208,7 @@ export class ActionRunner {
     trigger: ActionTrigger,
     env: Record<string, string>,
     key?: string,
+    provided?: ProvidedAction,
   ): { run: ActionRun; done: Promise<ActionRun> } {
     const id = this.options.newId();
     const logPath = join(this.options.logsDir, workspace.id, `${id}.log`);
@@ -207,6 +220,8 @@ export class ActionRunner {
       workspace,
       action,
       env,
+      ...(provided ? { provided } : {}),
+      abort: new AbortController(),
       cancelled: false,
       listeners: new Set(),
       done,
@@ -251,6 +266,7 @@ export class ActionRunner {
     const live = this.live.get(id);
     if (hasEnded(run) || !live) return run;
     live.cancelled = true;
+    live.abort.abort();
     if (run.status === "queued") {
       const folder = this.folders.get(live.workspace.path);
       if (folder) folder.waiting = folder.waiting.filter((waiting) => waiting !== id);
@@ -258,13 +274,16 @@ export class ActionRunner {
       return this.get(id);
     }
     const pid = live.child?.pid;
-    if (pid !== undefined) {
-      killGroup(pid, "SIGTERM");
-      setTimeout(() => {
-        if (this.live.has(id)) killGroup(pid, "SIGKILL");
-      }, KILL_GRACE_MS).unref();
-    }
+    if (pid !== undefined) this.stop(id, pid);
     return this.get(id);
+  }
+
+  /** SIGTERM to the process group, SIGKILL if the run is still live after the grace time. */
+  private stop(id: string, pid: number): void {
+    killGroup(pid, "SIGTERM");
+    setTimeout(() => {
+      if (this.live.has(id)) killGroup(pid, "SIGKILL");
+    }, KILL_GRACE_MS).unref();
   }
 
   /**
@@ -335,17 +354,12 @@ export class ActionRunner {
   private spawn(id: string, live: Live): void {
     const { action, workspace } = live;
     const run = this.get(id);
-    const [command, args] =
-      typeof action.run === "string"
-        ? ["/bin/sh", ["-c", action.run]]
-        : [action.run[0] as string, action.run.slice(1)];
     const fd = openSync(run.logPath, "a");
     const write = (data: string | Buffer) => {
       if (typeof data === "string") writeSync(fd, data);
       else writeSync(fd, data);
       this.notify(live);
     };
-    write(`$ ${typeof action.run === "string" ? action.run : action.run.join(" ")}\n`);
     this.options.store.run(
       "UPDATE actions_runs SET status = 'running', started_at = ? WHERE id = ?",
       this.options.now(),
@@ -361,34 +375,98 @@ export class ActionRunner {
       this.end(id, live, fields);
     };
 
-    const child = spawn(command, args, {
-      cwd: workspace.path,
-      env: { ...this.options.baseEnv, ...live.env },
-      // Its own process group, so cancel reaches the programs it starts.
-      detached: true,
-      stdio: ["ignore", "pipe", "pipe"],
-    });
-    live.child = child;
-    if (child.pid !== undefined) trackGroup(child.pid);
-    child.stdout?.on("data", write);
-    child.stderr?.on("data", write);
-    child.on("error", (error) => {
-      write(`\npi-spore: cannot run ${command}: ${error.message}\n`);
-      settle({ status: "failed", error: `Cannot run ${command}: ${error.message}` });
-    });
-    // "close" comes after the output streams end, so the log is complete.
-    child.on("close", (code, signal) => {
-      if (live.cancelled) {
-        write("\npi-spore: cancelled\n");
-        settle({ status: "cancelled", ...(signal ? { signal } : {}) });
-      } else if (code === 0) settle({ status: "succeeded", exitCode: 0 });
-      else
-        settle({
-          status: "failed",
-          ...(code === null ? {} : { exitCode: code }),
-          ...(signal ? { signal } : {}),
-        });
-    });
+    const launch = (
+      [command, ...args]: string[],
+      shown: string,
+      { timeoutMs, after }: Omit<Prepared, "argv"> = {},
+    ) => {
+      write(`$ ${shown}\n`);
+      const child = spawn(command as string, args, {
+        cwd: workspace.path,
+        env: { ...this.options.baseEnv, ...live.env },
+        // Its own process group, so cancel reaches the programs it starts.
+        detached: true,
+        stdio: ["ignore", "pipe", "pipe"],
+      });
+      live.child = child;
+      if (child.pid !== undefined) trackGroup(child.pid);
+      child.stdout?.on("data", write);
+      child.stderr?.on("data", write);
+      let timedOut = false;
+      const deadline =
+        timeoutMs === undefined || child.pid === undefined
+          ? undefined
+          : setTimeout(() => {
+              timedOut = true;
+              write(`\npi-spore: no exit after ${timeoutMs} ms, stopping it\n`);
+              this.stop(id, child.pid as number);
+            }, timeoutMs);
+      child.on("error", (error) => {
+        clearTimeout(deadline);
+        write(`\npi-spore: cannot run ${command}: ${error.message}\n`);
+        settle({ status: "failed", error: `Cannot run ${command}: ${error.message}` });
+      });
+      // "close" comes after the output streams end, so the log is complete.
+      child.on("close", (code, signal) => {
+        // A spawn error already settled the run and closed the log.
+        clearTimeout(deadline);
+        if (settled) return;
+        void (async () => {
+          let failure: string | undefined;
+          if (after) {
+            try {
+              await after(code, live.cancelled || timedOut);
+            } catch (error) {
+              failure = (error as Error).message;
+              write(`\npi-spore: ${failure}\n`);
+            }
+          }
+          if (live.cancelled) {
+            write("\npi-spore: cancelled\n");
+            settle({ status: "cancelled", ...(signal ? { signal } : {}) });
+          } else if (timedOut) {
+            settle({
+              status: "failed",
+              ...(signal ? { signal } : {}),
+              error: `Timed out: no exit after ${timeoutMs} ms`,
+            });
+          } else if (code === 0 && failure === undefined)
+            settle({ status: "succeeded", exitCode: 0 });
+          else
+            settle({
+              status: "failed",
+              ...(code === null ? {} : { exitCode: code }),
+              ...(signal ? { signal } : {}),
+              ...(failure === undefined ? {} : { error: failure }),
+            });
+        })().catch((error: Error) => settle({ status: "failed", error: error.message }));
+      });
+    };
+
+    if (live.provided) {
+      live.provided
+        .prepare({ workspace, runId: id, log: write, signal: live.abort.signal })
+        .then(
+          (prepared) => {
+            if (live.cancelled) return settle({ status: "cancelled" });
+            launch(prepared.argv, prepared.argv.join(" "), prepared);
+          },
+          (error: Error) => {
+            if (live.cancelled) {
+              write("\npi-spore: cancelled\n");
+              return settle({ status: "cancelled" });
+            }
+            write(`\npi-spore: ${error.message}\n`);
+            settle({ status: "failed", error: error.message });
+          },
+        )
+        .catch((error: Error) => settle({ status: "failed", error: error.message }));
+    } else {
+      launch(
+        typeof action.run === "string" ? ["/bin/sh", "-c", action.run] : action.run,
+        typeof action.run === "string" ? action.run : action.run.join(" "),
+      );
+    }
   }
 
   private end(
