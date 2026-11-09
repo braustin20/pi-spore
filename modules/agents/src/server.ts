@@ -23,6 +23,7 @@ import { type AgentChange, type Agents, AgentsKey, type LaunchHook } from "./con
 import {
   DELIVERIES_JOB_MIGRATION,
   DELIVERIES_MIGRATION,
+  DELIVERIES_OPTIONS_MIGRATION,
   DELIVERY_JOB,
   Deliveries,
 } from "./deliveries.js";
@@ -75,6 +76,8 @@ const MIGRATIONS = [
   "ALTER TABLE agents_agents ADD COLUMN closed_at INTEGER",
   // ADR 0004: a delivery's job on the runner.
   DELIVERIES_JOB_MIGRATION,
+  // R8.3: a delivery that keeps its prompt's images and steer choice.
+  DELIVERIES_OPTIONS_MIGRATION,
 ];
 
 interface Row {
@@ -161,6 +164,7 @@ export function createAgentsModule(
       const chatDeleteListeners: ((agentId: string) => void)[] = [];
       const workerChangeListeners: ((agent: Agent) => void)[] = [];
       const launchHooks: LaunchHook[] = [];
+      const promptHooks: ((agent: Agent) => string | undefined)[] = [];
 
       const resourceArgs =
         options.resourceArgs ??
@@ -252,8 +256,8 @@ export function createAgentsModule(
         newId: host.newId,
         workspaceOf: (agentId) => workspaces.get(agents.view(agentId).workspaceId),
         canRun: (agentId) => agents.view(agentId).active,
-        send: async (agentId, message) => {
-          await agents.prompt(agentId, message, "followUp");
+        send: async (agentId, message, options) => {
+          await agents.prompt(agentId, message, options?.whileBusy ?? "followUp", options?.images);
         },
       });
       workspaces.afterResume((workspace) => {
@@ -421,6 +425,9 @@ export function createAgentsModule(
         },
         addLaunchContext: (hook) => {
           launchHooks.push(hook);
+        },
+        addPromptHook: (hook) => {
+          promptHooks.push(hook);
         },
       };
       host.provide(AgentsKey, api);
@@ -634,6 +641,22 @@ export function createAgentsModule(
         const images = checkPromptImages(request.images ?? [], imageLimits);
         if (request.message.trim() === "" && images.length === 0)
           throw new ApiError(400, "empty_prompt", "A message needs text or an image");
+        const agent = agents.view(c.req.param("id"));
+        // The hooks mark what they add as taken, so it commits with the delivery row (see `addPromptHook`). A prompt
+        // also waits in the queue behind rows already there, so it cannot overtake them.
+        const delivered = host.store.transaction(() => {
+          // Pi runs a slash command without a model turn, so comments added to it would be lost.
+          const extras = request.message.trim().startsWith("/")
+            ? []
+            : promptHooks.flatMap((hook) => hook(agent) ?? []);
+          if (extras.length === 0 && !queue.hasPending(agent.id)) return false;
+          queue.add(agent.id, [request.message.trim(), ...extras].filter(Boolean).join("\n\n"), {
+            whileBusy: request.whileBusy ?? "steer",
+            images,
+          });
+          return true;
+        });
+        if (delivered) return c.json({ disposition: "queued" });
         const disposition = await agents.prompt(
           c.req.param("id"),
           request.message,
