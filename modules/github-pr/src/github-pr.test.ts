@@ -598,6 +598,36 @@ describe("watch", () => {
     });
   });
 
+  it("shows a PR that waits for the user on Home, and drops it when watching resumes (ADR 0152)", async () => {
+    const { workspace } = await setUp(false);
+    const notices = async () =>
+      (
+        await json<{ items: { kind: string; source: string; title: string; href: string }[] }>(
+          await server.request("GET", "/api/attention/inbox"),
+        )
+      ).items.filter((item) => item.kind === "notice");
+    await publish(workspace);
+    expect(await notices()).toEqual([]);
+
+    setChecks([run("test", "FAILURE")], "h1");
+    await tick();
+    expect(await notices()).toMatchObject([
+      {
+        source: "github-pr",
+        title: expect.stringContaining("#1"),
+        detail: "The workspace has no worker chat to send failures to. Waiting for you.",
+        href: `#/workspaces/${workspace.id}`,
+      },
+    ]);
+
+    await json(
+      await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/watch`, {
+        on: false,
+      }),
+    );
+    expect(await notices()).toEqual([]);
+  });
+
   it("ends when the PR is merged, and moves the card to Done", async () => {
     const { workspace, cardId } = await setUp();
     await publish(workspace);
