@@ -1,14 +1,22 @@
 import { existsSync } from "node:fs";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
-import { HomeItemsKey } from "@pi-spore/mod-attention/server";
+import { ApprovalsKey, HomeItemsKey } from "@pi-spore/mod-attention/server";
+import { BridgeKey } from "@pi-spore/mod-bridge/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
-import { ApiError, type ServerModule, type StepOutcome } from "@pi-spore/module-api";
+import {
+  ApiError,
+  type BridgeCaller,
+  type ServerModule,
+  type StepOutcome,
+} from "@pi-spore/module-api";
 import {
   type AgentStatus,
+  type Approval,
   MergeRequest,
+  type OpenWorkspacePrRequest,
   type PrCheckState,
   type PrEvent,
   type PrStatus,
@@ -20,6 +28,7 @@ import {
   parseJsonBody,
   WatchRequest,
   type Workspace,
+  WorkspacePrSubject,
 } from "@pi-spore/shared";
 import { PullRequestsKey } from "./contract.js";
 import { type BotComment, Gh, type GhCommand, jobIdOf, tail } from "./gh.js";
@@ -59,6 +68,11 @@ const MIGRATIONS = [
     summary TEXT NOT NULL
   )`,
   "CREATE INDEX github_pr_tries_by_workspace ON github_pr_tries (workspace_id, at)",
+  // The open `workspace-pr` approval of a workspace, so a chat cannot ask twice.
+  `CREATE TABLE github_pr_asks (
+    workspace_id TEXT PRIMARY KEY,
+    approval_id TEXT NOT NULL
+  )`,
 ];
 
 interface PrRow {
@@ -86,6 +100,8 @@ const WATCH_JOB = "github-pr.watch";
 const DISCOVER_JOB = "github-pr.discover";
 const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
 const LOG_MESSAGE_CHARS = 200;
+/** The approval kind a chat files to ask the user to open its workspace's PR (ADR 0100). */
+const WORKSPACE_PR = "workspace-pr";
 
 export interface GithubPrModuleOptions {
   gh?: GhCommand;
@@ -135,7 +151,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
   const discoverInterval = options.discoverIntervalMs ?? 5 * 60_000;
   return {
     id: "github-pr",
-    requires: ["projects", "workspaces", "agents", "attention", "kanban", "runs"],
+    requires: ["projects", "workspaces", "agents", "attention", "kanban", "runs", "bridge"],
     core: false,
     setup(host) {
       host.store.migrate("github-pr", MIGRATIONS);
@@ -144,6 +160,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       const agents = host.use(AgentsKey);
       const cards = host.use(CardsKey);
       const homeItems = host.use(HomeItemsKey);
+      const approvals = host.use(ApprovalsKey);
       const gh = new Gh(host.exec, options.gh ?? { command: "gh", args: [] });
 
       const load = (workspaceId: string) =>
@@ -210,6 +227,13 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       const providerOf = async (workspace: Workspace) =>
         projects.vcsFor(await projects.get(workspace.projectId));
 
+      /** The branch a PR targets: the workspace's own base, else the project's default. */
+      const baseOf = async (workspace: Workspace): Promise<string | undefined> =>
+        workspace.base ??
+        (await (
+          await providerOf(workspace)
+        ).changes?.defaultBase(await projects.get(workspace.projectId)));
+
       const status = async (workspaceId: string): Promise<PrStatus> => {
         const workspace = workspaces.get(workspaceId);
         const project = await projects.get(workspace.projectId);
@@ -221,7 +245,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             ? "The workspace works in the main checkout, not on its own branch"
             : undefined;
         const row = load(workspace.id);
-        const base = workspace.base ?? (await provider.changes?.defaultBase(project));
+        const base = await baseOf(workspace);
         const folder = existsSync(workspace.path);
         const location = { path: workspace.path };
         const local =
@@ -601,13 +625,9 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         return { workspace, push: provider.publish.push, line: workspace.line };
       };
 
-      /** The one path for the publish route and the `PullRequestsKey` interface. */
-      const openPullRequest = async (
-        workspaceId: string,
-        request: { title: string; body: string; base: string; draft?: boolean },
-      ): Promise<PullRequest> => {
-        const { workspace, push, line } = await publishable(workspaceId);
-        const existing = load(workspace.id);
+      /** The stored PR row, or a 409 `pr_exists` when that PR is open. */
+      const refuseOpenPr = (workspaceId: string): PrRow | undefined => {
+        const existing = load(workspaceId);
         if (existing && viewOf(existing).state === "open") {
           throw new ApiError(
             409,
@@ -615,6 +635,16 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             `PR #${existing.number} is open already: ${existing.url}`,
           );
         }
+        return existing;
+      };
+
+      /** The one path for the publish route and the `PullRequestsKey` interface. */
+      const openPullRequest = async (
+        workspaceId: string,
+        request: { title: string; body: string; base: string; draft?: boolean },
+      ): Promise<PullRequest> => {
+        const { workspace, push, line } = await publishable(workspaceId);
+        const existing = refuseOpenPr(workspace.id);
         const { remote } = await push({ path: workspace.path, line }, line);
         const base = request.base.startsWith(`${remote}/`)
           ? request.base.slice(remote.length + 1)
@@ -641,6 +671,83 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
 
       host.provide(PullRequestsKey, { open: openPullRequest });
       host.use(RunsKey).setPrOpener(openPullRequest);
+
+      /** Files a `workspace-pr` approval for the caller's workspace. Nothing is pushed or created until approve. */
+      const requestWorkspacePr = async (
+        caller: BridgeCaller,
+        request: OpenWorkspacePrRequest,
+      ): Promise<Approval> => {
+        const { workspace } = await publishable(caller.workspaceId);
+        refuseOpenPr(workspace.id);
+        const base = await baseOf(workspace);
+        if (!base) {
+          throw new ApiError(
+            422,
+            "not_supported",
+            "The workspace has no base branch to open a PR into",
+          );
+        }
+        const asked = host.store.get<{ approval_id: string }>(
+          "SELECT approval_id FROM github_pr_asks WHERE workspace_id = ?",
+          workspace.id,
+        );
+        if (asked) {
+          throw new ApiError(
+            409,
+            "workspace_pr_asked",
+            `Approval ${asked.approval_id} already asks the user to open the PR of workspace ${workspace.id}`,
+          );
+        }
+        return host.store.transaction(() => {
+          const filed = approvals.file(caller, {
+            kind: WORKSPACE_PR,
+            title: `Open the PR of workspace "${workspace.name}"`,
+            reason:
+              "Opening a PR pushes the branch and sends this text to GitHub. pi-spore never merges it; a human does (ADR 0130).",
+            subject: {
+              workspaceId: workspace.id,
+              title: request.title,
+              body: request.body,
+              base,
+            } satisfies WorkspacePrSubject,
+          });
+          host.store.run(
+            "INSERT INTO github_pr_asks (workspace_id, approval_id) VALUES (?, ?)",
+            workspace.id,
+            filed.id,
+          );
+          return filed;
+        });
+      };
+      host.use(BridgeKey).setPrRequester(requestWorkspacePr);
+
+      approvals.register({
+        kind: WORKSPACE_PR,
+        subject: WorkspacePrSubject,
+        approve: async (subject, approval) => {
+          const filed = approval.subject as WorkspacePrSubject;
+          if (subject.workspaceId !== filed.workspaceId || subject.base !== filed.base) {
+            throw new ApiError(
+              422,
+              "approval_workspace_changed",
+              "Approve can change the title and body, not the workspace or base",
+            );
+          }
+          const pr = await openPullRequest(subject.workspaceId, {
+            title: subject.title,
+            body: subject.body,
+            base: subject.base,
+          });
+          return `Opened PR #${pr.number} (${pr.url}) into ${subject.base}. A human merges it; pi-spore never merges it and never turns on auto-merge.`;
+        },
+        decided: (subject, approval) => {
+          host.store.run(
+            "DELETE FROM github_pr_asks WHERE workspace_id = ? AND approval_id = ?",
+            subject.workspaceId,
+            approval.id,
+          );
+        },
+      });
 
       host.events.onSubscribe(PR_TOPIC, async (topic) => {
         const event: PrEvent = {

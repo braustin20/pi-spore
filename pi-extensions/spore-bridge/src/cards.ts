@@ -267,4 +267,40 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient, env: B
       };
     },
   });
+
+  // Only the orchestrator chat ends card work with a PR. Side, stage, and run agents never ask for one.
+  if (env.chatKind !== "worker" || env.runRole) return;
+
+  pi.registerTool({
+    name: "open_pr",
+    label: "Ask to open the workspace's PR",
+    description:
+      "Ask the user to open the PR of this workspace, then end your turn. Nothing is pushed until the user " +
+      "approves on pi-spore's Home page; they may edit the title and body or decline. It never merges the PR. " +
+      "The decision arrives as a new user message.",
+    promptSnippet: "Ask the user to open this workspace's PR when the work is done",
+    promptGuidelines: ["Call open_pr alone, as the last tool call of your turn, then stop."],
+    parameters: Type.Object({
+      title: Type.String({ minLength: 1, maxLength: 256, description: "The PR title" }),
+      body: Type.String({
+        maxLength: 65_536,
+        description: "The PR body: what changed, what was tested, what the user must decide",
+      }),
+    }),
+    async execute(toolCallId, params, signal) {
+      const { approval } = await client.call(ApprovalAnswer, "workspace/pr", {
+        body: params,
+        receipt: toolCallId,
+        ...(signal ? { signal } : {}),
+      });
+      return {
+        content: text(
+          `The request is on the user's Home page (approval ${approval.id}: ${approval.title}). Stop now. ` +
+            "The decision arrives as a new user message.",
+        ),
+        details: { approvalId: approval.id },
+        terminate: true,
+      };
+    },
+  });
 }

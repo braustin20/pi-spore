@@ -902,6 +902,47 @@ describe("spore-bridge run tools", () => {
     expect(result.content[0]?.text).toContain("approval a1");
   });
 
+  it("posts open_pr to workspace/pr with the receipt and ends the turn", async () => {
+    reply("POST /api/bridge/workspace/pr", {
+      status: 201,
+      body: { approval: { id: "a2", title: "Open the PR of this workspace" } },
+    });
+
+    const result = await fakePi()
+      .tool("open_pr")
+      .execute("t6", { title: "Add the thing", body: "Changed X. Tested Y." });
+
+    expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
+      ["/api/bridge/workspace/pr", "t6", { title: "Add the thing", body: "Changed X. Tested Y." }],
+    ]);
+    expect(result.terminate).toBe(true);
+    expect(result.content[0]?.text).toContain("approval a2");
+  });
+
+  it("gives open_pr to the orchestrator chat only", () => {
+    expect(fakePi().tools.has("open_pr")).toBe(true);
+
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
+    expect(fakePi().tools.has("open_pr")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    expect(fakePi().tools.has("open_pr")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "worker");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    expect(fakePi().tools.has("open_pr")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "lane");
+    expect(fakePi().tools.has("open_pr")).toBe(false);
+  });
+
+  it("names open_pr in the orchestrator rules, not the coordinator rules", () => {
+    expect(RULES).toContain("`open_pr`");
+    expect(COORDINATOR_RULES).not.toContain("open_pr");
+  });
+
   it("gives a lane stage agent ask_coordinator, not request_human_input, and the lane paragraph", async () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
     vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");

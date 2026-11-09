@@ -131,6 +131,28 @@ export const PublishRequest = Type.Object(
 );
 export type PublishRequest = Static<typeof PublishRequest>;
 
+/** A chat asks the user to open its workspace's PR. The user may edit both fields on approve (ADR 0100). */
+export const OpenWorkspacePrRequest = Type.Object(
+  {
+    title: Type.String({ minLength: 1, maxLength: 256 }),
+    body: Type.String({ maxLength: 65_536 }),
+  },
+  { additionalProperties: false },
+);
+export type OpenWorkspacePrRequest = Static<typeof OpenWorkspacePrRequest>;
+
+/** What a `workspace-pr` approval holds. The user may edit `title` and `body` on approve, not the rest. */
+export const WorkspacePrSubject = Type.Object(
+  {
+    workspaceId: Type.String(),
+    title: Type.String(),
+    body: Type.String(),
+    base: Type.String(),
+  },
+  { additionalProperties: false },
+);
+export type WorkspacePrSubject = Static<typeof WorkspacePrSubject>;
+
 export const PushRequest = Type.Object(
   { confirm: Type.Literal(true) },
   { additionalProperties: false },

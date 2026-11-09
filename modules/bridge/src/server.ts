@@ -25,6 +25,7 @@ import {
   FileQuestionRequest,
   MergeLaneRequest,
   OpenRunPrRequest,
+  OpenWorkspacePrRequest,
   parseJsonBody,
   ReviseLaneRequest,
   StageReport,
@@ -32,6 +33,10 @@ import {
   StartLaneRequest,
   slugify,
 } from "@pi-spore/shared";
+
+import { type Bridge, BridgeKey } from "./contract.js";
+
+export * from "./contract.js";
 
 /** Longest a request may wait for a run to change, so clients do not time out. Same as the actions routes. */
 const MAX_WAIT_MS = 30_000;
@@ -65,6 +70,13 @@ export const bridgeModule: ServerModule = {
     const artifacts = host.use(ArtifactsKey);
     const pipelines = host.use(PipelinesKey);
     const runs = host.use(RunsKey);
+    let requestWorkspacePr: Parameters<Bridge["setPrRequester"]>[0] | undefined;
+    host.provide(BridgeKey, {
+      setPrRequester: (request) => {
+        if (requestWorkspacePr) throw new Error("The bridge module already has a PR requester");
+        requestWorkspacePr = request;
+      },
+    });
 
     /** A run of the caller's workspace. Other workspaces' runs look like they do not exist. */
     const ownRun = (caller: BridgeCaller, id: string): ActionRun => {
@@ -290,6 +302,24 @@ export const bridgeModule: ServerModule = {
       refuseReadOnly(caller, "open the run's PR");
       const request = parseJsonBody(OpenRunPrRequest, await c.req.text(), "run PR request");
       return c.json({ approval: runs.requestPr(caller, request) }, 201);
+    });
+
+    host.routes.post("/workspace/pr", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "open the workspace's PR");
+      const request = parseJsonBody(
+        OpenWorkspacePrRequest,
+        await c.req.text(),
+        "workspace PR request",
+      );
+      if (!requestWorkspacePr) {
+        throw new ApiError(
+          422,
+          "not_supported",
+          "No module opens pull requests: enable the github-pr module",
+        );
+      }
+      return c.json({ approval: await requestWorkspacePr(caller, request) }, 201);
     });
 
     // Lane reviewers are read-only and may ask their coordinator, so this route does not refuse read-only callers.

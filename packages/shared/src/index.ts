@@ -157,6 +157,7 @@ export {
 } from "./projects.js";
 export {
   MergeRequest,
+  OpenWorkspacePrRequest,
   PrCheck,
   PrCheckState,
   PrEvent,
@@ -170,6 +171,7 @@ export {
   PullRequest,
   PushRequest,
   WatchRequest,
+  WorkspacePrSubject,
 } from "./pull-requests.js";
 export {
   AnswerLaneRequest,
