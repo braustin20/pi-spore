@@ -61,6 +61,15 @@ export interface Agents {
    * first appear. Empty when the agent has no session yet.
    */
   modelsUsed(agentId: string): Promise<string[]>;
+  /**
+   * Why the agent's last run failed. For a `failed` agent it is the status error. While the run is not over (`busy`,
+   * `starting`, `waiting`) it is undefined. Otherwise it is the `errorMessage` of the last assistant message in the
+   * session file when Pi ended that turn with `stopReason: "error"` (a provider that refused), or a fixed text when
+   * the message has none. Undefined without a session. Throws a 404 ApiError for an unknown id.
+   */
+  turnError(agentId: string): Promise<string | undefined>;
+  /** Sets the agent's title. It joins the caller's `store.transaction`. Throws a 404 ApiError for an unknown id. */
+  rename(agentId: string, title: string): void;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
   /** Every agent (chat) of the workspace, closed ones too, oldest first. */

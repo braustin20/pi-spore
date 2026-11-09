@@ -56,6 +56,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
   for (const { server, agents } of servers) {
+    // A job could start an agent after stopAll; it would exit after the store closed.
+    server.services.jobs.stop();
     await agents.manager().stopAll();
     server.close();
   }

@@ -13,7 +13,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
-import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
+import {
+  type AgentEvent,
+  type AgentsModuleOptions,
+  createAgentsModule,
+} from "@pi-spore/mod-agents/server";
 import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { createGithubPrModule } from "@pi-spore/mod-github-pr/server";
@@ -53,6 +57,8 @@ beforeEach(() => {
 });
 afterEach(async () => {
   for (const { server, agents } of servers) {
+    // A job could start an agent after stopAll; it would exit after the store closed.
+    server.services.jobs.stop();
     await agents.manager().stopAll();
     server.close();
   }
@@ -73,12 +79,13 @@ async function start(
     firstId?: number;
     env?: Record<string, string>;
     extraModules?: readonly ServerModule[];
+    roleDefaults?: AgentsModuleOptions["roleDefaults"];
   } = {},
 ) {
   const agents = createAgentsModule({
     pi: { command: process.execPath, args: [FAKE_PI] },
     resourceArgs: async () => ["--no-extensions"],
-    roleDefaults: async () => ({}),
+    roleDefaults: options.roleDefaults ?? (async () => ({})),
     baseEnv: { PATH: process.env.PATH, ...options.env },
     idleStopMs: 60_000,
     startTimeoutMs: 1_000,
@@ -927,6 +934,149 @@ describe("min_strength_over (R4.4)", () => {
 
     expect(run.message).toContain("R4.4");
     expect(run.message).toContain("fake/weak (tier local) is not above spore/auto (tier light)");
+  });
+});
+
+describe("a stage agent whose turn failed", () => {
+  const LIMIT = "The ChatGPT user has reached their Subscription Sharing usage limit";
+  const APPROVE = { summary: "Good", verdict: "approve" };
+
+  const launches = () =>
+    readFileSync(join(scratch, "record.jsonl"), "utf8")
+      .split("\n")
+      .filter(Boolean)
+      .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> });
+
+  const agentOf = async (server: TestServer, agentId: string) =>
+    (
+      await json<{ agent: { title: string } }>(
+        await server.request("GET", `/api/agents/${agentId}`),
+      )
+    ).agent;
+
+  /** Starts a run of `pipeline` and waits until a stage blocks it. */
+  async function blockedRun(server: TestServer, name: string, pipeline: string) {
+    const { workspaceId } = await workspace(server, name);
+    userPipeline(server.paths.root, "p", pipeline);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+    return { workspaceId, run: await getRun(server, run.id) };
+  }
+
+  const retry = async (server: TestServer, runId: string) =>
+    json(await server.request("POST", `/api/pipelines/runs/${runId}/retry`));
+
+  it("blocks the stage on a reviewer turn the provider refused", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }] }),
+    });
+
+    const { run } = await blockedRun(server, "refused", withReview());
+
+    const review = run.turns[1] as PipelineTurn;
+    expect(run.state).toBe("running");
+    expect(run.blocked).toBe(
+      `stage review: the reviewer agent "Review 1" failed: ${LIMIT}. Retry starts a fresh reviewer agent for this turn.`,
+    );
+    expect(review).toMatchObject({ kind: "review", round: 1 });
+    expect(review.report).toBeUndefined();
+    expect(review.error).toBeUndefined();
+  });
+
+  it("starts a fresh reviewer on the role default of the retry for the same round, and passes", async () => {
+    let reviewerModel = "before";
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] }),
+      roleDefaults: async (role) =>
+        role === "reviewer" ? { provider: "fake", modelId: reviewerModel } : {},
+    });
+    const { workspaceId, run } = await blockedRun(server, "fresh-reviewer", withReview());
+    const failed = run.turns[1] as PipelineTurn;
+
+    reviewerModel = "after";
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(passed.blocked).toBeUndefined();
+    expect(kinds(passed)).toEqual(["task1", "review1", "review1"]);
+    const fresh = passed.turns[2] as PipelineTurn;
+    expect(fresh.agentId).not.toBe(failed.agentId);
+    expect(fresh.report?.verdict).toBe("approve");
+    expect(passed.turns[1]?.error).toBe(run.blocked);
+    expect((await agentOf(server, failed.agentId)).title).toBe("Review 1 (failed)");
+    const { agents } = await json<{ agents: { id: string }[] }>(
+      await server.request("GET", `/api/agents?workspaceId=${workspaceId}`),
+    );
+    expect(agents.map((agent) => agent.id)).toContain(failed.agentId);
+    const argv = launches().find((entry) => entry.env.PI_SPORE_AGENT_ID === fresh.agentId)
+      ?.argv as string[];
+    expect(argv[argv.indexOf("--model") + 1]).toBe("after");
+  });
+
+  it("starts a fresh worker for a crashed task turn, and the run passes", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["crash", DONE] }) });
+    const { run } = await blockedRun(server, "crashed", IMPLEMENT);
+    const failed = run.turns[0] as PipelineTurn;
+    expect(run.blocked).toContain("boom");
+    expect(run.workerAgentId).toBe(failed.agentId);
+
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(kinds(passed)).toEqual(["task1", "task1"]);
+    expect(passed.turns[1]?.agentId).not.toBe(failed.agentId);
+    expect(passed.workerAgentId).toBe(passed.turns[1]?.agentId);
+    expect((await agentOf(server, failed.agentId)).title).toBe("implement (failed)");
+  });
+
+  it("gives a refused fix turn to a fresh worker, and the next review round runs", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, { error: LIMIT }, FIX],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
+      }),
+    });
+    const { run } = await blockedRun(server, "refused-fix", withReview("rounds = 2"));
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(kinds(passed)).toEqual(["task1", "review1", "fix1", "fix1", "review2"]);
+    const [task, , failedFix, fix] = passed.turns as PipelineTurn[];
+    expect(failedFix?.error).toContain(LIMIT);
+    expect(fix?.agentId).not.toBe(task?.agentId);
+    expect(passed.workerAgentId).toBe(fix?.agentId);
+    expect(fix?.report?.summary).toBe(FIX.summary);
+  });
+
+  it("stays blocked after a restart and starts no new stage agent", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] });
+    const first = await start({ home, env });
+    const { workspaceId, run } = await blockedRun(first, "restart-blocked", withReview());
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+    const stageJob = () =>
+      second.services.jobs.list({
+        kind: "pipelines.stage",
+        key: workspaceId,
+        states: ["running", "waiting"],
+      })[0] as JobView;
+    await until(() => stageJob().state === "waiting" && stageJob().error !== null);
+
+    const after = await getRun(second, run.id);
+    expect(after.blocked).toBe(run.blocked);
+    expect(after.turns).toEqual(run.turns);
+    expect(launches().filter((launch) => launch.env.PI_SPORE_CHAT_KIND === "stage")).toHaveLength(
+      2,
+    );
   });
 });
 

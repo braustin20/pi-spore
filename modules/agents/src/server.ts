@@ -393,6 +393,8 @@ export function createAgentsModule(
         },
         roleDefaults: (role) => agents.roleDefaults(role),
         modelsUsed: (agentId) => agents.modelsUsed(agentId),
+        turnError: (agentId) => agents.turnError(agentId),
+        rename: (agentId, title) => agents.rename(agentId, title),
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),

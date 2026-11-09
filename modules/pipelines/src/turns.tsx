@@ -103,6 +103,7 @@ export function TurnList({
             <Chip tone="accent">{KIND_TITLES[turn.kind]}</Chip>
             <Chip>round {turn.round}</Chip>
             <Chip mono>{turn.role}</Chip>
+            {turn.error && <Chip tone="fail">Failed</Chip>}
             {turn.report?.verdict && (
               <Chip tone={turn.report.verdict === "approve" ? "ok" : "warn"}>
                 {turn.report.verdict === "approve" ? "Approve" : "Revise"}
@@ -117,6 +118,8 @@ export function TurnList({
           </div>
           {turn.report ? (
             <Report report={turn.report} routing={turn.routing} />
+          ) : turn.error ? (
+            <p className="m-0 mt-1.5 whitespace-pre-wrap text-sm text-muted">{turn.error}</p>
           ) : (
             <p className="m-0 mt-1.5 text-sm text-muted">Waiting for the report.</p>
           )}

@@ -102,7 +102,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
     `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
   - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
-    picker), because the pipeline judges a reviewer by the model it ran on (R4.4).
+    picker), because the pipeline judges a reviewer by the model it ran on (R4.4). A stage whose agent failed gets a
+    fresh agent on Retry instead (section 8, "Failed turns").
+  - `turnError(agentId)` says why the agent's last run failed: the error of a `failed` status, or the
+    `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a provider that
+    refused, such as a full usage window). `rename(agentId, title)` sets the title.
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
   CLI with `pi --session <path>`.
 - Extension dialogs (`extension_ui_request`) become pending prompts on the chat and on Home. The answer goes back as
@@ -276,7 +280,7 @@ export interface ServerHost {
 | Lane | A workspace inside a run | id, run, name, wave, depends on, brief artifact, pipeline, model, state, workspace, approval, message |
 | Pipeline | A declared stage list (file) | id, source (user, project, or built-in), stages |
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
-| Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer) |
+| Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer), error (the agent failed and Retry replaced it) |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state; a lane's question is a `runs_questions` row |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, pipeline gates; later close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
@@ -461,6 +465,16 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   later report never drops a test.
 - **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
   one and tells the agent once to continue and call `report`. There are no other automatic reminders.
+- **Failed turns** (ADR 0140). The pipeline listens to the stage agents' status. When the open turn's agent fails
+  (`turnError`: a crash, or a turn that ended with `stopReason: "error"`), the `await` step throws
+  `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The
+  job waits with that error, so the run stays `running` and shows it as `blocked`. The old agent may still report
+  while the run is blocked. Retry (`POST /api/pipelines/runs/:id/retry`) writes the error on the turn, and `await`
+  then replaces it in one commit: the old agent is renamed `<title> (failed)` and keeps its tab, and a fresh agent
+  takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
+  is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The
+  fresh agent has the stage's or run's model, else the role default read when it starts, so a settings fix works.
+  A restart or another wake does not mark the turn, so it only blocks again. Failed turns do not count as rounds.
 - **Review rounds** (R6.3, R6.4). Round r starts a fresh reviewer with the brief, the manifest with proof paths, and
   a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
   from the provider's `changes`). From round 2 on, the prompt also has the previous round's summary and findings and
@@ -482,6 +496,7 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   included, because the review runs in a fresh read-only chat. A missing model or tier, or a tier below, throws: the
   job waits with the error, shown on the run as `blocked`, and Retry checks again after the user fixes the settings.
   When the report comes, the reviewer's own `modelsUsed` is checked the same way; a failure ends the run `failed`.
+  The worker's models are those of every worker agent of the run, a failed one included.
 - **Local implementer** (R4.10, R3.4). Before the worker starts, its model is the stage `model`, else the worker role
   default. If that model is not `spore/auto`, its tier is not `local`, and its plan (`router.plans`) has fresh usage
   pressure (the router's thresholds), the run is `waiting_user` with a `pipeline-local-implementer` approval on Home
@@ -502,7 +517,7 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 | `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }` | Starts a run (201). |
 | `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
 | `GET /api/pipelines/runs/:id` | `{ run }` |
-| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). |
+| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed gets a fresh agent. |
 | `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
 
 - Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.

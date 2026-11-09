@@ -145,6 +145,8 @@ export const PipelineTurn = Type.Object({
   ),
   createdAt: Type.Integer(),
   reportedAt: Type.Optional(Type.Integer()),
+  /** Why the turn's agent failed. Retry started a fresh agent in its place. */
+  error: Type.Optional(Type.String()),
 });
 export type PipelineTurn = Static<typeof PipelineTurn>;
 
