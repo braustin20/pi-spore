@@ -1,9 +1,16 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { routerSettingEntries } from "@pi-spore/router";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { parse, SettingsView } from "@pi-spore/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { projectsModule } from "./server.js";
+
+// Passes through to the real router, so a test can make the router answer before the server's own read.
+vi.mock("@pi-spore/router", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@pi-spore/router")>();
+  return { ...actual, routerSettingEntries: vi.fn(actual.routerSettingEntries) };
+});
 
 let server: TestServer;
 
@@ -106,6 +113,12 @@ describe("GET /api/projects/settings", () => {
     expect((await retention()).value).toBe(7);
     writeSettings('{"retention":{"days":9}}');
     expect((await retention()).value).toBe(9);
+  });
+
+  // Both parsers refuse "[]" with different words. The server's message must win, whatever answers first.
+  it("gives the server's error even when the router fails first", async () => {
+    vi.mocked(routerSettingEntries).mockRejectedValueOnce(new Error("router failed first"));
+    await expectBadSettings("[]", "JSON object");
   });
 
   it("refuses an unknown key, naming it and the file", async () => {
