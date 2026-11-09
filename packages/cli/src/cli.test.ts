@@ -871,6 +871,7 @@ describe("pi-spore pr", () => {
     workspaceId: "W1",
     publishable: true,
     defaults: { title: "Fix UI", body: "From the card", base: "main" },
+    mergeWhenReady: false,
     watch: { state: "off", tries: 0, maxTries: 3 },
     tries: [],
     local: { headId: "h1", uncommitted: 0 },

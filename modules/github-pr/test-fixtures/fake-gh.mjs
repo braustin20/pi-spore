@@ -7,6 +7,8 @@
 //   createError: a message `gh pr create` fails with
 //   viewError:   a message `gh pr view` fails with
 //   mergeError:  a message `gh pr merge` fails with
+//   holdView:    the path of a FIFO; the next `gh pr view` answers, then waits until something is written to it
+//                (the knob is used up by that call), so a test can change things while a poll is in flight
 // It answers only the commands pi-spore may run. Anything else exits 99, so a test sees a forbidden call.
 import { execFileSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
@@ -42,8 +44,11 @@ if (group === "pr" && command === "view") {
     onBranch.find((candidate) => candidate.state === "OPEN") ??
     onBranch.sort((a, b) => b.number - a.number)[0];
   if (!pr) fail(`no pull requests found for branch "${selector}"`);
+  const hold = state.holdView;
+  delete state.holdView;
   save();
   process.stdout.write(JSON.stringify(pr));
+  if (hold) readFileSync(hold);
 } else if (group === "pr" && command === "create") {
   if (state.createError) fail(state.createError);
   const number = state.prs.length + 1;

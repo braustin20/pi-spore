@@ -73,6 +73,9 @@ const MIGRATIONS = [
     workspace_id TEXT PRIMARY KEY,
     approval_id TEXT NOT NULL
   )`,
+  // ADR 0164: the user's choice on the approval, and the head whose conflicts went to the chat.
+  "ALTER TABLE github_pr_prs ADD COLUMN merge_when_ready INTEGER NOT NULL DEFAULT 0",
+  "ALTER TABLE github_pr_prs ADD COLUMN conflict_head TEXT",
 ];
 
 interface PrRow {
@@ -88,6 +91,10 @@ interface PrRow {
   /** The last head commit that passed with nothing to send; it ends a run of tries. */
   clean_head: string | null;
   message: string | null;
+  /** 1 when the user chose "Open and merge when checks pass" for this PR (ADR 0164). */
+  merge_when_ready: number;
+  /** The head commit whose conflicts went to the worker already. */
+  conflict_head: string | null;
   polled_at: number | null;
   next_poll_at: number | null;
   interval_ms: number;
@@ -181,7 +188,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         const next = { ...row, ...fields };
         host.store.run(
           `UPDATE github_pr_prs SET view = ?, watch_state = ?, tries = ?, handled_head = ?, clean_head = ?,
-             message = ?, polled_at = ?, next_poll_at = ?, interval_ms = ?
+             message = ?, polled_at = ?, next_poll_at = ?, interval_ms = ?, merge_when_ready = ?, conflict_head = ?
            WHERE workspace_id = ?`,
           next.view,
           next.watch_state,
@@ -192,6 +199,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           next.polled_at,
           next.next_poll_at,
           next.interval_ms,
+          next.merge_when_ready,
+          next.conflict_head,
           workspaceId,
         );
         homeItems.changed();
@@ -275,6 +284,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           },
           ...(pr ? { pr } : {}),
           ...(blocked ? { mergeBlocked: blocked } : {}),
+          mergeWhenReady: row?.merge_when_ready === 1,
           watch: {
             state: row?.watch_state ?? "off",
             tries: row?.tries ?? 0,
@@ -340,6 +350,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         pr: PullRequest,
         failed: PullRequest["checks"],
         comments: readonly BotComment[],
+        conflicts: boolean,
         attempt: number,
       ): Promise<string> => {
         const parts = [
@@ -373,6 +384,11 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             return `- ${comment.author}${where} (${comment.url}):\n${body}`;
           });
           parts.push(`New review comments from bots:\n${lines.join("\n")}`);
+        }
+        if (conflicts) {
+          parts.push(
+            `PR #${pr.number} has conflicts with ${pr.base}. Merge ${pr.base} into this branch, fix the conflicts, run check and test, and push. Do not force push.`,
+          );
         }
         parts.push(
           "Fix what needs fixing, commit, and push the branch again. Do not force-push. Do not merge or close the pull request.",
@@ -410,7 +426,44 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           };
         }
         if (!pr) throw new ApiError(404, "pr_not_found", `PR #${row.number} is gone`);
-        const found = pr;
+        let found = pr;
+        // ADR 0164: the user chose, on this PR's approval, that the watch merges it. The read took time, so look
+        // again at the row and the workspace: the user may have turned the choice or the watch off, or parked the
+        // workspace, and a merge cannot be taken back.
+        const live = load(workspaceId);
+        const mergeOn =
+          live?.merge_when_ready === 1 && live.watch_state !== "off" && live.watch_state !== "done";
+        // The Merge button's readiness check and gh command, with the head just read: a newer push makes GitHub refuse.
+        if (
+          mergeOn &&
+          found.state === "open" &&
+          !mergeBlocked(workspaces.get(workspaceId), found)
+        ) {
+          try {
+            await gh.merge(workspace.path, found.number, found.headId);
+            host.log.info("PR merged when checks passed", {
+              workspace: workspaceId,
+              number: found.number,
+            });
+            const merged = await gh.view(workspace.path, String(found.number));
+            if (!merged) throw new ApiError(404, "pr_not_found", `PR #${found.number} is gone`);
+            found = merged;
+          } catch (error) {
+            // A refusal that lasts (a repo rule pi-spore cannot see) backs off as a failed read does.
+            const interval = Math.min(row.interval_ms * 2, maxInterval);
+            return {
+              next: "poll",
+              after: interval,
+              commit: () =>
+                update(workspaceId, {
+                  message: (error as Error).message,
+                  polled_at: now,
+                  next_poll_at: now + interval,
+                  interval_ms: interval,
+                }),
+            };
+          }
+        }
         const fields: Partial<PrRow> = {
           view: JSON.stringify(found),
           polled_at: now,
@@ -421,7 +474,13 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             next: null,
             commit: () => {
               stateChanged(workspaceId, before, found);
-              update(workspaceId, { ...fields, watch_state: "done", next_poll_at: null });
+              // The consent was for this PR while it was open; a reopened PR needs a new one (ADR 0164).
+              update(workspaceId, {
+                ...fields,
+                watch_state: "done",
+                next_poll_at: null,
+                merge_when_ready: 0,
+              });
             },
           };
         }
@@ -434,9 +493,13 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           | { workerId: string; message: string; comments: BotComment[]; summary: string }
           | undefined;
         const pending = found.checks.some((check) => check.state === "pending");
+        // A conflict does not wait for pending checks; failures and bot comments do.
+        const freshConflict =
+          mergeOn && found.mergeable === "conflicting" && row.conflict_head !== found.headId;
+        const failed = pending ? [] : found.checks.filter((check) => check.state === "fail");
+        const freshFailures = failed.length > 0 && row.handled_head !== found.headId;
+        let comments: BotComment[] = [];
         if (!pending) {
-          const failed = found.checks.filter((check) => check.state === "fail");
-          const freshFailures = failed.length > 0 && row.handled_head !== found.headId;
           const sent = new Set(
             host.store
               .all<{ item: string }>(
@@ -445,49 +508,63 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
               )
               .map((entry) => entry.item),
           );
-          const comments = (await gh.botComments(workspace.path, found.number)).filter(
+          comments = (await gh.botComments(workspace.path, found.number)).filter(
             (comment) => !sent.has(comment.key),
           );
-          if (freshFailures || comments.length > 0) {
-            if (row.watch_state === "watching") {
-              const worker = activeWorker(workspaceId);
-              if (row.tries >= maxTries) {
-                fields.watch_state = "waiting";
-                fields.message = `Stopped after ${maxTries} automatic tries in a row. Waiting for you.`;
-              } else if (!worker) {
-                fields.watch_state = "waiting";
-                fields.message =
-                  "The workspace has no worker chat to send failures to. Waiting for you.";
+        }
+        if (freshFailures || comments.length > 0 || freshConflict) {
+          if (row.watch_state === "watching") {
+            const worker = activeWorker(workspaceId);
+            if (row.tries >= maxTries) {
+              fields.watch_state = "waiting";
+              if (mergeOn) {
+                fields.merge_when_ready = 0;
+                const reason = mergeBlocked(workspace, found);
+                fields.message = `Stopped after ${maxTries} automatic tries in a row. PR #${found.number} will not merge on its own${reason ? `: ${reason}` : ""}. Waiting for you.`;
               } else {
-                const message = await feedback(
-                  workspace.path,
-                  found,
-                  freshFailures ? failed : [],
-                  comments,
-                  row.tries + 1,
-                );
-                const summary = [
-                  freshFailures
-                    ? `${failed.length} failed check${failed.length === 1 ? "" : "s"}`
-                    : "",
-                  comments.length
-                    ? `${comments.length} bot comment${comments.length === 1 ? "" : "s"}`
-                    : "",
-                ]
-                  .filter(Boolean)
-                  .join(" and ");
-                send = { workerId: worker.id, message, comments, summary };
-                fields.tries = row.tries + 1;
-                if (freshFailures) fields.handled_head = found.headId;
+                fields.message = `Stopped after ${maxTries} automatic tries in a row. Waiting for you.`;
               }
+            } else if (!worker) {
+              fields.watch_state = "waiting";
+              fields.message =
+                "The workspace has no worker chat to send failures to. Waiting for you.";
+            } else {
+              const message = await feedback(
+                workspace.path,
+                found,
+                freshFailures ? failed : [],
+                comments,
+                freshConflict,
+                row.tries + 1,
+              );
+              const summary = [
+                freshFailures
+                  ? `${failed.length} failed check${failed.length === 1 ? "" : "s"}`
+                  : "",
+                comments.length
+                  ? `${comments.length} bot comment${comments.length === 1 ? "" : "s"}`
+                  : "",
+                freshConflict ? `conflicts with ${found.base}` : "",
+              ]
+                .filter(Boolean)
+                .join(" and ");
+              send = { workerId: worker.id, message, comments, summary };
+              fields.tries = row.tries + 1;
+              if (freshFailures) fields.handled_head = found.headId;
+              if (freshConflict) fields.conflict_head = found.headId;
             }
-          } else if (failed.length === 0 && row.clean_head !== found.headId) {
-            // A head with every check passed and nothing to send ends the run of tries.
-            fields.tries = 0;
-            fields.clean_head = found.headId;
-            fields.watch_state = "watching";
-            fields.message = null;
           }
+        } else if (
+          !pending &&
+          failed.length === 0 &&
+          found.mergeable !== "conflicting" &&
+          row.clean_head !== found.headId
+        ) {
+          // A head with every check passed and nothing to send ends the run of tries.
+          fields.tries = 0;
+          fields.clean_head = found.headId;
+          fields.watch_state = "watching";
+          fields.message = null;
         }
         const interval = changed ? minInterval : Math.min(row.interval_ms * 2, maxInterval);
         return {
@@ -545,7 +622,9 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             view: JSON.stringify(pr),
             polled_at: host.now(),
             message: row.watch_state === "waiting" ? row.message : null,
-            ...(pr.state !== "open" ? { watch_state: "done", next_poll_at: null } : {}),
+            ...(pr.state !== "open"
+              ? { watch_state: "done", next_poll_at: null, merge_when_ready: 0 }
+              : {}),
           });
           if (pr.state !== "open") cancelWatchJobs(workspace.id);
         } catch (error) {
@@ -555,10 +634,15 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       };
 
       /** Stores a PR pi-spore has not seen yet for this workspace. */
-      const adopt = (workspace: Workspace, pr: PullRequest, watch: boolean) => {
+      const adopt = (
+        workspace: Workspace,
+        pr: PullRequest,
+        watch: boolean,
+        mergeWhenReady = false,
+      ) => {
         host.store.run(
-          `INSERT INTO github_pr_prs (workspace_id, number, url, view, watch_state, tries, interval_ms, created_at)
-           VALUES (?, ?, ?, ?, ?, 0, ?, ?)`,
+          `INSERT INTO github_pr_prs (workspace_id, number, url, view, watch_state, tries, interval_ms, created_at, merge_when_ready)
+           VALUES (?, ?, ?, ?, ?, 0, ?, ?, ?)`,
           workspace.id,
           pr.number,
           pr.url,
@@ -566,6 +650,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           pr.state !== "open" ? "done" : watch ? "watching" : "off",
           minInterval,
           host.now(),
+          mergeWhenReady ? 1 : 0,
         );
         stateChanged(workspace.id, undefined, pr);
         if (watch && pr.state === "open") startWatch(workspace.id, minInterval);
@@ -641,7 +726,13 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       /** The one path for the publish route and the `PullRequestsKey` interface. */
       const openPullRequest = async (
         workspaceId: string,
-        request: { title: string; body: string; base: string; draft?: boolean },
+        request: {
+          title: string;
+          body: string;
+          base: string;
+          draft?: boolean;
+          mergeWhenReady?: boolean;
+        },
       ): Promise<PullRequest> => {
         const { workspace, push, line } = await publishable(workspaceId);
         const existing = refuseOpenPr(workspace.id);
@@ -663,7 +754,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           host.store.run("DELETE FROM github_pr_prs WHERE workspace_id = ?", workspace.id);
           host.store.run("DELETE FROM github_pr_sent WHERE workspace_id = ?", workspace.id);
         }
-        adopt(workspace, pr, true);
+        adopt(workspace, pr, true, request.mergeWhenReady === true);
         host.log.info("PR opened", { workspace: workspace.id, number });
         await publishStatus(workspace.id);
         return pr;
@@ -703,7 +794,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             kind: WORKSPACE_PR,
             title: `Open the PR of workspace "${workspace.name}"`,
             reason:
-              "Opening a PR pushes the branch and sends this text to GitHub. pi-spore never merges it; a human does (ADR 0130).",
+              "Opening a PR pushes the branch and sends this text to GitHub. You may choose to have pi-spore merge it when checks pass (ADR 0164).",
             subject: {
               workspaceId: workspace.id,
               title: request.title,
@@ -737,8 +828,11 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             title: subject.title,
             body: subject.body,
             base: subject.base,
+            mergeWhenReady: subject.mergeWhenReady === true,
           });
-          return `Opened PR #${pr.number} (${pr.url}) into ${subject.base}. A human merges it; pi-spore never merges it and never turns on auto-merge.`;
+          return subject.mergeWhenReady === true
+            ? `Opened PR #${pr.number} (${pr.url}) into ${subject.base}. pi-spore merges the PR when checks pass and it has no conflicts. If the watch sends you failures or conflicts, fix them and push with push_line. pi-spore never turns on auto-merge.`
+            : `Opened PR #${pr.number} (${pr.url}) into ${subject.base}. A human merges it; pi-spore never merges it and never turns on auto-merge.`;
         },
         decided: (subject, approval) => {
           host.store.run(
@@ -884,6 +978,14 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         return c.json(await status(workspace.id));
       });
 
+      host.routes.delete("/workspaces/:id/merge-when-ready", async (c) => {
+        const workspace = workspaces.get(c.req.param("id"));
+        if (!load(workspace.id)) throw new ApiError(404, "no_pr", "The workspace has no PR");
+        update(workspace.id, { merge_when_ready: 0 });
+        await publishStatus(workspace.id);
+        return c.json(await status(workspace.id));
+      });
+
       host.routes.post("/workspaces/:id/watch", async (c) => {
         const request = parseJsonBody(WatchRequest, await c.req.text(), "watch request");
         const workspace = workspaces.get(c.req.param("id"));
@@ -898,13 +1000,19 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
             watch_state: "watching",
             tries: 0,
             handled_head: null,
+            conflict_head: null,
             message: null,
             interval_ms: minInterval,
           });
           if (workspace.state === "active") startWatch(workspace.id, 0);
         } else {
           cancelWatchJobs(workspace.id);
-          update(workspace.id, { watch_state: "off", next_poll_at: null, message: null });
+          update(workspace.id, {
+            watch_state: "off",
+            next_poll_at: null,
+            message: null,
+            merge_when_ready: 0,
+          });
         }
         await publishStatus(workspace.id);
         return c.json(await status(workspace.id));

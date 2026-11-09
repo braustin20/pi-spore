@@ -17,7 +17,13 @@ import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { JobTimer, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { CardDetail, PrStatus, Workspace } from "@pi-spore/shared";
+import type {
+  Approval,
+  CardDetail,
+  PrStatus,
+  Workspace,
+  WorkspacePrSubject,
+} from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { createGithubPrModule, type PullRequests, PullRequestsKey } from "./server.js";
 
@@ -154,6 +160,7 @@ interface FakeGh {
   createError?: string;
   viewError?: string;
   mergeError?: string;
+  holdView?: string;
 }
 const readGh = (): FakeGh => JSON.parse(readFileSync(ghState, "utf8")) as FakeGh;
 const editGh = (change: (state: FakeGh) => void) => {
@@ -888,6 +895,345 @@ describe("merge (ADR 0142)", () => {
     expect(error.code).toBe("gh_failed");
     expect(error.message).toContain("Base branch policy prohibits the merge");
     expect((await status(workspace.id)).pr?.state).toBe("open");
+  });
+});
+
+describe("merge when checks pass (ADR 0164)", () => {
+  const mergeCalls = () => readGh().calls.filter((call) => call[0] === "pr" && call[1] === "merge");
+  const pr1 = (change: (pr: Record<string, unknown>) => void) =>
+    editGh((state) => change(state.prs[0] as Record<string, unknown>));
+  const headOf = () => (readGh().prs[0] as { headRefOid: string }).headRefOid;
+  const cardColumn = async (cardId: string) =>
+    (await json<CardDetail>(await server.request("GET", `/api/kanban/cards/${cardId}`))).card
+      .column;
+  const notices = async () =>
+    (
+      await json<{ items: { kind: string; title: string; detail?: string }[] }>(
+        await server.request("GET", "/api/attention/inbox"),
+      )
+    ).items.filter((item) => item.kind === "notice");
+
+  /** The chat files the `workspace-pr` approval; the user approves it, with or without the choice. */
+  async function openByApproval(workspace: Workspace, mergeWhenReady: boolean | undefined) {
+    const agentId = await worker(workspace.id);
+    const token = server.agentTokens.issue({ agentId, workspaceId: workspace.id });
+    const { approval } = await json<{ approval: Approval }>(
+      await server.request(
+        "POST",
+        "/api/bridge/workspace/pr",
+        { title: "Fix the jump", body: "The player jumps twice." },
+        { "x-pi-spore-token": "", authorization: `Bearer ${token}` },
+      ),
+      201,
+    );
+    const subject = approval.subject as WorkspacePrSubject;
+    expect(subject.mergeWhenReady).toBeUndefined();
+    const decided = await json<{ approval: Approval }>(
+      await server.request("POST", `/api/attention/approvals/${approval.id}/approve`, {
+        subject: mergeWhenReady === undefined ? subject : { ...subject, mergeWhenReady },
+      }),
+    );
+    await until(() => scheduledDelays().length === 1);
+    return { agentId, outcome: decided.approval.outcome as string };
+  }
+
+  const makeReady = () =>
+    pr1((pr) => {
+      pr.mergeable = "MERGEABLE";
+      pr.statusCheckRollup = [run("test", "SUCCESS")];
+    });
+
+  it("merges a ready PR once with the head the watch read, and the card moves to Done", async () => {
+    const { workspace, cardId } = await setUp();
+    const { outcome } = await openByApproval(workspace, true);
+    expect(outcome).toContain("merges the PR when checks pass");
+    expect((await status(workspace.id)).mergeWhenReady).toBe(true);
+
+    makeReady();
+    await tick();
+
+    expect(mergeCalls()).toEqual([
+      ["pr", "merge", "1", "--merge", "--match-head-commit", headOf()],
+    ]);
+    expect(await status(workspace.id)).toMatchObject({
+      pr: { state: "merged" },
+      watch: { state: "done" },
+    });
+    expect(await cardColumn(cardId)).toBe("done");
+    expect(scheduledDelays()).toEqual([]);
+    expectOnlyAllowedCalls();
+  });
+
+  it("never merges a PR that was opened without the choice", async () => {
+    const { workspace } = await setUp();
+    const { outcome } = await openByApproval(workspace, undefined);
+    expect(outcome).not.toContain("merges the PR when checks pass");
+    expect((await status(workspace.id)).mergeWhenReady).toBe(false);
+
+    makeReady();
+    await tick();
+    await tick();
+
+    expect(mergeCalls()).toEqual([]);
+    expect((await status(workspace.id)).pr).toMatchObject({ state: "open" });
+  });
+
+  it("does not merge while checks run or after they fail, and still sends the failure to the chat", async () => {
+    const { workspace } = await setUp();
+    const { agentId } = await openByApproval(workspace, true);
+    pr1((pr) => {
+      pr.mergeable = "MERGEABLE";
+    });
+
+    setChecks([run("test", "")]);
+    await tick();
+    expect(mergeCalls()).toEqual([]);
+
+    setChecks([run("test", "FAILURE")], "h2");
+    await tick();
+    await until(() => said(agentId).length === 1);
+    expect(mergeCalls()).toEqual([]);
+    expect(await status(workspace.id)).toMatchObject({
+      mergeWhenReady: true,
+      watch: { state: "watching", tries: 1 },
+    });
+  });
+
+  it("keeps the choice and the watch, counts no try, and backs off when GitHub refuses the merge", async () => {
+    const { workspace } = await setUp();
+    await openByApproval(workspace, true);
+    makeReady();
+    editGh((state) => {
+      state.mergeError = "Head branch was modified.";
+    });
+
+    const delays = await tick();
+
+    expect(mergeCalls()).toHaveLength(1);
+    expect(delays).toEqual([30_000]);
+    expect(scheduledDelays()).toEqual([60_000]);
+    expect(await status(workspace.id)).toMatchObject({
+      mergeWhenReady: true,
+      watch: { state: "watching", tries: 0, message: expect.stringContaining("Head branch") },
+    });
+  });
+
+  it("sends conflicts once for each head, even while checks run, and gives up after 3 tries", async () => {
+    const { workspace } = await setUp();
+    const { agentId } = await openByApproval(workspace, true);
+    pr1((pr) => {
+      pr.mergeable = "CONFLICTING";
+    });
+
+    setChecks([run("test", "")], "h1");
+    await tick();
+    await until(() => said(agentId).length === 1);
+    expect(said(agentId)[0]).toContain(
+      "PR #1 has conflicts with main. Merge main into this branch, fix the conflicts, run check and test, and push. Do not force push.",
+    );
+    expect((await status(workspace.id)).tries).toMatchObject([
+      { summary: "Sent conflicts with main to the worker (try 1 of 3)" },
+    ]);
+
+    // The same head again, checks passed now: nothing is sent, and the clean-head reset does not run for a
+    // conflicting PR.
+    setChecks([run("test", "SUCCESS")], "h1");
+    await tick();
+    expect((await status(workspace.id)).tries).toHaveLength(1);
+    expect(said(agentId)).toHaveLength(1);
+    expect((await status(workspace.id)).watch).toMatchObject({ state: "watching", tries: 1 });
+
+    for (const head of ["h2", "h3"]) {
+      setChecks([run("test", "SUCCESS")], head);
+      await tick();
+    }
+    await until(() => said(agentId).length === 3);
+    expect(mergeCalls()).toEqual([]);
+
+    setChecks([run("test", "SUCCESS")], "h4");
+    await tick();
+    const waiting = await status(workspace.id);
+    expect(waiting.mergeWhenReady).toBe(false);
+    expect(waiting.watch).toMatchObject({
+      state: "waiting",
+      message:
+        "Stopped after 3 automatic tries in a row. PR #1 will not merge on its own: PR #1 has conflicts with main. Waiting for you.",
+    });
+    expect(await notices()).toMatchObject([
+      {
+        title: expect.stringContaining("#1"),
+        detail: expect.stringContaining("PR #1 will not merge on its own: PR #1 has conflicts"),
+      },
+    ]);
+    // Every delivery has a try row, written with it; none was added.
+    expect((await status(workspace.id)).tries).toHaveLength(3);
+    expect(said(agentId)).toHaveLength(3);
+  });
+
+  it("sends no conflicts for a PR without the choice", async () => {
+    const { workspace } = await setUp();
+    const { agentId } = await openByApproval(workspace, undefined);
+    pr1((pr) => {
+      pr.mergeable = "CONFLICTING";
+    });
+    await tick();
+    expect(await status(workspace.id)).toMatchObject({ tries: [], watch: { tries: 0 } });
+    expect(said(agentId)).toEqual([]);
+  });
+
+  it("turns off with DELETE, and a ready PR then does not merge", async () => {
+    const { workspace } = await setUp();
+    await openByApproval(workspace, true);
+
+    const off = await json<PrStatus>(
+      await server.request("DELETE", `/api/github-pr/workspaces/${workspace.id}/merge-when-ready`),
+    );
+    expect(off.mergeWhenReady).toBe(false);
+    makeReady();
+    await tick();
+
+    expect(mergeCalls()).toEqual([]);
+    expect(await status(workspace.id)).toMatchObject({ mergeWhenReady: false });
+  });
+
+  /**
+   * Runs one poll and holds its `gh pr view` after gh read the PR. `during` runs while the poll waits, so the poll
+   * acts on what it read before the change.
+   */
+  async function pollWhile(during: () => Promise<void>) {
+    const fifo = join(scratch, "hold.fifo");
+    execFileSync("mkfifo", [fifo]);
+    const seen = readGh().calls.length;
+    editGh((state) => {
+      state.holdView = fifo;
+    });
+    const polling = tick();
+    await until(() => {
+      try {
+        return readGh().calls.length > seen;
+      } catch {
+        return false; // The fake gh is writing its state file.
+      }
+    });
+    await during();
+    writeFileSync(fifo, "go");
+    await polling;
+  }
+
+  it("does not merge when the choice is turned off while the poll reads the PR", async () => {
+    const { workspace } = await setUp();
+    await openByApproval(workspace, true);
+    makeReady();
+
+    await pollWhile(async () => {
+      await json(
+        await server.request(
+          "DELETE",
+          `/api/github-pr/workspaces/${workspace.id}/merge-when-ready`,
+        ),
+      );
+    });
+
+    expect(mergeCalls()).toEqual([]);
+    expect(await status(workspace.id)).toMatchObject({
+      mergeWhenReady: false,
+      pr: { state: "open" },
+    });
+  });
+
+  it("does not merge when the watch is stopped while the poll reads the PR", async () => {
+    const { workspace } = await setUp();
+    await openByApproval(workspace, true);
+    makeReady();
+
+    await pollWhile(async () => {
+      await json(
+        await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/watch`, {
+          on: false,
+        }),
+      );
+    });
+
+    expect(mergeCalls()).toEqual([]);
+    expect(await status(workspace.id)).toMatchObject({
+      mergeWhenReady: false,
+      pr: { state: "open" },
+    });
+  });
+
+  /** Closes the PR, lets pi-spore see it closed in `observe`, reopens it ready, and resumes the watch. */
+  async function closedThenReopened(
+    workspace: Workspace,
+    observe: () => Promise<unknown>,
+  ): Promise<void> {
+    await openByApproval(workspace, true);
+    pr1((pr) => {
+      pr.state = "CLOSED";
+    });
+    await observe();
+    expect(await status(workspace.id)).toMatchObject({ mergeWhenReady: false });
+
+    pr1((pr) => {
+      pr.state = "OPEN";
+    });
+    makeReady();
+    const reopened = await json<PrStatus>(
+      await server.request("GET", `/api/github-pr/workspaces/${workspace.id}?refresh=1`),
+    );
+    expect(reopened.pr).toMatchObject({ state: "open" });
+    const polledAt = reopened.watch.polledAt ?? 0;
+    await json(
+      await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/watch`, { on: true }),
+    );
+    await until(async () => {
+      await tick();
+      return ((await status(workspace.id)).watch.polledAt ?? 0) > polledAt;
+    });
+  }
+
+  it("drops the choice when the watch sees the PR closed, so a reopened PR does not merge", async () => {
+    const { workspace } = await setUp();
+    await closedThenReopened(workspace, () => tick());
+
+    expect(mergeCalls()).toEqual([]);
+    expect(await status(workspace.id)).toMatchObject({
+      mergeWhenReady: false,
+      pr: { state: "open" },
+      watch: { state: "watching" },
+    });
+  });
+
+  it("drops the choice when a refresh sees the PR closed, so a reopened PR does not merge", async () => {
+    const { workspace } = await setUp();
+    await closedThenReopened(workspace, () =>
+      server.request("GET", `/api/github-pr/workspaces/${workspace.id}?refresh=1`),
+    );
+
+    expect(mergeCalls()).toEqual([]);
+    expect(await status(workspace.id)).toMatchObject({ mergeWhenReady: false });
+  });
+
+  it("answers 404 no_pr for DELETE when the workspace has no PR", async () => {
+    const { workspace } = await setUp();
+    const response = await server.request(
+      "DELETE",
+      `/api/github-pr/workspaces/${workspace.id}/merge-when-ready`,
+    );
+    expect(response.status).toBe(404);
+    expect(await response.json()).toMatchObject({ error: { code: "no_pr" } });
+  });
+
+  it("turns off when the watch stops", async () => {
+    const { workspace } = await setUp();
+    await openByApproval(workspace, true);
+
+    const stopped = await json<PrStatus>(
+      await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/watch`, {
+        on: false,
+      }),
+    );
+
+    expect(stopped).toMatchObject({ mergeWhenReady: false, watch: { state: "off" } });
   });
 });
 

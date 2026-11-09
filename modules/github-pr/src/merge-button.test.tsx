@@ -31,6 +31,7 @@ const status = (mergeBlocked?: string): PrStatus => ({
     checks: [],
   },
   ...(mergeBlocked ? { mergeBlocked } : {}),
+  mergeWhenReady: false,
   watch: { state: "off", tries: 0, maxTries: 3 },
   tries: [],
   local: { headId, uncommitted: 0 },
