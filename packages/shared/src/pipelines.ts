@@ -14,6 +14,8 @@ export const PipelineStage = Type.Object(
   {
     name: PipelineName,
     role: Type.Optional(StageRole),
+    /** The worker stage makes no new agent: it gives the brief to the worker of the run named by `previousRunId`. */
+    worker: Type.Optional(Type.Literal("reuse")),
     model: Type.Optional(ModelRef),
     /** Only `route` is built: the model `spore/auto` (R4.9). */
     tier: Type.Optional(Type.String()),

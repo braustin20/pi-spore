@@ -72,6 +72,8 @@ export interface Agents {
   rename(agentId: string, title: string): void;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
+  /** True for a chat the user closed (ADR 0110). Throws a 404 ApiError for an unknown id. */
+  isClosed(agentId: string): boolean;
   /**
    * The session file and role of each agent of the workspace that has a session, oldest first, so a reader of
    * session files can tell which role used the tokens in each (R18.2).

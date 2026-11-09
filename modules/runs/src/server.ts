@@ -250,6 +250,12 @@ const failedMessage = (lane: LaneRow) =>
     "You can call revise_lane with a new brief to run it again.",
   ].join("\n");
 
+const workerGoneMessage = (lane: LaneRow) =>
+  `Lane "${lane.name}" (${lane.id}): its worker chat is gone, so the revise runs the full pipeline "${lane.pipeline}" with a new worker.`;
+
+/** The built-in pipeline that gives a revise brief to the lane's own worker chat (ADR 0158). */
+const REVISE_PIPELINE = "revise";
+
 const conflictMessage = (lane: LaneRow, line: string, files: readonly string[]) =>
   [
     `Lane "${lane.name}" (${lane.id}) conflicts with ${line} in: ${files.join(", ")}.`,
@@ -779,18 +785,34 @@ export const runsModule: ServerModule = {
       };
     };
 
+    /** False when retention deleted the chat (404) or the user closed it (ADR 0110). */
+    const workerPresent = (agentId: string): boolean => {
+      try {
+        return !agents.isClosed(agentId);
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return false;
+        throw error;
+      }
+    };
+
     const launch = async ({ subject }: { subject: LaneSubject }): Promise<StepOutcome<never>> => {
       const lane = loadLane(subject.laneId);
       if (lane?.state !== "starting") return { next: lane ? "await" : null };
       const run = requireRun(lane.run_id);
       const brief = await readBrief(run, lane.brief);
+      // A lane that ran before is a revise. It needs its last run's worker chat, so a deleted or closed one is gone.
+      const worker = lane.pipeline_run_id
+        ? pipelines.get(lane.pipeline_run_id).workerAgentId
+        : undefined;
+      const reuse = worker !== undefined && workerPresent(worker);
       let pipelineRunId: string | undefined;
       try {
         const started = await pipelines.start(lane.workspace_id as string, {
-          pipeline: lane.pipeline,
           brief,
           askingAgentId: run.coordinator_agent_id,
-          ...(lane.model ? { workerModel: lane.model } : {}),
+          ...(reuse
+            ? { pipeline: REVISE_PIPELINE, previousRunId: lane.pipeline_run_id as string }
+            : { pipeline: lane.pipeline, ...(lane.model ? { workerModel: lane.model } : {}) }),
         });
         pipelineRunId = started.id;
       } catch (error) {
@@ -808,12 +830,17 @@ export const runsModule: ServerModule = {
         return { next: null };
       }
       return {
-        commit: () =>
+        commit: () => {
           host.store.run(
             "UPDATE runs_lanes SET state = 'running', pipeline_run_id = COALESCE(?, pipeline_run_id) WHERE id = ? AND state = 'starting'",
             pipelineRunId ?? null,
             lane.id,
-          ),
+          );
+          // Only the step that started the run tells, so a restart does not send it twice.
+          if (pipelineRunId && lane.pipeline_run_id && !reuse) {
+            agents.deliver(coordinatorOf(run.id), workerGoneMessage(lane));
+          }
+        },
       };
     };
 

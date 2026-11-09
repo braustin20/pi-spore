@@ -22,7 +22,12 @@ import { artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { createGithubPrModule } from "@pi-spore/mod-github-pr/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
-import { type Pipelines, PipelinesKey, pipelinesModule } from "@pi-spore/mod-pipelines/server";
+import {
+  type Pipelines,
+  PipelinesKey,
+  pipelinesModule,
+  type StartRunRequest,
+} from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
@@ -1521,23 +1526,23 @@ describe("reviewer report rules", () => {
   });
 });
 
+/** The labels the gate actions appended to the counter file, one per run. */
+const counterOf = () => join(scratch, "counter.txt");
+const ran = (): string[] =>
+  existsSync(counterOf()) ? readFileSync(counterOf(), "utf8").split("\n").filter(Boolean) : [];
+
+/** config.toml text that declares each action as the gate-action fixture in the given mode. */
+const config = (modes: Record<string, string>) =>
+  Object.entries(modes)
+    .map(
+      ([name, mode]) =>
+        `[actions.${name}]\nrun = ${JSON.stringify([process.execPath, GATE_ACTION, counterOf(), name, mode])}\n`,
+    )
+    .join("\n");
+
 describe("a gate stage", () => {
   const GATES = `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check", "test"]\nfail_first = "artifact"\n`;
   const reviewThenGates = `${withReview("rounds = 1", "fix_passes = 1")}\n[[stage]]\nname = "gates"\ngates = ["check"]\nfail_first = "artifact"\n`;
-
-  /** The labels the gate actions appended to the counter file, one per run. */
-  const counterOf = () => join(scratch, "counter.txt");
-  const ran = (): string[] =>
-    existsSync(counterOf()) ? readFileSync(counterOf(), "utf8").split("\n").filter(Boolean) : [];
-
-  /** config.toml text that declares each action as the gate-action fixture in the given mode. */
-  const config = (modes: Record<string, string>) =>
-    Object.entries(modes)
-      .map(
-        ([name, mode]) =>
-          `[actions.${name}]\nrun = ${JSON.stringify([process.execPath, GATE_ACTION, counterOf(), name, mode])}\n`,
-      )
-      .join("\n");
 
   /** A workspace artifact, as a worker would have saved it. */
   const saveArtifact = (server: TestServer, workspaceId: string, path: string, content: string) => {
@@ -1766,31 +1771,31 @@ fail_first = "artifact"
   });
 });
 
-describe("the pipelines interface (start, afterRunEnded)", () => {
-  /** A module that starts runs through `PipelinesKey` and records every run that ends. */
-  function probe() {
-    const ended: PipelineRun[] = [];
-    let pipelines: Pipelines | undefined;
-    const module: ServerModule = {
-      id: "runs-probe",
-      requires: ["pipelines"],
-      core: false,
-      setup(host) {
-        pipelines = host.use(PipelinesKey);
-        pipelines.afterRunEnded((run) => ended.push(run));
-      },
-    };
-    const startThrough = (...args: Parameters<Pipelines["start"]>) => {
-      if (!pipelines) throw new Error("The probe module is not set up");
-      return pipelines.start(...args);
-    };
-    const stopThrough = (...args: Parameters<Pipelines["stop"]>) => {
-      if (!pipelines) throw new Error("The probe module is not set up");
-      pipelines.stop(...args);
-    };
-    return { module, ended, startThrough, stopThrough };
-  }
+/** A module that starts runs through `PipelinesKey` and records every run that ends. */
+function probe() {
+  const ended: PipelineRun[] = [];
+  let pipelines: Pipelines | undefined;
+  const module: ServerModule = {
+    id: "runs-probe",
+    requires: ["pipelines"],
+    core: false,
+    setup(host) {
+      pipelines = host.use(PipelinesKey);
+      pipelines.afterRunEnded((run) => ended.push(run));
+    },
+  };
+  const startThrough = (...args: Parameters<Pipelines["start"]>) => {
+    if (!pipelines) throw new Error("The probe module is not set up");
+    return pipelines.start(...args);
+  };
+  const stopThrough = (...args: Parameters<Pipelines["stop"]>) => {
+    if (!pipelines) throw new Error("The probe module is not set up");
+    pipelines.stop(...args);
+  };
+  return { module, ended, startThrough, stopThrough };
+}
 
+describe("the pipelines interface (start, afterRunEnded)", () => {
   const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
     until(async () => (await getRun(server, runId)).state === state);
 
@@ -1876,5 +1881,199 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
       "--model",
       "other-1",
     ]);
+  });
+});
+
+describe("a revise run", () => {
+  const LOOKS_FINE = { summary: "Looks fine", verdict: "approve", findings: [FINDING] };
+  const APPROVE = { summary: "Good", verdict: "approve" };
+
+  const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
+    until(async () => (await getRun(server, runId)).state === state);
+
+  const commit = (folder: string, file: string, text: string) => {
+    writeFileSync(join(folder, file), text);
+    execFileSync("git", ["add", file], { cwd: folder });
+    execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", file], {
+      cwd: folder,
+    });
+  };
+
+  /**
+   * A git workspace whose first run (implement, then a review that approves with a finding) passed, and a way to start
+   * the built-in revise pipeline after it. The gates pass.
+   */
+  async function afterFirstRun(name: string, script: Record<string, unknown[]>) {
+    const { module, startThrough } = probe();
+    const server = await start({
+      env: scriptEnv(script),
+      extraModules: [module],
+      roleDefaults: async (role) =>
+        role === "reviewer" ? { provider: "fake", modelId: "strong" } : {},
+    });
+    writeTiers(server.paths.root, TIERS);
+    const { workspaceId, agentId, folder } = await workspace(server, name, {
+      git: true,
+      config: config({ check: "pass", test: "pass" }),
+    });
+    userPipeline(server.paths.root, "p", withReview());
+    const first = await startThrough(workspaceId, { pipeline: "p", brief: "Build the thing" });
+    await untilState(server, first.id, "passed");
+    const revise = (request: Partial<StartRunRequest> = {}) =>
+      startThrough(workspaceId, {
+        pipeline: "revise",
+        brief: "Fix the thing",
+        previousRunId: first.id,
+        ...request,
+      });
+    const stageAgents = async () =>
+      (
+        await json<{ agents: { id: string; kind: string; role: string }[] }>(
+          await server.request("GET", `/api/agents?workspaceId=${workspaceId}`),
+        )
+      ).agents.filter((agent) => agent.kind === "stage");
+    return {
+      server,
+      workspaceId,
+      agentId,
+      folder,
+      first: await getRun(server, first.id),
+      revise,
+      startThrough,
+      stageAgents,
+    };
+  }
+
+  it("gives the fix to the earlier run's worker, makes no new worker, and one reviewer", async () => {
+    const { server, first, revise, stageAgents } = await afterFirstRun("reuse", {
+      worker: [DONE, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+    const before = await stageAgents();
+
+    const run = await revise();
+    await untilState(server, run.id, "passed");
+
+    const done = await getRun(server, run.id);
+    const fix = done.turns[0] as PipelineTurn;
+    expect(done.workerAgentId).toBe(first.workerAgentId);
+    expect(fix).toMatchObject({ kind: "task", agentId: first.workerAgentId });
+    const after = await stageAgents();
+    expect(after.filter((agent) => agent.role === "worker").map((agent) => agent.id)).toEqual([
+      first.workerAgentId,
+    ]);
+    const reviewers = (agents: { role: string }[]) =>
+      agents.filter((agent) => agent.role === "reviewer").length;
+    expect(reviewers(after)).toBe(reviewers(before) + 1);
+    const prompt = (await chat(server, first.workerAgentId as string)).find((message) =>
+      message.includes(`Turn: ${fix.id}`),
+    );
+    expect(prompt).toContain('Your change came back with a new brief. You are the "fix" stage');
+    expect(prompt).toContain(`pipelines/${run.id}/brief.md`);
+  });
+
+  it("shows the reviewer the earlier review and a diff of the fix alone", async () => {
+    const { server, workspaceId, agentId, folder, revise } = await afterFirstRun("fixdiff", {
+      worker: [DONE, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+    commit(folder, "before.txt", "before line\n");
+    // The fix turn waits until the test made its change, so the change lands after the revise started.
+    const hold = join(folder, ".fake-pi-hold-turn");
+    writeFileSync(hold, "");
+
+    const run = await revise();
+    commit(folder, "after.txt", "after line\n");
+    rmSync(hold);
+    await untilState(server, run.id, "passed");
+
+    const review = (await getRun(server, run.id)).turns[1] as PipelineTurn;
+    const prompt = (await chat(server, review.agentId))[0];
+    const fixDiff = `pipelines/${run.id}/review-1-fix.diff`;
+    expect(prompt).toContain("This run is a fix pass of a change a pipeline already checked.");
+    expect(prompt).toContain(
+      `${fixDiff}: the commits since the fix started, then the uncommitted and untracked files.`,
+    );
+    expect(prompt).toContain("Looks fine");
+    expect(prompt).toContain("1. [important] Missing null check (a.txt:2)");
+    expect(prompt).toContain(
+      "Answer revise only for a finding that is a bug, a missing or wrong test, a regression, or a break of the brief.",
+    );
+    const diff = await json<BridgeArtifactFile>(
+      await asAgent(
+        server,
+        agentId,
+        workspaceId,
+      )("GET", `artifacts/file?scope=workspace&path=${fixDiff}`),
+    );
+    expect(diff.content).toContain("+after line");
+    expect(diff.content).not.toContain("+before line");
+  });
+
+  it("passes after an approve and the gates", async () => {
+    const { server, revise } = await afterFirstRun("approve", {
+      worker: [DONE, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+
+    const run = await revise();
+    await untilState(server, run.id, "passed");
+
+    expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1"]);
+    expect(ran()).toEqual(["check", "test"]);
+  });
+
+  it("makes one last fix after a REVISE, then runs the gates, with no second review or approval", async () => {
+    const { server, first, revise, stageAgents } = await afterFirstRun("lastfix", {
+      worker: [DONE, FIX, FIX],
+      reviewer: [LOOKS_FINE, REVISE],
+    });
+    const before = await stageAgents();
+
+    const run = await revise();
+    await untilState(server, run.id, "passed");
+
+    const done = await getRun(server, run.id);
+    expect(kinds(done)).toEqual(["task1", "review1", "fix1"]);
+    const lastFix = done.turns[2] as PipelineTurn;
+    expect(lastFix.agentId).toBe(first.workerAgentId);
+    const prompt = (await chat(server, lastFix.agentId)).find((message) =>
+      message.includes(`Turn: ${lastFix.id}`),
+    );
+    expect(prompt).toContain("This is the last fix: no review follows it.");
+    expect((await stageAgents()).length).toBe(before.length + 1);
+    const { approvals } = await json<{ approvals: Approval[] }>(
+      await server.request("GET", "/api/attention/approvals"),
+    );
+    expect(approvals).toEqual([]);
+    expect(ran()).toEqual(["check", "test"]);
+  });
+
+  it("refuses a reuse with no previous run, a previous run for another pipeline, and a worker model", async () => {
+    const { workspaceId, revise, startThrough } = await afterFirstRun("refused", {
+      worker: [DONE],
+      reviewer: [LOOKS_FINE],
+    });
+
+    await expect(
+      startThrough(workspaceId, { pipeline: "revise", brief: "Fix the thing" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "bad_request",
+      message: expect.stringContaining('Pipeline "revise" reuses'),
+    });
+    await expect(revise({ pipeline: "p" })).rejects.toMatchObject({
+      status: 400,
+      code: "bad_request",
+      message: expect.stringContaining('Pipeline "p"'),
+    });
+    await expect(revise({ workerModel: "fake/other-1" })).rejects.toMatchObject({
+      status: 400,
+      code: "bad_request",
+    });
+    await expect(revise({ previousRunId: "missing" })).rejects.toMatchObject({
+      status: 404,
+      code: "run_not_found",
+    });
   });
 });

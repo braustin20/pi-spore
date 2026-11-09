@@ -108,8 +108,13 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
     name: "revise_lane",
     label: "Revise lane",
     description:
-      "Send a passed or failed lane back with a new brief (an artifact path). Its pipeline runs again in the lane's workspace.",
+      "Send a passed or failed lane back with a new brief (an artifact path). The lane's worker gets the brief as a " +
+      "fix turn, then one fresh reviewer and the gates check it. If the worker chat is gone, the lane's full pipeline " +
+      "runs again.",
     promptSnippet: "Send a lane back with a new brief",
+    promptGuidelines: [
+      "Use revise_lane for a small, exact change: a cut, a conflict, a red gate. Name each ask in the brief, since the reviewer checks the brief's asks.",
+    ],
     parameters: Type.Object({
       laneId: Type.String({ minLength: 1 }),
       brief: Type.String({ minLength: 1, description: "Artifact path of the new brief" }),

@@ -1418,3 +1418,163 @@ describe("cards from a run's coordinator (ADR 0154)", () => {
     expect(await openApprovals(server)).toEqual([]);
   });
 });
+
+describe("revising a lane (ADR 0158)", () => {
+  const GREEN = { check: "pass", test: "pass" };
+  const FINDING = { severity: "important", title: "Missing null check", file: "a.txt", line: 2 };
+  const DONE = { summary: "Done" };
+  const FIX = { summary: "Fixed" };
+  const LOOKS_FINE = { summary: "Looks fine", verdict: "approve", findings: [FINDING] };
+  const APPROVE = { summary: "Good", verdict: "approve" };
+  const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
+  /** Implement, then one review round, so the lane's first run leaves a review for the revise to show. */
+  const REVIEWED = `id = "rv"\n\n[[stage]]\nname = "implement"\nrole = "worker"\n\n[[stage]]\nname = "review"\nrole = "reviewer"\nrounds = 1\n`;
+
+  /** A lane whose first run passed, and a way to revise it that returns the revise's pipeline run. */
+  async function passedLane(
+    name: string,
+    script: Record<string, unknown[]>,
+    gates: Record<string, string> = GREEN,
+  ) {
+    const server = await start({ script });
+    writeFileSync(join(server.paths.root, "pipelines", "rv.toml"), REVIEWED);
+    const { projectId } = await project(server, name, gates);
+    const { run, coordinator } = await createRun(server, projectId, name);
+    const started = await startLane(run, coordinator, "feature", { pipeline: "rv" });
+    const untilLane = (state: Lane["state"]) =>
+      until(async () => (await laneOf(server, run.id, started.id)).state === state);
+    await untilLane("passed");
+    const lane = await laneOf(server, run.id, started.id);
+    const pipelineRuns = async () =>
+      (
+        await json<{ runs: PipelineRun[] }>(
+          await server.request("GET", `/api/pipelines/workspaces/${lane.workspaceId}/runs`),
+        )
+      ).runs;
+    const [first] = (await pipelineRuns()) as [PipelineRun];
+    const laneAgents = async () =>
+      (
+        await json<{ agents: { id: string; role: string }[] }>(
+          await server.request("GET", `/api/agents?workspaceId=${lane.workspaceId}`),
+        )
+      ).agents;
+    const ofRole = async (role: string) =>
+      (await laneAgents()).filter((agent) => agent.role === role).map((agent) => agent.id);
+    const revise = async () => {
+      await artifacts.write(
+        { scope: "workspace", id: run.workspaceId },
+        "briefs/fix.md",
+        "Fix the null check",
+      );
+      await runs.reviseLane(coordinator, { laneId: lane.id, brief: "briefs/fix.md" });
+      let revised: PipelineRun | undefined;
+      await until(async () => {
+        revised = (await pipelineRuns()).find((entry) => entry.id !== first.id);
+        return revised !== undefined;
+      });
+      return revised as PipelineRun;
+    };
+    const coordinatorSaid = async (text: string) =>
+      // The fake Pi echoes each prompt, so only the user side counts.
+      (await chat(server, run.coordinatorAgentId)).filter(
+        (message) => message.startsWith("user:") && message.includes(text),
+      );
+    return { server, run, lane, first, revise, untilLane, ofRole, pipelineRuns, coordinatorSaid };
+  }
+
+  it("gives the brief to the lane's own worker, with one new reviewer and no new worker", async () => {
+    const { first, revise, untilLane, ofRole } = await passedLane("reuse", {
+      worker: [DONE, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+    const reviewers = await ofRole("reviewer");
+
+    const revised = await revise();
+    await untilLane("passed");
+
+    expect(revised.pipelineId).toBe("revise");
+    expect(revised.workerAgentId).toBe(first.workerAgentId);
+    expect(revised.turns[0]).toMatchObject({ kind: "task", agentId: first.workerAgentId });
+    expect(await ofRole("worker")).toEqual([first.workerAgentId]);
+    expect((await ofRole("reviewer")).length).toBe(reviewers.length + 1);
+    expect(await ofRole("adversarial-reviewer")).toEqual([]);
+  });
+
+  it("shows the reviewer the previous findings and the fix diff", async () => {
+    const { server, revise, untilLane, pipelineRuns } = await passedLane("findings", {
+      worker: [DONE, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+
+    const revised = await revise();
+    await untilLane("passed");
+
+    const done = (await pipelineRuns()).find((entry) => entry.id === revised.id) as PipelineRun;
+    const prompt = (await chat(server, (done.turns[1] as { agentId: string }).agentId))[0];
+    expect(prompt).toContain("1. [important] Missing null check (a.txt:2)");
+    expect(prompt).toContain(`pipelines/${revised.id}/review-1-fix.diff`);
+  });
+
+  it("passes the lane after an approve and green gates, and tells the coordinator", async () => {
+    const { revise, untilLane, coordinatorSaid } = await passedLane("approve", {
+      worker: [DONE, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+
+    await revise();
+    await untilLane("passed");
+
+    await until(async () => (await coordinatorSaid("passed its pipeline")).length === 2);
+    expect(await coordinatorSaid("worker chat is gone")).toEqual([]);
+  });
+
+  it("makes one last fix after a REVISE, with no second reviewer and no approval", async () => {
+    const { server, first, revise, untilLane, ofRole } = await passedLane("lastfix", {
+      worker: [DONE, FIX, FIX],
+      reviewer: [LOOKS_FINE, REVISE],
+    });
+    const reviewers = await ofRole("reviewer");
+
+    await revise();
+    await untilLane("passed");
+
+    expect((await ofRole("reviewer")).length).toBe(reviewers.length + 1);
+    expect(await ofRole("worker")).toEqual([first.workerAgentId]);
+    expect(await openApprovals(server)).toEqual([]);
+  });
+
+  it("fails the lane on a red gate and tells the coordinator", async () => {
+    const { revise, untilLane, coordinatorSaid } = await passedLane(
+      "redgate",
+      { worker: [DONE, FIX], reviewer: [LOOKS_FINE, APPROVE] },
+      { check: "pass", test: "fail" },
+    );
+
+    await revise();
+    await untilLane("failed");
+
+    await until(async () => (await coordinatorSaid("failed its pipeline")).length === 1);
+  });
+
+  it("runs the lane's own pipeline with a new worker when its worker chat is closed", async () => {
+    const { server, run, lane, first, revise, untilLane } = await passedLane("closed", {
+      worker: [DONE, DONE],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+    // A chat that is still working refuses the close with 409.
+    await until(
+      async () =>
+        (await server.request("POST", `/api/agents/${first.workerAgentId}/close`)).status === 200,
+    );
+
+    const revised = await revise();
+    await untilLane("passed");
+
+    expect(revised.pipelineId).toBe("rv");
+    expect(revised.workerAgentId).toBeDefined();
+    expect(revised.workerAgentId).not.toBe(first.workerAgentId);
+    const gone = await deliveredWith(server, run.coordinatorAgentId, "worker chat is gone");
+    expect(gone).toContain(`Lane "feature" (${lane.id})`);
+    expect(gone).toContain('"rv"');
+  });
+});

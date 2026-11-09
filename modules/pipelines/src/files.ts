@@ -39,6 +39,32 @@ gates = ["check", "test"]
 fail_first = "artifact"
 `;
 
+/** Used when no user or project file has the id `revise`: a short fix pass by the worker of an earlier run. */
+export const BUILT_IN_REVISE = `id = "revise"
+
+[[stage]]
+name = "fix"
+role = "worker"
+worker = "reuse"
+
+[[stage]]
+name = "review"
+role = "reviewer"
+rounds = 1
+fix_passes = 1
+min_strength_over = "fix"
+
+[[stage]]
+name = "gates"
+gates = ["check", "test"]
+fail_first = "artifact"
+`;
+
+const BUILT_INS = [
+  { id: "default", text: BUILT_IN_DEFAULT },
+  { id: "revise", text: BUILT_IN_REVISE },
+];
+
 /** A pipeline file that passed every check. */
 export interface Pipeline {
   id: string;
@@ -59,9 +85,10 @@ export type PipelineEntry = Pipeline | FailedPipeline;
 
 const TOP_KEYS = ["id", "stage"];
 const AGENT_KEYS = ["name", "role", "model", "tier"];
+const WORKER_KEYS = [...AGENT_KEYS, "worker"];
 const REVIEWER_KEYS = [...AGENT_KEYS, "rounds", "fix_passes", "early_stop", "min_strength_over"];
 const GATE_KEYS = ["name", "gates", "fail_first"];
-const ALL_STAGE_KEYS = new Set([...REVIEWER_KEYS, ...GATE_KEYS]);
+const ALL_STAGE_KEYS = new Set([...WORKER_KEYS, ...REVIEWER_KEYS, ...GATE_KEYS]);
 
 /** The model `tier = "route"` stands for (R4.9). */
 export const ROUTE_MODEL = "spore/auto";
@@ -138,13 +165,17 @@ function checkStages(
     if (stage.gates === undefined && stage.role === undefined)
       throw bad(`${where}: needs a role or gates`);
     const kind = stage.gates !== undefined ? "gate" : (stage.role as string);
-    const allowed = kind === "gate" ? GATE_KEYS : kind === "worker" ? AGENT_KEYS : REVIEWER_KEYS;
+    const allowed = kind === "gate" ? GATE_KEYS : kind === "worker" ? WORKER_KEYS : REVIEWER_KEYS;
     for (const key of Object.keys(stage)) {
       if (!allowed.includes(key))
         throw bad(`${where}: key "${key}" is not allowed on a ${kind} stage`);
     }
     if (stage.model !== undefined && stage.tier !== undefined)
       throw bad(`${where}: set model or tier, not both`);
+    if (stage.worker === "reuse" && (stage.model !== undefined || stage.tier !== undefined))
+      throw bad(
+        `${where}: worker = "reuse" keeps the earlier worker and its model; remove model and tier`,
+      );
     if (stage.tier !== undefined && stage.tier !== "route")
       throw bad(`${where}: tier ${stage.tier} is not built; use route or model`);
     if (stage.role === "worker" && index !== 0)
@@ -183,17 +214,15 @@ async function readFolder(dir: string, source: PipelineSource): Promise<Pipeline
 
 /**
  * Every pipeline a workspace can start, by id. A project file wins over a user file with the same id (R6.2). A bad
- * file stays in the list with its error, and does not fall back to the built-in default.
+ * file stays in the list with its error, and does not fall back to the built-in one.
  */
 export async function loadPipelines(userDir: string, projectDir: string): Promise<PipelineEntry[]> {
   const byId = new Map<string, PipelineEntry>();
   for (const entry of await readFolder(userDir, "user")) byId.set(entry.id, entry);
   for (const entry of await readFolder(projectDir, "project")) byId.set(entry.id, entry);
-  if (!byId.has("default")) {
-    byId.set(
-      "default",
-      parsePipeline(Buffer.from(BUILT_IN_DEFAULT), "default", "built-in", "built-in default"),
-    );
+  for (const { id, text } of BUILT_INS) {
+    if (!byId.has(id))
+      byId.set(id, parsePipeline(Buffer.from(text), id, "built-in", `built-in ${id}`));
   }
   return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id));
 }
