@@ -15,6 +15,7 @@ import {
   type Run,
   RunAnswer,
 } from "./client.js";
+import { registerServerGuard } from "./guard.js";
 import { registerReportTool } from "./report.js";
 import { applyRules } from "./rules.js";
 import { registerRunTools } from "./runs.js";
@@ -87,6 +88,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
     return;
   }
   const client = new BridgeClient(env);
+  registerServerGuard(pi, env);
 
   // ADR 0031: pi-spore's rules replace the user's global AGENTS.md in agents.
   pi.on("before_agent_start", (event) => {

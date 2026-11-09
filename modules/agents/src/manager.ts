@@ -1,5 +1,6 @@
 import { stat } from "node:fs/promises";
 import { join } from "node:path";
+import { pid } from "node:process";
 import { type AgentTokens, ApiError, type EventHub, type Logger } from "@pi-spore/module-api";
 import {
   type Agent,
@@ -831,6 +832,7 @@ export class AgentManager {
       ...(await this.options.env(record, workspace)),
       ...context.env,
       PI_SPORE_URL: this.options.url,
+      PI_SPORE_SERVER_PID: String(pid),
       PI_SPORE_TOKEN: token,
     };
 
