@@ -24,17 +24,17 @@ agents across Git projects, with first-class Unity support. Read these before ch
   for that merge, or when it asks and the user says yes (ADR 0130). pi-spore's own code merges a PR only when the
   user clicks Merge in the PR tab and confirms (ADR 0142).
 
-## Delegation (ADR 0120)
+## Delegation (ADR 0120, ADR 0162)
 
-- The chat plans and checks. A `worker` subagent writes the feature code, on `spore/auto`. The chat may write
-  failing tests first, edit docs, and make tiny corrections.
-- `scout`, `researcher`, and `reviewer` are always allowed. Ask the user before the first worker, with the plan.
-  That yes covers every worker for the plan.
-- One brief per worker: one outcome, the files it may edit, one example of the pattern, the invariants, one pass or
-  fail command, a fresh context. One writer in the worktree at a time.
-- After each worker, read the real diff and check it for conciseness: extra validation, duplicated types, code that
-  skips an existing seam, and changes outside the brief go back to a new worker as exact cuts. After three passes,
-  re-split the task or take it over.
+- The chat plans and checks. The workspace pipeline writes the feature code: one slice is one `start_pipeline` run,
+  its worker on `spore/auto`. The chat may write failing tests first, edit docs, and make tiny corrections.
+- `scout`, `researcher`, and `reviewer` are always allowed. Ask the user before the first run, with the plan.
+  That yes covers every pipeline run of the plan.
+- One brief per run: one outcome, the files it may edit, one example of the pattern, the invariants, one pass or
+  fail command. One run per workspace at a time; wait for its end message.
+- After each run that passes, read the real diff and check it for conciseness: extra validation, duplicated types,
+  code that skips an existing seam, and changes outside the brief go back as a new run with the exact cuts. After
+  three runs, re-split the task or take it over.
 
 ## Module rules
 
