@@ -91,7 +91,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     from their history when first read; side chats never take it from the copied history. The user can rename.
 - **Stage agents** (R6, [ADR 0140](decisions/0140-pipeline-stage-agents.md)). A pipeline runs each stage on its own
   agent: kind `stage`, with a role (`worker`, `reviewer`, or `adversarial-reviewer`), a title (`implement`,
-  `Review 1`, ...), and a fixed model. They show as chat tabs after side chats.
+  `Review 1`, ...), and a fixed model. They show as chat tabs after side chats. A busy, starting, or waiting stage
+  agent sets the workspace's status line (section 13).
   - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
     pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
     `subagents.agentOverrides.<role>`; `modelsUsed(agentId)` lists the physical models Pi recorded on the agent's
@@ -1276,7 +1277,10 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   passes `chatId`; without it the pane shows the active orchestrator chat.
 - `setStatus` sets a React hook that returns one status line per workspace. The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
-  supplies a fresh snapshot. The status line follows the active orchestrator chat. When that chat is idle or
+  supplies a fresh snapshot. A busy, starting, or waiting stage agent of the workspace wins first: "Working:
+  <title>" (tone `run`), or "Waiting for a free agent slot" (tone `warn`), since the worker chat of a pipeline or a
+  run lane sits stopped while stages work. A stage that works beats one that waits. An idle, stopped, or failed
+  stage agent never shows. Otherwise the status line follows the active orchestrator chat. When that chat is idle or
   stopped and waits for the user (`AgentsWebKey.setUserWaits`, section 11b), the line says "Waiting for your
   answer". Otherwise an idle chat with a running helper (`helpersRunning`, section 2) says "Working (helper
   running)", tone `run`. A busy chat whose router waits for a local model shows its `routerStatus` ("Waiting for
