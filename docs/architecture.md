@@ -46,7 +46,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   already loads it), and `-e <repo>/pi-extensions/spore-bridge` (the same way). The cwd is the workspace directory.
   pi-spore's rules come from spore-bridge, not from a prompt file (ADR 0031).
 - Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (this
-  process's agent token, ADR 0032), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker` or
+  process's agent token, ADR 0032), `PI_SPORE_SERVER_PID` (the server's pid, for the bash guard, ADR 0160), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker` or
   `side`), `PI_SPORE_UNITY_PROJECT` (Unity projects), and from launch hooks `PI_SPORE_RUN_ID` and `PI_SPORE_RUN_ROLE`
   (`coordinator` or `lane`, section 9). Later: the workspace action env.
 - **Launch hooks** (ADR 0150). `AgentsKey.addLaunchContext(hook)` registers a synchronous hook that the manager calls
@@ -126,9 +126,17 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     `terminate: true`. The answer arrives later as a new user message, through a delivery (section 6), so a long wait
     survives restarts. Its guidelines say to use the user's `ask_user` only for a quick choice while the user watches.
   - `check`: runs the project's `check` action and returns its outcome and log tail (ADR 0025).
-  - `run_action` `{ name }`: runs a named project action the same way.
+  - `run_action` `{ name, background? }`: runs a named project action the same way.
   - Both start the run, follow it with `GET /api/bridge/runs/:id?wait=25000` until it ends, then read the last
     16 KiB of its log. An aborted tool call cancels the run.
+  - With `background: true`, `run_action` returns at once with the run id and log path (ADR 0160).
+    `stop_action` `{ runId }` cancels a run of the workspace through `POST /api/bridge/runs/:id/cancel`, with the
+    tool call id as receipt. The cancel route refuses read-only chats, like the start route.
+  - The bash guard (ADR 0160): a `tool_call` handler blocks a `bash` command that would stop the pi-spore server. It
+    reads the command text: `kill` of the server's pid, `-<pgid>`, `-1`, or `$PI_SPORE_SERVER_PID`; `kill` fed by
+    `$(...)` or `xargs` from a command that names the server's port; `pkill` and `killall` patterns that match the
+    server's name or command line (read once with `ps`) or name `node`, `dist/main.js`, `pi-spore`, or
+    `packages/server`; `fuser -k` on the port. Other commands run. A script or `bash -c` can still get past it.
   - Card tools (ADR 0100), limited to cards of the agent's project: `kanban_list_cards` `{ label?, column? }` (also
     lists the project's active workspaces), `kanban_add_card` and `kanban_update_card` (title, body, column, labels,
     due day, `blockedBy` card ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,

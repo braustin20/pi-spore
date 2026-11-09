@@ -334,6 +334,7 @@ export const bridgeModule: ServerModule = {
 
     host.routes.post("/runs/:id/cancel", (c) => {
       const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "cancel actions");
       return c.json({ run: actions.cancel(ownRun(caller, c.req.param("id")).id) });
     });
   },

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeEnv } from "./client.js";
+import { STOP_REASON } from "./guard.js";
 import sporeBridge from "./index.js";
 import {
   COORDINATOR_RULES,
@@ -64,6 +65,8 @@ beforeEach(async () => {
   await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
   vi.stubEnv("PI_SPORE_URL", `http://127.0.0.1:${(server.address() as AddressInfo).port}/`);
   vi.stubEnv("PI_SPORE_TOKEN", "agent-token");
+  // The test process stands in for the server, so ps can read it.
+  vi.stubEnv("PI_SPORE_SERVER_PID", String(process.pid));
   vi.stubEnv("PI_CODING_AGENT_DIR", "/fake/agent");
 });
 afterEach(() => {
@@ -105,7 +108,7 @@ function fakePi() {
 }
 
 const run = (status: string, extra: Record<string, unknown> = {}) => ({
-  run: { id: "r1", action: "check", status, ...extra },
+  run: { id: "r1", action: "check", status, logPath: "/logs/r1.log", ...extra },
 });
 
 describe("spore-bridge", () => {
@@ -119,6 +122,28 @@ describe("spore-bridge", () => {
       { hasUI: true, ui: { notify: (message: string) => notices.push(message) } },
     );
     expect(notices[0]).toContain("PI_SPORE_TOKEN is not set");
+  });
+
+  it("blocks a bash command that would stop the server and lets others run", async () => {
+    const toolCall = fakePi().handlers.get("tool_call");
+    const bash = (command: string) =>
+      toolCall?.(
+        { type: "tool_call", toolName: "bash", toolCallId: "t", input: { command } },
+        {
+          hasUI: false,
+        },
+      );
+    expect(await bash(`kill ${process.pid}`)).toEqual({ block: true, reason: STOP_REASON });
+    expect(await bash("git status")).toBeUndefined();
+  });
+
+  it("names PI_SPORE_SERVER_PID when it is missing or not a positive integer", () => {
+    expect(() => bridgeEnv({ PI_SPORE_URL: "http://x", PI_SPORE_TOKEN: "t" })).toThrow(
+      "PI_SPORE_SERVER_PID",
+    );
+    expect(() =>
+      bridgeEnv({ PI_SPORE_URL: "http://x", PI_SPORE_TOKEN: "t", PI_SPORE_SERVER_PID: "-3" }),
+    ).toThrow('PI_SPORE_SERVER_PID must be a positive integer, not "-3"');
   });
 
   it("files a question with the agent token and the tool call id as receipt, and ends the turn", async () => {
@@ -205,6 +230,44 @@ describe("spore-bridge", () => {
     await vi.waitFor(() =>
       expect(seen.some((entry) => entry.path === "/api/bridge/runs/r1/cancel")).toBe(true),
     );
+  });
+
+  it("starts a background run, returns at once, and does not read the log", async () => {
+    reply("POST /api/bridge/runs", { status: 201, body: run("running", { action: "dev" }) });
+
+    const result = await fakePi()
+      .tool("run_action")
+      .execute("toolu_6", { name: "dev", background: true });
+
+    expect(seen).toHaveLength(1);
+    expect(seen[0]).toMatchObject({
+      method: "POST",
+      path: "/api/bridge/runs",
+      receipt: "toolu_6",
+      body: { action: "dev" },
+    });
+    expect(result.content[0]?.text).toContain("run r1");
+    expect(result.content[0]?.text).toContain("/logs/r1.log");
+    expect(result.content[0]?.text).toContain("stop_action");
+    expect(result.details).toEqual({ runId: "r1", status: "running" });
+  });
+
+  it("stops a run with the tool call id as receipt", async () => {
+    reply("POST /api/bridge/runs/r1/cancel", { body: run("cancelled", { action: "dev" }) });
+
+    const result = await fakePi().tool("stop_action").execute("toolu_7", { runId: "r1" });
+
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/runs/r1/cancel",
+        auth: "Bearer agent-token",
+        receipt: "toolu_7",
+        body: {},
+      },
+    ]);
+    expect(result.content[0]?.text).toBe('Run r1 of action "dev" is cancelled.');
+    expect(result.details).toEqual({ runId: "r1", status: "cancelled" });
   });
 
   const card = (extra: Record<string, unknown> = {}) => ({
@@ -405,6 +468,7 @@ describe("spore-bridge", () => {
     expect(rules).toContain("before the first worker");
     expect(rules).toContain("Only one writer works in the worktree at a time");
     expect(rules).toContain("After three passes");
+    expect(rules).toContain("Never stop the pi-spore server");
     expect(rules).toContain("`async: true`, never `async: false`");
     expect(rules).toContain("request_human_input");
     expect(rules).toContain("Never merge into the base branch on your own");
@@ -434,6 +498,10 @@ describe("spore-bridge", () => {
     expect(rules).toContain(phrase);
   });
 
+  it("tells the implement worker never to stop the pi-spore server", () => {
+    expect(STAGE_WORKER_RULES).toContain("Never stop the pi-spore server");
+  });
+
   it.each([
     ["missing", undefined],
     ["unknown", "orchestrator"],
@@ -445,12 +513,18 @@ describe("spore-bridge", () => {
 
   it("names PI_SPORE_STAGE_ROLE when a stage has no valid role", () => {
     expect(() =>
-      bridgeEnv({ PI_SPORE_URL: "http://x", PI_SPORE_TOKEN: "t", PI_SPORE_CHAT_KIND: "stage" }),
+      bridgeEnv({
+        PI_SPORE_URL: "http://x",
+        PI_SPORE_TOKEN: "t",
+        PI_SPORE_SERVER_PID: "1",
+        PI_SPORE_CHAT_KIND: "stage",
+      }),
     ).toThrow("PI_SPORE_STAGE_ROLE");
     expect(() =>
       bridgeEnv({
         PI_SPORE_URL: "http://x",
         PI_SPORE_TOKEN: "t",
+        PI_SPORE_SERVER_PID: "1",
         PI_SPORE_CHAT_KIND: "stage",
         PI_SPORE_STAGE_ROLE: "boss",
       }),
@@ -459,10 +533,17 @@ describe("spore-bridge", () => {
       bridgeEnv({
         PI_SPORE_URL: "http://x/",
         PI_SPORE_TOKEN: "t",
+        PI_SPORE_SERVER_PID: "1",
         PI_SPORE_CHAT_KIND: "stage",
         PI_SPORE_STAGE_ROLE: "reviewer",
       }),
-    ).toEqual({ url: "http://x", token: "t", chatKind: "stage", stageRole: "reviewer" });
+    ).toEqual({
+      url: "http://x",
+      token: "t",
+      serverPid: 1,
+      chatKind: "stage",
+      stageRole: "reviewer",
+    });
   });
 
   it("refuses an unknown chat kind instead of guessing", () => {
@@ -854,7 +935,12 @@ describe("spore-bridge run tools", () => {
 
   it("names PI_SPORE_RUN_ROLE when it is not coordinator or lane", () => {
     expect(() =>
-      bridgeEnv({ PI_SPORE_URL: "http://x", PI_SPORE_TOKEN: "t", PI_SPORE_RUN_ROLE: "boss" }),
+      bridgeEnv({
+        PI_SPORE_URL: "http://x",
+        PI_SPORE_TOKEN: "t",
+        PI_SPORE_SERVER_PID: "1",
+        PI_SPORE_RUN_ROLE: "boss",
+      }),
     ).toThrow('PI_SPORE_RUN_ROLE must be coordinator or lane, not "boss"');
     vi.stubEnv("PI_SPORE_RUN_ROLE", "boss");
     expect(fakePi().tools.size).toBe(0);

@@ -495,6 +495,44 @@ describe("check and run_action", () => {
     expect(await response.json()).toMatchObject({ error: { code: "read_only_chat" } });
   });
 
+  it("refuse a read-only side chat that cancels a run", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "side-cancel", config(0));
+    const { run } = await json<{ run: { id: string } }>(
+      await asAgent(server, agentId, workspaceId)("POST", "runs", { action: "check" }),
+      201,
+    );
+    const response = await asAgent(
+      server,
+      agentId,
+      workspaceId,
+      true,
+    )("POST", `runs/${run.id}/cancel`, {});
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "read_only_chat" } });
+    await asAgent(server, agentId, workspaceId)("GET", `runs/${run.id}?wait=5000`);
+  });
+
+  it("start one run when the same receipt arrives twice", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "replay", config(0));
+    const call = asAgent(server, agentId, workspaceId);
+    const first = await json<{ run: { id: string } }>(
+      await call("POST", "runs", { action: "check" }, "toolu_r"),
+      201,
+    );
+    const second = await json<{ run: { id: string } }>(
+      await call("POST", "runs", { action: "check" }, "toolu_r"),
+      201,
+    );
+    expect(second.run.id).toBe(first.run.id);
+    const { runs } = await json<{ runs: unknown[] }>(
+      await server.request("GET", `/api/actions/workspaces/${workspaceId}/runs`),
+    );
+    expect(runs).toHaveLength(1);
+    await call("GET", `runs/${first.run.id}?wait=5000`);
+  });
+
   it("let an agent reach only its own workspace's runs", async () => {
     const server = await start();
     const mine = await workspace(server, "mine", config(0));
