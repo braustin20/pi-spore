@@ -363,6 +363,12 @@ describe("staged comments", () => {
     }
     expect(await open(workspace.id)).toEqual([]);
 
+    // Wait for the first turn to end, or "Again" goes in as a steer the fake agent never runs.
+    const statuses = () =>
+      (server.events.eventsOf(`agent:${agent.id}`) as AgentEvent[]).flatMap((event) =>
+        event.type === "status" ? [event.status] : [],
+      );
+    await until(() => statuses().includes("busy") && statuses().at(-1) === "idle");
     await json(
       await server.request("POST", `/api/agents/${agent.id}/prompt`, { message: "Again" }),
     );
@@ -407,10 +413,12 @@ describe("staged comments", () => {
     await until(() => said(agent.id).length > 0);
     expect(said(agent.id)[0]).toContain("Look");
     expect(said(agent.id)[0]).toContain("Fix line 1.");
-    const replies = (server.events.eventsOf(`agent:${agent.id}`) as AgentEvent[]).flatMap((event) =>
-      JSON.stringify(event),
+    // The reply comes after the user message, so wait for it too; it can arrive in a later stdout chunk.
+    await until(() =>
+      (server.events.eventsOf(`agent:${agent.id}`) as AgentEvent[]).some((event) =>
+        JSON.stringify(event).includes("[1 images]"),
+      ),
     );
-    expect(replies.some((event) => event.includes("[1 images]"))).toBe(true);
     expect(await open(workspace.id)).toEqual([]);
   });
 
