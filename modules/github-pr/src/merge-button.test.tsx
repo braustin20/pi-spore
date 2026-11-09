@@ -10,10 +10,11 @@ import { githubPrWeb } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
+const NoNote = () => null;
 const headId = "a".repeat(40);
 const workspace = { id: "W1" } as Workspace;
 
-const status = (mergeBlocked?: string): PrStatus => ({
+const status = (mergeBlocked?: string, mergeWhenReady = false): PrStatus => ({
   workspaceId: "W1",
   publishable: true,
   defaults: { title: "Work", body: "" },
@@ -31,6 +32,7 @@ const status = (mergeBlocked?: string): PrStatus => ({
     checks: [],
   },
   ...(mergeBlocked ? { mergeBlocked } : {}),
+  mergeWhenReady,
   watch: { state: "off", tries: 0, maxTries: 3 },
   tries: [],
   local: { headId, uncommitted: 0 },
@@ -47,6 +49,8 @@ async function render(shown: PrStatus) {
   const view = {
     addTab: (added: { component: typeof tab }) => (tab = added.component),
     addPanel: () => {},
+    addApprovalView: () => {},
+    DeclineNote: NoNote,
   };
   githubPrWeb.setup({ use: () => view } as unknown as WebHost);
   if (!tab) throw new Error("the github-pr module did not add its tab");

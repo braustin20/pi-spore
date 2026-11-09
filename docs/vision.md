@@ -146,7 +146,8 @@ not built in v1.
   at most 3 tries in a row, then stops and waits for the user.
 - R9.3 pi-spore never merges on its own and never enables auto-merge. An agent merges a PR only when the user asks
   for that merge, or when it asks and the user says yes (ADR 0130). pi-spore merges a PR only when the user clicks
-  Merge in the PR tab and confirms (ADR 0142).
+  Merge in the PR tab and confirms (ADR 0142), or when the user chose "Open and merge when checks pass" on that
+  PR's approval and the PR is ready (ADR 0164). That choice covers one PR.
 
 ## R10. Unity support
 

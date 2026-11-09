@@ -16,6 +16,7 @@
     "@pi-spore/mod-attention": "0.0.0",
     "@pi-spore/mod-kanban": "0.0.0",
     "@pi-spore/mod-pipelines": "0.0.0",
+    "@pi-spore/mod-projects": "0.0.0",
     "@pi-spore/mod-runs": "0.0.0",
     "@pi-spore/mod-workspaces": "0.0.0",
     "@pi-spore/module-api": "0.0.0",
@@ -26,7 +27,6 @@
   "devDependencies": {
     "@pi-spore/mod-agents": "0.0.0",
     "@pi-spore/mod-github-pr": "0.0.0",
-    "@pi-spore/mod-projects": "0.0.0",
     "@pi-spore/mod-usage": "0.0.0",
     "@pi-spore/mod-vcs-folder": "0.0.0",
     "@pi-spore/mod-vcs-git": "0.0.0",

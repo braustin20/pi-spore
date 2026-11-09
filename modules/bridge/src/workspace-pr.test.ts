@@ -111,8 +111,12 @@ const openApprovals = async (server: TestServer) =>
   ).approvals;
 
 /** Calls a bridge route as the agent would; `receipt` is the tool call id the idempotency middleware keys on. */
-function asAgent(server: TestServer, agentId: string, workspaceId: string) {
-  const token = server.agentTokens.issue({ agentId, workspaceId });
+function asAgent(server: TestServer, agentId: string, workspaceId: string, readOnly = false) {
+  const token = server.agentTokens.issue({
+    agentId,
+    workspaceId,
+    ...(readOnly ? { readOnly } : {}),
+  });
   return (method: string, path: string, body?: unknown, receipt?: string) =>
     server.request(method, `/api/bridge/${path}`, body, {
       "x-pi-spore-token": "",
@@ -312,4 +316,85 @@ describe("a chat asks to open its workspace's PR", () => {
       expect(remoteHas(origin, line)).toBe(false);
     },
   );
+});
+
+describe("a chat pushes its workspace's branch", () => {
+  const push = (call: Awaited<ReturnType<typeof chatOf>>) => call("POST", "workspace/push", {});
+
+  it("sends the workspace's commit to origin and answers the remote and line", async () => {
+    const server = await start();
+    const { call, origin, line, workspace } = await branchWorkspace(server, "push");
+    expect(remoteHas(origin, line)).toBe(false);
+
+    const answer = await json<{ remote: string; line: string }>(await push(call));
+
+    expect(answer).toEqual({ remote: "origin", line });
+    expect(git(origin, "rev-parse", line)).toBe(git(workspace.path, "rev-parse", "HEAD"));
+  });
+
+  it("refuses a side chat with 403 read_only_chat, and pushes nothing", async () => {
+    const server = await start();
+    const { origin, line, workspace } = await branchWorkspace(server, "push-side");
+    // The workspace's chat already exists, so this answers 200 with it.
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      200,
+    );
+    const side = asAgent(server, agent.id, workspace.id, true);
+
+    const response = await push(side);
+
+    expect(response.status).toBe(403);
+    expect(await response.json()).toMatchObject({ error: { code: "read_only_chat" } });
+    expect(remoteHas(origin, line)).toBe(false);
+  });
+
+  it("answers 422 not_supported for a workspace without its own branch", async () => {
+    const server = await start();
+    const folder = join(scratch, "push-plain");
+    mkdirSync(join(folder, ".pi-spore"), { recursive: true });
+    writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+    const { project } = await json<{ project: { id: string } }>(
+      await server.request("POST", "/api/projects", { path: folder }),
+      201,
+    );
+    const { workspace } = await json<{ workspace: Workspace }>(
+      await server.request("POST", "/api/workspaces", {
+        projectId: project.id,
+        name: "plain",
+        isolation: "in-place",
+      }),
+      201,
+    );
+    const call = await chatOf(server, workspace.id);
+
+    const response = await push(call);
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: { code: "not_supported" } });
+  });
+
+  it("answers 409 push_failed when origin has a commit the branch lacks, and leaves origin alone", async () => {
+    const server = await start();
+    const { call, origin, line, workspace } = await branchWorkspace(server, "push-reject");
+    await json(await push(call));
+    const pushed = git(origin, "rev-parse", line);
+    // Origin gets a commit from another clone, so the workspace's next push would rewind it.
+    const other = join(scratch, "push-reject-other");
+    git(scratch, "clone", "-q", "-b", line, origin, other);
+    writeFileSync(join(other, "b.txt"), "theirs\n");
+    git(other, "add", ".");
+    git(other, "commit", "-q", "-m", "theirs");
+    git(other, "push", "-q", "origin", line);
+    const theirs = git(origin, "rev-parse", line);
+    writeFileSync(join(workspace.path, "a.txt"), "three\n");
+    git(workspace.path, "commit", "-q", "-am", "mine");
+
+    const response = await push(call);
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "push_failed" } });
+    expect(theirs).not.toBe(pushed);
+    expect(git(origin, "rev-parse", line)).toBe(theirs);
+  });
 });

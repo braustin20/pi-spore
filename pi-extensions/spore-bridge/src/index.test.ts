@@ -938,9 +938,45 @@ describe("spore-bridge run tools", () => {
     expect(fakePi().tools.has("open_pr")).toBe(false);
   });
 
-  it("names open_pr in the orchestrator rules, not the coordinator rules", () => {
+  it("names open_pr and push_line in the orchestrator rules, not the coordinator rules", () => {
     expect(RULES).toContain("`open_pr`");
+    expect(RULES).toContain("`push_line`");
     expect(COORDINATOR_RULES).not.toContain("open_pr");
+    expect(COORDINATOR_RULES).not.toContain("push_line");
+  });
+
+  it("posts push_line to workspace/push with the receipt and does not end the turn", async () => {
+    reply("POST /api/bridge/workspace/push", {
+      status: 200,
+      body: { remote: "origin", line: "spore/feature" },
+    });
+
+    const result = await fakePi().tool("push_line").execute("t7", {});
+
+    expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
+      ["/api/bridge/workspace/push", "t7", {}],
+    ]);
+    expect(result.terminate).toBeUndefined();
+    expect(result.content[0]?.text).toBe("Pushed spore/feature to origin.");
+  });
+
+  it("gives push_line to the orchestrator chat only", () => {
+    expect(fakePi().tools.has("push_line")).toBe(true);
+
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
+    expect(fakePi().tools.has("push_line")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    expect(fakePi().tools.has("push_line")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "worker");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    expect(fakePi().tools.has("push_line")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "lane");
+    expect(fakePi().tools.has("push_line")).toBe(false);
   });
 
   it("gives a lane stage agent ask_coordinator, not request_human_input, and the lane paragraph", async () => {

@@ -3,6 +3,7 @@ import { type ArtifactOwner, ArtifactsKey } from "@pi-spore/mod-artifacts/server
 import { QuestionsKey } from "@pi-spore/mod-attention/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
+import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type BridgeCaller, bridgeCaller, type ServerModule } from "@pi-spore/module-api";
@@ -26,6 +27,7 @@ import {
   MergeLaneRequest,
   OpenRunPrRequest,
   OpenWorkspacePrRequest,
+  PushLineRequest,
   parseJsonBody,
   ReviseLaneRequest,
   StageReport,
@@ -60,7 +62,16 @@ export function tail(text: string): { text: string; truncated: boolean } {
  */
 export const bridgeModule: ServerModule = {
   id: "bridge",
-  requires: ["workspaces", "attention", "actions", "kanban", "artifacts", "pipelines", "runs"],
+  requires: [
+    "workspaces",
+    "attention",
+    "actions",
+    "kanban",
+    "artifacts",
+    "pipelines",
+    "runs",
+    "projects",
+  ],
   core: false,
   setup(host) {
     const workspaces = host.use(WorkspacesKey);
@@ -70,6 +81,7 @@ export const bridgeModule: ServerModule = {
     const artifacts = host.use(ArtifactsKey);
     const pipelines = host.use(PipelinesKey);
     const runs = host.use(RunsKey);
+    const projects = host.use(ProjectsKey);
     let requestWorkspacePr: Parameters<Bridge["setPrRequester"]>[0] | undefined;
     host.provide(BridgeKey, {
       setPrRequester: (request) => {
@@ -320,6 +332,26 @@ export const bridgeModule: ServerModule = {
         );
       }
       return c.json({ approval: await requestWorkspacePr(caller, request) }, 201);
+    });
+
+    // It never forces (R9.3), and `publish.push` throws 409 push_failed itself when the remote refuses.
+    host.routes.post("/workspace/push", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "push the branch");
+      refuseCoordinator(caller);
+      parseJsonBody(PushLineRequest, await c.req.text(), "push request");
+      const workspace = workspaces.get(caller.workspaceId);
+      const provider = projects.vcsFor(await projects.get(workspace.projectId));
+      const line = workspace.line;
+      if (!provider.publish || !line) {
+        throw new ApiError(
+          422,
+          "not_supported",
+          "Only a workspace on its own branch of a Git project can be pushed",
+        );
+      }
+      const { remote } = await provider.publish.push({ path: workspace.path, line }, line);
+      return c.json({ remote, line });
     });
 
     // Lane reviewers are read-only and may ask their coordinator, so this route does not refuse read-only callers.

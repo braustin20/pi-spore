@@ -97,6 +97,8 @@ export const PrStatus = Type.Object({
   pr: Type.Optional(PullRequest),
   /** Why Merge is off; absent when the PR can merge. */
   mergeBlocked: Type.Optional(Type.String()),
+  /** The user chose that the watch merges this PR when it is ready (ADR 0164). */
+  mergeWhenReady: Type.Boolean(),
   watch: Type.Object({
     state: PrWatchState,
     tries: Type.Integer(),
@@ -141,6 +143,10 @@ export const OpenWorkspacePrRequest = Type.Object(
 );
 export type OpenWorkspacePrRequest = Static<typeof OpenWorkspacePrRequest>;
 
+/** A chat pushes its workspace's branch. It names nothing: the branch is the workspace's own (ADR 0164). */
+export const PushLineRequest = Type.Object({}, { additionalProperties: false });
+export type PushLineRequest = Static<typeof PushLineRequest>;
+
 /** What a `workspace-pr` approval holds. The user may edit `title` and `body` on approve, not the rest. */
 export const WorkspacePrSubject = Type.Object(
   {
@@ -148,6 +154,8 @@ export const WorkspacePrSubject = Type.Object(
     title: Type.String(),
     body: Type.String(),
     base: Type.String(),
+    /** Set by the user on approve only; the chat files the subject without it (ADR 0164). */
+    mergeWhenReady: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
