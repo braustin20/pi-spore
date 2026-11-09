@@ -122,6 +122,8 @@ export function createSettings(home: string): Settings & { finishDeclaring(): Pr
     };
     const walk = (table: Record<string, unknown>, prefix: string): void => {
       for (const [name, child] of Object.entries(table)) {
+        // A quoted "a.b" would match the setting path a.b and skip the model-key scan of the nested form.
+        if (name.includes(".")) fail(`key "${name}" has a dot; write it as a nested table`);
         const key = prefix ? `${prefix}.${name}` : name;
         if (!prefix && reserved[source === "global" ? "global" : "project"].has(name)) continue;
         const def = defs.get(key);

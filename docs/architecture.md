@@ -1216,7 +1216,8 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   the file: 422 `bad_settings` for `settings.json`, 422 `bad_project_config` for the TOML files. So is a model key
   (`model`, `models`, `provider`, `thinking`) anywhere in `config.toml` (R17.3). `config.local.toml` and
   `settings.json` may hold model choices, but only under a key a module declares. A bad file also stops anything
-  that reads settings, such as creating a workspace. Nothing falls back to a default.
+  that reads settings, such as creating a workspace. Nothing falls back to a default. A key with a dot in its name
+  (`"a.b" = 1`) is an error: write nested keys as tables, so the model-key scan sees every path.
 - Modules declare in their setup, in dependency order, and one may resolve before a later module has declared. So
   until every module is set up, a key nobody has declared yet is not an error. Then the server calls
   `finishDeclaring`, which checks `settings.json` against every declaration. A bad file stops startup with the error

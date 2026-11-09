@@ -170,6 +170,39 @@ describe("bad files name the key and the file", () => {
     );
   });
 
+  it("does not let a quoted dotted key slip a model choice into the project file", async () => {
+    const settings = createSettings(home);
+    const model = settings.declare({
+      key: "worker.model",
+      schema: Type.String(),
+      default: "none",
+      scope: "project",
+    });
+    await settings.finishDeclaring();
+    projectFile('"worker.model" = "a/b"\n');
+    await expectError(
+      settings.resolve({ projectPath: project }),
+      "bad_project_config",
+      "worker.model",
+      "config.toml",
+    );
+    // The same literal key is refused in the other files, so a dotted name never stands for a path.
+    rmSync(join(project, ".pi-spore", "config.toml"));
+    localFile('"worker.model" = "a/b"\n');
+    await expectError(
+      settings.resolve({ projectPath: project }),
+      "bad_project_config",
+      "worker.model",
+      "config.local.toml",
+    );
+    global('{"worker.model":"a/b"}');
+    await expectError(settings.resolve(), "bad_settings", "worker.model", "settings.json");
+    rmSync(join(project, ".pi-spore", "config.local.toml"));
+    rmSync(join(home, "settings.json"));
+    localFile('[worker]\nmodel = "a/b"\n');
+    expect((await settings.resolve({ projectPath: project })).get(model).value).toBe("a/b");
+  });
+
   it("treats an undeclared model key in the local override as an unknown key", async () => {
     const { settings } = await makeSettings();
     localFile('[agents.worker]\nmodel = "x"\n');
