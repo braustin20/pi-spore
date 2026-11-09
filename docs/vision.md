@@ -141,7 +141,8 @@ not built in v1.
 - R9.2 pi-spore watches checks and conflicts with the base. It sends failures (with log tails) back to the worker,
   at most 3 tries in a row, then stops and waits for the user.
 - R9.3 pi-spore never merges on its own and never enables auto-merge. An agent merges a PR only when the user asks
-  for that merge, or when it asks and the user says yes (ADR 0130).
+  for that merge, or when it asks and the user says yes (ADR 0130). pi-spore merges a PR only when the user clicks
+  Merge in the PR tab and confirms (ADR 0142).
 
 ## R10. Unity support
 
