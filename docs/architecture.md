@@ -1517,6 +1517,26 @@ API under `/api/actions`:
 CLI: `pi-spore action list <workspace>`, `pi-spore action run <workspace> <name>` (follows the log, exits 1 if the
 run fails), `pi-spore action cancel <run>`. The workspace view has an Actions panel.
 
+In the Actions panel's log view, `http://127.0.0.1:<port>` and `http://localhost:<port>` URLs are links that open
+in a new tab. Other hosts stay plain text. While a run is `running` and its log has such a URL, the log header shows
+an Open button with the newest one.
+
+#### Test a workspace's changes
+
+See [ADR 0161](decisions/0161-dev-server-for-the-user.md). pi-spore's own `[actions.dev]` runs
+`scripts/dev-server.mjs`:
+
+- Click Run on `dev` in the workspace's Actions panel. The script builds, then starts the worktree's server on a free
+  port and prints `pi-spore dev server: http://127.0.0.1:<port>/`. Click Open. Cancel stops it.
+- The home is `<worktree>/.pi-spore-dev/home` (gitignored). It is kept between runs. To reset it, delete
+  `.pi-spore-dev/`.
+- The first run makes `.pi-spore-dev/sample-repo`, a new git repo with one commit, and adds it as the dev server's
+  project. The real repo is never added: the worktree shares its `.git`, so dev branches would show up there.
+- The dev server does not get the real server's `PI_SPORE_URL`, `PI_SPORE_TOKEN`, `PI_SPORE_SERVER_PID`, or the
+  workspace and agent names. It never reads `~/.pi-spore`. Each run gets its own port, so two workspaces can run
+  one each. Two runs in one worktree share the home, and the second fails on the home lock.
+- The dev server's agents use real models and spend tokens.
+
 The workspaces module calls other modules around a copy through its contract: `afterCopyCreated` and
 `beforeRemoveCopy` return step reports, which the create and archive responses list in `steps`. A failed
 `beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced. `afterStateChange` runs after
