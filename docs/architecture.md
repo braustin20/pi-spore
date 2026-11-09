@@ -156,7 +156,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     never from the request. A read-only side chat may list and read; a write answers 403 `read_only_chat`.
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
     chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033). Stage agents get stage worker or stage
-    reviewer rules: end every turn with `report`, and record fail-first proofs. The orchestrator rules say to start
+    reviewer rules: end every turn with `report`, and record fail-first proofs. The stage worker runs `check`, then
+    the full `run_action test`, before every `report`, and puts both results in it, so a break shows up before the
+    reviewers, not at the final gates. The orchestrator rules say to start
     every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120),
     and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162).
   - `start_pipeline` `{ brief, pipeline? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
