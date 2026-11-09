@@ -99,3 +99,32 @@ describe("cancelling a run", () => {
     }
   });
 });
+
+describe("a blocked lane", () => {
+  it("shows Blocked and the error, and Retry posts the retry of its pipeline run", async () => {
+    const blocked: Run = {
+      ...run("running"),
+      lanes: [
+        {
+          id: "L1",
+          runId: "U1",
+          name: "feature",
+          wave: 1,
+          dependsOn: [],
+          brief: "briefs/feature.md",
+          pipeline: "gated",
+          state: "running",
+          workspaceId: "W1",
+          pipelineRunId: "R1",
+          blocked: 'stage "gates": no action "check"',
+          createdAt: 0,
+        },
+      ],
+    };
+    const { root, sent, click } = await render(blocked);
+    expect(root.textContent).toContain("Blocked");
+    expect(root.textContent).toContain('stage "gates": no action "check"');
+    await click("Retry");
+    expect(sent).toEqual([{ method: "POST", path: "pipelines/runs/R1/retry" }]);
+  });
+});

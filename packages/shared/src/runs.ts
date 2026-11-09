@@ -38,6 +38,10 @@ export const Lane = Type.Object({
   /** The lane's own workspace, once it has one. */
   workspaceId: Type.Optional(Type.String()),
   message: Type.Optional(Type.String()),
+  /** The lane's current pipeline run, once it has one. */
+  pipelineRunId: Type.Optional(Type.String()),
+  /** Why the lane's pipeline run does not move: its error, until the user fixes the cause and presses Retry. */
+  blocked: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
 });
 export type Lane = Static<typeof Lane>;
@@ -73,6 +77,35 @@ export const Run = Type.Object({
   questions: Type.Array(RunQuestion),
 });
 export type Run = Static<typeof Run>;
+
+/** One lane as `run_status` gives it to the run's agents. */
+export const LaneStatus = Type.Object({
+  id: Type.String(),
+  name: Type.String(),
+  wave: Type.Integer({ minimum: 1 }),
+  state: LaneState,
+  /** The name of the lane's workspace. */
+  workspace: Type.Optional(Type.String()),
+  /** The current stage of the lane's pipeline run. */
+  stage: Type.Optional(Type.String()),
+  /** The highest round of that stage's turns. */
+  round: Type.Optional(Type.Integer()),
+  blocked: Type.Optional(Type.String()),
+  message: Type.Optional(Type.String()),
+  /** The artifact path of the lane's diff, once it has passed. */
+  diff: Type.Optional(Type.String()),
+});
+export type LaneStatus = Static<typeof LaneStatus>;
+
+/** A run and its lanes, for the coordinator and lane agents (`GET /api/bridge/run-status/:id`). */
+export const RunStatus = Type.Object({
+  runId: Type.String(),
+  /** The name of the run workspace. */
+  name: Type.String(),
+  state: RunState,
+  lanes: Type.Array(LaneStatus),
+});
+export type RunStatus = Static<typeof RunStatus>;
 
 export const RunList = Type.Object({ runs: Type.Array(Run) });
 export type RunList = Static<typeof RunList>;

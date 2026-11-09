@@ -98,6 +98,8 @@ const MIGRATIONS = [
   // A fix pass: the run whose worker it reuses, and the workspace head when it started, the base of its fix diff.
   "ALTER TABLE pipelines_runs ADD COLUMN previous_run_id TEXT",
   "ALTER TABLE pipelines_runs ADD COLUMN fix_base TEXT",
+  // The last blocked error told to the run's chat. A new error sends one message; the same error never sends twice.
+  "ALTER TABLE pipelines_runs ADD COLUMN blocked_sent TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -141,6 +143,7 @@ interface RunRow {
   worker_model: string | null;
   previous_run_id: string | null;
   fix_base: string | null;
+  blocked_sent: string | null;
   created_at: number;
   ended_at: number | null;
 }
@@ -398,9 +401,11 @@ export const pipelinesModule: ServerModule = {
         )
         .map(viewOf);
 
+    const changeListeners: ((workspaceId: string) => void)[] = [];
     const publish = (workspaceId: string) => {
       const event: PipelineEvent = { type: "runs", runs: runsOf(workspaceId) };
       host.events.publish(`${PIPELINES_TOPIC}${workspaceId}`, event);
+      for (const listener of changeListeners) listener(workspaceId);
     };
     host.events.onSubscribe(PIPELINES_TOPIC, (topic) => {
       const workspace = workspaces.get(topic.slice(PIPELINES_TOPIC.length));
@@ -409,7 +414,9 @@ export const pipelinesModule: ServerModule = {
     });
     // The job moves a run on; the browser sees it here.
     host.jobs.onChange((job) => {
-      if (job.kind === STAGE_JOB && job.key !== null) publish(job.key);
+      if (job.kind !== STAGE_JOB || job.key === null) return;
+      publish(job.key);
+      tellBlocked((job.subject as StageSubject).runId);
     });
     // A failed or refused turn never reports, so the agent's status change wakes `await` to see it.
     agents.onChange((agentId, change) => {
@@ -463,6 +470,27 @@ export const pipelinesModule: ServerModule = {
       const lane = laneLookup?.(workspaceId);
       return lane ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${lane.run}"` : name;
     };
+
+    /**
+     * Tells the run's chat about a new blocked error, once. The column is the dedupe: a retry that fails the same way
+     * sends nothing. A lane's message goes to its run's current coordinator.
+     */
+    const tellBlocked = (runId: string) =>
+      host.store.transaction(() => {
+        const current = loadRun(runId);
+        if (!current) return;
+        const error = blockedOf(current);
+        if (error === undefined || error === current.blocked_sent) return;
+        const stage = stageOf(current, current.stage_index);
+        host.store.run("UPDATE pipelines_runs SET blocked_sent = ? WHERE id = ?", error, runId);
+        agents.deliver(
+          laneLookup?.(current.workspace_id)?.coordinatorAgentId ?? current.asking_agent_id,
+          [
+            `Pipeline run ${runId} on ${workspaceLabel(current.workspace_id)} is blocked at stage "${stage.name}": ${error}`,
+            `Fix the cause, then Retry the run on its Pipeline tab (POST /api/pipelines/runs/${runId}/retry). Retry runs the step again.`,
+          ].join("\n"),
+        );
+      });
 
     const stageOf = (run: RunRow, stageIndex: number) =>
       (JSON.parse(run.stages) as PipelineStage[])[stageIndex] as PipelineStage;
@@ -869,9 +897,17 @@ export const pipelinesModule: ServerModule = {
       const gate = checkpoint?.gate ?? 0;
       const attempt = checkpoint?.attempt ?? 0;
       const name = gates[gate] as string;
-      const started = await actions.start(run.workspace_id, name, "pipeline", {
-        key: `${run.id}:${stage.name}:${name}:${attempt}`,
-      });
+      const started = await actions
+        .start(run.workspace_id, name, "pipeline", {
+          key: `${run.id}:${stage.name}:${name}:${attempt}`,
+        })
+        .catch(async (error: unknown) => {
+          if (!(error instanceof ApiError) || error.code !== "action_not_found") throw error;
+          const project = await projects.get(workspaces.get(run.workspace_id).projectId);
+          throw new Error(
+            `stage "${stage.name}": no action "${name}" in ${join(project.path, ".pi-spore", "config.toml")}. Add it there, then Retry.`,
+          );
+        });
       const ended = await actions.wait(started.id);
       if (ended.status === "interrupted")
         return { next: "gate", checkpoint: { gate, attempt: attempt + 1 } };
@@ -1317,6 +1353,9 @@ export const pipelinesModule: ServerModule = {
       stop,
       afterRunEnded: (listener) => {
         endListeners.push(listener);
+      },
+      onChange: (listener) => {
+        changeListeners.push(listener);
       },
       setLaneLookup: (lookup) => {
         if (laneLookup) throw new Error("The pipelines module already has a lane lookup");

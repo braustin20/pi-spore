@@ -33,6 +33,7 @@ export function fakePipelines(): { module: ServerModule; end: (run: FakeRun) => 
     stop: THROWS,
     setLaneLookup: THROWS,
     get: THROWS,
+    onChange: THROWS,
     afterRunEnded: (listener) => {
       listeners.push(listener);
     },

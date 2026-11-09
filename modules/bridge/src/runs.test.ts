@@ -32,6 +32,7 @@ import type {
   Run,
   RunEvent,
   RunPrSubject,
+  RunStatus,
   StartLaneRequest,
   Workspace,
 } from "@pi-spore/shared";
@@ -388,6 +389,61 @@ describe("a lane", () => {
     expect(diff.bytes.toString("utf8")).toContain("+lane change");
     expect(runs.laneOf(started.workspaceId as string)).toEqual({ runId: run.id, laneId: lane.id });
     expect(runs.runOf(run.workspaceId)?.id).toBe(run.id);
+  });
+
+  it("tells the coordinator once when the lane's pipeline blocks on a missing gate action, and passes after the fix", async () => {
+    const server = await start();
+    writeFileSync(
+      join(server.paths.root, "pipelines", "gated.toml"),
+      `${IMPLEMENT.replace('id = "p"', 'id = "gated"')}\n[[stage]]\nname = "gates"\ngates = ["check", "test"]\n`,
+    );
+    const { projectId, folder } = await project(server, "blocked-gate", { test: "pass" });
+    const { run, coordinator } = await createRun(server, projectId, "blocked-gate");
+    const lane = await startLane(run, coordinator, "feature", { pipeline: "gated" });
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const started = await laneOf(server, run.id, lane.id);
+    const worker = await laneWorker(server, started);
+    await json(
+      await asAgent(server, worker.agentId, started.workspaceId as string)("POST", "reports", {
+        turn: worker.turnId,
+        summary: "Done",
+      }),
+    );
+
+    const first = await deliveredWith(server, run.coordinatorAgentId, "is blocked at stage");
+    expect(first).toContain('"feature"');
+    expect(first).toContain(lane.id);
+    expect(first).toContain('stage "gates"');
+    expect(first).toContain('"check"');
+    expect(first).toContain(join(folder, ".pi-spore", "config.toml"));
+    expect(first).toContain("/retry");
+    const stageJob = () =>
+      server.services.jobs.list({
+        kind: "pipelines.stage",
+        key: started.workspaceId as string,
+        states: ["running", "waiting"],
+      })[0] as JobView;
+    const pipelineRunId = (stageJob().subject as { runId: string }).runId;
+    const blockedMessages = async () =>
+      (await chat(server, run.coordinatorAgentId)).filter(
+        (line) => line.startsWith("user: ") && line.includes("is blocked at stage"),
+      );
+    expect(await blockedMessages()).toHaveLength(1);
+
+    // The same error again sends nothing.
+    const attempts = stageJob().attempts;
+    await json(await server.request("POST", `/api/pipelines/runs/${pipelineRunId}/retry`));
+    await until(() => stageJob().attempts > attempts && stageJob().state === "waiting");
+    expect(await blockedMessages()).toHaveLength(1);
+
+    writeFileSync(
+      join(folder, ".pi-spore", "config.toml"),
+      gateConfig({ check: "pass", test: "pass" }),
+    );
+    await json(await server.request("POST", `/api/pipelines/runs/${pipelineRunId}/retry`));
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "passed");
+    await untilDelivered(server, run.coordinatorAgentId, `"feature" (${lane.id}) passed`);
+    expect(await blockedMessages()).toHaveLength(1);
   });
 
   it("keeps a wave-2 lane waiting, with no workspace, until the wave-1 lane is merged", async () => {
@@ -838,6 +894,93 @@ describe("questions up the chain (R7.5, ADR 0008)", () => {
 
     expect(refused.status).toBe(403);
     expect(await refused.json()).toMatchObject({ error: { code: "not_in_lane" } });
+  });
+});
+
+describe("run status", () => {
+  it("shows a blocked lane on the run, live, and run_status gives each lane to the run's agents only", async () => {
+    const server = await start();
+    writeFileSync(
+      join(server.paths.root, "pipelines", "gated.toml"),
+      `${IMPLEMENT.replace('id = "p"', 'id = "gated"')}\n[[stage]]\nname = "gates"\ngates = ["check"]\n`,
+    );
+    const { projectId } = await project(server, "status");
+    const { run, coordinator } = await createRun(server, projectId, "status");
+    const done = await startLane(run, coordinator, "done");
+    await passLane(server, run.id, done.id);
+    const stuck = await startLane(run, coordinator, "stuck", { pipeline: "gated" });
+    await until(async () => (await laneOf(server, run.id, stuck.id)).state === "running");
+    const started = await laneOf(server, run.id, stuck.id);
+    const worker = await laneWorker(server, started);
+    await json(
+      await asAgent(server, worker.agentId, started.workspaceId as string)("POST", "reports", {
+        turn: worker.turnId,
+        summary: "Done",
+      }),
+    );
+    await until(async () => (await laneOf(server, run.id, stuck.id)).blocked !== undefined);
+
+    const blocked = await laneOf(server, run.id, stuck.id);
+    expect(blocked.blocked).toContain('no action "check"');
+    const pipelineRun = (
+      await json<{ run: PipelineRun }>(
+        await server.request("GET", `/api/pipelines/runs/${blocked.pipelineRunId}`),
+      )
+    ).run;
+    expect(pipelineRun.workspaceId).toBe(started.workspaceId);
+    expect(pipelineRun.blocked).toBe(blocked.blocked);
+    await until(() =>
+      (server.events.eventsOf("runs:list") as RunEvent[]).some((event) =>
+        event.runs[0]?.lanes.some((lane) => lane.blocked !== undefined),
+      ),
+    );
+
+    const { status } = await json<{ status: RunStatus }>(
+      await asAgent(server, run.coordinatorAgentId, run.workspaceId)("GET", `run-status/${run.id}`),
+    );
+    const doneLane = await laneOf(server, run.id, done.id);
+    expect(status).toEqual({
+      runId: run.id,
+      name: "status",
+      state: "running",
+      lanes: [
+        {
+          id: done.id,
+          name: "done",
+          wave: 1,
+          state: "passed",
+          workspace: (await workspaceOf(server, doneLane.workspaceId as string)).name,
+          stage: "implement",
+          round: 1,
+          diff: `runs/${run.id}/lanes/${done.id}.diff`,
+        },
+        {
+          id: stuck.id,
+          name: "stuck",
+          wave: 1,
+          state: "running",
+          workspace: (await workspaceOf(server, started.workspaceId as string)).name,
+          stage: "gates",
+          blocked: blocked.blocked,
+        },
+      ],
+    });
+
+    const asLane = await asAgent(
+      server,
+      worker.agentId,
+      started.workspaceId as string,
+    )("GET", `run-status/${run.id}`);
+    expect((await json<{ status: RunStatus }>(asLane)).status.runId).toBe(run.id);
+
+    const other = await createRun(server, projectId, "other");
+    const refused = await asAgent(
+      server,
+      other.run.coordinatorAgentId,
+      other.run.workspaceId,
+    )("GET", `run-status/${run.id}`);
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "not_in_run" } });
   });
 });
 

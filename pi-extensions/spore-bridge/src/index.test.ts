@@ -810,6 +810,7 @@ describe("spore-bridge run tools", () => {
 
   it("gives the coordinator the five run tools, request_human_input, and the coordinator rules", async () => {
     vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
     const pi = fakePi();
 
     for (const name of RUN_TOOLS) expect(pi.tools.has(name)).toBe(true);
@@ -823,6 +824,7 @@ describe("spore-bridge run tools", () => {
 
   it("gives the coordinator kanban_list_cards and kanban_add_card, never update or start (ADR 0154)", async () => {
     vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
     const pi = fakePi();
 
     expect(pi.tools.has("kanban_list_cards")).toBe(true);
@@ -843,11 +845,13 @@ describe("spore-bridge run tools", () => {
     ];
     for (const name of CARD_TOOLS) expect(fakePi().tools.has(name)).toBe(true);
     vi.stubEnv("PI_SPORE_RUN_ROLE", "lane");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
     for (const name of CARD_TOOLS) expect(fakePi().tools.has(name)).toBe(true);
   });
 
   it("sends each run tool to its route with the tool call id as receipt, and ends no turn", async () => {
     vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
     const lane = (state: string) => ({ body: { lane: { id: "l1", name: "api", state } } });
     reply("POST /api/bridge/lanes", { status: 201, ...lane("waiting") });
     reply("POST /api/bridge/lanes/revise", lane("starting"));
@@ -881,6 +885,7 @@ describe("spore-bridge run tools", () => {
 
   it("posts open_run_pr to coordinator/pr with the receipt and ends the turn", async () => {
     vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
     reply("POST /api/bridge/coordinator/pr", {
       status: 201,
       body: { approval: { id: "a1", title: 'Open the PR of run "api"' } },
@@ -901,6 +906,7 @@ describe("spore-bridge run tools", () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
     vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
     vi.stubEnv("PI_SPORE_RUN_ROLE", "lane");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
     reply("POST /api/bridge/coordinator/questions", {
       status: 201,
       body: { question: { id: "q1" } },
@@ -931,6 +937,58 @@ describe("spore-bridge run tools", () => {
     expect(pi.tools.has("request_human_input")).toBe(true);
     for (const name of [...RUN_TOOLS, "ask_coordinator"]) expect(pi.tools.has(name)).toBe(false);
     expect(await rulesOf(pi)).toBe(RULES);
+  });
+
+  it.each(["coordinator", "lane"])(
+    "gives the %s run_status, which GETs the run's status",
+    async (role) => {
+      vi.stubEnv("PI_SPORE_RUN_ROLE", role);
+      vi.stubEnv("PI_SPORE_RUN_ID", "U1");
+      const status = {
+        runId: "U1",
+        name: "api",
+        state: "running",
+        lanes: [
+          {
+            id: "l1",
+            name: "core",
+            wave: 1,
+            state: "running",
+            workspace: "api core",
+            stage: "gates",
+            blocked: 'no action "check"',
+          },
+          { id: "l2", name: "docs", wave: 2, state: "waiting" },
+        ],
+      };
+      reply("GET /api/bridge/run-status/U1", { body: { status } });
+
+      const result = await fakePi().tool("run_status").execute("t1", {});
+
+      expect(seen.map((entry) => [entry.method, entry.path])).toEqual([
+        ["GET", "/api/bridge/run-status/U1"],
+      ]);
+      expect(result.content[0]?.text).toBe(
+        [
+          'Run "api" (U1) is running.',
+          '- "core" (l1), wave 1, running, workspace "api core", stage gates, blocked: no action "check"',
+          '- "docs" (l2), wave 2, waiting',
+        ].join("\n"),
+      );
+      expect(result.details).toEqual(status);
+      expect(COORDINATOR_RULES).toContain("Call run_status before you say a lane is lost or stuck");
+    },
+  );
+
+  it("names PI_SPORE_RUN_ID when a run role has none", () => {
+    expect(() =>
+      bridgeEnv({
+        PI_SPORE_URL: "http://x",
+        PI_SPORE_TOKEN: "t",
+        PI_SPORE_SERVER_PID: "1",
+        PI_SPORE_RUN_ROLE: "lane",
+      }),
+    ).toThrow("PI_SPORE_RUN_ID is not set");
   });
 
   it("names PI_SPORE_RUN_ROLE when it is not coordinator or lane", () => {

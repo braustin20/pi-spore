@@ -29,6 +29,11 @@ export interface Pipelines {
    */
   afterRunEnded(listener: (run: PipelineRun) => void): void;
   /**
+   * Runs whenever a workspace's runs change as the browser sees them, `blocked` included. It may run inside a
+   * transaction.
+   */
+  onChange(listener: (workspaceId: string) => void): void;
+  /**
    * Ends a `running` or `waiting_user` run as `stopped` with the message and cancels its stage jobs, as
    * `POST /api/pipelines/runs/:id/cancel` does. It joins the caller's `store.transaction`. Throws 404 `run_not_found`;
    * 409 `run_ended` when the run has ended.
@@ -43,11 +48,13 @@ export interface Pipelines {
    */
   report(caller: BridgeCaller, report: StageReport): Promise<{ turn: PipelineTurn }>;
   /**
-   * Sets how a run's approvals name a lane workspace. The runs module sets it, because runs requires pipelines. At
-   * most one.
+   * Sets how a run's approvals name a lane workspace, and which chat hears that a lane's run is blocked. The runs
+   * module sets it, because runs requires pipelines. At most one.
    */
   setLaneLookup(
-    lookup: (workspaceId: string) => { run: string; laneId: string; lane: string } | undefined,
+    lookup: (
+      workspaceId: string,
+    ) => { run: string; laneId: string; lane: string; coordinatorAgentId: string } | undefined,
   ): void;
 }
 

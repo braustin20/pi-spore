@@ -276,6 +276,11 @@ export const bridgeModule: ServerModule = {
       return c.json({ question: runs.answerLane(caller, request) });
     });
 
+    // It only reads, so lane reviewers and side chats may call it.
+    host.routes.get("/run-status/:id", (c) =>
+      c.json({ status: runs.status(bridgeCaller(c), c.req.param("id")) }),
+    );
+
     // Reviewers are read-only and report too, so this route does not refuse read-only callers.
     host.routes.post("/reports", async (c) => {
       const caller = bridgeCaller(c);
