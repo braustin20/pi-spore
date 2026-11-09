@@ -527,6 +527,16 @@ async function stageAgent(server: TestServer, agentId: string) {
   return { agent, tools: argv[argv.indexOf("--tools") + 1] };
 }
 
+/** The `provider/id` an agent's process was launched with. */
+const modelOf = (agentId: string) => {
+  const { argv } = readFileSync(join(scratch, "record.jsonl"), "utf8")
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
+    .find((entry) => entry.env.PI_SPORE_AGENT_ID === agentId) as { argv: string[] };
+  return `${argv[argv.indexOf("--provider") + 1]}/${argv[argv.indexOf("--model") + 1]}`;
+};
+
 /** Starts a run on a fresh workspace and waits for the run to end in `state`. */
 async function runUntil(
   server: TestServer,
@@ -1111,15 +1121,6 @@ model = "claude-bridge/claude-sonnet-5-5"
       )
     ).approvals;
 
-  const modelOf = (agentId: string) => {
-    const { argv } = readFileSync(join(scratch, "record.jsonl"), "utf8")
-      .split("\n")
-      .filter(Boolean)
-      .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> })
-      .find((entry) => entry.env.PI_SPORE_AGENT_ID === agentId) as { argv: string[] };
-    return `${argv[argv.indexOf("--provider") + 1]}/${argv[argv.indexOf("--model") + 1]}`;
-  };
-
   const decide = async (server: TestServer, how: "approve" | "decline") => {
     const [approval] = await openApprovals(server);
     await json(await server.request("POST", `/api/attention/approvals/${approval?.id}/${how}`, {}));
@@ -1200,6 +1201,205 @@ model = "claude-bridge/claude-sonnet-5-5"
 
     expect(modelOf(run.workerAgentId as string)).toBe("spore/auto");
     expect(await openApprovals(server)).toHaveLength(0);
+  });
+});
+
+describe("a reviewer default on a full plan", () => {
+  const NOW = 1_700_000_000_000;
+  const RESETS = NOW + 3_600_000;
+  const APPROVE = { summary: "Good", verdict: "approve" };
+
+  /** Three ladders. Plan `gamma` has no usage file unless a test writes one, so it reads as room. */
+  const writeSettings = (home: string, tiers: Record<string, string> = {}) =>
+    writeFileSync(
+      join(home, "settings.json"),
+      JSON.stringify({
+        tiers: {
+          "spore/auto": "local",
+          "alpha/low": "light",
+          "alpha/mid": "medium",
+          "alpha/high": "heavy",
+          "beta/low": "light",
+          "beta/mid": "medium",
+          "beta/high": "heavy",
+          "gamma/low": "light",
+          "gamma/high": "heavy",
+          ...tiers,
+        },
+        router: {
+          plans: { alpha: "alpha", beta: "beta", gamma: "gamma" },
+          ladders: ["alpha", "beta", "gamma"].map((plan) => ({
+            plan,
+            rungs: (plan === "gamma" ? ["low", "high", "high"] : ["low", "mid", "high"]).map(
+              (rung) => ({ model: `${plan}/${rung}`, thinking: "high" }),
+            ),
+          })),
+        },
+      }),
+    );
+
+  /** A plan's 5-hour window seen now by the test clock; `utilization` 1 is full. */
+  const writeUsage = (home: string, plan: string, utilization: number) => {
+    mkdirSync(join(home, "usage"), { recursive: true });
+    writeFileSync(
+      join(home, "usage", `${plan}.json`),
+      JSON.stringify({
+        plan,
+        source: "test",
+        seenAt: NOW,
+        windows: { "5h": { utilization, resetsAt: RESETS, seenAt: NOW } },
+      }),
+    );
+  };
+
+  const reviewerDefault = (model: string): AgentsModuleOptions["roleDefaults"] => {
+    const [provider, modelId] = model.split("/") as [string, string];
+    return async (role) => (role === "reviewer" ? { provider, modelId } : {});
+  };
+
+  const reviewTurn = (run: PipelineRun) => run.turns.find((turn) => turn.kind === "review");
+
+  it("starts the reviewer on the next same-tier ladder model and notes the swap", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 0.5);
+    const settings = readFileSync(join(server.paths.root, "settings.json"), "utf8");
+
+    const { run } = await runUntil(server, "swap", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("beta/mid");
+    expect(review.modelNote).toBe(
+      `alpha/mid: plan alpha is full until ${new Date(RESETS).toISOString()}; took beta/mid`,
+    );
+    expect(readFileSync(join(server.paths.root, "settings.json"), "utf8")).toBe(settings);
+  });
+
+  it("takes a higher tier when every same-tier model is full, in ladder order", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 1);
+
+    const { run } = await runUntil(server, "higher", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("gamma/high");
+    expect(review.modelNote).toContain("took gamma/high");
+  });
+
+  it("takes a same-tier model of a later ladder before a higher tier of an earlier one", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root, { "beta/mid": "heavy", "gamma/low": "medium" });
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 0.5);
+
+    const { run } = await runUntil(server, "same-tier-first", withReview(), "passed");
+
+    expect(modelOf((reviewTurn(run) as PipelineTurn).agentId)).toBe("gamma/low");
+  });
+
+  it("keeps the default when its plan has room", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 0.5);
+
+    const { run } = await runUntil(server, "room", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("alpha/mid");
+    expect(review.modelNote).toBeUndefined();
+  });
+
+  it("keeps the default when its plan has no usage file", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("gamma/high"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+
+    const { run } = await runUntil(server, "unknown", withReview(), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("gamma/high");
+    expect(review.modelNote).toBeUndefined();
+  });
+
+  it("keeps a stage model on a full plan", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("beta/mid"),
+    });
+    writeSettings(server.paths.root);
+    writeUsage(server.paths.root, "alpha", 1);
+
+    const { run } = await runUntil(server, "pinned", withReview('model = "alpha/mid"'), "passed");
+
+    const review = reviewTurn(run) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("alpha/mid");
+    expect(review.modelNote).toBeUndefined();
+  });
+
+  it("blocks with the plan and its reset when no candidate has room, and Retry reads usage again", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/mid"),
+    });
+    writeSettings(server.paths.root);
+    for (const plan of ["alpha", "beta", "gamma"]) writeUsage(server.paths.root, plan, 1);
+    const { workspaceId } = await workspace(server, "all-full");
+    userPipeline(server.paths.root, "p", withReview());
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    const blocked = await getRun(server, run.id);
+    expect(blocked.state).toBe("running");
+    expect(blocked.blocked).toBe(
+      `stage review: the reviewer default alpha/mid is on plan alpha, which is full until ${new Date(RESETS).toISOString()}; no ladder model of tier medium or higher has room. Retry after the reset, or set another reviewer model in the pi-subagents settings.`,
+    );
+    expect(kinds(blocked)).toEqual(["task1"]);
+
+    writeUsage(server.paths.root, "alpha", 0.5);
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const review = reviewTurn(await getRun(server, run.id)) as PipelineTurn;
+    expect(modelOf(review.agentId)).toBe("alpha/mid");
+  });
+
+  it("checks min_strength_over against the swapped model", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: reviewerDefault("alpha/low"),
+    });
+    // The default (light) is below the worker (medium); the swap (medium) is not.
+    writeSettings(server.paths.root, { "spore/auto": "medium", "gamma/low": "medium" });
+    writeUsage(server.paths.root, "alpha", 1);
+    writeUsage(server.paths.root, "beta", 1);
+
+    const { run } = await runUntil(
+      server,
+      "strength",
+      withReview('min_strength_over = "implement"'),
+      "passed",
+    );
+
+    expect(modelOf((reviewTurn(run) as PipelineTurn).agentId)).toBe("gamma/low");
   });
 });
 

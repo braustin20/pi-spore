@@ -14,6 +14,7 @@ import {
 } from "@pi-spore/module-api";
 import {
   loadSettings,
+  type PlanSnapshot,
   planState,
   type RouterSettings,
   readPlans,
@@ -92,6 +93,8 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_turns ADD COLUMN routing TEXT",
   // Why the turn's agent failed, set by Retry when it starts a fresh agent for the turn.
   "ALTER TABLE pipelines_turns ADD COLUMN error TEXT",
+  // Why a review turn's agent runs on another model than the role default: the default's plan was full (R4.10).
+  "ALTER TABLE pipelines_turns ADD COLUMN model_note TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -149,6 +152,7 @@ interface TurnRow {
   report: string | null;
   routing: string | null;
   error: string | null;
+  model_note: string | null;
   created_at: number;
   reported_at: number | null;
 }
@@ -192,6 +196,7 @@ const turnToView = (row: TurnRow): PipelineTurn => ({
   createdAt: row.created_at,
   ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
   ...(row.error === null ? {} : { error: row.error }),
+  ...(row.model_note === null ? {} : { modelNote: row.model_note }),
 });
 
 const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): PipelineRun => ({
@@ -433,16 +438,66 @@ export const pipelinesModule: ServerModule = {
       stage.model ?? (stage.tier === "route" ? ROUTE_MODEL : undefined);
     const rolesTitle = (role: StageRole) => (role === "reviewer" ? "Review" : "Adversarial");
 
-    /** The model a reviewer stage will run on: the stage's, else the role default. No model is an error. */
-    const reviewerModel = async (stage: PipelineStage): Promise<string> => {
-      const chosen = modelOf(stage);
-      if (chosen) return chosen;
+    /** The plan a model draws on (`router.plans`) and its usage now. A provider with no plan has none. */
+    const planOf = (
+      settings: RouterSettings,
+      snapshots: readonly PlanSnapshot[],
+      model: string,
+    ): { plan: string; state: ReturnType<typeof planState> } | undefined => {
+      const plan = settings.plans[splitModel(model).provider];
+      if (!plan) return undefined;
+      const snapshot = snapshots.find((entry) => entry.plan === plan);
+      return {
+        plan,
+        state: planState(plan, snapshot, host.now(), {
+          maxAgeMs: settings.usageMaxAgeMinutes * 60_000,
+          weekly: settings.pressure.weekly,
+          fiveHour: settings.pressure.fiveHour,
+        }),
+      };
+    };
+
+    /**
+     * The model a reviewer stage will run on: the stage's, else the role default, else none (the agent's own
+     * default). A role default whose plan is full gives way to the first ladder model of its tier or higher whose
+     * plan is not full (R4.10, ADR 0141); `note` says so. A started agent keeps its model (ADR 0140).
+     */
+    const reviewerModel = async (
+      stage: PipelineStage,
+      settings: RouterSettings,
+    ): Promise<{ model?: string; note?: string }> => {
+      const pinned = modelOf(stage);
+      if (pinned) return { model: pinned };
       const role = stage.role as StageRole;
       const defaults = await agents.roleDefaults(role);
-      if (defaults.provider && defaults.modelId) return `${defaults.provider}/${defaults.modelId}`;
-      throw new Error(
-        `stage ${stage.name}: min_strength_over needs the ${role} model, but the stage sets no model and the ${role} role has no default; set "model" in the stage or the ${role} model in the pi-subagents settings`,
-      );
+      if (!defaults.provider || !defaults.modelId) return {};
+      const model = `${defaults.provider}/${defaults.modelId}`;
+      const snapshots = (await readPlans(host.home.root)).plans;
+      const own = planOf(settings, snapshots, model);
+      // No fresh numbers count as room, as in the router.
+      if (own?.state.room !== "full") return { model };
+      const tier = tierOf(settings, model);
+      // Settings allow a ladder model with no tier. It cannot be shown strong enough, so it ranks below every tier.
+      const rank = (candidate: string) => {
+        const candidateTier = settings.tiers[candidate];
+        return candidateTier ? TIERS.indexOf(candidateTier) : -1;
+      };
+      const chosen = [
+        ...new Set(settings.ladders.flatMap((ladder) => ladder.rungs.map((rung) => rung.model))),
+      ]
+        .filter((candidate) => candidate !== model && rank(candidate) >= TIERS.indexOf(tier))
+        .sort((a, b) => rank(a) - rank(b))
+        .find((candidate) => planOf(settings, snapshots, candidate)?.state.room !== "full");
+      const until =
+        own.state.resetsAt === undefined
+          ? ""
+          : ` until ${new Date(own.state.resetsAt).toISOString()}`;
+      if (!chosen) {
+        throw new Error(
+          `stage ${stage.name}: the ${role} default ${model} is on plan ${own.plan}, which is full${until}; no ladder model of tier ${tier} or higher has room. Retry after the reset, or set another ${role} model in the pi-subagents settings.`,
+        );
+      }
+      return { model: chosen, note: `${model}: plan ${own.plan} is full${until}; took ${chosen}` };
     };
 
     /**
@@ -509,15 +564,8 @@ export const pipelinesModule: ServerModule = {
       } catch {
         return undefined;
       }
-      const plan = settings.plans[splitModel(model).provider];
-      if (!plan) return undefined;
-      const snapshot = (await readPlans(host.home.root)).plans.find((entry) => entry.plan === plan);
-      const state = planState(plan, snapshot, host.now(), {
-        maxAgeMs: settings.usageMaxAgeMinutes * 60_000,
-        weekly: settings.pressure.weekly,
-        fiveHour: settings.pressure.fiveHour,
-      });
-      return state.pressure ? { model, notes: state.notes } : undefined;
+      const used = planOf(settings, (await readPlans(host.home.root)).plans, model);
+      return used?.state.pressure ? { model, notes: used.state.notes } : undefined;
     };
 
     const advanceWorker = async (
@@ -580,11 +628,12 @@ export const pipelinesModule: ServerModule = {
       kind: PipelineTurnKind,
       role: StageRole,
       agentId: string,
+      modelNote?: string,
     ): string => {
       const turnId = host.newId();
       host.store.run(
-        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, model_note, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         turnId,
         run.id,
         stageIndex,
@@ -593,6 +642,7 @@ export const pipelinesModule: ServerModule = {
         kind,
         role,
         agentId,
+        modelNote ?? null,
         host.now(),
       );
       return turnId;
@@ -632,11 +682,16 @@ export const pipelinesModule: ServerModule = {
       stageIndex: number,
     ): Promise<StepOutcome<StageCheckpoint>> => {
       const role = stage.role as StageRole;
+      const settings = await loadSettings(host.home.root);
+      const { model, note } = await reviewerModel(stage, settings);
       if (stage.min_strength_over) {
         // Checked before the reviewer exists, so a refused model creates no agent. A throw waits for a settings fix.
-        const settings = await loadSettings(host.home.root);
-        const reviewer = await reviewerModel(stage);
-        const problem = notStronger(settings, [reviewer], await workerModels(run));
+        if (!model) {
+          throw new Error(
+            `stage ${stage.name}: min_strength_over needs the ${role} model, but the stage sets no model and the ${role} role has no default; set "model" in the stage or the ${role} model in the pi-subagents settings`,
+          );
+        }
+        const problem = notStronger(settings, [model], await workerModels(run));
         if (problem) {
           throw new Error(
             `stage ${stage.name} (min_strength_over ${stage.min_strength_over}): reviewer model ${problem}; set a reviewer model of a high enough tier in the stage or fix "tiers" in settings.json, then retry`,
@@ -655,7 +710,6 @@ export const pipelinesModule: ServerModule = {
         diff: `pipelines/${run.id}/${stage.name}-${round}.diff`,
       };
       await writeDiff(run, paths.diff);
-      const model = modelOf(stage);
       const tests = JSON.parse(run.tests) as TestProof[];
       return {
         checkpoint: { boot: bootId },
@@ -665,7 +719,7 @@ export const pipelinesModule: ServerModule = {
             title: `${rolesTitle(role)} ${round}`,
             ...(model ? { model } : {}),
           });
-          const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id);
+          const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id, note);
           agents.deliver(agent.id, reviewPrompt(stage, round, turnId, paths, tests, earlier));
         },
       };

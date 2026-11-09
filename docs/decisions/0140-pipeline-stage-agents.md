@@ -32,6 +32,9 @@ the prompt it answers.
 - **Failed agents.** A stage agent whose turn fails (a crash, or a provider error such as a full usage window) blocks
   its stage, and the run stays `running`. Retry starts a fresh agent for the same turn, on the model the stage or
   the role default gives at that moment. The failed agent keeps its tab and its model (2026-11-08).
+- **Reviewer plan.** A reviewer role default whose plan is full is swapped, before the agent starts, for the first
+  ladder model of the same or a higher tier whose plan has room. A pinned stage model is kept. The user approved
+  this model change (2026-11-09).
 - **Tiers.** Only `tier = "route"` (spore/auto) is built. Other tiers are an error until a tier-to-model choice is
   decided.
 
