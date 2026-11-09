@@ -746,8 +746,12 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 - Headers arrive only when a request is made, so a snapshot can be old. A window is stale when its reset time has
   passed or it was seen longer ago than `router.usageMaxAgeMinutes` (default 60). Stale windows are shown as stale
   and the router ignores them (R18.5).
-- v1 is passive only (ADR 0022). Active polling of the plans' usage endpoints is a v2 option. It would also
-  count use from Claude Code and the Codex CLI, which the tap cannot see.
+- Claude is passive (ADR 0022). Codex is polled (ADR 0153), because the `openai` login sends no headers. The `usage`
+  module's job `usage.codex-poll` asks `GET https://chatgpt.com/backend-api/wham/usage` once a minute, started in
+  `onStarted`. It reads the Codex CLI login from `$CODEX_HOME/auth.json` (default `~/.codex/auth.json`) read-only and
+  never refreshes it. `readUsageEndpoint` (router) turns the body into `5h` and `7d` windows and `writeReading` merges
+  them into `codex.json`. A failed poll sets a message that `GET /api/usage/plans` returns in `errors`
+  (`Codex usage: ...`) and the job goes on. It also counts use from the Codex CLI, which the tap cannot see.
 - The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, and `pipelines`) reads the
   router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
   table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
