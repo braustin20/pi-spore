@@ -105,6 +105,13 @@ export interface Agents {
    * agent.
    */
   addLaunchContext(hook: LaunchHook): void;
+  /**
+   * Runs for each prompt of a chat, inside a `store.transaction`. It returns text to add to the message, or undefined,
+   * and marks what it took as taken in the same transaction. When a hook adds text, the message goes out as a durable
+   * delivery of the whole text, with the prompt's images and steer choice, so the mark and the message commit
+   * together. It must be synchronous.
+   */
+  addPromptHook(hook: (agent: Agent) => string | undefined): void;
 }
 
 export const AgentsKey = defineInterface<Agents>("agents", "agents");

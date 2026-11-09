@@ -20,6 +20,7 @@ import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { FAKE_PNG } from "../test-fixtures/png.mjs";
 import type { Agents, LaunchHook } from "./contract.js";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
@@ -1082,6 +1083,7 @@ describe("chats (ADR 0030)", () => {
       INSERT INTO agents_agents SELECT * FROM old;
       DROP TABLE old;
       ALTER TABLE agents_deliveries DROP COLUMN job_id;
+      ALTER TABLE agents_deliveries DROP COLUMN options;
       DELETE FROM core_migrations WHERE module = 'agents' AND version >= 4;
     `);
     db.close();
@@ -1444,6 +1446,28 @@ describe("deliveries on the job runner", () => {
       "user: second",
       "assistant: echo: second",
     ]);
+  });
+
+  it("keeps a typed prompt behind a pending row, with its images and steer choice", async () => {
+    const { deliver, flag } = await failingPi();
+    const { agentId } = await makeAgent();
+
+    deliver(agentId, "first");
+    await until(() => delivery()?.attempts === 1);
+    rmSync(flag);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/prompt`, {
+        message: "second",
+        images: [{ mimeType: "image/png", data: FAKE_PNG }],
+        whileBusy: "followUp",
+      }),
+    );
+    await until(
+      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
+    );
+    const lines = texts(await chat(agentId));
+    expect(lines.slice(0, 2)).toEqual(["user: first", "assistant: echo: first"]);
+    expect(lines.slice(2)).toEqual(["user: second", "assistant: echo: second [1 images]"]);
   });
 
   describe("moving and dropping a chat's pending rows", () => {

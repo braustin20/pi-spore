@@ -53,6 +53,13 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   at each launch with the agent and its workspace. It may add `env` and replace the tool allowlist with `tools`
   (`--tools <tools> --exclude-tools mcp__*`). Two hooks that give `tools` for one agent fail the launch. A hook never
   changes the bridge token's read-only flag.
+- **Prompt hooks** (R8.3). `AgentsKey.addPromptHook(hook)` registers a synchronous hook that `POST /api/agents/:id/prompt`
+  calls for each prompt, inside one transaction. A hook returns text to add to the message and marks what
+  it took in that transaction. If any hook returns text, the route queues the whole message, with its images and
+  steer choice, as one delivery and answers `queued`. A prompt also goes into the queue when the chat already has
+  a pending delivery, so a later message never overtakes an earlier one. This holds for every chat, with or without comments: a delivery
+  that cannot be sent (Pi fails to start, for example) holds later messages behind it until it goes out. A message that
+  starts with `/` is a slash command: hooks skip it, so staged comments stay for the next message. The `changes` module uses it for staged diff comments (section 11d).
 - **Chats** (ADR 0030, ADR 0033, ADR 0120). The role of a workspace chat is `orchestrator`: a new chat starts on
   `subagents.agentOverrides.orchestrator` (model, thinking) from Pi's settings, and on Pi's own default when that
   override is missing. The `worker` role is a subagent on `spore/auto`; `worker` stays only as a chat `kind`, in
@@ -886,6 +893,14 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
   code, body, created, sent). "Send to agent" writes one delivery to the workspace's active orchestrator chat
   (`AgentsKey.deliver`) and marks the comments sent in the same transaction. Sent comments leave the open list. No
   orchestrator chat yet is 409 `no_worker_chat`. The message lists each comment with its file, line, quoted code, and text.
+- A comment can also be staged (`staged` column): the user adds open comments to the composer of the workspace's active
+  orchestrator chat as a batch. The `changes` module adds a prompt hook (`Agents.addPromptHook`). When the user sends a
+  message in that chat, `POST /api/agents/:id/prompt` runs the hooks inside one transaction. A hook that returns text
+  makes the route queue the message and that text as one durable delivery (`queued`), and the hook marks its comments
+  sent in the same transaction, so a crash neither loses nor repeats them. The message text comes first, then the
+  comments in the format above. The delivery keeps the prompt's images and its `whileBusy` choice (default steer) in
+  its `options` column, which is cleared once Pi accepts the message. Other deliveries have no options: a follow-up
+  with no images.
 - Topic `changes:<workspace id>` sends the open comments on subscribe and after each change
   (`{ type: "comments" }`), and `{ type: "stale" }` when an orchestrator chat of the workspace ends a run, so an open tab
   reloads.
@@ -897,8 +912,9 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 | `GET /api/changes/workspaces/:id/diff?scope=&record=&path=` | Hunks of one changed file, or of every file up to the limit; `truncated` says it cut. A path without changes is 404 `file_not_changed`. |
 | `GET /api/changes/workspaces/:id/comments` | Open comments. |
 | `POST /api/changes/workspaces/:id/comments` `{ path, side, line, code, body }` | Adds a comment. |
+| `POST /api/changes/workspaces/:id/comments/stage` `{ staged, ids? }` | Stages open comments for the composer, or drops them from the batch (`staged: false`). No `ids` means every open comment. A dropped comment stays open. Answers the open comments. |
 | `DELETE /api/changes/comments/:id` | Deletes an open comment; a sent one is 409 `comment_sent`. |
-| `POST /api/changes/workspaces/:id/comments/send` | Sends every open comment to the worker as one message. |
+| `POST /api/changes/workspaces/:id/comments/send` | Sends every open comment to the worker as one message ("Send now"), staged or not. |
 
 CLI: `pi-spore ws diff <workspace> [--staged | --commits | --commit <id>]` prints each file's status, path, and
 counts, then its hunks in unified form.
@@ -909,10 +925,11 @@ counts, then its hunks in unified form.
   browser choice). Code colors come from lowlight (highlight.js grammars, `common` set), mapped to role tokens, so
   they follow the theme; each side of a hunk is colored as one block. Binary and large files show a note.
 - Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
-  bar at the bottom lists them with Send to agent. The tab reloads on Refresh, on a scope change, and on the
+  bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
   `stale` event.
-- Not built yet: attaching comments to the chat composer so they go with the next message (R8.3). Today they go
-  as their own message.
+- The module adds a chat panel (`AgentsWeb.addChatPanel`) above the composer of an orchestrator chat. It shows the
+  staged comments with a count, Drop on each, and Drop all. It follows the `changes:<workspace id>` topic. The socket sends the first snapshot to the first listener of a topic only, so the panel
+  and the Changes tab each also load the open comments when they mount. A newer event wins over a late load.
 
 ## 11e. Pull requests
 
