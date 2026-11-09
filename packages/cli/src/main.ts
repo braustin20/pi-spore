@@ -26,4 +26,5 @@ process.exitCode = await run(process.argv.slice(2), {
   readToken,
   resolvePath: (path) => resolve(process.cwd(), path),
   newKey: randomUUID,
+  now: Date.now,
 });
