@@ -1505,9 +1505,8 @@ describe("deliveries on the job runner", () => {
     await until(() => delivery()?.attempts === 1);
     rmSync(flag);
     deliver(agentId, "second");
-    await until(
-      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
-    );
+    // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+    await until(async () => texts(await chat(agentId)).includes("assistant: echo: second"));
     expect(texts(await chat(agentId))).toEqual([
       "user: first",
       "assistant: echo: first",
@@ -1530,8 +1529,9 @@ describe("deliveries on the job runner", () => {
         whileBusy: "followUp",
       }),
     );
-    await until(
-      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
+    // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+    await until(async () =>
+      texts(await chat(agentId)).includes("assistant: echo: second [1 images]"),
     );
     const lines = texts(await chat(agentId));
     expect(lines.slice(0, 2)).toEqual(["user: first", "assistant: echo: first"]);
