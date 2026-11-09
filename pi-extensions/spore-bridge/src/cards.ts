@@ -51,6 +51,8 @@ export const ApprovalAnswer = Type.Object({
   approval: Type.Object({ id: Type.String(), title: Type.String() }),
 });
 
+export const PushAnswer = Type.Object({ remote: Type.String(), line: Type.String() });
+
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
 /** One line per card, with what an agent needs to link or start it. */
@@ -301,6 +303,24 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient, env: B
         details: { approvalId: approval.id },
         terminate: true,
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "push_line",
+    label: "Push the workspace's branch",
+    description:
+      "Push this workspace's branch to its remote. It never force-pushes. Use it to push fixes for the " +
+      "workspace's PR.",
+    promptSnippet: "Push this workspace's branch to its remote",
+    parameters: Type.Object({}),
+    async execute(toolCallId, _params, signal) {
+      const { remote, line } = await client.call(PushAnswer, "workspace/push", {
+        body: {},
+        receipt: toolCallId,
+        ...(signal ? { signal } : {}),
+      });
+      return { content: text(`Pushed ${line} to ${remote}.`), details: { remote, line } };
     },
   });
 }

@@ -141,6 +141,10 @@ export const OpenWorkspacePrRequest = Type.Object(
 );
 export type OpenWorkspacePrRequest = Static<typeof OpenWorkspacePrRequest>;
 
+/** A chat pushes its workspace's branch. It names nothing: the branch is the workspace's own (ADR 0164). */
+export const PushLineRequest = Type.Object({}, { additionalProperties: false });
+export type PushLineRequest = Static<typeof PushLineRequest>;
+
 /** What a `workspace-pr` approval holds. The user may edit `title` and `body` on approve, not the rest. */
 export const WorkspacePrSubject = Type.Object(
   {

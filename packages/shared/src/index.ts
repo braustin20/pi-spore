@@ -171,6 +171,7 @@ export {
   PrWatchState,
   PublishRequest,
   PullRequest,
+  PushLineRequest,
   PushRequest,
   WatchRequest,
   WorkspacePrSubject,

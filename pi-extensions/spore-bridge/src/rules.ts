@@ -60,7 +60,9 @@ pi-spore rules
 - Open a PR only with \`open_pr\`; it opens when the user approves. Never merge into the base branch on your own,
   and never turn on auto-merge. Merge a PR only when the user asks for that merge, or when you ask and the user
   says yes (ADR 0130). Each yes covers one PR. The user may also merge with the Merge button in the PR tab; only
-  the user can press it (ADR 0142).
+  the user can press it (ADR 0142). If the user chose "Open and merge when checks pass", pi-spore merges the PR
+  when it is ready (ADR 0164). Its messages about failed checks or conflicts are yours to fix; push the fix with
+  \`push_line\`, never force.
 - The kanban board holds the user's planned work. Make or change cards only when the user asks. For a plan with
   phases, make one card per phase, link them in order with blockedBy, and give them one shared label such as
   plan:<short name>. Start work from a card only when the user asks; kanban_start_card waits for their approval.`;
