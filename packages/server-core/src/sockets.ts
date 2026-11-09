@@ -8,7 +8,7 @@ import {
   type SocketRoutes,
 } from "@pi-spore/module-api";
 import { WebSocket, WebSocketServer } from "ws";
-import { isLoopbackHost, isLoopbackOrigin } from "./guards.js";
+import { guardRequest, type RemoteAccess } from "./guards.js";
 import { tokensMatch } from "./token.js";
 
 /** Takes an upgrade that passed the guards. */
@@ -28,13 +28,22 @@ function refuse(socket: Duplex, status: string): void {
 export function attachUpgrades(
   server: Server,
   token: string,
+  remoteAccess: RemoteAccess,
   route: (pathname: string) => UpgradeHandler | undefined,
 ): void {
   server.on("upgrade", (request: IncomingMessage, socket: Duplex, head: Buffer) => {
     const url = new URL(request.url ?? "/", "http://localhost");
-    if (!isLoopbackHost(request.headers.host) || !isLoopbackOrigin(request.headers.origin)) {
-      return refuse(socket, "403 Forbidden");
-    }
+    const login = request.headers["tailscale-user-login"];
+    const refusal = guardRequest(
+      remoteAccess,
+      {
+        host: request.headers.host,
+        peer: request.socket.remoteAddress,
+        login: typeof login === "string" ? login : undefined,
+      },
+      { origin: request.headers.origin },
+    );
+    if (refusal) return refuse(socket, `${refusal.status} ${STATUS_TEXT[refusal.status]}`);
     if (!tokensMatch(token, url.searchParams.get("token") ?? undefined)) {
       return refuse(socket, "401 Unauthorized");
     }

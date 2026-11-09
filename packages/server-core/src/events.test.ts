@@ -13,21 +13,41 @@ let hub: WebSocketHub;
 let port: number;
 const sockets: WebSocket[] = [];
 
-beforeEach(async () => {
+async function start(remoteAccess: {
+  allowedHosts: string[];
+  allowedLogins: string[];
+}): Promise<void> {
   server = createServer((_request, response) => response.end());
   hub = new WebSocketHub(silentLog);
-  attachUpgrades(server, TEST_TOKEN, (pathname) =>
+  attachUpgrades(server, TEST_TOKEN, remoteAccess, (pathname) =>
     pathname === "/api/ws" ? hub.upgrade : undefined,
   );
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   port = (server.address() as AddressInfo).port;
-});
+}
+
+beforeEach(() => start({ allowedHosts: [], allowedLogins: [] }));
 afterEach(async () => {
   for (const socket of sockets.splice(0)) socket.terminate();
   hub.close();
   server.close();
 });
+
+interface UpgradeOptions {
+  token?: string;
+  host?: string;
+  origin?: string;
+  login?: string | undefined;
+}
+
+function upgradeHeaders(options: UpgradeOptions): Record<string, string> {
+  return {
+    ...(options.host ? { host: options.host } : {}),
+    ...(options.origin ? { origin: options.origin } : {}),
+    ...(options.login ? { "tailscale-user-login": options.login } : {}),
+  };
+}
 
 interface Frame {
   type: string;
@@ -37,15 +57,10 @@ interface Frame {
 }
 
 /** Opens a socket and collects every frame it receives. */
-async function connect(options: { token?: string; host?: string; origin?: string } = {}) {
+async function connect(options: UpgradeOptions = {}) {
   const socket = new WebSocket(
     `ws://127.0.0.1:${port}/api/ws?token=${options.token ?? TEST_TOKEN}`,
-    {
-      headers: {
-        ...(options.host ? { host: options.host } : {}),
-        ...(options.origin ? { origin: options.origin } : {}),
-      },
-    },
+    { headers: upgradeHeaders(options) },
   );
   sockets.push(socket);
   const frames: Frame[] = [];
@@ -60,20 +75,11 @@ async function until(check: () => boolean): Promise<void> {
 }
 
 /** Resolves with the HTTP status of a refused upgrade. */
-function refusedStatus(options: {
-  token?: string;
-  host?: string;
-  origin?: string;
-}): Promise<number> {
+function refusedStatus(options: UpgradeOptions): Promise<number> {
   return new Promise((resolve, reject) => {
     const socket = new WebSocket(
       `ws://127.0.0.1:${port}/api/ws?token=${options.token ?? TEST_TOKEN}`,
-      {
-        headers: {
-          ...(options.host ? { host: options.host } : {}),
-          ...(options.origin ? { origin: options.origin } : {}),
-        },
-      },
+      { headers: upgradeHeaders(options) },
     );
     socket.on("unexpected-response", (_request, response) => resolve(response.statusCode ?? 0));
     socket.on("open", () => reject(new Error("The upgrade was accepted")));
@@ -165,5 +171,32 @@ describe("WebSocketHub", () => {
   it("accepts a same-origin page", async () => {
     const { socket } = await connect({ origin: `http://127.0.0.1:${port}` });
     expect(socket.readyState).toBe(WebSocket.OPEN);
+  });
+
+  describe("through tailscale serve", () => {
+    const tailnet = {
+      host: "box.tail.ts.net",
+      origin: "https://box.tail.ts.net",
+      login: "me@example.com",
+    };
+    beforeEach(async () => {
+      hub.close();
+      server.close();
+      await start({ allowedHosts: ["box.tail.ts.net"], allowedLogins: ["me@example.com"] });
+    });
+
+    it("accepts an allowed host with a listed login, its own origin, and the token", async () => {
+      const { socket } = await connect(tailnet);
+      expect(socket.readyState).toBe(WebSocket.OPEN);
+    });
+
+    it("refuses another login, an unlisted host, another site, and a missing token", async () => {
+      expect(await refusedStatus({ ...tailnet, login: "you@example.com" })).toBe(401);
+      expect(await refusedStatus({ ...tailnet, login: undefined })).toBe(401);
+      expect(await refusedStatus({ ...tailnet, host: "other.tail.ts.net" })).toBe(403);
+      expect(await refusedStatus({ ...tailnet, origin: "https://evil.example" })).toBe(403);
+      expect(await refusedStatus({ ...tailnet, origin: "http://box.tail.ts.net" })).toBe(403);
+      expect(await refusedStatus({ ...tailnet, token: "wrong" })).toBe(401);
+    });
   });
 });

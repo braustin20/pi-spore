@@ -65,6 +65,8 @@ describe("GET /api/projects/settings", () => {
     expect(settings).toEqual(
       expect.arrayContaining([
         { key: "retention.days", value: 7, source: "global" },
+        { key: "server.allowedHosts", value: [], source: "default" },
+        { key: "server.allowedLogins", value: [], source: "default" },
         { key: "worktree.branch_prefix", value: "spore", source: "default" },
         { key: "worktree.copy", value: [], source: "default" },
       ]),

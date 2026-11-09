@@ -12,7 +12,8 @@ not built in v1.
 
 - R1.1 A local server, a browser UI, and a thin CLI (`pi-spore`). One user. No accounts, no hosting.
 - R1.2 The server binds to `127.0.0.1` only and requires a token that the CLI and the UI read from
-  `~/.pi-spore/`.
+  `~/.pi-spore/`. A phone may reach it through `tailscale serve` on this machine, only on hosts and for Tailscale
+  logins the user lists (ADR 0143). Never through Funnel.
 - R1.3 pi-spore replaces Orca for agent and Unity work: worktrees, setup, terminals, Unity launch, agent status.
 - R1.4 Every agent is a Pi agent that loads the same auth, models, settings, skills, extensions, prompt templates,
   AGENTS.md files, and MCP config as the `pi` CLI. Extensions that work in `pi` today (Strata auto-start,
@@ -230,6 +231,6 @@ not built in v1.
 
 - v2: full-text search over conversations, MCP manager UI (v1 shows the MCP servers read-only), services with
   ports, snooze and wait-on rules.
-- Not planned: Perforce or other VCS (the provider interface must not assume Git), voice input, mobile layout,
-  changelog page, multi-user, hosting, external runtime plugins, other agent CLIs as workbench agents, schedules,
-  auto-merge.
+- Not planned: Perforce or other VCS (the provider interface must not assume Git), voice input, a layout made for
+  phones (a phone may open the UI over Tailscale, ADR 0143), changelog page, multi-user, hosting, external runtime
+  plugins, other agent CLIs as workbench agents, schedules, auto-merge.

@@ -1340,8 +1340,29 @@ the Settings page, `#/settings`, shows that list):
 | `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
 | `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
 | `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
+| `server.allowedHosts` | global | array of host names, default none | Tailnet hosts that `tailscale serve` forwards from (ADR 0143). |
+| `server.allowedLogins` | global | array of Tailscale logins, default none | Logins that may use those hosts (ADR 0143). Required when `server.allowedHosts` is set. |
 
-The `agents.*` keys are read when the server starts. Change them, then restart.
+The `agents.*` and `server.*` keys are read when the server starts. Change them, then restart. Core declares the
+`server.*` keys in `setupModules`.
+
+### Remote access
+
+See [ADR 0143](decisions/0143-phone-over-tailscale-serve.md).
+
+The server binds `127.0.0.1` only. A phone reaches it through `tailscale serve --bg <port>`, which the user runs
+once; it proxies `https://<machine>.<tailnet>.ts.net/` to the loopback port and sets `Tailscale-User-Login`.
+`guardRequest` (`packages/server-core/src/guards.ts`) runs first on every HTTP request and WebSocket upgrade:
+
+1. The TCP peer must be loopback, or 403 `bad_peer`.
+2. A loopback Host passes.
+3. A Host in `server.allowedHosts` needs a login in `server.allowedLogins`, or 401 `identity_required`. This
+   covers the page that holds the token.
+4. Any other Host: 403 `bad_host` (DNS rebinding guard).
+5. Upgrades only: Origin absent, loopback, or `https://<allowed host>`, or 403 `bad_origin`.
+
+The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale` and never uses Funnel.
+`pi-spore remote` prints the serve command and the URLs.
 
 Not built yet:
 
@@ -1505,7 +1526,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   `attention:inbox` (Home), `kanban:board` (the board), and `runs:list` (runs).
 - Modules add their own WebSocket routes with `host.sockets.add(path, open)`, under `/api/<module id>/`. `open`
   gets the path params and throws an ApiError to refuse the upgrade with its status. Every upgrade, `/api/ws`
-  included, needs a loopback Host and Origin and the user's token in `?token=` (browsers cannot set headers on a
+  included, passes `guardRequest` (Host, Origin, peer, and login; section 13, Remote access) and needs the user's
+  token in `?token=` (browsers cannot set headers on a
   WebSocket). Agent tokens are never accepted. `ApiClient.socketUrl(path)` builds the URL in the page.
 - Routes under `/api/bridge/` are for spore-bridge and take only agent tokens; all others take only the user's token
   (ADR 0032). Card routes (ADR 0100): `GET /api/bridge/cards?label=&column=`, `POST /api/bridge/cards`,
@@ -1519,6 +1541,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   cancel <id>`.
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
+- `pi-spore remote [--json]` prints the `tailscale serve` command, the URLs, and the allowed logins, or the
+  settings to add when remote access is off. It runs nothing (ADR 0143).
 - Chats (agents module, ADR 0030):
 
   | Route | Does |
