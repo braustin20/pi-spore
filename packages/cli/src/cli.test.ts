@@ -1312,6 +1312,33 @@ describe("pi-spore inbox", () => {
     expect(text).toContain("status: busy");
   });
 
+  it("lists and shows a notice, which has no workspace or chat", async () => {
+    const notice = {
+      kind: "notice",
+      source: "github-pr",
+      id: "pr-7",
+      at: NOW - 60_000,
+      title: "PR 7 waits for review",
+      detail: "Two checks passed",
+      href: "#/projects/P1/prs/7",
+    };
+    const { deps, out } = fakeDeps(() =>
+      Response.json({ items: [notice], interrupted: [], running: [] }),
+    );
+    expect(await run(["inbox", "list"], deps)).toBe(0);
+    expect(await run(["inbox", "show", "notice:github-pr:pr-7"], deps)).toBe(0);
+    expect(out).toEqual([
+      "notice:github-pr:pr-7  notice  1m  github-pr  #/projects/P1/prs/7",
+      "id: notice:github-pr:pr-7",
+      "kind: notice",
+      "age: 1m",
+      "link: #/projects/P1/prs/7",
+      "source: github-pr",
+      "title: PR 7 waits for review",
+      "detail: Two checks passed",
+    ]);
+  });
+
   it("shows the prefill and placeholder of input and editor dialogs", async () => {
     const dialog = (id: string, rest: object) => ({
       kind: "dialog",

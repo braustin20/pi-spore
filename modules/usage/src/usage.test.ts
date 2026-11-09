@@ -2,9 +2,14 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createAgentsModule } from "@pi-spore/mod-agents/server";
+import { attentionModule, HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import {
   CreateWorkspaceResponse,
@@ -19,17 +24,50 @@ import { formatAge, formatTokens, formatUntil } from "./format.js";
 import { createUsageModule, warningsFor } from "./server.js";
 
 const START = 1_800_000_000_000;
+const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 let server: TestServer;
+let agents: ReturnType<typeof createAgentsModule>;
 let scratch: string;
+/** Pushes the inbox, as any other module's change would. */
+let nudgeHome: () => void;
+
+/** Another module that changes Home for its own reasons. */
+const otherModule: ServerModule = {
+  id: "other",
+  requires: ["attention"],
+  core: false,
+  setup(host) {
+    nudgeHome = host.use(HomeItemsKey).changed;
+  },
+};
 
 beforeEach(async () => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-usage-mod-")));
+  agents = createAgentsModule({
+    pi: { command: process.execPath, args: [FAKE_PI] },
+    resourceArgs: async () => ["--no-extensions"],
+    roleDefaults: async () => ({}),
+    baseEnv: { PATH: process.env.PATH },
+    idleStopMs: 60_000,
+    startTimeoutMs: 5_000,
+  });
   server = await createTestServer(
-    [fakePipelines().module, projectsModule, vcsGitModule, workspacesModule, createUsageModule()],
+    [
+      fakePipelines().module,
+      projectsModule,
+      vcsGitModule,
+      vcsFolderModule,
+      workspacesModule,
+      agents,
+      attentionModule,
+      createUsageModule(),
+      otherModule,
+    ],
     { startAt: START },
   );
 });
-afterEach(() => {
+afterEach(async () => {
+  await agents.manager().stopAll();
   server.close();
   rmSync(scratch, { recursive: true, force: true });
 });
@@ -88,6 +126,88 @@ const writePlan = (plan: string, body: unknown) => {
   mkdirSync(join(server.paths.root, "usage"), { recursive: true });
   writeFileSync(join(server.paths.root, "usage", `${plan}.json`), JSON.stringify(body));
 };
+
+describe("Home items (ADR 0152, R18.4)", () => {
+  const usageItems = async () =>
+    (
+      (await json(await server.request("GET", "/api/attention/inbox"))) as {
+        items: { kind: string; source: string; id: string; title: string; href: string }[];
+      }
+    ).items.filter((item) => item.kind === "notice" && item.source === "usage");
+
+  const claude = (weekly: number) =>
+    writePlan("claude", {
+      plan: "claude",
+      source: "anthropic-ratelimit-unified headers",
+      seenAt: START - 60_000,
+      windows: { "7d": { utilization: weekly, seenAt: START - 60_000 } },
+    });
+
+  it("shows a usage warning on Home with a link to the Usage page, and drops it when the window clears", async () => {
+    claude(0.5);
+    expect(await usageItems()).toEqual([]);
+    claude(0.8);
+    expect(await usageItems()).toMatchObject([
+      {
+        id: "claude:7d",
+        title: "Claude weekly window is at 80%, over the 75% threshold.",
+        href: "#/usage",
+      },
+    ]);
+    claude(0.5);
+    expect(await usageItems()).toEqual([]);
+  });
+});
+
+describe("Home items follow plan files live (ADR 0152, R18.4)", () => {
+  const noticeTitles = () =>
+    (
+      server.events.eventsOf("attention:inbox") as {
+        inbox: { items: { kind: string; title?: string }[] };
+      }[]
+    ).map((event) =>
+      event.inbox.items.filter((item) => item.kind === "notice").map((item) => item.title),
+    );
+  const untilPushed = async (check: (pushed: (string | undefined)[][]) => boolean) => {
+    for (let tries = 0; tries < 300; tries++) {
+      if (check(noticeTitles())) return;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`No matching inbox was pushed: ${JSON.stringify(noticeTitles())}`);
+  };
+  const claude = (weekly: number) =>
+    writePlan("claude", {
+      plan: "claude",
+      source: "anthropic-ratelimit-unified headers",
+      seenAt: START - 60_000,
+      windows: { "7d": { utilization: weekly, seenAt: START - 60_000 } },
+    });
+
+  it("pushes the inbox when a plan file crosses a threshold and when it clears, with no other change", async () => {
+    claude(0.8);
+    await untilPushed((pushed) => pushed.some((titles) => titles.length === 1));
+    claude(0.5);
+    await untilPushed((pushed) => pushed.at(-1)?.length === 0 && pushed.length > 1);
+  });
+
+  it("shows a warning again when a fresh reading follows one that went stale", async () => {
+    const maxAge = (minutes: number) =>
+      writeFileSync(
+        join(server.paths.root, "settings.json"),
+        JSON.stringify({ router: { usageMaxAgeMinutes: minutes } }),
+      );
+    claude(0.8);
+    await untilPushed((pushed) => pushed.some((titles) => titles.length === 1));
+    // The reading ages out with no file change, and another module's change drops the warning from Home.
+    maxAge(1);
+    nudgeHome();
+    await untilPushed((pushed) => pushed.at(-1)?.length === 0 && pushed.length > 1);
+    // A fresh reading at the same percentage is a new warning.
+    maxAge(60);
+    claude(0.8);
+    await untilPushed((pushed) => pushed.at(-1)?.length === 1 && pushed.length > 2);
+  });
+});
 
 describe("GET /api/usage/plans", () => {
   it("shows each plan's windows with their age, marks stale ones, and warns over a threshold", async () => {

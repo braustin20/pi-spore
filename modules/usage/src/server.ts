@@ -1,3 +1,6 @@
+import { mkdirSync, watch } from "node:fs";
+import { join } from "node:path";
+import { HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
@@ -5,6 +8,7 @@ import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { loadSettings, pruneRecords, readPlans, readRecords, windowViews } from "@pi-spore/router";
 import type {
   CalibrationResponse,
+  HomeNotice,
   RoutingDecisionsResponse,
   TokenUseResponse,
   TokenUseRow,
@@ -74,12 +78,13 @@ interface OutcomeRow {
 export function createUsageModule(): ServerModule {
   return {
     id: "usage",
-    requires: ["projects", "workspaces", "pipelines"],
+    requires: ["projects", "workspaces", "pipelines", "attention"],
     core: false,
     setup(host) {
       const projects = host.use(ProjectsKey);
       const workspaces = host.use(WorkspacesKey);
       const pipelines = host.use(PipelinesKey);
+      const homeItems = host.use(HomeItemsKey);
       const sessions = new SessionIndex(host.home.sessions);
       const settings = () =>
         loadSettings(host.home.root).catch((error: unknown) => {
@@ -116,13 +121,13 @@ export function createUsageModule(): ServerModule {
         if (count > 0) host.log.info("Retention deleted routing decisions", { count });
       });
 
-      host.routes.get("/plans", async (c) => {
+      const plansView = async (): Promise<UsagePlansResponse> => {
         const { pressure, usageMaxAgeMinutes } = await settings();
         const now = host.now();
         const maxAgeMs = usageMaxAgeMinutes * 60_000;
         const { plans, errors } = await readPlans(host.home.root);
         const warnings: UsageWarning[] = [];
-        const body: UsagePlansResponse = {
+        return {
           plans: plans.map((snapshot) => {
             const windows = windowViews(snapshot, now, maxAgeMs).map((view) => ({
               ...view,
@@ -143,8 +148,32 @@ export function createUsageModule(): ServerModule {
           maxAgeMinutes: usageMaxAgeMinutes,
           errors,
         };
-        return c.json(body);
-      });
+      };
+
+      host.routes.get("/plans", async (c) => c.json(await plansView()));
+
+      // R18.4: the warnings show on Home as well as on the Usage page.
+      const homeWarnings = async (): Promise<HomeNotice[]> => {
+        const { plans, warnings } = await plansView();
+        return warnings.map((warning) => ({
+          id: `${warning.plan}:${warning.window}`,
+          at: plans.find((plan) => plan.plan === warning.plan)?.seenAt ?? host.now(),
+          title: warning.message,
+          href: "#/usage",
+        }));
+      };
+      homeItems.register("usage", homeWarnings);
+
+      // The router writes the plan files from any Pi process, so this module watches the folder and nudges Home when
+      // a plan file changes. Warnings also clear with time, so Home reads them fresh instead of comparing with the
+      // last nudge. The watcher does not keep the process alive.
+      const usageFolder = join(host.home.root, "usage");
+      mkdirSync(usageFolder, { recursive: true });
+      watch(usageFolder, { persistent: false }, (_event, name) => {
+        if (name?.endsWith(".json")) homeItems.changed();
+      }).on("error", (error) =>
+        host.log.error("Watching the usage folder failed", { error: String(error) }),
+      );
 
       host.routes.get("/tokens", async (c) => {
         const { tiers } = await settings();

@@ -5,6 +5,7 @@ import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { CalibrationResponse, parse } from "@pi-spore/shared";
 import { afterEach, describe, expect, it } from "vitest";
+import { fakeAttention } from "./fake-attention.js";
 import { type FakeRun, fakePipelines } from "./fake-pipelines.js";
 import { createUsageModule } from "./server.js";
 
@@ -20,7 +21,7 @@ async function start(records: object[]): Promise<void> {
   const pipelines = fakePipelines();
   end = pipelines.end;
   server = await createTestServer(
-    [pipelines.module, projectsModule, workspacesModule, createUsageModule()],
+    [pipelines.module, fakeAttention, projectsModule, workspacesModule, createUsageModule()],
     {},
   );
   mkdirSync(join(server.paths.root, "usage"), { recursive: true });

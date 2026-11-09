@@ -7,6 +7,7 @@ import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fakeAttention } from "./fake-attention.js";
 import { fakePipelines } from "./fake-pipelines.js";
 import { createUsageModule } from "./server.js";
 
@@ -43,6 +44,7 @@ async function startWithLog(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      fakeAttention,
       createUsageModule(),
     ],
     { home, startAt: START + days * DAY + SLACK },
@@ -64,6 +66,7 @@ async function startWithOutcomes(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      fakeAttention,
       createUsageModule(),
     ],
     { home, startAt: START },
@@ -84,6 +87,7 @@ async function startWithOutcomes(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      fakeAttention,
       createUsageModule(),
     ],
     { home, startAt: START + days * DAY + SLACK },

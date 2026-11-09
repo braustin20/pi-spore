@@ -104,7 +104,7 @@ Commands:
   approvals approve <approval>
   approvals decline <approval> [--note <text>]
   inbox list                               What needs you across projects: questions, approvals, dialogs,
-                                           failures, finished chats, and running work
+                                           failures, finished chats, module notices, and running work
   inbox show <id>                          One inbox item in full. Use an id from inbox list
   jobs [--all]                             Background jobs that have not ended; --all includes ended ones
   jobs retry <job>                         Run an interrupted or waiting job again now
@@ -712,10 +712,18 @@ interface InboxEntry {
 }
 
 function inboxEntries({ items, running }: Inbox): InboxEntry[] {
-  const link = (entry: InboxItem | RunningItem) =>
+  const link = (entry: Exclude<InboxItem, { kind: "notice" }> | RunningItem) =>
     `#/workspaces/${entry.workspace.id}/chats/${entry.chat.id}`;
   return [
     ...items.map((item): InboxEntry => {
+      if (item.kind === "notice")
+        return {
+          id: `notice:${item.source}:${item.id}`,
+          kind: "notice",
+          at: item.at,
+          link: item.href,
+          item,
+        };
       const id =
         item.kind === "question"
           ? item.question.id
@@ -746,7 +754,8 @@ function age(ms: number): string {
   return `${Math.floor(seconds / 86_400)}d`;
 }
 
-const placeOf = ({ item }: InboxEntry) => `${item.workspace.projectName} / ${item.workspace.name}`;
+const placeOf = ({ item }: InboxEntry) =>
+  "workspace" in item ? `${item.workspace.projectName} / ${item.workspace.name}` : item.source;
 
 function inboxDetails({ item }: InboxEntry): string[] {
   if ("status" in item)
@@ -779,6 +788,12 @@ function inboxDetails({ item }: InboxEntry): string[] {
       return [`error: ${item.error}`];
     case "finished":
       return ["The agent's last run ended. It waits for you."];
+    case "notice":
+      return [
+        `source: ${item.source}`,
+        `title: ${item.title}`,
+        ...(item.detail ? [`detail: ${item.detail}`] : []),
+      ];
   }
 }
 
@@ -801,13 +816,17 @@ async function inboxCommand(api: Api, deps: CliDeps, args: string[], json: boole
   const entry = entries.find((candidate) => candidate.id === rest[0]);
   if (!entry) throw new CliError(`No inbox item "${rest[0]}". See: pi-spore inbox list`, 1);
   if (json) return deps.out(JSON.stringify(entry));
-  const chat = entry.item.chat;
+  const { item } = entry;
   for (const line of [
     `id: ${entry.id}`,
     `kind: ${entry.kind}`,
     `age: ${age(deps.now() - entry.at)}`,
-    `workspace: ${placeOf(entry)}`,
-    `chat: ${chat.title ?? chat.id} (${chat.kind})`,
+    ...("chat" in item
+      ? [
+          `workspace: ${placeOf(entry)}`,
+          `chat: ${item.chat.title ?? item.chat.id} (${item.chat.kind})`,
+        ]
+      : []),
     `link: ${entry.link}`,
     ...inboxDetails(entry),
   ])
