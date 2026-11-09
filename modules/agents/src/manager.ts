@@ -423,6 +423,20 @@ export class AgentManager {
     return [...used];
   }
 
+  async turnError(id: string): Promise<string | undefined> {
+    const { status, error, record } = this.get(id);
+    if (status === "failed") return error;
+    if (status === "busy" || status === "starting" || status === "waiting") return undefined;
+    if (!record.sessionFile) return undefined;
+    const last = (await readTranscript(record.sessionFile)).messages.findLast(
+      (message) => message.role === "assistant",
+    );
+    if (last?.stopReason !== "error") return undefined;
+    return typeof last.errorMessage === "string"
+      ? last.errorMessage
+      : "the model returned an error";
+  }
+
   async setModel(id: string, provider: string, modelId: string): Promise<AgentModel | undefined> {
     const live = this.get(id);
     // The pipeline judges a stage by the model it ran on (R4.4), so the model is fixed at creation.
