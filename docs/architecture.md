@@ -822,10 +822,13 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
     plain one (title, reason, approve, decline with a note).
 - The CLI reads the same route: `pi-spore inbox list` prints each item and each running agent with an id, its kind
-  (`question`, `approval`, `dialog`, `failed`, `finished`, `running`), age, `project / workspace`, and the chat link.
-  `pi-spore inbox show <id>` prints one in full: a question's text and choices, an approval's gate, title, reason,
-  and subject, a dialog's prompt, a failure's error. Ids are `<kind>:<id>` (a dialog is `dialog:<agent>:<dialog>`;
-  `failed`, `finished`, and `running` use the agent id). Interrupted jobs are not listed; `pi-spore jobs` shows them.
+  (`question`, `approval`, `dialog`, `failed`, `finished`, `running`, `notice`), age, `project / workspace`, and the
+  chat link. `pi-spore inbox show <id>` prints one in full: a question's text and choices, an approval's gate, title,
+  reason, and subject, a dialog's prompt, a failure's error. Ids are `<kind>:<id>` (a dialog is
+  `dialog:<agent>:<dialog>`; `failed`, `finished`, and `running` use the agent id). A notice is
+  `notice:<source>:<id>`; it has no workspace or chat, so its place column is the source name, its link is its
+  `href`, and `show` prints its source, title, and detail. Interrupted jobs are not listed; `pi-spore jobs` shows
+  them.
 
 ## 11c. Terminals
 
