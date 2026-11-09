@@ -84,7 +84,7 @@ describe("ladders (ADR 0141)", () => {
   it("refuses a top model, naming the setting and the model", async () => {
     const top = ladder("a/one", "a/two", "claude-bridge/claude-fable-5-1");
     await expect(load({ ladders: [ladder("a/x", "a/y", "a/z"), top] })).rejects.toThrow(
-      "router.ladders[1].rungs[2].model claude-bridge/claude-fable-5-1 is tier top; the router never routes to a top model (ADR 0141)",
+      `router.ladders[1].rungs[2].model claude-bridge/claude-fable-5-1 is tier top; the router never routes to a top model (ADR 0141) in ${join(home, "settings.json")}`,
     );
     await expect(
       load({ ladders: [ladder("a/one", "a/two", "a/three")] }, { "a/two": "top" }),
@@ -93,7 +93,7 @@ describe("ladders (ADR 0141)", () => {
 
   it("refuses spore/auto in a ladder and in a local target", async () => {
     await expect(load({ ladders: [ladder("a/one", "spore/auto", "a/three")] })).rejects.toThrow(
-      "router.ladders[0].rungs[1].model is spore/auto",
+      `router.ladders[0].rungs[1].model is spore/auto; the router cannot route to itself in ${join(home, "settings.json")}`,
     );
     const target = {
       model: "spore/auto",

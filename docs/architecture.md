@@ -764,6 +764,12 @@ defaults apply to every key left out. Unknown `router` keys and wrong values are
 - `ladders` replaces the whole default list when set. A ladder's `plan` names its usage file
   (`~/.pi-spore/usage/<plan>.json`). OpenRouter sends no plan window, so its plan always has room.
 - `router.cloud` and `router.spill` are gone (ADR 0141). Either key is an error that names `router.ladders`.
+- The Settings page shows each top-level `router` key as `router.<name>`, and `tiers` as one row, with the value
+  the router uses. The source is `global` when the file sets the key, else `default`; `pressure`, `plans`, and
+  `tiers` merge with the defaults, so any value in the file makes them `global`. The projects module reads them
+  with the router's `routerSettingEntries`, so the router's parser stays the only check. A bad router key answers
+  422 `bad_settings` with the parser's message, which names the key and the file. These keys are read only from
+  `settings.json`, never from `config.toml` (R17.3).
 - `threshold` is the rung-1 bar, `heavyThreshold` the rung-3 bar for visual, design, and foundational, `large` the
   rung-3 token estimate, and `maxQueued` the most sessions that may wait for a busy local target.
 - `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes a bar; the
@@ -1322,8 +1328,8 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   `checkSection(schema, value, what)` give the owner the parsed file and the same 422 error.
 - The resolve order is a list of layers, so a run or workspace override can be added after the local override.
 
-Declared keys (`GET /api/projects/settings` lists them all with their source; the Settings page, `#/settings`, shows
-that list):
+Declared keys (`GET /api/projects/settings` lists them all with their source, plus the router keys of section 10;
+the Settings page, `#/settings`, shows that list):
 
 | Key | Scope | Type | Meaning |
 |---|---|---|---|

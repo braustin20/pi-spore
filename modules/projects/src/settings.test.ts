@@ -60,11 +60,43 @@ describe("GET /api/projects/settings", () => {
     writeSettings('{"retention":{"days":7}}');
     const response = await server.request("GET", "/api/projects/settings");
     const { settings } = parse(SettingsView, await response.json(), "settings");
-    expect(settings).toEqual([
-      { key: "retention.days", value: 7, source: "global" },
-      { key: "worktree.branch_prefix", value: "spore", source: "default" },
-      { key: "worktree.copy", value: [], source: "default" },
-    ]);
+    const keys = settings.map((setting) => setting.key);
+    expect(keys).toEqual([...keys].sort());
+    expect(settings).toEqual(
+      expect.arrayContaining([
+        { key: "retention.days", value: 7, source: "global" },
+        { key: "worktree.branch_prefix", value: "spore", source: "default" },
+        { key: "worktree.copy", value: [], source: "default" },
+      ]),
+    );
+  });
+
+  // The router reads these keys itself (pi-extensions/router); the page shows them through its parser (R17.1).
+  it("shows a router key from settings.json as global and the rest as default", async () => {
+    writeSettings('{"router":{"threshold":0.5}}');
+    expect(await entry("router.threshold")).toEqual({ value: 0.5, source: "global" });
+    expect(await entry("router.maxQueued")).toEqual({ value: 1, source: "default" });
+    expect((await entry("tiers")).source).toBe("default");
+  });
+
+  it("shows tiers from settings.json as global", async () => {
+    writeSettings('{"tiers":{"a/model":"light"}}');
+    const tiers = await entry("tiers");
+    expect(tiers.source).toBe("global");
+    expect(tiers.value).toMatchObject({ "a/model": "light" });
+  });
+
+  it.each([
+    ["a router value of the wrong type", '{"router":{"threshold":"high"}}', "/router/threshold"],
+    ["an unknown router key", '{"router":{"thresh":1}}', "/router"],
+    ["a bad tier", '{"tiers":{"a/model":"huge"}}', "/tiers/a~1model"],
+    [
+      "a router target that routes to itself",
+      '{"router":{"localTargets":[{"model":"spore/auto","thinking":"high","contextWindow":1000,"budget":0.5,"concurrency":1,"healthUrl":"http://127.0.0.1:1/health"}]}}',
+      "router.localTargets[0].model",
+    ],
+  ])("refuses %s with 422 bad_settings", async (_name, text, mentions) => {
+    await expectBadSettings(text, mentions);
   });
 
   it("reads the file fresh on each call", async () => {

@@ -19,6 +19,9 @@
       "path": "../../packages/shared"
     },
     {
+      "path": "../../pi-extensions/router"
+    },
+    {
       "path": "../../packages/server-core"
     }
   ]
