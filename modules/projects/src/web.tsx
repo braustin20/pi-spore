@@ -76,7 +76,10 @@ function ProjectsPage() {
       <Panel>
         <PanelHeader title="Add a project" />
         <form className="flex flex-wrap items-end gap-3" onSubmit={add}>
-          <Field label="Folder (absolute path)" className="min-w-80 flex-1">
+          <Field
+            label="Folder (absolute path)"
+            className="min-w-80 flex-1 max-md:min-w-0 max-md:basis-full"
+          >
             <Input
               value={path}
               onChange={(event) => setPath(event.target.value)}

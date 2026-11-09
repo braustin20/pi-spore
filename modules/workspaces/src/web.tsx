@@ -658,7 +658,12 @@ function RightColumn({
               <ArrowLeft />
             </Button>
           )}
-          <TabsList className="min-w-0 flex-1 overflow-x-auto border-b-0">
+          <TabsList
+            className={cn(
+              "min-w-0 flex-1 overflow-x-auto border-b-0",
+              phone && "[scrollbar-width:none]",
+            )}
+          >
             <TabsTrigger value="details">Details</TabsTrigger>
             {sortedTabs.map((extra) => (
               <TabsTrigger key={extra.id} value={extra.id}>
