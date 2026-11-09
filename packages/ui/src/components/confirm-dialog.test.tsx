@@ -18,6 +18,18 @@ function Host({ onReady }: { onReady: (confirm: Confirm) => void }) {
   return <>{dialog}</>;
 }
 
+function Opener() {
+  const { confirm, dialog } = useConfirm();
+  return (
+    <>
+      <button type="button" id="opener" onClick={() => void confirm({ message: "Go on?" })}>
+        Open
+      </button>
+      {dialog}
+    </>
+  );
+}
+
 function mount() {
   let confirm: Confirm | undefined;
   container = document.body.appendChild(document.createElement("div"));
@@ -87,5 +99,34 @@ describe("useConfirm", () => {
     });
     await expect(first).resolves.toBe(false);
     expect(document.querySelector("[role=alertdialog]")?.textContent).toContain("Second?");
+  });
+
+  it("returns focus to the button that opened it", async () => {
+    container = document.body.appendChild(document.createElement("div"));
+    act(() => {
+      createRoot(container as HTMLElement).render(<Opener />);
+    });
+    const opener = document.getElementById("opener") as HTMLButtonElement;
+    opener.focus();
+    await act(async () => opener.click());
+    expect(document.activeElement).toBe(button("Cancel"));
+    await act(async () => button("Cancel")?.click());
+    // Radix gives focus back in a zero-delay timer.
+    await act(async () => new Promise((done) => setTimeout(done, 0)));
+    expect(document.activeElement).toBe(opener);
+  });
+
+  it("keeps a long message in a scrolling region, with the buttons outside it", async () => {
+    const confirm = mount();
+    await act(async () => {
+      void confirm({ message: "Blocked by a very long name.\n".repeat(200) });
+    });
+    const dialog = document.querySelector("[role=alertdialog]") as HTMLElement;
+    const scroller = [...dialog.querySelectorAll<HTMLElement>("*")].find((each) =>
+      each.className.includes("overflow-y-auto"),
+    );
+    expect(scroller?.textContent).toContain("Blocked by a very long name.");
+    expect(scroller?.querySelector("button")).toBeNull();
+    expect(dialog.className).toContain("max-h-");
   });
 });
