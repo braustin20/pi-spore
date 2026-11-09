@@ -151,6 +151,7 @@ interface FakeGh {
   logs?: Record<string, string>;
   createError?: string;
   viewError?: string;
+  mergeError?: string;
 }
 const readGh = (): FakeGh => JSON.parse(readFileSync(ghState, "utf8")) as FakeGh;
 const editGh = (change: (state: FakeGh) => void) => {
@@ -284,15 +285,30 @@ const said = (agentId: string) =>
     return text.startsWith("Pull request #") ? [text] : [];
   });
 
-/** Every gh command must be one pi-spore may run (R9.3). */
+/** Every gh command must be one pi-spore may run (R9.3). The one merge form is ADR 0142's. */
 function expectOnlyAllowedCalls() {
   for (const call of readGh().calls) {
     const allowed =
       (call[0] === "pr" && (call[1] === "view" || call[1] === "create")) ||
+      (call[0] === "pr" &&
+        call[1] === "merge" &&
+        call.length === 6 &&
+        call[3] === "--merge" &&
+        call[4] === "--match-head-commit") ||
       (call[0] === "run" && call[1] === "view") ||
       (call[0] === "api" && call.includes("--method=GET"));
     expect(allowed, `gh ${call.join(" ")}`).toBe(true);
-    for (const forbidden of ["merge", "close", "--auto", "--force", "-f"]) {
+    for (const forbidden of [
+      "close",
+      "--auto",
+      "--admin",
+      "--delete-branch",
+      "-d",
+      "--squash",
+      "--rebase",
+      "--force",
+      "-f",
+    ]) {
       expect(call, `gh ${call.join(" ")}`).not.toContain(forbidden);
     }
   }
@@ -671,6 +687,175 @@ describe("watch", () => {
     await until(() => scheduledDelays().length === 1);
     await tick();
     expect((await status(workspace.id)).watch.polledAt).toBeDefined();
+  });
+});
+
+describe("merge (ADR 0142)", () => {
+  const mergeCalls = () => readGh().calls.filter((call) => call[0] === "pr" && call[1] === "merge");
+  const merge = (workspaceId: string, body: unknown, headers?: Record<string, string>) =>
+    server.request("POST", `/api/github-pr/workspaces/${workspaceId}/merge`, body, headers);
+  const refused = async (response: Response, status = 409) =>
+    (await json<{ error: { code: string; message: string } }>(response, status)).error;
+  const refreshed = async (workspaceId: string) =>
+    json<PrStatus>(
+      await server.request("GET", `/api/github-pr/workspaces/${workspaceId}?refresh=1`),
+    );
+  const pr1 = (change: (pr: Record<string, unknown>) => void) =>
+    editGh((state) => change(state.prs[0] as Record<string, unknown>));
+
+  /** An opened PR that may merge: no conflicts, every check passed. */
+  async function ready() {
+    const setup = await setUp();
+    await publish(setup.workspace);
+    pr1((pr) => {
+      pr.mergeable = "MERGEABLE";
+      pr.statusCheckRollup = [run("test", "SUCCESS")];
+    });
+    const headId = (readGh().prs[0] as { headRefOid: string }).headRefOid;
+    return { ...setup, headId };
+  }
+
+  it("merges with a merge commit, reads the PR at once, and the state moves the card to Done", async () => {
+    const { workspace, cardId, headId } = await ready();
+    const merged = await json<PrStatus>(await merge(workspace.id, { confirm: true, headId }));
+    expect(mergeCalls()).toEqual([["pr", "merge", "1", "--merge", "--match-head-commit", headId]]);
+    expect(merged).toMatchObject({ pr: { state: "merged" }, watch: { state: "done" } });
+    const { card } = await json<CardDetail>(
+      await server.request("GET", `/api/kanban/cards/${cardId}`),
+    );
+    expect(card.column).toBe("done");
+    expect(scheduledDelays()).toEqual([]);
+    expectOnlyAllowedCalls();
+  });
+
+  it("needs an explicit confirm and the head the user saw", async () => {
+    const { workspace, headId } = await ready();
+    expect((await merge(workspace.id, { headId })).status).toBe(400);
+    expect((await merge(workspace.id, { confirm: true })).status).toBe(400);
+    expect(mergeCalls()).toEqual([]);
+  });
+
+  it("takes only the user's token, so an agent cannot press Merge", async () => {
+    const { workspace, headId } = await ready();
+    const token = server.agentTokens.issue({ agentId: "a1", workspaceId: workspace.id });
+    const response = await merge(
+      workspace.id,
+      { confirm: true, headId },
+      { "x-pi-spore-token": "", authorization: `Bearer ${token}` },
+    );
+    expect(response.status).toBe(401);
+    expect(mergeCalls()).toEqual([]);
+  });
+
+  it.each<[string, (pr: Record<string, unknown>) => void, string]>([
+    [
+      "a closed PR",
+      (pr) => {
+        pr.state = "CLOSED";
+      },
+      "PR #1 is closed",
+    ],
+    [
+      "a draft",
+      (pr) => {
+        pr.isDraft = true;
+      },
+      "PR #1 is a draft",
+    ],
+    [
+      "conflicts",
+      (pr) => {
+        pr.mergeable = "CONFLICTING";
+      },
+      "PR #1 has conflicts with main",
+    ],
+    [
+      "an unknown conflict state",
+      (pr) => {
+        pr.mergeable = "UNKNOWN";
+      },
+      "GitHub is still checking PR #1 for conflicts",
+    ],
+    [
+      "a failed check",
+      (pr) => {
+        pr.statusCheckRollup = [run("test", "FAILURE"), run("lint", "SUCCESS")];
+      },
+      "Checks did not pass: test",
+    ],
+    [
+      "a cancelled check",
+      (pr) => {
+        pr.statusCheckRollup = [run("test", "CANCELLED")];
+      },
+      "Checks did not pass: test",
+    ],
+    [
+      "a running check",
+      (pr) => {
+        pr.statusCheckRollup = [run("test", "")];
+      },
+      "Checks are still running: test",
+    ],
+    [
+      "a required review",
+      (pr) => {
+        pr.reviewDecision = "REVIEW_REQUIRED";
+      },
+      "PR #1 needs a review",
+    ],
+    [
+      "requested changes",
+      (pr) => {
+        pr.reviewDecision = "CHANGES_REQUESTED";
+      },
+      "PR #1 has changes requested",
+    ],
+  ])("refuses %s, says why, and shows the reason on the button", async (_, change, reason) => {
+    const { workspace, headId } = await ready();
+    pr1(change);
+    expect(await refused(await merge(workspace.id, { confirm: true, headId }))).toEqual({
+      code: "pr_not_mergeable",
+      message: reason,
+    });
+    expect(mergeCalls()).toEqual([]);
+    expect((await refreshed(workspace.id)).mergeBlocked).toBe(reason);
+  });
+
+  it("refuses a parked workspace", async () => {
+    const { workspace, headId } = await ready();
+    await json(await server.request("POST", `/api/workspaces/${workspace.id}/park`));
+    expect(await refused(await merge(workspace.id, { confirm: true, headId }))).toEqual({
+      code: "pr_not_mergeable",
+      message: "The workspace is parked",
+    });
+    expect((await status(workspace.id)).mergeBlocked).toBe("The workspace is parked");
+    expect(mergeCalls()).toEqual([]);
+  });
+
+  it("shows no reason when the PR can merge", async () => {
+    const { workspace } = await ready();
+    expect((await refreshed(workspace.id)).mergeBlocked).toBeUndefined();
+  });
+
+  it("refuses when the PR moved on since the user looked", async () => {
+    const { workspace } = await ready();
+    const error = await refused(
+      await merge(workspace.id, { confirm: true, headId: "0".repeat(40) }),
+    );
+    expect(error.code).toBe("pr_changed");
+    expect(mergeCalls()).toEqual([]);
+  });
+
+  it("shows gh's error when GitHub refuses the merge", async () => {
+    const { workspace, headId } = await ready();
+    editGh((state) => {
+      state.mergeError = "Base branch policy prohibits the merge";
+    });
+    const error = await refused(await merge(workspace.id, { confirm: true, headId }), 422);
+    expect(error.code).toBe("gh_failed");
+    expect(error.message).toContain("Base branch policy prohibits the merge");
+    expect((await status(workspace.id)).pr?.state).toBe("open");
   });
 });
 

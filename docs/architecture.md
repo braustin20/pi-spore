@@ -923,15 +923,25 @@ counts, then its hunks in unified form.
 
 ## 11e. Pull requests
 
-See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
+See [ADR 0090](decisions/0090-changes-and-pull-requests.md) and [ADR 0142](decisions/0142-merge-button.md).
+Requirements R9.
 
 - The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `kanban`, `runs`) talks to GitHub only
   through `gh`, run with `execFile`, `GH_PROMPT_DISABLED=1`, and `--json` where gh has it. Output is checked with
   TypeBox; a value it does not know (a new check conclusion) is a 422 `gh_failed`, not a guess.
 - The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
   --body= [--draft]` (the `=` form keeps a title starting with `-` a value), `gh run view --job <id>
-  --log-failed`, and `gh api --method=GET --paginate --slurp` for the PR's comments, reviews, and line comments.
-  It never merges, closes, enables auto-merge, or force-pushes (R9.3). The tests fail on any other gh command.
+  --log-failed`, `gh api --method=GET --paginate --slurp` for the PR's comments, reviews, and line comments, and
+  `gh pr merge <number> --merge --match-head-commit <sha>` from the merge route only. It never closes, enables
+  auto-merge, deletes a branch, merges with `--admin`, or force-pushes (R9.3). The tests fail on any other gh
+  command.
+- Merge (ADR 0142), `confirm: true` and the head the user saw: reads the PR fresh and refuses with 409
+  `pr_not_mergeable` and the reason when the workspace is not active, or the PR is not open, is a draft, is not
+  known to be free of conflicts, has a check that failed, was cancelled, or still runs, or waits for a review.
+  A head other than the one the user saw is 409 `pr_changed`. The same reason is the status's `mergeBlocked`, so
+  the tab shows why the button is off. After the merge it reads the PR once, as a refresh does, so the merged state
+  moves the card to Done and ends the watch; the route does not move the card. It logs one line: workspace and
+  number. Only the user's token reaches it (ADR 0032).
 - Publish (`confirm: true` required): pushes the branch through the provider's `publish` (section 7), opens the
   PR, stores it, turns the watch on, and moves the workspace's card to Review (`CardsKey.workChanged`). The form
   starts with the workspace name as title, the card's body as body, and the workspace's base. A base like
@@ -980,6 +990,7 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R9.
 | `POST /api/github-pr/workspaces/:id/publish` `{ title, body, base, draft?, confirm: true }` | Pushes and opens the PR (201). An open PR is 409 `pr_exists`. |
 | `POST /api/github-pr/workspaces/:id/push` `{ confirm: true }` | Pushes new commits to the PR's branch. |
 | `POST /api/github-pr/workspaces/:id/watch` `{ on }` | Turns the watch on (a new run of tries) or off. |
+| `POST /api/github-pr/workspaces/:id/merge` `{ confirm: true, headId }` | Merges the PR with a merge commit (ADR 0142). |
 
 CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t] [--body b] [--base branch]
 [--draft]` (the form defaults fill what is not given), `pi-spore pr push <workspace>`, and `pi-spore pr watch
@@ -991,7 +1002,8 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
   the push is visible to others. With a PR it shows a header card (number, title, state, branch → base, review,
   conflicts), a Push… confirm when the workspace has commits the PR lacks, the checks with state chips and links,
   and the watch: state, tries, last and next look, the message, Resume and send again, Stop watching, and the tries
-  so far. The Details panel shows the number, state, failing checks, conflicts, and "Waiting for you".
+  so far. A Merge button asks `Merge #n into <base> with a merge commit?` (`window.confirm`); while
+  `mergeBlocked` is set it is off, with the reason in its tooltip. The Details panel shows the number, state, failing checks, conflicts, and "Waiting for you".
 - Not built yet: "waiting for you" on Home (the attention module has no way for other modules to add items, Q18),
   and PR tools for agents (they come through spore-bridge).
 
@@ -1247,8 +1259,8 @@ The workspaces module calls other modules around a copy through its contract: `a
 every park, resume, and archive; a listener that throws is logged and does not undo the change. `create` makes a
 workspace as `POST /api/workspaces` does, for modules that start work, such as kanban.
 
-The workspace view has three panes: the workspace list (grouped active, parked, then archived behind a toggle,
-newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
+The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
+and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
 panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<project>` (filtered to a project),
 `#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. The list
 follows the topic `workspaces:list`: a snapshot of every workspace on subscribe and after a reconnect, then one

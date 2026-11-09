@@ -50,7 +50,8 @@ pi-spore rules
 - Do the work in this workspace's folder. Do not create other worktrees or start agents in other terminals.
 - Before you say the work is done, run check and fix what it reports.
 - Never merge into the base branch on your own, and never turn on auto-merge. Merge a PR only when the user asks
-  for that merge, or when you ask and the user says yes (ADR 0130). Each yes covers one PR.
+  for that merge, or when you ask and the user says yes (ADR 0130). Each yes covers one PR. The user may also merge
+  with the Merge button in the PR tab; only the user can press it (ADR 0142).
 - The kanban board holds the user's planned work. Make or change cards only when the user asks. For a plan with
   phases, make one card per phase, link them in order with blockedBy, and give them one shared label such as
   plan:<short name>. Start work from a card only when the user asks; kanban_start_card waits for their approval.`;
@@ -110,7 +111,8 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
 - The user is often away. Ask and stop; every answer and result comes back as a new message, possibly after a
   restart. Do not poll.
 - When every lane is merged or declined, call open_run_pr with a title and a body that sums up the run. The user
-  approves it on Home. pi-spore never merges to the base line, and neither do you; a human merges the PR.`;
+  approves it on Home. You never merge to the base line. The user merges the PR, by hand or with the Merge button
+  in the PR tab (ADR 0142).`;
 
 /** Added to the stage rules of an agent in a lane of a run (R7.5). */
 export const LANE_RULES = `You are in a lane of a run. Ask your coordinator with \`ask_coordinator\`, never the user. No lane talks to

@@ -95,6 +95,8 @@ export const PrStatus = Type.Object({
     base: Type.Optional(Type.String()),
   }),
   pr: Type.Optional(PullRequest),
+  /** Why Merge is off; absent when the PR can merge. */
+  mergeBlocked: Type.Optional(Type.String()),
   watch: Type.Object({
     state: PrWatchState,
     tries: Type.Integer(),
@@ -134,6 +136,13 @@ export const PushRequest = Type.Object(
   { additionalProperties: false },
 );
 export type PushRequest = Static<typeof PushRequest>;
+
+/** `headId` is the PR head the user saw; GitHub refuses the merge if the head moved (ADR 0142). */
+export const MergeRequest = Type.Object(
+  { confirm: Type.Literal(true), headId: Type.String({ pattern: "^[0-9a-f]{40,64}$" }) },
+  { additionalProperties: false },
+);
+export type MergeRequest = Static<typeof MergeRequest>;
 
 export const WatchRequest = Type.Object({ on: Type.Boolean() }, { additionalProperties: false });
 export type WatchRequest = Static<typeof WatchRequest>;
