@@ -238,6 +238,7 @@ describe("agents", () => {
       PI_SPORE_WORKSPACE_ID: workspaceId,
       PI_SPORE_CHAT_KIND: "worker",
       PI_SPORE_URL: server.url,
+      PI_SPORE_SERVER_PID: String(process.pid),
       PI_SPORE_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/),
     });
     expect(statuses(agentId)).toEqual(["starting", "idle", "busy", "idle"]);

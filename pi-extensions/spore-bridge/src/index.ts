@@ -15,6 +15,7 @@ import {
   type Run,
   RunAnswer,
 } from "./client.js";
+import { registerServerGuard } from "./guard.js";
 import { registerReportTool } from "./report.js";
 import { applyRules } from "./rules.js";
 import { registerRunTools } from "./runs.js";
@@ -87,6 +88,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
     return;
   }
   const client = new BridgeClient(env);
+  registerServerGuard(pi, env);
 
   // ADR 0031: pi-spore's rules replace the user's global AGENTS.md in agents.
   pi.on("before_agent_start", (event) => {
@@ -174,22 +176,65 @@ export default function sporeBridge(pi: ExtensionAPI) {
     label: "Run action",
     description:
       "Run a named action from the project's .pi-spore/config.toml (for example test) in this workspace, wait " +
-      "for it to end, and return its result and the end of its log.",
+      "for it to end, and return its result and the end of its log. With background it returns at once.",
     promptSnippet: "Run a named project action such as test",
     promptGuidelines: [
       "Use run_action for the project's named commands (such as test) instead of guessing the command line.",
+      "Use background for servers and other long runs, then stop them with stop_action.",
     ],
     parameters: Type.Object({
       name: Type.String({
         pattern: "^[a-z0-9_-]{1,64}$",
         description: "The action name, such as test",
       }),
+      background: Type.Optional(
+        Type.Boolean({
+          description:
+            "Return at once with the run id and log path instead of waiting. Stop the run with stop_action.",
+        }),
+      ),
     }),
     async execute(toolCallId, params, signal, onUpdate) {
+      if (params.background) {
+        const { run } = await client.call(RunAnswer, "runs", {
+          body: { action: params.name },
+          receipt: toolCallId,
+          ...(signal ? { signal } : {}),
+        });
+        return {
+          content: text(
+            `Action "${params.name}" started in the background (run ${run.id}, ${run.status}). ` +
+              `Its log is at ${run.logPath}. Stop it with stop_action { "runId": "${run.id}" }.`,
+          ),
+          details: { runId: run.id, status: run.status },
+        };
+      }
       const { run, report } = await runAction(client, params.name, toolCallId, signal, (message) =>
         onUpdate?.({ content: text(message), details: undefined }),
       );
       return { content: text(report), details: { runId: run.id, status: run.status } };
+    },
+  });
+
+  pi.registerTool({
+    name: "stop_action",
+    label: "Stop action",
+    description:
+      "Stop a run of an action that is still going, such as one started with background.",
+    promptSnippet: "Stop a running action by its run id",
+    parameters: Type.Object({
+      runId: Type.String({ minLength: 1, description: "The run id that run_action returned" }),
+    }),
+    async execute(toolCallId, params, signal) {
+      const { run } = await client.call(
+        RunAnswer,
+        `runs/${encodeURIComponent(params.runId)}/cancel`,
+        { body: {}, receipt: toolCallId, ...(signal ? { signal } : {}) },
+      );
+      return {
+        content: text(`Run ${run.id} of action "${run.action}" is ${run.status}.`),
+        details: { runId: run.id, status: run.status },
+      };
     },
   });
 }

@@ -12,6 +12,8 @@ const RUN_ROLES = ["coordinator", "lane"] as const;
 export interface BridgeEnv {
   url: string;
   token: string;
+  /** The pi-spore server's own pid, so the bash guard can refuse to stop it. */
+  serverPid: number;
   /** `side`: a read-only side chat (ADR 0033). `stage`: a pipeline stage agent (R6). Both get their own rules. */
   chatKind: "worker" | "side" | "stage";
   /** Set exactly when `chatKind` is `stage`. */
@@ -23,8 +25,8 @@ export interface BridgeEnv {
 }
 
 /**
- * Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, `PI_SPORE_CHAT_KIND`, for a stage `PI_SPORE_STAGE_ROLE`, and in a run
- * `PI_SPORE_RUN_ROLE` and `PI_SPORE_RUN_ID`, or names what is missing or wrong.
+ * Reads `PI_SPORE_URL`, `PI_SPORE_TOKEN`, `PI_SPORE_SERVER_PID`, `PI_SPORE_CHAT_KIND`, for a stage
+ * `PI_SPORE_STAGE_ROLE`, and in a run `PI_SPORE_RUN_ROLE` and `PI_SPORE_RUN_ID`, or names what is missing or wrong.
  */
 export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): BridgeEnv {
   const url = env.PI_SPORE_URL;
@@ -33,6 +35,11 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
     throw new Error("spore-bridge runs only inside pi-spore agents: PI_SPORE_URL is not set");
   if (!token)
     throw new Error("spore-bridge runs only inside pi-spore agents: PI_SPORE_TOKEN is not set");
+  const serverPid = Number(env.PI_SPORE_SERVER_PID);
+  if (!/^[1-9][0-9]*$/.test(env.PI_SPORE_SERVER_PID ?? "") || !Number.isSafeInteger(serverPid))
+    throw new Error(
+      `spore-bridge: PI_SPORE_SERVER_PID must be a positive integer, not "${env.PI_SPORE_SERVER_PID ?? ""}"`,
+    );
   const kind = env.PI_SPORE_CHAT_KIND ?? "worker";
   const runRole = RUN_ROLES.find((candidate) => candidate === env.PI_SPORE_RUN_ROLE);
   if (env.PI_SPORE_RUN_ROLE !== undefined && !runRole)
@@ -47,6 +54,7 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
   const base = {
     url: url.replace(/\/+$/, ""),
     token,
+    serverPid,
     ...(runRole && runId ? { runRole, runId } : {}),
   };
   if (kind === "worker" || kind === "side") return { ...base, chatKind: kind };
@@ -75,6 +83,7 @@ export const Run = Type.Object({
   id: Type.String(),
   action: Type.String(),
   status: RunStatus,
+  logPath: Type.String(),
   exitCode: Type.Optional(Type.Integer()),
   signal: Type.Optional(Type.String()),
   error: Type.Optional(Type.String()),

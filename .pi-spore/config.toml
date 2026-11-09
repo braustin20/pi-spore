@@ -19,7 +19,15 @@ run = [
   "-u", "PI_SPORE_CHAT_KIND",
   "-u", "PI_SPORE_URL",
   "-u", "PI_SPORE_TOKEN",
+  "-u", "PI_SPORE_SERVER_PID",
   "npm", "test",
 ]
 description = "Vitest"
 exclusive = true
+
+# A test server for agents that work on pi-spore: it builds, then runs on a temp PI_SPORE_HOME and a free port
+# (printed in the log), with the real server's PI_SPORE_URL, PI_SPORE_TOKEN, and PI_SPORE_SERVER_PID removed.
+# Start it with run_action { name: "dev", background: true } and stop it with stop_action.
+[actions.dev]
+run = ["node", "scripts/dev-server.mjs"]
+description = "Build, then run a throwaway server on a temp home and a free port"
