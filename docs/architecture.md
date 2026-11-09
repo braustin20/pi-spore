@@ -573,6 +573,13 @@ fail_first = "artifact"
   action runs once through `ActionsKey.start(..., "pipeline", { key })` with the key `<run>:<stage>:<action>:<attempt>`,
   so a step that runs again gets the same action run back. A run a restart cut off starts once more under the next
   attempt. A failure ends the run `failed` with the last 4 KiB of its log. The failing tests are never run again.
+  A gate action that config.toml does not declare blocks the run with the stage, the action, and the config.toml
+  path to fix.
+- **Blocked message.** When a stage job waits with an error, the run's chat gets one message: the run, its
+  workspace label (a lane names its lane, lane id, and run), the stage, the error, and that Retry runs the step
+  again. A lane's message goes to its run's current coordinator, which the lane lookup gives; any other run's goes
+  to its asking chat. `pipelines_runs.blocked_sent` holds the last error sent, so a retry that fails the same way
+  sends nothing, also after a restart. A new error sends one new message.
 
 | Route | Does |
 |---|---|
@@ -593,7 +600,8 @@ fail_first = "artifact"
   the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`), so
   that run never asks about the local implementer.
   `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
-  uses it to record outcomes (section 11a).
+  uses it to record outcomes (section 11a). `onChange(listener)` runs with the workspace id whenever its runs
+  change, as the topic does; the runs module uses it to show a lane's `blocked`.
 - Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
   card when a run passes, and a tool for the orchestrator to start a run.
 
@@ -614,7 +622,7 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   stored, so its PR tab targets the base), and its orchestrator chat. That chat is the coordinator.
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
-  kanban_list_cards,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,open_run_pr`: no write or shell
+  kanban_list_cards,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,open_run_pr,run_status`: no write or shell
   tools. Its token is not read-only, so it writes artifacts and calls the run routes. Every agent in a lane workspace
   gets `PI_SPORE_RUN_ROLE=lane`.
 - **Follow-up cards** (ADR 0154). The coordinator adds a card for follow-up work out of the lanes' scope; it never
@@ -677,14 +685,24 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   with `answer_lane` from the spec, or asks the user with `request_human_input` first; the answer is stored and
   delivered to the asking agent in one transaction (404 `question_not_found`, 409 `question_answered`). The bridge
   refuses `request_human_input` from a lane with 409 `ask_coordinator`. There is no lane-to-lane route.
+- **Blocked lanes.** A lane's pipeline run that blocks tells the coordinator once per new error (section 8). The lane
+  view carries `pipelineRunId` and the pipeline's `blocked` text; it is not a lane state. `PipelinesKey.onChange`
+  republishes `runs:list` when a lane's pipeline changes, so the block shows and clears live.
+- **Status** (`run_status`). `RunsKey.status` (bridge `GET /api/bridge/run-status/:id`) returns the run's state and
+  each lane: id, name, wave, state, workspace name, the pipeline's current stage and round, `blocked`, the last
+  message, and the diff path once it has one. Only an agent in the run workspace or in one of its lanes' may call
+  it (403 `not_in_run`), read-only chats too. The coordinator and lane agents have the tool. The coordinator's rules
+  say to check it before calling a lane lost, and after a user message that names a lane.
 - Bridge routes: `POST /api/bridge/lanes`, `/lanes/revise`, `/lanes/merge`, `/coordinator/answers`, `/coordinator/pr` (not for
-  read-only callers), and `/coordinator/questions` (lane reviewers too). The runs module checks who may call each.
+  read-only callers), `/coordinator/questions` (lane reviewers too), and `GET /run-status/:id`. The runs module
+  checks who may call each.
 - Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`,
   `POST /api/runs/:id/cancel`. `RunsKey.create` does the same as `POST /api/runs` for other modules, with an
   optional coordinator model; kanban starts runs from cards with it (section 12). Topic `runs:list` sends
   `{ type: "runs", runs }` on subscribe and after every change.
 - Web: a Runs page (`#/runs`, rail icon) with a start form and every run's state and lanes by wave, and a run panel
-  on a run workspace (the same card) or a lane workspace (a link to its run). A running run's card has Cancel, with
+  on a run workspace (the same card) or a lane workspace (a link to its run). A blocked lane shows `Blocked`, the
+  error, and Retry, which calls the pipeline's retry route. A running run's card has Cancel, with
   a confirm that names what stops. Home shows a `run-pr` approval with the head and base and an editable title and
   body.
 - CLI: `pi-spore run start <project> <name> [--base <line>] [--gate <action>]...`, `run list [--project <id>]`,

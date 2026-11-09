@@ -28,6 +28,9 @@ wave to start from.
   log tail, and sends the lane back with `revise_lane`, which starts a new pipeline run in the same lane workspace.
   ADR 0158 makes that run a short fix pass with the lane's own worker.
 - **Never the base.** The provider's merge refuses any copy whose current branch is not `run/...` (R9.3).
+- **Blocked lanes and status.** A lane whose pipeline blocks (a stage job waits with an error) tells the current
+  coordinator once per new error, with the fix and Retry. The read-only `run_status` tool is on the coordinator's
+  allowlist, so it can see each lane's stage, round, and `blocked` text instead of guessing.
 
 ## Consequences
 
