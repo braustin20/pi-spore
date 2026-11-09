@@ -95,6 +95,9 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_turns ADD COLUMN error TEXT",
   // Why a review turn's agent runs on another model than the role default: the default's plan was full (R4.10).
   "ALTER TABLE pipelines_turns ADD COLUMN model_note TEXT",
+  // A fix pass: the run whose worker it reuses, and the workspace head when it started, the base of its fix diff.
+  "ALTER TABLE pipelines_runs ADD COLUMN previous_run_id TEXT",
+  "ALTER TABLE pipelines_runs ADD COLUMN fix_base TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -136,6 +139,8 @@ interface RunRow {
   approval_id: string | null;
   local_approval_id: string | null;
   worker_model: string | null;
+  previous_run_id: string | null;
+  fix_base: string | null;
   created_at: number;
   ended_at: number | null;
 }
@@ -229,7 +234,9 @@ function mergeTests(manifest: readonly TestProof[], reported: readonly TestProof
 
 const taskPrompt = (stage: PipelineStage, pipeline: string, turnId: string, briefPath: string) =>
   [
-    `You are the "${stage.name}" stage of pipeline "${pipeline}". Implement the brief.`,
+    stage.worker === "reuse"
+      ? `Your change came back with a new brief. You are the "${stage.name}" stage of pipeline "${pipeline}". Do what the brief asks.`
+      : `You are the "${stage.name}" stage of pipeline "${pipeline}". Implement the brief.`,
     "",
     `Turn: ${turnId}`,
     "",
@@ -244,6 +251,17 @@ const bullets = (tests: readonly TestProof[]) =>
     ? ["(the worker listed no tests)"]
     : tests.map((test) => `- ${test.name}: proof ${test.proof}`);
 
+const REVISE_ONLY = [
+  "Answer revise only for a finding that is a bug, a missing or wrong test, a regression, or a break of the brief.",
+  "List anything else (style, naming, wording, taste) as minor.",
+];
+
+/** A fix pass: the fix diff, and the last review of the run it continues (none when that run had no review). */
+interface FixPass {
+  diff: string;
+  review: StageReport | undefined;
+}
+
 const reviewPrompt = (
   stage: PipelineStage,
   round: number,
@@ -251,6 +269,7 @@ const reviewPrompt = (
   paths: { brief: string; diff: string },
   tests: readonly TestProof[],
   earlier?: { review: StageReport; fix: StageReport },
+  fixPass?: FixPass,
 ) =>
   [
     stage.role === "adversarial-reviewer"
@@ -274,9 +293,25 @@ const reviewPrompt = (
             : ["(none listed)"]),
           `The worker's fix report: ${earlier.fix.summary}`,
           "First check that each earlier finding is fixed.",
-          "Answer revise only for a finding that is a bug, a missing or wrong test, a regression, or a break of the brief.",
-          "List anything else (style, naming, wording, taste) as minor.",
+          ...REVISE_ONLY,
           `A new finding that round ${round - 1} could have raised is important at most, not blocking.`,
+        ]
+      : []),
+    ...(fixPass
+      ? [
+          "This run is a fix pass of a change a pipeline already checked.",
+          `The fix diff is the workspace artifact ${fixPass.diff}: the commits since the fix started, then the uncommitted and untracked files.`,
+          ...(fixPass.review
+            ? [
+                `Earlier reviewer summary: ${fixPass.review.summary}`,
+                "Earlier findings:",
+                ...(findingLines(fixPass.review).length > 0
+                  ? findingLines(fixPass.review)
+                  : ["(none listed)"]),
+              ]
+            : ["(no earlier review)"]),
+          "Check that the brief's asks are met and that nothing broke.",
+          ...REVISE_ONLY,
         ]
       : []),
     `When you are done, call report with turn ${turnId}, a short summary, a verdict (approve or revise), and findings, each with a severity (blocking, important, or minor). Do not send tests.`,
@@ -575,6 +610,20 @@ export const pipelinesModule: ServerModule = {
     ): Promise<StepOutcome<StageCheckpoint>> => {
       const briefPath = `pipelines/${run.id}/brief.md`;
       await artifacts.write({ scope: "workspace", id: run.workspace_id }, briefPath, run.brief);
+      const giveTask = (agentId: string) => {
+        const turnId = insertTurn(run, stageIndex, stage, 1, "task", "worker", agentId);
+        host.store.run(
+          "UPDATE pipelines_runs SET worker_agent_id = ? WHERE id = ?",
+          agentId,
+          run.id,
+        );
+        agents.deliver(agentId, taskPrompt(stage, run.pipeline_id, turnId, briefPath));
+      };
+      // The reused worker keeps its model, so there is no pin to question.
+      if (stage.worker === "reuse") {
+        const worker = requireRun(run.previous_run_id as string).worker_agent_id as string;
+        return { checkpoint: { boot: bootId }, commit: () => giveTask(worker) };
+      }
       const pinned = run.worker_model === null ? await pressuredPin(stage) : undefined;
       if (pinned) {
         return {
@@ -609,13 +658,7 @@ export const pipelinesModule: ServerModule = {
             title: stage.name,
             ...(model ? { model } : {}),
           });
-          const turnId = insertTurn(run, stageIndex, stage, 1, "task", "worker", agent.id);
-          host.store.run(
-            "UPDATE pipelines_runs SET worker_agent_id = ? WHERE id = ?",
-            agent.id,
-            run.id,
-          );
-          agents.deliver(agent.id, taskPrompt(stage, run.pipeline_id, turnId, briefPath));
+          giveTask(agent.id);
         },
       };
     };
@@ -661,18 +704,29 @@ export const pipelinesModule: ServerModule = {
       agents.deliver(worker, fixPrompt(stage, reportOf(review), turnId, last));
     };
 
-    /** The diff artifact: commits since the workspace's base, plus uncommitted and untracked files. */
-    const writeDiff = async (run: RunRow, path: string) => {
-      const workspace = workspaces.get(run.workspace_id);
+    /** The workspace's change operations (none when its project has no version control that shows them). */
+    const changesOf = async (workspaceId: string) => {
+      const workspace = workspaces.get(workspaceId);
       const project = await projects.get(workspace.projectId);
-      const ops = projects.vcsFor(project).changes;
-      const text = ops
-        ? await renderDiff(
-            ops,
-            { path: workspace.path, ...(workspace.line ? { line: workspace.line } : {}) },
-            workspace.base ?? (await ops.defaultBase(project)),
-          )
-        : NO_DIFF;
+      return {
+        workspace,
+        project,
+        ops: projects.vcsFor(project).changes,
+        location: { path: workspace.path, ...(workspace.line ? { line: workspace.line } : {}) },
+      };
+    };
+
+    /**
+     * The diff artifact: commits since the workspace's base, plus uncommitted and untracked files. A fix diff passes the
+     * run's `fix_base` instead; null (no head when the fix started) lists no commits.
+     */
+    const writeDiff = async (run: RunRow, path: string, fixBase?: string | null) => {
+      const { workspace, project, ops, location } = await changesOf(run.workspace_id);
+      const base =
+        fixBase === undefined
+          ? (workspace.base ?? (await ops?.defaultBase(project)))
+          : (fixBase ?? undefined);
+      const text = ops ? await renderDiff(ops, location, base) : NO_DIFF;
       await artifacts.write({ scope: "workspace", id: run.workspace_id }, path, text);
     };
 
@@ -710,6 +764,17 @@ export const pipelinesModule: ServerModule = {
         diff: `pipelines/${run.id}/${stage.name}-${round}.diff`,
       };
       await writeDiff(run, paths.diff);
+      const fixPass: FixPass | undefined =
+        run.previous_run_id === null
+          ? undefined
+          : {
+              diff: `pipelines/${run.id}/${stage.name}-${round}-fix.diff`,
+              review: turnRows(run.previous_run_id)
+                .filter((turn) => turn.kind === "review" && turn.report !== null)
+                .map(reportOf)
+                .at(-1),
+            };
+      if (fixPass) await writeDiff(run, fixPass.diff, run.fix_base);
       const tests = JSON.parse(run.tests) as TestProof[];
       return {
         checkpoint: { boot: bootId },
@@ -720,7 +785,10 @@ export const pipelinesModule: ServerModule = {
             ...(model ? { model } : {}),
           });
           const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id, note);
-          agents.deliver(agent.id, reviewPrompt(stage, round, turnId, paths, tests, earlier));
+          agents.deliver(
+            agent.id,
+            reviewPrompt(stage, round, turnId, paths, tests, earlier, fixPass),
+          );
         },
       };
     };
@@ -1156,14 +1224,54 @@ export const pipelinesModule: ServerModule = {
       if (!entry)
         throw new ApiError(404, "pipeline_not_found", `No pipeline "${request.pipeline}"`);
       if ("error" in entry) throw new ApiError(422, "bad_pipeline", entry.error);
+      let fixBase: string | null = null;
+      if (entry.stages[0]?.worker === "reuse") {
+        if (request.previousRunId === undefined) {
+          throw new ApiError(
+            400,
+            "bad_request",
+            `Pipeline "${entry.id}" reuses the worker of an earlier run; name that run in previousRunId`,
+          );
+        }
+        if (request.workerModel !== undefined) {
+          throw new ApiError(
+            400,
+            "bad_request",
+            `Pipeline "${entry.id}" reuses the worker of an earlier run, which keeps its model; workerModel is not allowed`,
+          );
+        }
+        const previous = loadRun(request.previousRunId);
+        if (previous?.workspace_id !== workspace.id) {
+          throw new ApiError(
+            404,
+            "run_not_found",
+            `No pipeline run ${request.previousRunId} in this workspace`,
+          );
+        }
+        if (previous.worker_agent_id === null) {
+          throw new ApiError(
+            409,
+            "run_has_no_worker",
+            `Pipeline run ${previous.id} has no worker agent to reuse`,
+          );
+        }
+        const { ops, location } = await changesOf(workspace.id);
+        fixBase = (await ops?.head(location)) ?? null;
+      } else if (request.previousRunId !== undefined) {
+        throw new ApiError(
+          400,
+          "bad_request",
+          `Pipeline "${entry.id}" makes a new worker; previousRunId is only for a pipeline whose worker stage has worker = "reuse"`,
+        );
+      }
       const askingAgentId = request.askingAgentId ?? (await agents.activeWorker(workspace.id)).id;
       const runId = host.store.transaction(() => {
         requireNoActiveRun(workspace.id);
         const id = host.newId();
         host.store.run(
           `INSERT INTO pipelines_runs (id, workspace_id, pipeline_id, source, path, hash, stages, brief,
-             asking_agent_id, worker_model, state, stage_index, tests, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, '[]', ?)`,
+             asking_agent_id, worker_model, previous_run_id, fix_base, state, stage_index, tests, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, '[]', ?)`,
           id,
           workspace.id,
           entry.id,
@@ -1174,6 +1282,8 @@ export const pipelinesModule: ServerModule = {
           request.brief,
           askingAgentId,
           request.workerModel ?? null,
+          request.previousRunId ?? null,
+          fixBase,
           host.now(),
         );
         host.jobs.start(STAGE_JOB, { runId: id, stageIndex: 0 }, { key: workspace.id });
@@ -1203,6 +1313,7 @@ export const pipelinesModule: ServerModule = {
     const api: Pipelines = {
       report,
       start,
+      get: (runId) => viewOf(requireRun(runId)),
       stop,
       afterRunEnded: (listener) => {
         endListeners.push(listener);

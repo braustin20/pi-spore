@@ -8,6 +8,11 @@ export interface StartRunRequest {
   askingAgentId?: string;
   /** `provider/id`. The model of the worker stage (stage 0) for this run only, instead of the stage's own. */
   workerModel?: string;
+  /**
+   * A run of the same workspace that this run continues. A pipeline whose worker stage has `worker = "reuse"` needs
+   * it and reuses that run's worker agent; other pipelines refuse it.
+   */
+  previousRunId?: string;
 }
 
 export interface Pipelines {
@@ -16,6 +21,8 @@ export interface Pipelines {
    * 409 `pipeline_running`, 404 `pipeline_not_found`, 422 `bad_pipeline`.
    */
   start(workspaceId: string, request: StartRunRequest): Promise<PipelineRun>;
+  /** The run as `GET /api/pipelines/runs/:id` returns it. Throws 404 `run_not_found`. */
+  get(runId: string): PipelineRun;
   /**
    * Runs for every run that ends (passed, failed, or stopped), inside the transaction that ends it, with the run as it
    * is after the update. A throw rolls the end back.

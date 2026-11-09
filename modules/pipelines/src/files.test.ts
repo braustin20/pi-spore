@@ -4,7 +4,13 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ApiError } from "@pi-spore/module-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { BUILT_IN_DEFAULT, loadPipelines, type PipelineEntry, parsePipeline } from "./files.js";
+import {
+  BUILT_IN_DEFAULT,
+  BUILT_IN_REVISE,
+  loadPipelines,
+  type PipelineEntry,
+  parsePipeline,
+} from "./files.js";
 
 let scratch: string;
 let userDir: string;
@@ -67,6 +73,7 @@ describe("pipeline files", () => {
       ["default", "built-in"],
       ["other", "user"],
       ["p", "project"],
+      ["revise", "built-in"],
     ]);
     expect(entries.find((entry) => entry.id === "p")).toMatchObject({ path: projectPath });
   });
@@ -85,6 +92,46 @@ describe("pipeline files", () => {
       "gates",
     ]);
     expect(entry).not.toHaveProperty("path");
+  });
+
+  it("lists the built-in revise pipeline: a fix by the reused worker, one review, then the gates", async () => {
+    const entry = await entryOf("revise");
+
+    expect(entry).toMatchObject({
+      source: "built-in",
+      hash: createHash("sha256").update(BUILT_IN_REVISE).digest("hex"),
+      stages: [
+        { name: "fix", role: "worker", worker: "reuse" },
+        {
+          name: "review",
+          role: "reviewer",
+          rounds: 1,
+          fix_passes: 1,
+          min_strength_over: "fix",
+        },
+        { name: "gates", gates: ["check", "test"], fail_first: "artifact" },
+      ],
+    });
+    expect(entry).not.toHaveProperty("path");
+  });
+
+  it("uses a project file named revise in place of the built-in one", async () => {
+    write(projectDir, "revise", implementOnly("revise"));
+
+    expect(await entryOf("revise")).toMatchObject({ source: "project" });
+  });
+
+  it("allows worker reuse only on the worker stage, and never with a model or tier", () => {
+    const reviewer = `${implementOnly("p")}\n[[stage]]\nname = "review"\nrole = "reviewer"\nworker = "reuse"\n`;
+    expect(refusal(reviewer)).toBe(
+      '/files/p.toml: stage "review": key "worker" is not allowed on a reviewer stage',
+    );
+    expect(refusal(implementOnly("p", 'worker = "reuse"\nmodel = "fake/a-1"'))).toBe(
+      '/files/p.toml: stage "implement": worker = "reuse" keeps the earlier worker and its model; remove model and tier',
+    );
+    expect(refusal(implementOnly("p", 'worker = "reuse"\ntier = "route"'))).toContain(
+      'worker = "reuse" keeps the earlier worker and its model',
+    );
   });
 
   it("uses a user file named default in place of the built-in one", async () => {
