@@ -439,7 +439,11 @@ export const pipelinesModule: ServerModule = {
       return used;
     };
 
-    /** R4.4 with the tier list (ADR 0023): the first reviewer model not strictly above a worker model, as a sentence. */
+    /**
+     * R4.4 with the tier list (ADR 0023, 0152): the first reviewer model that may not review a worker model, as a
+     * sentence. A worker of the `local` tier needs a reviewer of a strictly higher tier; any other worker accepts a
+     * reviewer of its own tier, the same model included.
+     */
     const notStronger = (
       settings: RouterSettings,
       reviewers: readonly string[],
@@ -449,8 +453,9 @@ export const pipelinesModule: ServerModule = {
         const reviewerTier = tierOf(settings, reviewer);
         for (const worker of workers) {
           const workerTier = tierOf(settings, worker);
-          if (TIERS.indexOf(reviewerTier) <= TIERS.indexOf(workerTier)) {
-            return `${reviewer} (tier ${reviewerTier}) is not stronger than ${worker} (tier ${workerTier})`;
+          const gap = TIERS.indexOf(reviewerTier) - TIERS.indexOf(workerTier);
+          if (gap < (workerTier === "local" ? 1 : 0)) {
+            return `${reviewer} (tier ${reviewerTier}) is not above ${worker} (tier ${workerTier})`;
           }
         }
       }
@@ -607,7 +612,7 @@ export const pipelinesModule: ServerModule = {
         const problem = notStronger(settings, [reviewer], await workerModels(run));
         if (problem) {
           throw new Error(
-            `stage ${stage.name} (min_strength_over ${stage.min_strength_over}): reviewer model ${problem}; set a stronger model in the stage or fix "tiers" in settings.json, then retry`,
+            `stage ${stage.name} (min_strength_over ${stage.min_strength_over}): reviewer model ${problem}; set a reviewer model of a high enough tier in the stage or fix "tiers" in settings.json, then retry`,
           );
         }
       }
@@ -772,7 +777,7 @@ export const pipelinesModule: ServerModule = {
     const lastFix = (stage: PipelineStage, review: TurnRow) =>
       review.round >= rounds(stage) || stopsEarly(stage, review);
 
-    /** R4.4 on the report: the models the reviewer really ran on must be above the worker's. */
+    /** R4.4 on the report: the models the reviewer really ran on must be allowed to review the worker's. */
     const reviewerWeakness = async (
       run: RunRow,
       stage: PipelineStage,
