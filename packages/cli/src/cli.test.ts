@@ -115,6 +115,103 @@ describe("pi-spore health", () => {
   });
 });
 
+const remoteSettings = (hosts: string[], logins: string[]) => () =>
+  Response.json({
+    settings: [
+      {
+        key: "server.allowedHosts",
+        value: hosts,
+        source: hosts.length > 0 ? "global" : "default",
+      },
+      {
+        key: "server.allowedLogins",
+        value: logins,
+        source: logins.length > 0 ? "global" : "default",
+      },
+    ],
+  });
+
+describe("pi-spore remote", () => {
+  it("says access is off and names settings.json when no host is allowed", async () => {
+    const { deps, out } = fakeDeps(remoteSettings([], []));
+
+    expect(await run(["remote"], deps)).toBe(0);
+    expect(out[0]).toBe("Remote access is off.");
+    const text = out.join("\n");
+    expect(text).toContain("tailscale status --json");
+    expect(text).toContain("~/.pi-spore/settings.json");
+    expect(text).toContain('"allowedHosts"');
+  });
+
+  it("prints the serve command and one URL per allowed host", async () => {
+    const { deps, out } = fakeDeps(
+      remoteSettings(
+        ["box.tail.ts.net", "desk.tail.ts.net"],
+        ["me@example.com", "you@example.com"],
+      ),
+    );
+
+    expect(await run(["remote"], deps)).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("tailscale serve --bg 7420");
+    expect(out).toContain("Open: https://box.tail.ts.net/");
+    expect(out).toContain("Open: https://desk.tail.ts.net/");
+    expect(text).toContain("Allowed logins: me@example.com, you@example.com");
+    expect(text).toContain("tailscale serve --https=443 off");
+    expect(text).toContain("Never use tailscale funnel");
+  });
+
+  it("uses the port from PI_SPORE_URL", async () => {
+    const { deps, out } = fakeDeps(remoteSettings(["box.tail.ts.net"], ["me@example.com"]), {
+      env: { PI_SPORE_URL: "http://127.0.0.1:7500" },
+    });
+
+    await run(["remote"], deps);
+    expect(out[0]).toContain("tailscale serve --bg 7500");
+  });
+
+  it("prints port, settings, the serve command, and the urls with --json", async () => {
+    const { deps, out } = fakeDeps(remoteSettings(["box.tail.ts.net"], ["me@example.com"]));
+
+    expect(await run(["remote", "--json"], deps)).toBe(0);
+    expect(out).toHaveLength(1);
+    expect(JSON.parse(out[0] ?? "")).toEqual({
+      port: 7420,
+      allowedHosts: ["box.tail.ts.net"],
+      allowedLogins: ["me@example.com"],
+      serve: "tailscale serve --bg 7420",
+      urls: ["https://box.tail.ts.net/"],
+    });
+  });
+
+  it("reads settings with the token header", async () => {
+    const { deps, sent } = fakeDeps(remoteSettings([], []));
+
+    await run(["remote"], deps);
+    expect(sent[0]).toMatchObject({
+      method: "GET",
+      url: "http://127.0.0.1:7420/api/projects/settings",
+      headers: { "x-pi-spore-token": "secret" },
+    });
+  });
+
+  it("fails when the server does not report server.allowedHosts", async () => {
+    const { deps, err } = fakeDeps(() => Response.json({ settings: [] }));
+
+    expect(await run(["remote"], deps)).toBe(1);
+    expect(err[0]).toContain("server.allowedHosts");
+  });
+
+  it("asks for a port when PI_SPORE_URL has none", async () => {
+    const { deps, err } = fakeDeps(remoteSettings(["box.tail.ts.net"], ["me@example.com"]), {
+      env: { PI_SPORE_URL: "http://127.0.0.1" },
+    });
+
+    expect(await run(["remote"], deps)).toBe(1);
+    expect(err[0]).toContain("port");
+  });
+});
+
 describe("pi-spore project", () => {
   it("adds a project from a relative path with the token and an idempotency key", async () => {
     const { deps, out, sent } = fakeDeps(() => Response.json({ project }, { status: 201 }));
