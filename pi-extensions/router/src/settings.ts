@@ -235,19 +235,19 @@ export function resolveSettings(file: unknown, path: string): RouterSettings {
     plans: { ...DEFAULT_SETTINGS.plans, ...router.plans },
     tiers: { ...DEFAULT_TIERS, ...tiers },
   };
-  checkRoutable(settings);
+  checkRoutable(settings, path);
   return settings;
 }
 
 /** The router never routes to `spore/auto` (it would loop) or to a `top` model (ADR 0141). */
-function checkRoutable(settings: RouterSettings): void {
+function checkRoutable(settings: RouterSettings, path: string): void {
   const check = (setting: string, model: string) => {
     if (model === "spore/auto") {
-      throw new Error(`${setting} is spore/auto; the router cannot route to itself`);
+      throw new Error(`${setting} is spore/auto; the router cannot route to itself in ${path}`);
     }
     if (settings.tiers[model] === "top") {
       throw new Error(
-        `${setting} ${model} is tier top; the router never routes to a top model (ADR 0141)`,
+        `${setting} ${model} is tier top; the router never routes to a top model (ADR 0141) in ${path}`,
       );
     }
   };
@@ -261,22 +261,50 @@ function checkRoutable(settings: RouterSettings): void {
   });
 }
 
-export async function loadSettings(home: string): Promise<RouterSettings> {
-  const path = join(home, "settings.json");
+/** The parsed file, or `{}` when it does not exist. */
+async function readSettingsFile(path: string): Promise<unknown> {
   let text: string;
   try {
     text = await readFile(path, "utf8");
   } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return resolveSettings({}, path);
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
     throw error;
   }
-  let value: unknown;
   try {
-    value = JSON.parse(text);
+    return JSON.parse(text);
   } catch {
     throw new Error(`${path} is not valid JSON`);
   }
-  return resolveSettings(value, path);
+}
+
+export async function loadSettings(home: string): Promise<RouterSettings> {
+  const path = join(home, "settings.json");
+  return resolveSettings(await readSettingsFile(path), path);
+}
+
+export interface RouterSettingEntry {
+  key: string;
+  value: unknown;
+  source: "global" | "default";
+}
+
+/** Every router setting with its resolved value, for the settings page (R17.1). */
+export async function routerSettingEntries(home: string): Promise<RouterSettingEntry[]> {
+  const path = join(home, "settings.json");
+  const file = (await readSettingsFile(path)) as {
+    router?: Record<string, unknown>;
+    tiers?: unknown;
+  };
+  const { tiers, ...router } = resolveSettings(file, path);
+  const fromFile = (name: string) => file.router?.[name] !== undefined;
+  return [
+    ...Object.entries(router).map(([name, value]) => ({
+      key: `router.${name}`,
+      value,
+      source: fromFile(name) ? ("global" as const) : ("default" as const),
+    })),
+    { key: "tiers", value: tiers, source: file.tiers !== undefined ? "global" : "default" },
+  ];
 }
 
 /** Splits `provider/id` at the first slash. */

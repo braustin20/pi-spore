@@ -12,6 +12,7 @@ export { ListRow } from "./components/list-row.js";
 export { Notice } from "./components/notice.js";
 export { Page, PageHeader } from "./components/page.js";
 export { Panel, PanelHeader } from "./components/panel.js";
+export { isPanelResizing, onPanelResizeEnd, ResizeHandle } from "./components/resize-handle.js";
 export { SectionLabel } from "./components/section-label.js";
 export { Spinner } from "./components/spinner.js";
 export { StatusLine } from "./components/status-line.js";
@@ -19,5 +20,13 @@ export { Table, TableCell, TableHead } from "./components/table.js";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/tabs.js";
 export { ThemeMenu } from "./components/theme-menu.js";
 export { Tooltip, TooltipProvider } from "./components/tooltip.js";
+export {
+  clampWidth,
+  readWidth,
+  stepWidth,
+  useStoredWidth,
+  useWindowWidth,
+  writeWidth,
+} from "./panel-width.js";
 export { readFlag, useStoredFlag } from "./stored-flag.js";
 export { initTheme, readTheme, setTheme, THEMES, type Theme, useTheme } from "./themes.js";

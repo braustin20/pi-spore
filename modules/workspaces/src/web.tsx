@@ -25,6 +25,7 @@ import {
   Notice,
   Panel,
   PanelHeader,
+  ResizeHandle,
   SectionLabel,
   Select,
   StatusLine,
@@ -35,6 +36,8 @@ import {
   Tooltip,
   useConfirm,
   useStoredFlag,
+  useStoredWidth,
+  useWindowWidth,
 } from "@pi-spore/ui";
 import {
   Layers,
@@ -47,6 +50,7 @@ import {
 } from "lucide-react";
 import { type ComponentType, type ReactNode, type SubmitEvent, useEffect, useState } from "react";
 import { ago, groupByProject, reduceWorkspaceList } from "./list.js";
+import { defaultWidths, layoutPanels, type PanelSize } from "./panel-layout.js";
 import {
   type CreateWorkspaceFormProps,
   type UseWorkspaceStatus,
@@ -328,6 +332,9 @@ function WorkspaceListColumn({
   selectedId,
   projectId,
   error,
+  size,
+  onResize,
+  onResetWidth,
   onCollapse,
   onArchive,
 }: {
@@ -336,6 +343,9 @@ function WorkspaceListColumn({
   selectedId: string | undefined;
   projectId: string | undefined;
   error: string | undefined;
+  size: PanelSize;
+  onResize: (width: number) => void;
+  onResetWidth: () => void;
   onCollapse: () => void;
   onArchive: (workspace: Workspace) => void;
 }) {
@@ -347,8 +357,16 @@ function WorkspaceListColumn({
   return (
     <aside
       aria-label="Workspaces"
-      className="flex w-64 shrink-0 flex-col border-r border-line bg-panel xl:w-72"
+      style={{ width: size.width }}
+      className="relative flex shrink-0 flex-col border-r border-line bg-panel"
     >
+      <ResizeHandle
+        label="Resize the workspace list"
+        {...size}
+        grow={1}
+        onChange={onResize}
+        onReset={onResetWidth}
+      />
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
         <SectionLabel className="flex-1">Workspaces</SectionLabel>
         <Tooltip label="New workspace" side="bottom">
@@ -561,26 +579,39 @@ function Details({
 function RightColumn({
   workspace,
   project,
+  tab,
+  onTab,
+  size,
+  onResize,
+  onResetWidth,
   onNotes,
   onCollapse,
 }: {
   workspace: Workspace;
   project: Project | undefined;
+  tab: string;
+  onTab: (tab: string) => void;
+  size: PanelSize;
+  onResize: (width: number) => void;
+  onResetWidth: () => void;
   onNotes: (notes: Note[]) => void;
   onCollapse: () => void;
 }) {
-  const [tab, setTab] = useState("details");
   const sortedTabs = [...tabs].sort((a, b) => a.order - b.order);
-  const wide = sortedTabs.find((candidate) => candidate.id === tab)?.wide === true;
   return (
     <aside
       aria-label="Workspace details"
-      className={cn(
-        "flex shrink-0 flex-col border-l border-line bg-panel",
-        wide ? "w-[min(40rem,50vw)]" : "w-80 xl:w-88",
-      )}
+      style={{ width: size.width }}
+      className="relative flex shrink-0 flex-col border-l border-line bg-panel"
     >
-      <Tabs value={tab} onValueChange={setTab} className="min-h-0 flex-1">
+      <ResizeHandle
+        label="Resize the details"
+        {...size}
+        grow={-1}
+        onChange={onResize}
+        onReset={onResetWidth}
+      />
+      <Tabs value={tab} onValueChange={onTab} className="min-h-0 flex-1">
         <div className="flex h-11 shrink-0 items-end border-b border-line pr-2">
           <TabsList className="min-w-0 flex-1 overflow-x-auto border-b-0">
             <TabsTrigger value="details">Details</TabsTrigger>
@@ -664,6 +695,14 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
     "pi-spore.workspaces.details",
     window.innerWidth >= 1100,
   );
+  const windowWidth = useWindowWidth();
+  const defaults = defaultWidths(windowWidth);
+  const [listWidth, setListWidth] = useStoredWidth("pi-spore.workspaces.list-width", defaults.list);
+  const [rightWidth, setRightWidth] = useStoredWidth(
+    "pi-spore.workspaces.details-width",
+    defaults.right,
+  );
+  const [tab, setTab] = useState("details");
 
   useEffect(() => {
     api
@@ -686,6 +725,13 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
 
   const workspace = workspaces?.find((candidate) => candidate.id === selectedId);
   const project = projects.find((candidate) => candidate.id === workspace?.projectId);
+  const wide = tabs.find((candidate) => candidate.id === tab)?.wide === true;
+  const layout = layoutPanels({
+    window: windowWidth,
+    list: listOpen ? listWidth : "closed",
+    right: !workspace ? "absent" : rightOpen ? rightWidth : "closed",
+    wide,
+  });
 
   let middle: ReactNode;
   if (selectedId && workspaces && !workspace) {
@@ -744,6 +790,9 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           selectedId={selectedId}
           projectId={projectId}
           error={error}
+          size={layout.list}
+          onResize={setListWidth}
+          onResetWidth={() => setListWidth(defaults.list)}
           onCollapse={() => setListOpen(false)}
           onArchive={(target) =>
             void archiveWorkspace(api, confirm, target).then(
@@ -777,6 +826,11 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           <RightColumn
             workspace={workspace}
             project={project}
+            tab={tab}
+            onTab={setTab}
+            size={layout.right}
+            onResize={setRightWidth}
+            onResetWidth={() => setRightWidth(defaults.right)}
             onNotes={setNotes}
             onCollapse={() => setRightOpen(false)}
           />
