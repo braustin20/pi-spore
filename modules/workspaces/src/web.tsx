@@ -44,7 +44,7 @@ import {
   X,
 } from "lucide-react";
 import { type ComponentType, type ReactNode, type SubmitEvent, useEffect, useState } from "react";
-import { ago, groupWorkspaces, reduceWorkspaceList } from "./list.js";
+import { ago, groupByProject, reduceWorkspaceList } from "./list.js";
 import {
   type CreateWorkspaceFormProps,
   type UseWorkspaceStatus,
@@ -257,14 +257,12 @@ async function archiveWorkspace(api: ApiClient, workspace: Workspace): Promise<N
 
 function WorkspaceRow({
   workspace,
-  project,
   status,
   selected,
   now,
   onArchive,
 }: {
   workspace: Workspace;
-  project: string;
   status: WorkspaceStatus | undefined;
   selected: boolean;
   now: number;
@@ -280,10 +278,9 @@ function WorkspaceRow({
             {ago(workspace.updatedAt, now)}
           </span>
         </div>
-        <div className="truncate text-xs text-muted">
-          {project}
-          {workspace.line && <span className="font-mono"> · {workspace.line}</span>}
-        </div>
+        {workspace.line && (
+          <div className="truncate font-mono text-xs text-muted">{workspace.line}</div>
+        )}
         {status && (
           <StatusLine tone={status.tone} className="mt-0.5 max-w-full">
             {status.text}
@@ -327,7 +324,7 @@ function WorkspaceListColumn({
   const [showArchived, setShowArchived] = useStoredFlag("pi-spore.workspaces.archived", false);
   const statuses = useStatus(workspaces ?? []);
   const projectName = (id: string) => projects.find((candidate) => candidate.id === id)?.name ?? id;
-  const groups = groupWorkspaces(workspaces ?? [], { showArchived, projectId });
+  const groups = groupByProject(workspaces ?? [], projects, { showArchived, projectId });
   const now = Date.now();
   return (
     <aside
@@ -371,24 +368,42 @@ function WorkspaceListColumn({
         {workspaces !== undefined && groups.length === 0 && (
           <p className="px-2 text-sm text-muted">No workspaces.</p>
         )}
-        {groups.map((group) => (
-          <section key={group.state} aria-label={group.label} className="flex flex-col gap-0.5">
-            <SectionLabel className="px-3 pb-1">
-              {group.label}
-              <span className="font-mono">{group.workspaces.length}</span>
-            </SectionLabel>
-            {group.workspaces.map((workspace) => (
-              <WorkspaceRow
-                key={workspace.id}
-                workspace={workspace}
-                project={projectName(workspace.projectId)}
-                status={statuses.get(workspace.id)}
-                selected={workspace.id === selectedId}
-                now={now}
-                onArchive={() => onArchive(workspace)}
-              />
+        {groups.map((group, index) => (
+          // biome-ignore lint/a11y/useSemanticElements: a fieldset brings a border and min-width that fight the list layout
+          <div
+            key={group.projectId}
+            role="group"
+            aria-label={group.name}
+            className="flex flex-col gap-4"
+          >
+            {group.divider && (
+              <SectionLabel
+                role="heading"
+                aria-level={2}
+                className={cn("px-3", index > 0 && "border-t border-line pt-3")}
+              >
+                {group.name}
+              </SectionLabel>
+            )}
+            {group.parts.map((part) => (
+              <section key={part.state} aria-label={part.label} className="flex flex-col gap-0.5">
+                <SectionLabel className="px-3 pb-1">
+                  {part.label}
+                  <span className="font-mono">{part.workspaces.length}</span>
+                </SectionLabel>
+                {part.workspaces.map((workspace) => (
+                  <WorkspaceRow
+                    key={workspace.id}
+                    workspace={workspace}
+                    status={statuses.get(workspace.id)}
+                    selected={workspace.id === selectedId}
+                    now={now}
+                    onArchive={() => onArchive(workspace)}
+                  />
+                ))}
+              </section>
             ))}
-          </section>
+          </div>
         ))}
       </div>
       <div className="shrink-0 border-t border-line px-4 py-2">
