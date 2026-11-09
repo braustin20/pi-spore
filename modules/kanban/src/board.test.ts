@@ -7,6 +7,7 @@ import {
   filterCards,
   labelsOf,
   localDay,
+  phoneColumn,
   stepTarget,
 } from "./board.js";
 
@@ -22,6 +23,24 @@ const card = (id: string, fields: Partial<Card> = {}): Card => ({
   createdAt: 1,
   updatedAt: 1,
   ...fields,
+});
+
+describe("phoneColumn", () => {
+  const columnsOf = (...columns: Card["column"][]) =>
+    byColumn(columns.map((column, index) => card(`c${index}`, { column })));
+  it("uses the column the pane names", () => {
+    expect(phoneColumn("done", columnsOf("ready"))).toBe("done");
+  });
+  it("starts at the first active column with cards", () => {
+    expect(phoneColumn(undefined, columnsOf("backlog", "review", "in-progress"))).toBe(
+      "in-progress",
+    );
+    expect(phoneColumn(undefined, columnsOf("backlog", "ready", "review"))).toBe("ready");
+  });
+  it("falls back to backlog when no active column has cards, or the pane is unknown", () => {
+    expect(phoneColumn(undefined, columnsOf("done"))).toBe("backlog");
+    expect(phoneColumn("nope", columnsOf())).toBe("backlog");
+  });
 });
 
 describe("board helpers", () => {
