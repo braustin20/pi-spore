@@ -224,6 +224,7 @@ not built in v1.
 - R18.3 Usage seen by any Pi process counts, including plain `pi` in a terminal, not only pi-spore agents.
 - R18.4 Home warns when a window crosses a threshold. The router reads the same numbers (R4.10).
 - R18.5 Stale numbers are shown as stale and are not used for routing.
+- R18.6 Codex usage is polled with the Codex CLI login, because the `openai` login reports none (ADR 0153).
 
 ## Out of scope for v1
 

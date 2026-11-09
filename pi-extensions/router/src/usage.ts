@@ -168,6 +168,49 @@ export function readStreamEvent(data: unknown): PlanReading | undefined {
   return { plan: "codex", source: "codex.rate_limits event", windows };
 }
 
+const WhamUsageWindow = Type.Object({
+  used_percent: Type.Number({ minimum: 0 }),
+  limit_window_seconds: Type.Number({ minimum: 0 }),
+  reset_at: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
+});
+const WhamUsageResponse = Type.Object({
+  rate_limit: Type.Optional(
+    Type.Union([
+      Type.Object({
+        primary_window: Type.Optional(Type.Union([WhamUsageWindow, Type.Null()])),
+        secondary_window: Type.Optional(Type.Union([WhamUsageWindow, Type.Null()])),
+      }),
+      Type.Null(),
+    ]),
+  ),
+});
+const WHAM_WINDOWS = [
+  ["primary", "primary_window"],
+  ["secondary", "secondary_window"],
+] as const;
+
+/**
+ * The JSON body of ChatGPT's `GET /backend-api/wham/usage`, which reports the same Codex windows as the headers.
+ * Everything else in the body (`plan_type`, `additional_rate_limits`, credits) is allowed and ignored. Throws when
+ * the body reports no window at all.
+ */
+export function readUsageEndpoint(body: unknown): PlanReading {
+  const response = parse(WhamUsageResponse, body, "wham/usage response");
+  const windows: PlanReading["windows"] = {};
+  for (const [slot, key] of WHAM_WINDOWS) {
+    const window = response.rate_limit?.[key];
+    if (!window) continue;
+    windows[windowName(Math.ceil(window.limit_window_seconds / 60), slot)] = {
+      utilization: window.used_percent / 100,
+      ...(typeof window.reset_at === "number" ? { resetsAt: epochMs(window.reset_at) } : {}),
+    };
+  }
+  if (Object.keys(windows).length === 0) {
+    throw new Error("wham/usage response has no rate-limit windows");
+  }
+  return { plan: "codex", source: "chatgpt wham/usage", windows };
+}
+
 export const usageDir = (home: string): string => join(home, "usage");
 const planFile = (home: string, plan: string): string => join(usageDir(home), `${plan}.json`);
 
