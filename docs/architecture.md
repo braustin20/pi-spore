@@ -425,7 +425,7 @@ role = "reviewer"
 rounds = 2                # the most reviewer runs; a fresh read-only agent each round
 early_stop = "jev"        # Jev may end the review early; it never adds a round
 fix_passes = 1            # a REVISE on round 2 gets one fix, with no review after it
-min_strength_over = "implement"   # the reviewer's tier must be above every model the worker used
+min_strength_over = "implement"   # a cloud worker may be reviewed by its own tier; a local worker needs a higher tier
 
 [[stage]]
 name = "adversarial"
@@ -476,11 +476,12 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   severity. The subject is `{ runId, stage, action }`, filed with `action: "fix"`. Its `decided` hook, in the
   decision's transaction, acts on the choice: `fix` starts one last fix turn with no review after it, then the stage
   ends; `accept` ends the stage without a fix; decline stops the run. Home shows the three as buttons, fix first.
-- **min_strength_over** (R4.4, ADR 0023). Before a reviewer starts, its model (stage `model`, `spore/auto` for
-  `route`, else the role default) must have a tier strictly above every model in `modelsUsed` of the worker. A
-  missing model or tier, or a weaker model, throws: the job waits with the error, shown on the run as `blocked`,
-  and Retry checks again after the user fixes the settings. When the report comes, the reviewer's own `modelsUsed`
-  is checked the same way; a failure ends the run `failed`.
+- **min_strength_over** (R4.4, ADR 0023, 0152). Before a reviewer starts, its model (stage `model`, `spore/auto`
+  for `route`, else the role default) must have a tier at or above every model in `modelsUsed` of the worker, and
+  strictly above it when that model's tier is `local`. A cloud model may be reviewed by its own tier, the same model
+  included, because the review runs in a fresh read-only chat. A missing model or tier, or a tier below, throws: the
+  job waits with the error, shown on the run as `blocked`, and Retry checks again after the user fixes the settings.
+  When the report comes, the reviewer's own `modelsUsed` is checked the same way; a failure ends the run `failed`.
 - **Local implementer** (R4.10, R3.4). Before the worker starts, its model is the stage `model`, else the worker role
   default. If that model is not `spore/auto`, its tier is not `local`, and its plan (`router.plans`) has fresh usage
   pressure (the router's thresholds), the run is `waiting_user` with a `pipeline-local-implementer` approval on Home

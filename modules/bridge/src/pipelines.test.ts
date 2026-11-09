@@ -791,15 +791,17 @@ describe("the round limit", () => {
 });
 
 describe("min_strength_over (R4.4)", () => {
-  const STRONG = withReview('model = "fake/weak"', 'min_strength_over = "implement"');
+  const WEAK_REVIEW = withReview('model = "fake/weak"', 'min_strength_over = "implement"');
+  const SAME_MODEL_REVIEW = withReview('model = "spore/auto"', 'min_strength_over = "implement"');
 
-  it("starts no reviewer on a model that is not stronger, and a settings fix plus a retry starts it", async () => {
+  it("starts no reviewer of a local worker's own tier, and a settings fix plus a retry starts it", async () => {
+    // A local worker still needs a strictly higher tier (R4.4, ADR 0152).
     const server = await start({
       env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
     });
     writeTiers(server.paths.root, TIERS);
     const { workspaceId } = await workspace(server, "weak");
-    userPipeline(server.paths.root, "p", STRONG);
+    userPipeline(server.paths.root, "p", WEAK_REVIEW);
     const { run: started } = await json<{ run: PipelineRun }>(
       await startRun(server, workspaceId),
       201,
@@ -818,6 +820,68 @@ describe("min_strength_over (R4.4)", () => {
     await json(await server.request("POST", `/api/pipelines/runs/${started.id}/retry`));
     await until(async () => (await getRun(server, started.id)).state === "passed");
     expect((await getRun(server, started.id)).blocked).toBeUndefined();
+  });
+
+  it("starts a reviewer on the worker's own cloud model", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    writeTiers(server.paths.root, { "spore/auto": "medium" });
+
+    const { run } = await runUntil(server, "same-model", SAME_MODEL_REVIEW, "passed");
+
+    expect(kinds(run)).toEqual(["task1", "review1"]);
+  });
+
+  it("starts a reviewer on another model of the worker's cloud tier", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    writeTiers(server.paths.root, { "spore/auto": "medium", "fake/mid": "medium" });
+
+    const { run } = await runUntil(
+      server,
+      "same-tier",
+      withReview('model = "fake/mid"', 'min_strength_over = "implement"'),
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1"]);
+  });
+
+  it("starts no reviewer on a lower cloud tier", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    writeTiers(server.paths.root, { "spore/auto": "medium", "fake/weak": "light" });
+    const { workspaceId } = await workspace(server, "lower-tier");
+    userPipeline(server.paths.root, "p", WEAK_REVIEW);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    expect((await getRun(server, run.id)).blocked).toContain(
+      "fake/weak (tier light) is not above spore/auto (tier medium)",
+    );
+  });
+
+  it("accepts a reviewer that really ran on the worker's cloud tier", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE],
+        reviewer: [{ summary: "Good", verdict: "approve", model: "fake/mid" }],
+      }),
+    });
+    writeTiers(server.paths.root, { ...TIERS, "spore/auto": "medium" });
+
+    const { run } = await runUntil(
+      server,
+      "equal-used",
+      withReview('model = "fake/strong"', 'min_strength_over = "implement"'),
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1"]);
   });
 
   it("answers 409 to a retry of a run with no waiting job", async () => {
@@ -862,9 +926,7 @@ describe("min_strength_over (R4.4)", () => {
     );
 
     expect(run.message).toContain("R4.4");
-    expect(run.message).toContain(
-      "fake/weak (tier local) is not stronger than spore/auto (tier light)",
-    );
+    expect(run.message).toContain("fake/weak (tier local) is not above spore/auto (tier light)");
   });
 });
 
