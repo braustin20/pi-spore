@@ -22,7 +22,8 @@ agents across Git projects, with first-class Unity support. Read these before ch
 - pi-spore never merges to a base branch on its own, never enables auto-merge, never changes a role's model without
   approval, and never closes a Unity editor without an explicit yes. An agent merges a PR only when the user asks
   for that merge, or when it asks and the user says yes (ADR 0130). pi-spore's own code merges a PR only when the
-  user clicks Merge in the PR tab and confirms (ADR 0142).
+  user clicks Merge in the PR tab and confirms (ADR 0142), or when the user chose "Open and merge when checks pass"
+  on that PR's approval and the PR is ready (ADR 0164).
 
 ## Delegation (ADR 0120, ADR 0162)
 

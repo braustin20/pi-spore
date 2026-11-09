@@ -1,6 +1,7 @@
 # 0142. pi-spore merges a PR only when the user clicks Merge and confirms
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [0164](0164-merge-when-checks-pass.md), where the PR watch merges a
+  PR whose approval said "Open and merge when checks pass"
 - Date: 2026-11-08
 - Requirements: R9.3
 
