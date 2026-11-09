@@ -1,7 +1,11 @@
 import { mkdirSync, mkdtempSync, readdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createAgentsModule } from "@pi-spore/mod-agents/server";
+import { attentionModule } from "@pi-spore/mod-attention/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
+import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { JobTimer } from "@pi-spore/module-api";
@@ -11,6 +15,7 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { fakePipelines } from "./fake-pipelines.js";
 import { createUsageModule } from "./server.js";
 
+const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 const START = 1_800_000_000_000;
 const USAGE_URL = "https://chatgpt.com/backend-api/wham/usage";
 const TOKEN = "test-token-xyz";
@@ -98,8 +103,18 @@ async function start() {
       fakePipelines().module,
       projectsModule,
       vcsGitModule,
+      vcsFolderModule,
       workspacesModule,
-      createUsageModule({ codexHome, fetch: fakeFetch }),
+      createAgentsModule({
+        pi: { command: process.execPath, args: [FAKE_PI] },
+        resourceArgs: async () => ["--no-extensions"],
+        roleDefaults: async () => ({}),
+        baseEnv: { PATH: process.env.PATH },
+        idleStopMs: 60_000,
+        startTimeoutMs: 5_000,
+      }),
+      attentionModule,
+      createUsageModule({ codexHome, fetch: fakeFetch, agentDir: join(scratch, "pi-agent") }),
     ],
     { startAt: START, timer },
   );

@@ -1,12 +1,9 @@
 import { writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import { GlobalSettingsView, parse } from "@pi-spore/shared";
-import Type from "typebox";
+import { parse, SettingsView } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { projectsModule } from "./server.js";
-
-const SettingsBody = Type.Object({ settings: GlobalSettingsView });
 
 let server: TestServer;
 
@@ -18,13 +15,18 @@ afterEach(() => server.close());
 const writeSettings = (text: string) =>
   writeFileSync(join(server.paths.root, "settings.json"), text);
 
-async function retention(): Promise<{ value: number; source: string }> {
+async function entry(key = "retention.days"): Promise<{ value: unknown; source: string }> {
   const response = await server.request("GET", "/api/projects/settings");
   expect(response.status).toBe(200);
-  return parse(SettingsBody, await response.json(), "settings").settings.retentionDays;
+  const found = parse(SettingsView, await response.json(), "settings").settings.find(
+    (candidate) => candidate.key === key,
+  );
+  expect(found, `no setting ${key}`).toBeDefined();
+  return { value: found?.value, source: found?.source ?? "" };
 }
+const retention = () => entry();
 
-async function expectBadSettings(text: string, mentions = "retention.days"): Promise<void> {
+async function expectBadSettings(text: string, mentions: string): Promise<void> {
   writeSettings(text);
   const response = await server.request("GET", "/api/projects/settings");
   expect(response.status).toBe(422);
@@ -54,6 +56,17 @@ describe("GET /api/projects/settings", () => {
     expect(await retention()).toEqual({ value: 30, source: "default" });
   });
 
+  it("lists every key with its source, sorted by key", async () => {
+    writeSettings('{"retention":{"days":7}}');
+    const response = await server.request("GET", "/api/projects/settings");
+    const { settings } = parse(SettingsView, await response.json(), "settings");
+    expect(settings).toEqual([
+      { key: "retention.days", value: 7, source: "global" },
+      { key: "worktree.branch_prefix", value: "spore", source: "default" },
+      { key: "worktree.copy", value: [], source: "default" },
+    ]);
+  });
+
   it("reads the file fresh on each call", async () => {
     writeSettings('{"retention":{"days":7}}');
     expect((await retention()).value).toBe(7);
@@ -61,17 +74,18 @@ describe("GET /api/projects/settings", () => {
     expect((await retention()).value).toBe(9);
   });
 
-  it.each([
-    ["negative", '{"retention":{"days":-1}}'],
-    ["fractional", '{"retention":{"days":1.5}}'],
-    ["a string", '{"retention":{"days":"30"}}'],
-    ["a bad retention section", '{"retention":"30"}'],
-    ["a file that is not an object", "[]"],
-  ])("refuses %s with 422 bad_settings", async (_name, text) => {
-    await expectBadSettings(text);
+  it("refuses an unknown key, naming it and the file", async () => {
+    await expectBadSettings('{"retention":{"day":7}}', "retention.day");
   });
 
-  it("refuses broken JSON with 422 bad_settings", async () => {
-    await expectBadSettings("{not json");
+  it.each([
+    ["negative", '{"retention":{"days":-1}}', "retention.days"],
+    ["fractional", '{"retention":{"days":1.5}}', "retention.days"],
+    ["a string", '{"retention":{"days":"30"}}', "retention.days"],
+    ["a bad retention section", '{"retention":"30"}', "retention"],
+    ["a file that is not an object", "[]", "JSON object"],
+    ["broken JSON", "{not json", "not valid JSON"],
+  ])("refuses %s with 422 bad_settings", async (_name, text, mentions) => {
+    await expectBadSettings(text, mentions);
   });
 });

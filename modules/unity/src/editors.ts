@@ -43,6 +43,25 @@ const toLease = (row: LeaseRow): EditorLease => ({
   ...(row.seen_at === null ? {} : { seenAt: row.seen_at }),
 });
 
+/** Error code of `unity close --json` for a project without the Pipeline package (spike Q17). */
+const PIPELINE_MISSING = "PROJECTS_CLOSE_PIPELINE_MISSING";
+
+const CloseOutput = Type.Object({
+  errors: Type.Array(Type.Object({ code: Type.String() })),
+});
+
+/** True when the `--json` output of a failed close says exactly that the Pipeline package is missing. */
+function pipelineMissing(stdout: string): boolean {
+  try {
+    return parse(CloseOutput, JSON.parse(stdout), "unity close output").errors.some(
+      (error) => error.code === PIPELINE_MISSING,
+    );
+  } catch {
+    // Not the JSON envelope: some other failure, which must not end the editor's process.
+    return false;
+  }
+}
+
 /** A lease whose editor was never seen is dropped after this long, for example when Unity failed to start. */
 const STARTUP_GRACE_MS = 10 * 60_000;
 
@@ -314,7 +333,12 @@ export function createEditors(deps: EditorsDeps): UnityEditors & {
         throw new ApiError(404, "editor_not_found", `No Unity editor has ${target} open`);
       }
       const project = await deps.projects.get(projectId);
-      const result = await runUnity(["close", target], project.path, 90_000);
+      let result = await runUnity(["close", "--json", target], project.path, 90_000);
+      // Q17, ADR 0156: without the Pipeline package the editor has no graceful channel. The caller already has the
+      // user's yes, and a graceful close would not save either, so --force changes only how the process ends.
+      if (result.code !== 0 && pipelineMissing(result.stdout)) {
+        result = await runUnity(["close", "--json", target, "--force"], project.path, 90_000);
+      }
       if (result.code !== 0) {
         throw new ApiError(
           409,

@@ -23,6 +23,7 @@ import {
   Textarea,
   type Tone,
   Tooltip,
+  useConfirm,
 } from "@pi-spore/ui";
 import { ArrowRight, ExternalLink, GitPullRequest, RefreshCw } from "lucide-react";
 import { type SubmitEvent, useCallback, useEffect, useState } from "react";
@@ -226,6 +227,7 @@ function PrView({
   pr: PullRequest;
   act: (method: "POST", suffix: string, body: unknown) => Promise<boolean>;
 }) {
+  const { confirm, dialog } = useConfirm();
   const [confirmPush, setConfirmPush] = useState(false);
   const [busy, setBusy] = useState(false);
   const { watch } = status;
@@ -238,16 +240,21 @@ function PrView({
   };
   const failing = pr.checks.filter((check) => check.state === "fail").length;
   const passing = pr.checks.filter((check) => check.state === "pass").length;
-  const merge = () => {
-    if (!window.confirm(`Merge #${pr.number} into ${pr.base} with a merge commit?`)) return;
-    void run(() => act("POST", "merge", { confirm: true, headId: pr.headId }));
+  const merge = async () => {
+    const yes = await confirm({
+      title: "Merge pull request?",
+      message: `Merge #${pr.number} into ${pr.base} with a merge commit?`,
+      confirmLabel: "Merge",
+    });
+    if (!yes) return;
+    await run(() => act("POST", "merge", { confirm: true, headId: pr.headId }));
   };
   const mergeButton = (
     <Button
       variant="primary"
       size="sm"
       disabled={busy || status.mergeBlocked !== undefined}
-      onClick={merge}
+      onClick={() => void merge()}
     >
       Merge
     </Button>
@@ -255,6 +262,7 @@ function PrView({
 
   return (
     <div className="flex flex-col gap-4 p-4">
+      {dialog}
       <div className="rounded-xl border border-line bg-raised/40 p-3">
         <div className="flex items-start gap-2">
           <a

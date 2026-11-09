@@ -34,4 +34,4 @@ class names in one placeholder stylesheet. The user chose React with Tailwind an
 - Tailwind scans `packages/web/src`, `packages/ui/src`, and `modules/`. A new folder with class names must be
   added to `packages/web/src/app.css`.
 - Native `<select>` stays for model lists and form choices: long lists and keyboard use work as the platform does.
-- Confirmations still use `window.confirm`. A styled confirm dialog is later work.
+- Confirmations use the styled `useConfirm()` dialog from `@pi-spore/ui`, not `window.confirm`.

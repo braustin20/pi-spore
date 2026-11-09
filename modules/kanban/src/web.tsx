@@ -30,6 +30,7 @@ import {
   Checkbox,
   Chip,
   CollapsibleSection,
+  type Confirm,
   EmptyState,
   Field,
   Input,
@@ -38,6 +39,7 @@ import {
   Select,
   Textarea,
   Tooltip,
+  useConfirm,
 } from "@pi-spore/ui";
 import {
   ArrowDown,
@@ -511,10 +513,14 @@ const REASONS: Readonly<Record<string, string>> = {
 };
 
 /** Asks before a blocked card starts. True when it may start. */
-function confirmBlocked(card: Card): boolean {
+async function confirmBlocked(card: Card, confirm: Confirm): Promise<boolean> {
   if (!card.blocked) return true;
   const names = card.blockedBy.filter((blocker) => blocker.open).map(blockerName);
-  return window.confirm(`This card is blocked by: ${names.join(", ")}.\n\nStart it anyway?`);
+  return confirm({
+    title: "Card is blocked",
+    message: `This card is blocked by: ${names.join(", ")}.\n\nStart it anyway?`,
+    confirmLabel: "Start anyway",
+  });
 }
 
 /** Active workspaces work from this card may start in: those of its project, or any without one. */
@@ -555,6 +561,7 @@ function StartWork({
   const [base, setBase] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const { confirm, dialog } = useConfirm();
 
   if (started) {
     return (
@@ -571,25 +578,26 @@ function StartWork({
     );
   }
   if (!mode) {
-    const choose = (next: "new" | "existing" | "run") => {
-      if (!confirmBlocked(card)) return;
+    const choose = async (next: "new" | "existing" | "run") => {
+      if (!(await confirmBlocked(card, confirm))) return;
       setConfirmed(card.blocked);
       setMode(next);
     };
     return (
       <div className="flex flex-col gap-2">
+        {dialog}
         <p className="m-0 text-xs text-muted">
           The card's brief goes to the workspace's worker chat, or to a run's coordinator chat. The
           chat starts on it.
         </p>
         <div className="flex flex-wrap gap-1.5">
-          <Button size="sm" onClick={() => choose("new")}>
+          <Button size="sm" onClick={() => void choose("new")}>
             Start in a new workspace
           </Button>
-          <Button size="sm" disabled={targets.length === 0} onClick={() => choose("existing")}>
+          <Button size="sm" disabled={targets.length === 0} onClick={() => void choose("existing")}>
             Start in an existing workspace
           </Button>
-          <Button size="sm" onClick={() => choose("run")}>
+          <Button size="sm" onClick={() => void choose("run")}>
             Start a run
           </Button>
         </div>
@@ -800,6 +808,7 @@ function CardEditor({
   const [detail, setDetail] = useState<CardDetail | undefined>();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | undefined>();
+  const { confirm, dialog } = useConfirm();
 
   // History changes on every move; read it again when the card does.
   const updatedAt = card?.updatedAt;
@@ -854,8 +863,15 @@ function CardEditor({
       .finally(() => setBusy(false));
   };
 
-  const remove = () => {
-    if (!card || !window.confirm(`Delete the card "${card.title}"? Its history goes too.`)) return;
+  const remove = async () => {
+    if (!card) return;
+    const yes = await confirm({
+      title: "Delete card?",
+      message: `Delete the card "${card.title}"? Its history goes too.`,
+      confirmLabel: "Delete",
+      tone: "danger",
+    });
+    if (!yes) return;
     setBusy(true);
     api
       .send("DELETE", `kanban/cards/${card.id}`)
@@ -879,6 +895,7 @@ function CardEditor({
 
   return (
     <div className="flex flex-col">
+      {dialog}
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
         <SectionLabel className="flex-1">{isNew ? "New card" : "Card"}</SectionLabel>
         <Tooltip label="Close" side="bottom">
@@ -993,7 +1010,7 @@ function CardEditor({
             {isNew ? "Add card" : "Save"}
           </Button>
           {card && (
-            <Button type="button" variant="danger" disabled={busy} onClick={remove}>
+            <Button type="button" variant="danger" disabled={busy} onClick={() => void remove()}>
               <Trash2 />
               Delete
             </Button>

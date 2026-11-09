@@ -14,12 +14,23 @@ export const DELIVERIES_MIGRATION = `CREATE TABLE agents_deliveries (
 
 export const DELIVERIES_JOB_MIGRATION = "ALTER TABLE agents_deliveries ADD COLUMN job_id TEXT";
 
+/** How a message with options goes in: stored as JSON, cleared once Pi accepts the message. */
+export const DELIVERIES_OPTIONS_MIGRATION = "ALTER TABLE agents_deliveries ADD COLUMN options TEXT";
+
 export const DELIVERY_JOB = "agents.delivery";
 
 interface Row {
   id: string;
   agent_id: string;
   message: string;
+  options: string | null;
+}
+
+/** What a delivery keeps of the prompt that made it. Without options a delivery is a follow-up with no images. */
+export interface DeliveryOptions {
+  /** How the message goes in while the chat works. */
+  whileBusy: "steer" | "followUp";
+  images: { type: "image"; data: string; mimeType: string }[];
 }
 
 export interface DeliveriesOptions {
@@ -32,7 +43,7 @@ export interface DeliveriesOptions {
   /** Whether the agent's chat can run. An older worker chat keeps its rows until it is made active again. */
   canRun(agentId: string): boolean;
   /** Sends the message to the agent, starting it first if needed. Resolves when Pi accepts it. */
-  send(agentId: string, message: string): Promise<void>;
+  send(agentId: string, message: string, options?: DeliveryOptions): Promise<void>;
 }
 
 /**
@@ -51,20 +62,25 @@ export class Deliveries {
   }
 
   /** Inserts the row and its job together, so the job runs only if the caller's transaction commits. */
-  add(agentId: string, message: string): void {
+  add(agentId: string, message: string, options?: DeliveryOptions): void {
     this.options.store.transaction(() => {
       const id = this.options.newId();
       this.options.store.run(
-        "INSERT INTO agents_deliveries (id, agent_id, message, state, created_at) VALUES (?, ?, ?, 'pending', ?)",
+        "INSERT INTO agents_deliveries (id, agent_id, message, options, state, created_at) VALUES (?, ?, ?, ?, 'pending', ?)",
         id,
         agentId,
         message,
+        options ? JSON.stringify(options) : null,
         this.options.now(),
       );
       this.startJob(id, agentId);
       // An older row that waits after a failed send blocks this one, so a new message tries it again.
       this.options.jobs.wake(DELIVERY_JOB, agentId);
     });
+  }
+
+  hasPending(agentId: string): boolean {
+    return this.pendingRows(agentId).length > 0;
   }
 
   /** Cancels the jobs of the agent's rows. Call it before the rows are deleted. */
@@ -135,7 +151,7 @@ export class Deliveries {
   private async send(deliveryId: string): Promise<StepOutcome<never>> {
     const { store, log } = this.options;
     const row = store.get<Row>(
-      "SELECT id, agent_id, message FROM agents_deliveries WHERE id = ? AND state = 'pending'",
+      "SELECT id, agent_id, message, options FROM agents_deliveries WHERE id = ? AND state = 'pending'",
       deliveryId,
     );
     // Retention deleted it.
@@ -143,7 +159,11 @@ export class Deliveries {
     try {
       const workspace = this.options.workspaceOf(row.agent_id);
       if (workspace.state !== "active" || !this.options.canRun(row.agent_id)) return { wait: true };
-      await this.options.send(row.agent_id, row.message);
+      await this.options.send(
+        row.agent_id,
+        row.message,
+        row.options ? (JSON.parse(row.options) as DeliveryOptions) : undefined,
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       log.warn("A delivery to an agent failed; it stays pending", {
@@ -167,7 +187,7 @@ export class Deliveries {
       next: null,
       commit: () => {
         store.run(
-          "UPDATE agents_deliveries SET state = 'done', attempts = attempts + 1, error = NULL, delivered_at = ? WHERE id = ?",
+          "UPDATE agents_deliveries SET state = 'done', attempts = attempts + 1, error = NULL, options = NULL, delivered_at = ? WHERE id = ?",
           this.options.now(),
           row.id,
         );

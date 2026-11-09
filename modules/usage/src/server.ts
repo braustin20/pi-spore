@@ -1,5 +1,8 @@
+import { mkdirSync, watch } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { basename, join, sep } from "node:path";
+import { AgentsKey } from "@pi-spore/mod-agents/server";
+import { HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
@@ -14,7 +17,9 @@ import {
   writeReading,
 } from "@pi-spore/router";
 import type {
+  AgentRole,
   CalibrationResponse,
+  HomeNotice,
   RoutingDecisionsResponse,
   TokenUseResponse,
   TokenUseRow,
@@ -24,6 +29,17 @@ import type {
 import { calibration, type Outcome } from "./calibration.js";
 import { fetchCodexUsage, readCodexLogin } from "./codex.js";
 import { SessionIndex } from "./tokens.js";
+
+export interface UsageModuleOptions {
+  /** Pi's agent folder, whose `sessions/` holds plain `pi` sessions (R18.3). Default: `PI_CODING_AGENT_DIR` or `~/.pi/agent`. */
+  agentDir?: string;
+  /** The Codex CLI's folder, whose `auth.json` is the login the poll uses (ADR 0153). Default: `CODEX_HOME` or `~/.codex`. */
+  codexHome?: string;
+  fetch?: typeof fetch;
+}
+
+const isInside = (folder: string, path: string): boolean =>
+  path === folder || path.startsWith(folder.endsWith(sep) ? folder : folder + sep);
 
 const WINDOW_NAMES: Readonly<Record<string, string>> = { "5h": "5-hour", "7d": "weekly" };
 const planTitle = (plan: string): string =>
@@ -88,20 +104,22 @@ interface OutcomeRow {
  * with a worker ended, to judge the router's local choices against its decisions.
  * Codex windows are polled instead: the user's `openai` login reports none (ADR 0153).
  */
-export function createUsageModule(
-  options: { codexHome?: string; fetch?: typeof fetch } = {},
-): ServerModule {
+export function createUsageModule(options: UsageModuleOptions = {}): ServerModule {
   const codexHome = options.codexHome ?? process.env.CODEX_HOME ?? join(homedir(), ".codex");
   const fetchFn = options.fetch ?? globalThis.fetch;
   return {
     id: "usage",
-    requires: ["projects", "workspaces", "pipelines"],
+    requires: ["projects", "workspaces", "pipelines", "attention", "agents"],
     core: false,
     setup(host) {
       const projects = host.use(ProjectsKey);
       const workspaces = host.use(WorkspacesKey);
       const pipelines = host.use(PipelinesKey);
-      const sessions = new SessionIndex(host.home.sessions);
+      const homeItems = host.use(HomeItemsKey);
+      const agents = host.use(AgentsKey);
+      const agentDir =
+        options.agentDir ?? process.env.PI_CODING_AGENT_DIR ?? join(homedir(), ".pi", "agent");
+      const sessions = new SessionIndex(host.home.sessions, join(agentDir, "sessions"));
       const settings = () =>
         loadSettings(host.home.root).catch((error: unknown) => {
           throw new ApiError(422, "bad_settings", (error as Error).message);
@@ -167,13 +185,13 @@ export function createUsageModule(
         host.jobs.start(CODEX_POLL_JOB, {}, { key: "all", after: 0 });
       });
 
-      host.routes.get("/plans", async (c) => {
+      const plansView = async (): Promise<UsagePlansResponse> => {
         const { pressure, usageMaxAgeMinutes } = await settings();
         const now = host.now();
         const maxAgeMs = usageMaxAgeMinutes * 60_000;
         const { plans, errors } = await readPlans(host.home.root);
         const warnings: UsageWarning[] = [];
-        const body: UsagePlansResponse = {
+        return {
           plans: plans.map((snapshot) => {
             const windows = windowViews(snapshot, now, maxAgeMs).map((view) => ({
               ...view,
@@ -194,31 +212,88 @@ export function createUsageModule(
           maxAgeMinutes: usageMaxAgeMinutes,
           errors: [...errors, ...(codexError === undefined ? [] : [`Codex usage: ${codexError}`])],
         };
-        return c.json(body);
-      });
+      };
+
+      host.routes.get("/plans", async (c) => c.json(await plansView()));
+
+      // R18.4: the warnings show on Home as well as on the Usage page.
+      const homeWarnings = async (): Promise<HomeNotice[]> => {
+        const { plans, warnings } = await plansView();
+        return warnings.map((warning) => ({
+          id: `${warning.plan}:${warning.window}`,
+          at: plans.find((plan) => plan.plan === warning.plan)?.seenAt ?? host.now(),
+          title: warning.message,
+          href: "#/usage",
+        }));
+      };
+      homeItems.register("usage", homeWarnings);
+
+      // The router writes the plan files from any Pi process, so this module watches the folder and nudges Home when
+      // a plan file changes. Warnings also clear with time, so Home reads them fresh instead of comparing with the
+      // last nudge. The watcher does not keep the process alive.
+      const usageFolder = join(host.home.root, "usage");
+      mkdirSync(usageFolder, { recursive: true });
+      watch(usageFolder, { persistent: false }, (_event, name) => {
+        if (name?.endsWith(".json")) homeItems.changed();
+      }).on("error", (error) =>
+        host.log.error("Watching the usage folder failed", { error: String(error) }),
+      );
 
       host.routes.get("/tokens", async (c) => {
         const { tiers } = await settings();
         const known = new Map(workspaces.list().map((workspace) => [workspace.id, workspace]));
-        const projectNames = new Map(
-          (await projects.list()).map((project) => [project.id, project.name]),
-        );
+        const used = await sessions.scan();
+        const allProjects = await projects.list();
+        const projectNames = new Map(allProjects.map((project) => [project.id, project.name]));
+        // A plain session has no workspace, so its folder names its project: the workspace or project folder that
+        // holds it (the deepest one), else the folder's own name.
+        const folders = [
+          ...allProjects.map((project) => ({ path: project.path, projectId: project.id })),
+          ...[...known.values()].map((workspace) => ({
+            path: workspace.path,
+            projectId: workspace.projectId,
+          })),
+        ].sort((a, b) => b.path.length - a.path.length);
+        const roles = new Map<string, AgentRole>();
+        for (const workspaceId of new Set(used.flatMap((s) => s.workspaceId ?? []))) {
+          for (const entry of agents.sessionRoles(workspaceId))
+            roles.set(entry.sessionFile, entry.role);
+        }
         const rows = new Map<string, TokenUseRow>();
         let skippedLines = 0;
-        const used = await sessions.scan();
         for (const session of used) {
           skippedLines += session.skippedLines;
-          const workspace = known.get(session.workspaceId);
+          const workspace = session.workspaceId ? known.get(session.workspaceId) : undefined;
+          const role = roles.get(session.path);
+          const folder = session.cwd
+            ? folders.find((candidate) => isInside(candidate.path, session.cwd as string))
+            : undefined;
+          const projectId =
+            workspace?.projectId ?? (session.workspaceId ? undefined : folder?.projectId);
+          const projectName = session.workspaceId
+            ? workspace
+              ? (projectNames.get(workspace.projectId) ?? "(removed project)")
+              : "(unknown)"
+            : (folder && projectNames.get(folder.projectId)) ||
+              basename(session.cwd ?? "") ||
+              "(unknown)";
           for (const model of session.models) {
-            const key = `${session.workspaceId}\u0000${model.provider}/${model.model}`;
+            const key = [
+              // A plain session's identity is its project, else its folder: names can repeat.
+              session.workspaceId ?? `outside:${projectId ?? session.cwd ?? ""}`,
+              role ?? "",
+              `${model.provider}/${model.model}`,
+            ].join("\u0000");
             const local = tiers[`${model.provider}/${model.model}`] === "local";
             const row = rows.get(key) ?? {
-              ...(workspace ? { projectId: workspace.projectId } : {}),
-              projectName: workspace
-                ? (projectNames.get(workspace.projectId) ?? "(removed project)")
-                : "(unknown)",
-              workspaceId: session.workspaceId,
-              workspaceName: workspace?.name ?? "(removed workspace)",
+              ...(projectId ? { projectId } : {}),
+              projectName,
+              ...(session.workspaceId ? { workspaceId: session.workspaceId } : {}),
+              workspaceName: session.workspaceId
+                ? (workspace?.name ?? "(removed workspace)")
+                : "(outside pi-spore)",
+              ...(role ? { role } : {}),
+              external: !session.workspaceId,
               provider: model.provider,
               model: model.model,
               local,
@@ -243,7 +318,9 @@ export function createUsageModule(
           rows: [...rows.values()].sort(
             (a, b) =>
               a.projectName.localeCompare(b.projectName) ||
+              Number(a.external) - Number(b.external) ||
               a.workspaceName.localeCompare(b.workspaceName) ||
+              (a.role ?? "").localeCompare(b.role ?? "") ||
               b.input + b.output - (a.input + a.output),
           ),
           sessions: used.length,

@@ -35,4 +35,11 @@ export type {
   WebPage,
 } from "./modules.js";
 export { ModuleRegistryError, resolveModules } from "./registry.js";
+export type {
+  RawConfigFile,
+  RawConfigFiles,
+  ResolvedSettings,
+  SettingDef,
+  Settings,
+} from "./settings.js";
 export { ApiContext, useApi } from "./web-context.js";

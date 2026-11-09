@@ -11,21 +11,30 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { projectsModule } from "@pi-spore/mod-projects/server";
-import { unityModule } from "@pi-spore/mod-unity/server";
+import { ProjectsKey, projectsModule } from "@pi-spore/mod-projects/server";
+import { unityTrait } from "@pi-spore/mod-unity/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FAKE_PNG } from "../test-fixtures/png.mjs";
 import type { Agents, LaunchHook } from "./contract.js";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
 
 const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
+
+/** Only the Unity trait: the full unity module also needs the actions, artifacts, and attention modules. */
+const unityTraitModule: ServerModule = {
+  id: "unity",
+  requires: ["projects"],
+  core: false,
+  setup: (host) => host.use(ProjectsKey).registerTrait(unityTrait),
+};
 
 let server: TestServer;
 let scratch: string;
@@ -62,7 +71,7 @@ async function setup(
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
-      unityModule,
+      unityTraitModule,
       agentsModule,
       ...extraModules,
     ],
@@ -401,6 +410,45 @@ describe("agents", () => {
         status(second.agentId) === "idle" &&
         statuses(second.agentId).filter((s) => s === "idle").length >= 2,
     );
+  });
+
+  describe("limits come from settings.json (R3.6)", () => {
+    const home = () => join(scratch, "home");
+    const writeSettings = (text: string) => {
+      mkdirSync(home(), { recursive: true });
+      writeFileSync(join(home(), "settings.json"), text);
+    };
+
+    it("reads agents.maxLive at startup", async () => {
+      writeSettings('{"agents":{"maxLive":1}}');
+      await setup({}, {}, { home: home() });
+      const first = await makeAgent("a");
+      const second = await makeAgent("b");
+      // A busy agent is never stopped for a waiting chat, so only stopping it frees the slot.
+      await json(await prompt(first.agentId, "slow:60000"));
+      await until(() => status(first.agentId) === "busy");
+
+      const pending = prompt(second.agentId, "two");
+      await until(() => status(second.agentId) === "waiting");
+      expect(statuses(second.agentId)).not.toContain("busy");
+
+      await json(await server.request("POST", `/api/agents/${first.agentId}/stop`));
+      expect(await json(await pending)).toEqual({ disposition: "started" });
+    });
+
+    it("lists the agents keys with their source on the settings route", async () => {
+      writeSettings('{"agents":{"maxImagesPerMessage":3}}');
+      await setup({}, {}, { home: home() });
+      const { settings } = await json<{
+        settings: { key: string; value: unknown; source: string }[];
+      }>(await server.request("GET", "/api/projects/settings"));
+      expect(settings.filter((entry) => entry.key.startsWith("agents."))).toEqual([
+        { key: "agents.idleStopMinutes", value: 10, source: "default" },
+        { key: "agents.maxImageBytes", value: 10 * 1024 * 1024, source: "default" },
+        { key: "agents.maxImagesPerMessage", value: 3, source: "global" },
+        { key: "agents.maxLive", value: 8, source: "default" },
+      ]);
+    });
   });
 
   describe("a waiting chat takes the slot of an idle one (ADR 0026)", () => {
@@ -1082,6 +1130,7 @@ describe("chats (ADR 0030)", () => {
       INSERT INTO agents_agents SELECT * FROM old;
       DROP TABLE old;
       ALTER TABLE agents_deliveries DROP COLUMN job_id;
+      ALTER TABLE agents_deliveries DROP COLUMN options;
       DELETE FROM core_migrations WHERE module = 'agents' AND version >= 4;
     `);
     db.close();
@@ -1413,7 +1462,9 @@ describe("deliveries on the job runner", () => {
 
   it("keeps a row pending with its error when the send fails, and sends it after a wake", async () => {
     const { deliver, flag } = await failingPi();
-    const { agentId, workspaceId } = await makeAgent();
+    const { agentId, workspaceId, folder } = await makeAgent();
+    const gate = join(folder, ".fake-pi-hold-turn");
+    writeFileSync(gate, "");
 
     deliver(agentId, "hello");
     await until(() => delivery()?.attempts === 1);
@@ -1421,9 +1472,28 @@ describe("deliveries on the job runner", () => {
 
     rmSync(flag);
     await json(await server.request("POST", `/api/workspaces/${workspaceId}/park`));
+    const settled = new Promise<void>((resolve) => {
+      const publish = server.events.publish.bind(server.events);
+      const listener = vi.spyOn(server.events, "publish").mockImplementation((topic, raw) => {
+        publish(topic, raw);
+        const event = raw as AgentEvent;
+        if (
+          topic === `agent:${agentId}` &&
+          event.type === "pi" &&
+          (event.event as { type: string }).type === "agent_settled"
+        ) {
+          listener.mockRestore();
+          resolve();
+        }
+      });
+    });
     await json(await server.request("POST", `/api/workspaces/${workspaceId}/resume`));
     await until(() => delivery()?.state === "done");
     expect(delivery()).toMatchObject({ attempts: 2, error: null });
+    // Acceptance does not imply a completed turn: Pi has not emitted its transcript yet.
+    expect(texts(await chat(agentId))).toEqual([]);
+    rmSync(gate);
+    await settled;
     expect(texts(await chat(agentId))).toEqual(["user: hello", "assistant: echo: hello"]);
   });
 
@@ -1435,15 +1505,37 @@ describe("deliveries on the job runner", () => {
     await until(() => delivery()?.attempts === 1);
     rmSync(flag);
     deliver(agentId, "second");
-    await until(
-      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
-    );
+    // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+    await until(async () => texts(await chat(agentId)).includes("assistant: echo: second"));
     expect(texts(await chat(agentId))).toEqual([
       "user: first",
       "assistant: echo: first",
       "user: second",
       "assistant: echo: second",
     ]);
+  });
+
+  it("keeps a typed prompt behind a pending row, with its images and steer choice", async () => {
+    const { deliver, flag } = await failingPi();
+    const { agentId } = await makeAgent();
+
+    deliver(agentId, "first");
+    await until(() => delivery()?.attempts === 1);
+    rmSync(flag);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/prompt`, {
+        message: "second",
+        images: [{ mimeType: "image/png", data: FAKE_PNG }],
+        whileBusy: "followUp",
+      }),
+    );
+    // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+    await until(async () =>
+      texts(await chat(agentId)).includes("assistant: echo: second [1 images]"),
+    );
+    const lines = texts(await chat(agentId));
+    expect(lines.slice(0, 2)).toEqual(["user: first", "assistant: echo: first"]);
+    expect(lines.slice(2)).toEqual(["user: second", "assistant: echo: second [1 images]"]);
   });
 
   describe("moving and dropping a chat's pending rows", () => {
@@ -1699,6 +1791,30 @@ describe("stage agents (R6)", () => {
 
     const stage = api.createStage(workspaceId, { role: "reviewer", title: "R" });
     expect(await api.modelsUsed(stage.id)).toEqual([]);
+  });
+
+  it("lists the session file and role of each agent that has a session, for one workspace", async () => {
+    await setupStages();
+    const { agentId, workspaceId } = await makeAgent();
+    const other = await makeAgent("other");
+    expect(api.sessionRoles(workspaceId)).toEqual([]);
+    await json(await prompt(agentId, "one"));
+    await replied(agentId, 1);
+    const stage = start(workspaceId, { role: "reviewer", title: "R" });
+    await replied(stage.id, 1);
+    api.createStage(workspaceId, { role: "worker", title: "No session yet" });
+    await json(await prompt(other.agentId, "one"));
+    await replied(other.agentId, 1);
+
+    const files = (id: string) =>
+      server.store.get<{ session_file: string }>(
+        "SELECT session_file FROM agents_agents WHERE id = ?",
+        id,
+      )?.session_file;
+    expect(api.sessionRoles(workspaceId)).toEqual([
+      { sessionFile: files(agentId), role: "orchestrator" },
+      { sessionFile: files(stage.id), role: "reviewer" },
+    ]);
   });
 
   describe("turnError", () => {

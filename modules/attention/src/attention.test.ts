@@ -9,10 +9,17 @@ import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { Approval, Inbox, InboxEvent } from "@pi-spore/shared";
+import type { Approval, HomeNotice, Inbox, InboxEvent } from "@pi-spore/shared";
 import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { type Approvals, ApprovalsKey, attentionModule, INBOX_TOPIC } from "./server.js";
+import {
+  type Approvals,
+  ApprovalsKey,
+  attentionModule,
+  type HomeItems,
+  HomeItemsKey,
+  INBOX_TOPIC,
+} from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
 
@@ -20,6 +27,14 @@ let server: TestServer;
 let scratch: string;
 let agents: ReturnType<typeof createAgentsModule>;
 let approvals: Approvals;
+let homeItems: HomeItems;
+/** What the test Home source reports now. */
+let notices: HomeNotice[];
+/** Makes a second test source throw. */
+let broken: boolean;
+/** The test source answers its next reads from here before it answers from `notices`, so a test can hold a read. */
+let heldReads: Promise<HomeNotice[]>[];
+let sourceReads: number;
 let agentsApi: Agents;
 /** What the test gate was asked to carry out; `fail` makes it throw. `decided` lists its decided() calls. */
 let gate: {
@@ -56,6 +71,24 @@ const gateModule: ServerModule = {
   },
 };
 
+/** Another module that adds items to Home, as github-pr, kanban, and usage do (ADR 0155). */
+const sourceModule: ServerModule = {
+  id: "source",
+  requires: ["attention"],
+  core: false,
+  setup(host) {
+    homeItems = host.use(HomeItemsKey);
+    homeItems.register("test-source", () => {
+      sourceReads++;
+      return heldReads.shift() ?? notices;
+    });
+    homeItems.register("broken-source", () => {
+      if (broken) throw new Error("source failed");
+      return [];
+    });
+  },
+};
+
 beforeEach(async () => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-attention-")));
   agents = createAgentsModule({
@@ -74,7 +107,12 @@ beforeEach(async () => {
     agents,
     attentionModule,
     gateModule,
+    sourceModule,
   ]);
+  notices = [];
+  broken = false;
+  heldReads = [];
+  sourceReads = 0;
   gate = { approved: [], decided: [], fail: false, failDecided: false };
 });
 afterEach(async () => {
@@ -114,7 +152,9 @@ async function makeAgent(name: string) {
 
 const inbox = async () => json<Inbox>(await server.request("GET", "/api/attention/inbox"));
 const kinds = async () =>
-  (await inbox()).items.map((item) => `${item.kind} ${item.workspace.name}`);
+  (await inbox()).items.map(
+    (item) => `${item.kind} ${item.kind === "notice" ? item.title : item.workspace.name}`,
+  );
 const prompt = (agentId: string, message: string) =>
   server.request("POST", `/api/agents/${agentId}/prompt`, { message });
 
@@ -281,6 +321,76 @@ describe("Home inbox", () => {
       answer: "x",
     });
     expect(response.status).toBe(404);
+  });
+});
+
+describe("Home sources (ADR 0155)", () => {
+  const overdue: HomeNotice = {
+    id: "card-1",
+    at: 5_000,
+    title: "Overdue: Ship it",
+    detail: "Due 2026-11-01",
+    href: "#/board/card-1",
+  };
+
+  it("shows what a source reports, with its link, and drops it when the condition clears", async () => {
+    expect((await inbox()).items).toEqual([]);
+    notices = [overdue];
+    expect((await inbox()).items).toEqual([{ kind: "notice", source: "test-source", ...overdue }]);
+    notices = [];
+    expect((await inbox()).items).toEqual([]);
+  });
+
+  it("sorts a notice among the other items by its time", async () => {
+    const { agentId } = await makeAgent("mixed");
+    await json(await prompt(agentId, "one"));
+    await until(async () => (await kinds()).includes("finished mixed"));
+    notices = [
+      { ...overdue, id: "new", title: "Newer", at: 9_000_000_000_000 },
+      { ...overdue, id: "old", title: "Older", at: 1 },
+    ];
+    expect(await kinds()).toEqual(["notice Newer", "finished mixed", "notice Older"]);
+  });
+
+  it("keeps the rest of Home when a source throws", async () => {
+    notices = [overdue];
+    broken = true;
+    expect((await inbox()).items).toMatchObject([{ kind: "notice", id: "card-1" }]);
+  });
+
+  it("pushes the inbox to subscribers when a source says it changed", async () => {
+    await server.events.snapshot(INBOX_TOPIC);
+    notices = [overdue];
+    homeItems.changed();
+    const kindsPushed = () =>
+      (server.events.eventsOf(INBOX_TOPIC) as InboxEvent[]).flatMap((event) =>
+        event.inbox.items.map((item) => item.kind),
+      );
+    await until(async () => kindsPushed().includes("notice"));
+  });
+
+  it("does not let an older, slower inbox build overwrite a newer one", async () => {
+    await server.events.snapshot(INBOX_TOPIC);
+    sourceReads = 0;
+    const pushed = () => server.events.eventsOf(INBOX_TOPIC) as InboxEvent[];
+    const noticeIds = () =>
+      pushed().flatMap((event) =>
+        event.inbox.items.flatMap((item) => (item.kind === "notice" ? [item.id] : [])),
+      );
+    let finishFirst: (value: HomeNotice[]) => void = () => {};
+    heldReads = [new Promise((resolve) => (finishFirst = resolve))];
+    homeItems.changed();
+    await until(async () => sourceReads === 1);
+    // The condition clears while the first read is out, so the second build finishes first.
+    notices = [];
+    homeItems.changed();
+    await until(async () => pushed().length === 1);
+    finishFirst([overdue]);
+    // A third build ends after the first, so when it shows, the first has had its turn to publish.
+    notices = [{ ...overdue, id: "last" }];
+    homeItems.changed();
+    await until(async () => noticeIds().includes("last"));
+    expect(noticeIds()).toEqual(["last"]);
   });
 });
 

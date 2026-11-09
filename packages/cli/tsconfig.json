@@ -6,5 +6,33 @@
     "types": ["node"]
   },
   "include": ["src"],
-  "references": [{ "path": "../shared" }]
+  "references": [
+    {
+      "path": "../shared"
+    },
+    {
+      "path": "../module-api"
+    },
+    {
+      "path": "../server-core"
+    },
+    {
+      "path": "../../modules/projects"
+    },
+    {
+      "path": "../../modules/workspaces"
+    },
+    {
+      "path": "../../modules/agents"
+    },
+    {
+      "path": "../../modules/attention"
+    },
+    {
+      "path": "../../modules/vcs-git"
+    },
+    {
+      "path": "../../modules/vcs-folder"
+    }
+  ]
 }

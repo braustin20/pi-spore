@@ -19,13 +19,23 @@ import {
   PageHeader,
   Panel,
   PanelHeader,
+  Select,
   Table,
   TableCell,
   TableHead,
 } from "@pi-spore/ui";
 import { Gauge, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
-import { formatAge, formatShare, formatTokens, formatUntil, windowTitle } from "./format.js";
+import {
+  formatAge,
+  formatShare,
+  formatTokens,
+  formatUntil,
+  type RoleSum,
+  roleLabel,
+  sumByRole,
+  windowTitle,
+} from "./format.js";
 
 const PLAN_TITLES: Readonly<Record<string, string>> = { claude: "Claude", codex: "OpenAI Codex" };
 
@@ -240,6 +250,118 @@ function PlanPanel({
   );
 }
 
+const modelCells = (row: Omit<RoleSum, "label">) => (
+  <TableCell className="font-mono text-xs">
+    {row.provider}/{row.model}
+    {row.local && (
+      <Chip tone="ok" className="ml-1.5">
+        local
+      </Chip>
+    )}
+  </TableCell>
+);
+
+function NumberCells({ row }: { row: Omit<RoleSum, "label"> }) {
+  return (
+    <>
+      <TableCell className="text-right font-mono">{row.requests}</TableCell>
+      <TableCell className="text-right font-mono">{formatTokens(row.input)}</TableCell>
+      <TableCell className="text-right font-mono">{formatTokens(row.output)}</TableCell>
+      <TableCell className="text-right font-mono">{formatTokens(row.cacheRead)}</TableCell>
+      <TableCell className="text-right font-mono">
+        {row.local ? "free" : `$${row.cost.toFixed(2)}`}
+      </TableCell>
+    </>
+  );
+}
+
+const NUMBER_HEADS = ["Requests", "Input", "Output", "Cache read", "Cost"];
+
+/** Token use per workspace, role, and model, or per role and model; filtered by role (R18.2, R18.3). */
+function TokenPanel({ tokens }: { tokens: TokenUseResponse }) {
+  const [groupBy, setGroupBy] = useState<"workspace" | "role">("workspace");
+  const [role, setRole] = useState("all");
+  const roles = [...new Set(tokens.rows.map(roleLabel))].sort();
+  const rows = tokens.rows.filter((row) => role === "all" || roleLabel(row) === role);
+  return (
+    <Panel>
+      <PanelHeader title="Token use by workspace, role, and model">
+        <Select value={groupBy} onChange={(e) => setGroupBy(e.target.value as typeof groupBy)}>
+          <option value="workspace">By workspace</option>
+          <option value="role">By role</option>
+        </Select>
+        <Select value={role} onChange={(e) => setRole(e.target.value)}>
+          <option value="all">All roles</option>
+          {roles.map((name) => (
+            <option key={name} value={name}>
+              {name}
+            </option>
+          ))}
+        </Select>
+      </PanelHeader>
+      {tokens.rows.length === 0 ? (
+        <EmptyState icon={Gauge} title="No agent sessions yet">
+          Token use appears after an agent in a workspace answers, or after a plain pi session.
+        </EmptyState>
+      ) : (
+        <Table>
+          <thead>
+            <tr>
+              {groupBy === "workspace" ? (
+                <>
+                  <TableHead>Project</TableHead>
+                  <TableHead>Workspace</TableHead>
+                </>
+              ) : null}
+              <TableHead>Role</TableHead>
+              <TableHead>Model</TableHead>
+              {NUMBER_HEADS.map((name) => (
+                <TableHead key={name} className="text-right">
+                  {name}
+                </TableHead>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {groupBy === "role"
+              ? sumByRole(rows).map((sum) => (
+                  <tr key={`${sum.label}/${sum.provider}/${sum.model}`}>
+                    <TableCell>{sum.label}</TableCell>
+                    {modelCells(sum)}
+                    <NumberCells row={sum} />
+                  </tr>
+                ))
+              : rows.map((row, index) => (
+                  <tr
+                    // Plain sessions of two folders can share a project name, so the position is part of the key.
+                    // biome-ignore lint/suspicious/noArrayIndexKey: the rows are rebuilt as a whole
+                    key={`${index}/${row.workspaceId ?? row.projectId ?? row.projectName}/${row.role}/${row.provider}/${row.model}`}
+                  >
+                    <TableCell>{row.projectName}</TableCell>
+                    <TableCell>
+                      {row.workspaceId ? (
+                        <a href={`#/workspaces/${row.workspaceId}`}>{row.workspaceName}</a>
+                      ) : (
+                        <span className="text-muted">{row.workspaceName}</span>
+                      )}
+                    </TableCell>
+                    <TableCell>{roleLabel(row)}</TableCell>
+                    {modelCells(row)}
+                    <NumberCells row={row} />
+                  </tr>
+                ))}
+          </tbody>
+        </Table>
+      )}
+      <p className="mt-2 mb-0 text-xs text-muted">
+        From {tokens.sessions} session files: pi-spore's own, and plain pi sessions outside pi-spore
+        (they have no workspace or role). Subscription models show their catalog price, which is $0
+        through claude-bridge.
+      </p>
+    </Panel>
+  );
+}
+
 function UsagePage() {
   const api = useApi();
   const [data, setData] = useState<Data | undefined>();
@@ -322,64 +444,7 @@ function UsagePage() {
             are stale and not used for routing.
           </p>
 
-          <Panel>
-            <PanelHeader title="Token use by workspace and model" />
-            {data.tokens.rows.length === 0 ? (
-              <EmptyState icon={Gauge} title="No agent sessions yet">
-                Token use appears after an agent in a workspace answers.
-              </EmptyState>
-            ) : (
-              <Table>
-                <thead>
-                  <tr>
-                    <TableHead>Project</TableHead>
-                    <TableHead>Workspace</TableHead>
-                    <TableHead>Model</TableHead>
-                    <TableHead className="text-right">Requests</TableHead>
-                    <TableHead className="text-right">Input</TableHead>
-                    <TableHead className="text-right">Output</TableHead>
-                    <TableHead className="text-right">Cache read</TableHead>
-                    <TableHead className="text-right">Cost</TableHead>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.tokens.rows.map((row) => (
-                    <tr key={`${row.workspaceId}/${row.provider}/${row.model}`}>
-                      <TableCell>{row.projectName}</TableCell>
-                      <TableCell>
-                        <a href={`#/workspaces/${row.workspaceId}`}>{row.workspaceName}</a>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {row.provider}/{row.model}
-                        {row.local && (
-                          <Chip tone="ok" className="ml-1.5">
-                            local
-                          </Chip>
-                        )}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">{row.requests}</TableCell>
-                      <TableCell className="text-right font-mono">
-                        {formatTokens(row.input)}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {formatTokens(row.output)}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {formatTokens(row.cacheRead)}
-                      </TableCell>
-                      <TableCell className="text-right font-mono">
-                        {row.local ? "free" : `$${row.cost.toFixed(2)}`}
-                      </TableCell>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
-            )}
-            <p className="mt-2 mb-0 text-xs text-muted">
-              From {data.tokens.sessions} pi-spore session files. Subscription models show their
-              catalog price, which is $0 through claude-bridge.
-            </p>
-          </Panel>
+          <TokenPanel tokens={data.tokens} />
 
           <Panel>
             <PanelHeader title="Routing decisions (spore/auto)" />

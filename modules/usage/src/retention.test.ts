@@ -1,12 +1,14 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { agentsModule } from "@pi-spore/mod-agents/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { fakeAttention } from "./fake-attention.js";
 import { fakePipelines } from "./fake-pipelines.js";
 import { createUsageModule } from "./server.js";
 
@@ -43,6 +45,8 @@ async function startWithLog(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      agentsModule,
+      fakeAttention,
       createUsageModule(),
     ],
     { home, startAt: START + days * DAY + SLACK },
@@ -64,6 +68,8 @@ async function startWithOutcomes(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      agentsModule,
+      fakeAttention,
       createUsageModule(),
     ],
     { home, startAt: START },
@@ -84,6 +90,8 @@ async function startWithOutcomes(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      agentsModule,
+      fakeAttention,
       createUsageModule(),
     ],
     { home, startAt: START + days * DAY + SLACK },

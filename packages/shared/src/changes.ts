@@ -128,6 +128,8 @@ export const DiffComment = Type.Object({
   code: Type.String(),
   body: Type.String(),
   createdAt: Type.Integer(),
+  /** In the chat composer's batch: it goes with the next message the user sends (R8.3). */
+  staged: Type.Boolean(),
   /** When it went to the worker. Sent comments leave the open list. */
   sentAt: Type.Optional(Type.Integer()),
 });
@@ -147,6 +149,16 @@ export const CreateCommentRequest = Type.Object(
   { additionalProperties: false },
 );
 export type CreateCommentRequest = Static<typeof CreateCommentRequest>;
+
+export const StageCommentsRequest = Type.Object(
+  {
+    staged: Type.Boolean(),
+    /** Without ids, every open comment of the workspace. */
+    ids: Type.Optional(Type.Array(Type.String(), { maxItems: 1000 })),
+  },
+  { additionalProperties: false },
+);
+export type StageCommentsRequest = Static<typeof StageCommentsRequest>;
 
 export const SendCommentsResponse = Type.Object({
   /** The worker chat that got them. */

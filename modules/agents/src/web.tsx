@@ -9,7 +9,16 @@ import {
   parse,
   type Workspace,
 } from "@pi-spore/shared";
-import { Button, Chip, EmptyState, Notice, Select, Spinner, Tooltip } from "@pi-spore/ui";
+import {
+  Button,
+  Chip,
+  EmptyState,
+  Notice,
+  Select,
+  Spinner,
+  Tooltip,
+  useConfirm,
+} from "@pi-spore/ui";
 import { MessageSquare } from "lucide-react";
 import {
   type ComponentType,
@@ -115,6 +124,7 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
   const workspaceId = workspace.id;
   const [chats, setChats] = useState<Agent[] | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const { confirm, dialog } = useConfirm();
 
   const archived = workspace.state === "archived";
 
@@ -151,9 +161,15 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
       .catch((caught: unknown) => setError(message(caught)));
   };
 
-  const closeChat = (chat: Agent) => {
+  const closeChat = async (chat: Agent) => {
     const name = chat.title ?? "New chat";
-    if (!window.confirm(`Close "${name}"? It leaves the chat bar for good.`)) return;
+    const yes = await confirm({
+      title: "Close chat?",
+      message: `Close "${name}"? It leaves the chat bar for good.`,
+      confirmLabel: "Close chat",
+      tone: "danger",
+    });
+    if (!yes) return;
     api
       .send("POST", `agents/${chat.id}/close`)
       .then(() => {
@@ -179,33 +195,36 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
     ) : null;
   }
   return (
-    <ChatView
-      key={selected.id}
-      workspace={workspace}
-      agentId={selected.id}
-      bar={
-        <ChatBar
-          workspaceId={workspaceId}
-          chats={chats ?? []}
-          selected={selected}
-          canStart={workspace.state === "active"}
-          onNew={startChat}
-          onClose={closeChat}
-          onRename={async (title) => {
-            try {
-              await api.send("POST", `agents/${selected.id}/title`, { title });
-              await load();
-            } catch (caught) {
-              setError(message(caught));
-              throw caught;
-            }
-          }}
-        />
-      }
-      outerError={error}
-      onDismissOuterError={() => setError(undefined)}
-      onChatChanged={() => void load()}
-    />
+    <>
+      {dialog}
+      <ChatView
+        key={selected.id}
+        workspace={workspace}
+        agentId={selected.id}
+        bar={
+          <ChatBar
+            workspaceId={workspaceId}
+            chats={chats ?? []}
+            selected={selected}
+            canStart={workspace.state === "active"}
+            onNew={startChat}
+            onClose={(chat) => void closeChat(chat)}
+            onRename={async (title) => {
+              try {
+                await api.send("POST", `agents/${selected.id}/title`, { title });
+                await load();
+              } catch (caught) {
+                setError(message(caught));
+                throw caught;
+              }
+            }}
+          />
+        }
+        outerError={error}
+        onDismissOuterError={() => setError(undefined)}
+        onChatChanged={() => void load()}
+      />
+    </>
   );
 }
 

@@ -22,6 +22,9 @@ import {
   type ApprovalKind,
   type Approvals,
   ApprovalsKey,
+  type HomeItems,
+  HomeItemsKey,
+  type HomeSource,
   type Questions,
   QuestionsKey,
 } from "./contract.js";
@@ -183,6 +186,7 @@ export const attentionModule: ServerModule = {
       return row;
     };
 
+    const sources = new Map<string, HomeSource>();
     const inbox = async (): Promise<Inbox> => {
       const projectNames = new Map(
         (await projects.list()).map((project) => [project.id, project.name]),
@@ -268,6 +272,14 @@ export const attentionModule: ServerModule = {
             since,
           });
       }
+      // One failing source must not blank Home.
+      for (const [source, read] of sources) {
+        try {
+          for (const notice of await read()) items.push({ kind: "notice", source, ...notice });
+        } catch (error) {
+          host.log.error("Home source failed", { source, error: String(error) });
+        }
+      }
       items.sort((a, b) => b.at - a.at);
       running.sort((a, b) => b.since - a.since);
       const interrupted = host.jobs
@@ -278,13 +290,19 @@ export const attentionModule: ServerModule = {
 
     // Many changes come in bursts (status, then dialog); one inbox per tick is enough.
     let scheduled = false;
+    // A source can answer slowly, so an older build may end after a newer one. Only the newest build publishes.
+    let latestBuild = 0;
     const changed = () => {
       if (scheduled) return;
       scheduled = true;
       setImmediate(() => {
         scheduled = false;
+        const build = ++latestBuild;
         inbox().then(
-          (current) => host.events.publish(INBOX_TOPIC, { type: "inbox", inbox: current }),
+          (current) => {
+            if (build === latestBuild)
+              host.events.publish(INBOX_TOPIC, { type: "inbox", inbox: current });
+          },
           (error: unknown) => host.log.error("Home inbox failed", { error: String(error) }),
         );
       });
@@ -409,6 +427,14 @@ export const attentionModule: ServerModule = {
       },
     };
     host.provide(ApprovalsKey, approvals);
+
+    host.provide(HomeItemsKey, {
+      register: (name, source) => {
+        if (sources.has(name)) throw new Error(`Home source "${name}" is registered twice`);
+        sources.set(name, source);
+      },
+      changed,
+    } satisfies HomeItems);
 
     /** Approvals being carried out, so a second click does not start the work twice. */
     const deciding = new Set<string>();

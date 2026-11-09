@@ -11,6 +11,8 @@ interface Sent {
   body?: unknown;
 }
 
+const NOW = 1_000_000_000;
+
 /** A fake server: `answer` maps "METHOD /path" to a response. Every request is recorded. */
 function fakeDeps(
   answer: (key: string, sent: Sent) => Response | Promise<Response>,
@@ -40,6 +42,7 @@ function fakeDeps(
     readToken: () => "secret",
     resolvePath: (path) => (path.startsWith("/") ? path : `/home/me/${path}`),
     newKey: () => `key-${++keys}`,
+    now: () => NOW,
     ...overrides,
   };
   return { deps, out, written, err, sent };
@@ -1188,5 +1191,192 @@ describe("pi-spore usage calibration", () => {
     expect(await run(["usage"], deps)).toBe(2);
     expect(err.at(-1)).toContain("Usage: pi-spore");
     expect(sent).toEqual([]);
+  });
+});
+
+describe("pi-spore inbox", () => {
+  const place = {
+    workspace: { id: "W1", name: "Fix UI", projectName: "Game", state: "active" },
+    agentId: "A1",
+    chat: { id: "A1", title: "Worker", kind: "worker", active: true },
+  };
+  const inbox = {
+    items: [
+      {
+        kind: "question",
+        at: NOW - 5 * 60_000,
+        ...place,
+        question: {
+          id: "Q1",
+          agentId: "A1",
+          workspaceId: "W1",
+          question: "Which palette?",
+          choices: ["Dark", "Light"],
+          state: "open",
+          createdAt: NOW - 5 * 60_000,
+        },
+      },
+      {
+        kind: "approval",
+        at: NOW - 2 * 3_600_000,
+        ...place,
+        approval: {
+          id: "AP1",
+          kind: "card-start",
+          agentId: "A1",
+          workspaceId: "W1",
+          title: "Start card Fix UI",
+          reason: "Phase 1 is next",
+          subject: { cardId: "C1" },
+          state: "open",
+          createdAt: NOW - 2 * 3_600_000,
+        },
+      },
+      {
+        kind: "dialog",
+        at: NOW - 30_000,
+        ...place,
+        dialog: { id: "dlg-1", method: "confirm", title: "Proceed?", message: "Delete it?" },
+      },
+      { kind: "failed", at: NOW - 3 * 86_400_000, ...place, error: "boom" },
+      { kind: "finished", at: NOW - 90_000, ...place },
+    ],
+    interrupted: [],
+    running: [
+      {
+        agentId: "A2",
+        workspace: place.workspace,
+        chat: { ...place.chat, id: "A2" },
+        status: "busy",
+        since: NOW - 10_000,
+      },
+    ],
+  };
+  const serve = () => fakeDeps(() => Response.json(inbox));
+
+  it("lists every kind with its age, place, and deep link", async () => {
+    const { deps, out, sent } = serve();
+    expect(await run(["inbox", "list"], deps)).toBe(0);
+    expect(sent[0]?.url).toBe("http://127.0.0.1:7420/api/attention/inbox");
+    expect(out).toEqual([
+      "question:Q1  question  5m  Game / Fix UI  #/workspaces/W1/chats/A1",
+      "approval:AP1  approval  2h  Game / Fix UI  #/workspaces/W1/chats/A1",
+      "dialog:A1:dlg-1  dialog  30s  Game / Fix UI  #/workspaces/W1/chats/A1",
+      "failed:A1  failed  3d  Game / Fix UI  #/workspaces/W1/chats/A1",
+      "finished:A1  finished  1m  Game / Fix UI  #/workspaces/W1/chats/A1",
+      "running:A2  running  10s  Game / Fix UI  #/workspaces/W1/chats/A2",
+    ]);
+  });
+
+  it("says when nothing needs the user", async () => {
+    const { deps, out } = fakeDeps(() =>
+      Response.json({ items: [], interrupted: [], running: [] }),
+    );
+    expect(await run(["inbox", "list"], deps)).toBe(0);
+    expect(out).toEqual(["Nothing needs you."]);
+  });
+
+  it("prints entries with ids and links as JSON", async () => {
+    const { deps, out } = serve();
+    expect(await run(["inbox", "list", "--json"], deps)).toBe(0);
+    expect(JSON.parse(out[0] ?? "")).toMatchObject([
+      { id: "question:Q1", kind: "question", link: "#/workspaces/W1/chats/A1" },
+      { id: "approval:AP1", kind: "approval" },
+      { id: "dialog:A1:dlg-1" },
+      { id: "failed:A1" },
+      { id: "finished:A1" },
+      { id: "running:A2", kind: "running" },
+    ]);
+  });
+
+  it("shows a question's subject and choices", async () => {
+    const { deps, out } = serve();
+    expect(await run(["inbox", "show", "question:Q1"], deps)).toBe(0);
+    expect(out.join("\n")).toContain("question: Which palette?");
+    expect(out.join("\n")).toContain("choices: Dark, Light");
+  });
+
+  it("shows an approval's reason and subject", async () => {
+    const { deps, out } = serve();
+    expect(await run(["inbox", "show", "approval:AP1"], deps)).toBe(0);
+    const text = out.join("\n");
+    expect(text).toContain("title: Start card Fix UI");
+    expect(text).toContain("reason: Phase 1 is next");
+    expect(text).toContain('subject: {"cardId":"C1"}');
+  });
+
+  it("shows a dialog, a failure, and running work", async () => {
+    const { deps, out } = serve();
+    await run(["inbox", "show", "dialog:A1:dlg-1"], deps);
+    await run(["inbox", "show", "failed:A1"], deps);
+    await run(["inbox", "show", "running:A2"], deps);
+    const text = out.join("\n");
+    expect(text).toContain("message: Delete it?");
+    expect(text).toContain("error: boom");
+    expect(text).toContain("status: busy");
+  });
+
+  it("lists and shows a notice, which has no workspace or chat", async () => {
+    const notice = {
+      kind: "notice",
+      source: "github-pr",
+      id: "pr-7",
+      at: NOW - 60_000,
+      title: "PR 7 waits for review",
+      detail: "Two checks passed",
+      href: "#/projects/P1/prs/7",
+    };
+    const { deps, out } = fakeDeps(() =>
+      Response.json({ items: [notice], interrupted: [], running: [] }),
+    );
+    expect(await run(["inbox", "list"], deps)).toBe(0);
+    expect(await run(["inbox", "show", "notice:github-pr:pr-7"], deps)).toBe(0);
+    expect(out).toEqual([
+      "notice:github-pr:pr-7  notice  1m  github-pr  #/projects/P1/prs/7",
+      "id: notice:github-pr:pr-7",
+      "kind: notice",
+      "age: 1m",
+      "link: #/projects/P1/prs/7",
+      "source: github-pr",
+      "title: PR 7 waits for review",
+      "detail: Two checks passed",
+    ]);
+  });
+
+  it("shows the prefill and placeholder of input and editor dialogs", async () => {
+    const dialog = (id: string, rest: object) => ({
+      kind: "dialog",
+      at: NOW,
+      ...place,
+      dialog: { id, ...rest },
+    });
+    const { deps, out } = fakeDeps(() =>
+      Response.json({
+        items: [
+          dialog("d-in", { method: "input", title: "Name?", placeholder: "Type a name" }),
+          dialog("d-ed", { method: "editor", title: "Review", prefill: "Line 1\nLine 2" }),
+        ],
+        interrupted: [],
+        running: [],
+      }),
+    );
+    await run(["inbox", "show", "dialog:A1:d-in"], deps);
+    await run(["inbox", "show", "dialog:A1:d-ed"], deps);
+    const text = out.join("\n");
+    expect(text).toContain("placeholder: Type a name");
+    expect(text).toContain("prefill: Line 1\nLine 2");
+  });
+
+  it("rejects extra arguments before it contacts the server", async () => {
+    const { deps, err, sent } = serve();
+    expect(await run(["inbox", "list", "extra"], deps)).toBe(2);
+    expect(err[0]).toContain("inbox list takes no arguments");
+    expect(sent).toEqual([]);
+  });
+
+  it("fails for an id that is not in the inbox", async () => {
+    const { deps, err } = serve();
+    expect(await run(["inbox", "show", "question:nope"], deps)).toBe(1);
+    expect(err[0]).toContain('No inbox item "question:nope"');
   });
 });

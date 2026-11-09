@@ -21,7 +21,7 @@ run review bots on PRs (open question Q14).
   fall back to the provider's default base.
 - Module `changes` owns the Changes tab, the diff API, and diff-line comments. "Send to agent" delivers all open
   comments as one message to the workspace's active worker chat through `AgentsKey.deliver`, and marks them sent in
-  the same transaction. Attaching comments to the composer instead (R8.3) is a later step.
+  the same transaction. Comments can also be staged in the chat composer and go with the next message (R8.3, architecture 11d).
 - Module `github-pr` owns the PR tab and talks to GitHub only through `gh`, with argv arrays, `--json` output, and
   TypeBox checks. It runs only `gh pr view`, `gh pr create`, `gh run view --log-failed`, and read-only `gh api` GETs.
   No code path runs `gh pr merge`, `gh pr close`, or `--auto`.

@@ -53,6 +53,13 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   at each launch with the agent and its workspace. It may add `env` and replace the tool allowlist with `tools`
   (`--tools <tools> --exclude-tools mcp__*`). Two hooks that give `tools` for one agent fail the launch. A hook never
   changes the bridge token's read-only flag.
+- **Prompt hooks** (R8.3). `AgentsKey.addPromptHook(hook)` registers a synchronous hook that `POST /api/agents/:id/prompt`
+  calls for each prompt, inside one transaction. A hook returns text to add to the message and marks what
+  it took in that transaction. If any hook returns text, the route queues the whole message, with its images and
+  steer choice, as one delivery and answers `queued`. A prompt also goes into the queue when the chat already has
+  a pending delivery, so a later message never overtakes an earlier one. This holds for every chat, with or without comments: a delivery
+  that cannot be sent (Pi fails to start, for example) holds later messages behind it until it goes out. A message that
+  starts with `/` is a slash command: hooks skip it, so staged comments stay for the next message. The `changes` module uses it for staged diff comments (section 11d).
 - **Chats** (ADR 0030, ADR 0033, ADR 0120). The role of a workspace chat is `orchestrator`: a new chat starts on
   `subagents.agentOverrides.orchestrator` (model, thinking) from Pi's settings, and on Pi's own default when that
   override is missing. The `worker` role is a subagent on `spore/auto`; `worker` stays only as a chat `kind`, in
@@ -96,7 +103,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
     pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
     `subagents.agentOverrides.<role>`; `modelsUsed(agentId)` lists the physical models Pi recorded on the agent's
-    assistant messages.
+    assistant messages; `sessionRoles(workspaceId)` lists the session file and role of each agent that has a session,
+    so the `usage` module can split token use per role.
   - The thinking level comes from the role default. Env adds `PI_SPORE_CHAT_KIND=stage` and `PI_SPORE_STAGE_ROLE`.
   - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,request_human_input,artifacts_list,
     artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
@@ -235,7 +243,7 @@ export interface WebHost {
 }
 
 export interface ServerHost {
-  settings: SettingsReader;               // resolved values with their source
+  settings: Settings;                     // declare keys, resolve values with their source (section 13)
   store: Store;                           // SQLite, module-owned tables via migrations
   jobs: JobRunner;                        // durable jobs (section 6)
   events: EventBus;                       // typed server events, pushed to the web over ws
@@ -253,6 +261,10 @@ export interface ServerHost {
 - The web shell has a top bar (theme menu, server status dot), a left rail, and the page area. A page with
   `rail: { order, icon }` gets a rail icon, lit on its path and every path below it. Full pages wrap their content
   in `Page` from `@pi-spore/ui`; the workspace view fills the area itself.
+- Confirmations use `useConfirm()` from `@pi-spore/ui`, never `window.confirm`. It returns `{ confirm, dialog }`:
+  render `dialog` once, and `await confirm({ message, title?, confirmLabel?, tone?: "danger" })` for a boolean.
+  The dialog is themed, focuses Cancel first, and answers false on Cancel or Escape. A test fails if
+  `window.confirm` appears in `packages` or `modules`.
 - `server-core` holds everything except the registry, so module tests can use its test server without a package
   cycle (server → modules → server-core).
 - Startup validation, each failure stops the server with a clear message:
@@ -284,7 +296,7 @@ export interface ServerHost {
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
 | Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer), error (the agent failed and Retry replaced it), model note (a reviewer default on a full plan was swapped) |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state; a lane's question is a `runs_questions` row |
-| Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, pipeline gates; later close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
+| Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, `unity-close-editor`, pipeline gates), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, explore, session, agent, workspace |
@@ -782,19 +794,25 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   never refreshes it. `readUsageEndpoint` (router) turns the body into `5h` and `7d` windows and `writeReading` merges
   them into `codex.json`. A failed poll sets a message that `GET /api/usage/plans` returns in `errors`
   (`Codex usage: ...`) and the job goes on. It also counts use from the Codex CLI, which the tap cannot see.
-- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, and `pipelines`) reads the
-  router's files on each request through `@pi-spore/router`, so file formats have one definition. It owns one
-  table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker agent stores its state,
+- The `usage` module (`modules/usage/`, not core, requires `projects`, `workspaces`, `pipelines`, `attention`, and
+  `agents`) reads the router's files on each request through `@pi-spore/router`, so file formats have one
+  definition. It owns one table, `usage_outcomes` (ADR 0144): on `PipelinesKey.afterRunEnded`, a run with a worker
+  agent stores its state,
   the verdict of the last review of its first reviewer stage, its review rounds, and its fix passes. Retention
   deletes rows with the same cutoff as `routing.jsonl`.
   - `GET /api/usage/plans`: each plan's windows with age and staleness, warnings, the thresholds, and plan files that
     did not read. A warning is a fresh window that is full, a weekly window above `router.pressure.weekly`, or a
     5-hour window at or above `router.pressure.fiveHour` (R18.4).
-  - `GET /api/usage/tokens`: token use per project, workspace, and model, summed from the `usage` of every assistant
-    message in `~/.pi-spore/sessions/<workspace id>/*.jsonl`. Sums are cached per file by size and modification
-    time. Models in the `local` tier show as free (R18.2). Lines that are not JSON are counted, not fatal. A forked
-    session (a side chat) skips the entries copied from its parent, which are older than its header, so they count
-    once.
+  - `GET /api/usage/tokens`: token use per project, workspace, role, and model, summed from the `usage` of every
+    assistant message in two folders (R18.2, R18.3). Both have the layout `<folder>/<name>/*.jsonl`:
+    `~/.pi-spore/sessions/<workspace id>/`, and Pi's own `<agent dir>/sessions/<encoded folder>/` (the agent dir is
+    `PI_CODING_AGENT_DIR` or `~/.pi/agent`), where a plain `pi` in a terminal writes. A row from a plain session has
+    `external: true`, no workspace, and no role; its project is the registered project or workspace folder that holds
+    the session's `cwd` (from its header), else the folder's own name. A pi-spore row gets its `role` from
+    `AgentsKey.sessionRoles(workspaceId)`, which maps session files to the agent's role. A session whose agent row is
+    gone has no role. Sums are cached per file by size and content hash (a file can change and keep its size and time). Models in the `local` tier show as
+    free (R18.2). Lines that are not JSON are counted, not fatal. A forked session (a side chat) skips the entries
+    copied from its parent, which are older than its header, so they count once.
   - `GET /api/usage/routing?limit=<1-500>`: the newest routing decisions (default 50), and how many lines did not
     parse.
   - `GET /api/usage/calibration`: the routing calibration report (ADR 0144). It joins each outcome to the newest
@@ -808,11 +826,10 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     rung and place (`local` or the plan), for every decision with a rung.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
-  warnings at the top; the token table; the routing decisions with their rung, plan, model, thinking level, and reasons; and
-  the routing calibration (the bars table with "now" and "suggested" chips, the per-rung table, and the buckets). It loads on open and on Refresh.
+  warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions
+  with their rung, plan, model, thinking level, and reasons; and the routing calibration (the bars table with "now"
+  and "suggested" chips, the per-rung table, and the buckets). It loads on open and on Refresh.
 - CLI: `pi-spore usage calibration [--json]` prints the same report.
-- Not built yet: token use per role (every agent is a worker today), scanning `~/.pi/agent/sessions/` for plain `pi`
-  work, and a warning on Home (Home has no module slots yet).
 
 ## 11b. Home and questions (attention module)
 
@@ -830,7 +847,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   - Every item names its chat (`chat`: id, title, kind, active) and links to `#/workspaces/<id>/chats/<chat>`.
   - `items`, newest first: open questions; open extension dialogs of running agents; failed agents with their error;
     agents whose last run ended and that wait for the user (`finished`), unless they have an open question or a
-    running helper. Pipeline stage agents are never `finished`: their pipeline reads the report and moves on.
+    running helper. Pipeline stage agents are never `finished`: their pipeline reads the report and moves on. `notice` items
+    come from other modules' sources (below). A notice has no chat: it has `source`, `id`, `title`, optional `detail`, and
+    an `href` to the module's page.
   - `running`: agents that are busy, starting, or waiting for a slot, and idle agents with a running helper
     (`status: "helpers"`). When the helper ends, an idle agent that waits for the user is `finished` again.
 - The agents module tracks what Home needs (`AgentsKey.attention()`): when each agent entered its status, when each
@@ -856,6 +875,21 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   `AgentsWebKey.setUserWaits(hook)`: a React hook that returns, per chat id, why that chat waits for the user
   (`question`, `approval`, or `dialog`). The attention web module sets it from the same `attention:inbox` store, with
   `chatWaits(inbox)`. With no hook set, the list looks as before.
+- **Home sources** (ADR 0155): a module adds items to Home with `HomeItemsKey.register(name, source)`, where
+  `source()` returns the current `HomeNotice[]` (`id` stable and unique within the source, `at`, `title`, `detail?`,
+  `href`). Attention keeps no state for them. It reads every source each time it builds the inbox, so an item shows
+  while its condition holds and goes when it clears. `HomeItemsKey.changed()` builds and pushes the inbox on the next
+  tick, so a new item reaches the topic and the desktop notification path; a module calls it where its condition
+  changes. Only the newest inbox build publishes, so a slow source cannot bring back an item that has cleared. A source that throws is logged and skipped. Home shows a notice as a card with an Open link. Registered
+  sources:
+  - `github-pr`: a PR whose watch is `waiting` (`#/workspaces/<id>`), in an active workspace. It calls `changed()` on
+    every write of the PR row.
+  - `kanban`: a card past due or due today that is not in Done (`#/board/<card id>`). It calls `changed()` on every
+    board change. "Today" is the server's local day, as on the board (`localDay`, `dueState`); a card that turns
+    overdue at midnight shows on the next inbox build.
+  - `usage`: each usage warning (R18.4, `#/usage`). The router writes the plan files from any Pi process, so the
+    module watches `~/.pi-spore/usage/` and calls `changed()` when a plan file changes.
+  The Usage page, the PR tab, and the board keep their own displays.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not.
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
@@ -881,7 +915,14 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
     plain one (title, reason, approve, decline with a note).
-- Not built yet: usage warnings, and a CLI command for the inbox.
+- The CLI reads the same route: `pi-spore inbox list` prints each item and each running agent with an id, its kind
+  (`question`, `approval`, `dialog`, `failed`, `finished`, `running`, `notice`), age, `project / workspace`, and the
+  chat link. `pi-spore inbox show <id>` prints one in full: a question's text and choices, an approval's gate, title,
+  reason, and subject, a dialog's prompt, a failure's error. Ids are `<kind>:<id>` (a dialog is
+  `dialog:<agent>:<dialog>`; `failed`, `finished`, and `running` use the agent id). A notice is
+  `notice:<source>:<id>`; it has no workspace or chat, so its place column is the source name, its link is its
+  `href`, and `show` prints its source, title, and detail. Interrupted jobs are not listed; `pi-spore jobs` shows
+  them.
 
 ## 11c. Terminals
 
@@ -939,6 +980,14 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
   code, body, created, sent). "Send to agent" writes one delivery to the workspace's active orchestrator chat
   (`AgentsKey.deliver`) and marks the comments sent in the same transaction. Sent comments leave the open list. No
   orchestrator chat yet is 409 `no_worker_chat`. The message lists each comment with its file, line, quoted code, and text.
+- A comment can also be staged (`staged` column): the user adds open comments to the composer of the workspace's active
+  orchestrator chat as a batch. The `changes` module adds a prompt hook (`Agents.addPromptHook`). When the user sends a
+  message in that chat, `POST /api/agents/:id/prompt` runs the hooks inside one transaction. A hook that returns text
+  makes the route queue the message and that text as one durable delivery (`queued`), and the hook marks its comments
+  sent in the same transaction, so a crash neither loses nor repeats them. The message text comes first, then the
+  comments in the format above. The delivery keeps the prompt's images and its `whileBusy` choice (default steer) in
+  its `options` column, which is cleared once Pi accepts the message. Other deliveries have no options: a follow-up
+  with no images.
 - Topic `changes:<workspace id>` sends the open comments on subscribe and after each change
   (`{ type: "comments" }`), and `{ type: "stale" }` when an orchestrator chat of the workspace ends a run, so an open tab
   reloads.
@@ -950,8 +999,9 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 | `GET /api/changes/workspaces/:id/diff?scope=&record=&path=` | Hunks of one changed file, or of every file up to the limit; `truncated` says it cut. A path without changes is 404 `file_not_changed`. |
 | `GET /api/changes/workspaces/:id/comments` | Open comments. |
 | `POST /api/changes/workspaces/:id/comments` `{ path, side, line, code, body }` | Adds a comment. |
+| `POST /api/changes/workspaces/:id/comments/stage` `{ staged, ids? }` | Stages open comments for the composer, or drops them from the batch (`staged: false`). No `ids` means every open comment. A dropped comment stays open. Answers the open comments. |
 | `DELETE /api/changes/comments/:id` | Deletes an open comment; a sent one is 409 `comment_sent`. |
-| `POST /api/changes/workspaces/:id/comments/send` | Sends every open comment to the worker as one message. |
+| `POST /api/changes/workspaces/:id/comments/send` | Sends every open comment to the worker as one message ("Send now"), staged or not. |
 
 CLI: `pi-spore ws diff <workspace> [--staged | --commits | --commit <id>]` prints each file's status, path, and
 counts, then its hunks in unified form.
@@ -962,17 +1012,18 @@ counts, then its hunks in unified form.
   browser choice). Code colors come from lowlight (highlight.js grammars, `common` set), mapped to role tokens, so
   they follow the theme; each side of a hunk is colored as one block. Binary and large files show a note.
 - Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
-  bar at the bottom lists them with Send to agent. The tab reloads on Refresh, on a scope change, and on the
+  bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
   `stale` event.
-- Not built yet: attaching comments to the chat composer so they go with the next message (R8.3). Today they go
-  as their own message.
+- The module adds a chat panel (`AgentsWeb.addChatPanel`) above the composer of an orchestrator chat. It shows the
+  staged comments with a count, Drop on each, and Drop all. It follows the `changes:<workspace id>` topic. The socket sends the first snapshot to the first listener of a topic only, so the panel
+  and the Changes tab each also load the open comments when they mount. A newer event wins over a late load.
 
 ## 11e. Pull requests
 
 See [ADR 0090](decisions/0090-changes-and-pull-requests.md) and [ADR 0142](decisions/0142-merge-button.md).
 Requirements R9.
 
-- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `kanban`, `runs`) talks to GitHub only
+- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `attention`, `kanban`, `runs`) talks to GitHub only
   through `gh`, run with `execFile`, `GH_PROMPT_DISABLED=1`, and `--json` where gh has it. Output is checked with
   TypeBox; a value it does not know (a new check conclusion) is a 422 `gh_failed`, not a guess.
 - The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
@@ -1048,10 +1099,11 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
   the push is visible to others. With a PR it shows a header card (number, title, state, branch → base, review,
   conflicts), a Push… confirm when the workspace has commits the PR lacks, the checks with state chips and links,
   and the watch: state, tries, last and next look, the message, Resume and send again, Stop watching, and the tries
-  so far. A Merge button asks `Merge #n into <base> with a merge commit?` (`window.confirm`); while
-  `mergeBlocked` is set it is off, with the reason in its tooltip. The Details panel shows the number, state, failing checks, conflicts, and "Waiting for you".
-- Not built yet: "waiting for you" on Home (the attention module has no way for other modules to add items, Q18),
-  and PR tools for agents (they come through spore-bridge).
+  so far. A Merge button asks `Merge #n into <base> with a merge commit?` in the `useConfirm` dialog; while
+  `mergeBlocked` is set it is off, with the reason in its tooltip. The Details panel shows the number, state,
+  failing checks, conflicts, and "Waiting for you".
+- "Waiting for you" is also a Home item (a `github-pr` Home source, ADR 0155). Not built yet: PR tools for agents
+  (they come through spore-bridge).
 
 ## 11f. Artifacts
 
@@ -1098,8 +1150,10 @@ See [ADR 0011](decisions/0011-unity-support.md).
 - Editor control through the `unity` CLI (run with `host.exec`, plus `--no-banner --non-interactive`):
   - `unity open <path>` to open (it returns at once);
   - `unity status --json` to see open editors, their project paths, and pids;
-  - `unity close <path>` to close (exits without saving, so it is only run after an explicit yes);
-  - `unity test --mode <EditMode|PlayMode> --output <artifact>` for gates (not built yet).
+  - `unity close --json <path>` to close (exits without saving, so it is only run after an explicit yes). Without the
+    Pipeline package it fails with `PROJECTS_CLOSE_PIPELINE_MISSING`; pi-spore then runs it again with `--force`
+    (SIGTERM, then SIGKILL; [ADR 0156](decisions/0156-unity-test-gates.md), spike `spikes/q17-unity-close.md`);
+  - `unity test <folder> --mode <EditMode|PlayMode> --output <file> --timeout <s>` for the test gates.
 - Finding open editors (ADR 0028). For the main checkout and each workspace folder of the project, an editor is
   open when one of these sees it:
   - a `unity status --json` row with that `projectPath` (only editors whose project has the Pipeline package);
@@ -1118,15 +1172,27 @@ See [ADR 0011](decisions/0011-unity-support.md).
     `close(projectId, path)`.
   - Later: an agent that needs the editor (for unity-mcp work) creates an Approval and opens Unity only after a
     yes. If another agent holds the lease, it waits. If the user holds it, the Approval asks to share or close it.
-  - Later: a batch-mode gate needs the editor of its worktree closed. It waits for an agent lease to end, or
-    creates a "close Unity?" Approval for a user lease.
+- Test gates (R10.6, [ADR 0156](decisions/0156-unity-test-gates.md)). The module provides the actions
+  `unity-test-editmode` and `unity-test-playmode` for Unity projects (section 13, provided actions). A pipeline
+  gate stage lists them like any action. A run:
+  1. Looks every 5 s at the editors on the workspace's folder (other folders of the project do not block). With
+     none, it goes on. If an agent holds the lease, it waits. Otherwise (the user's lease, or an editor opened
+     outside pi-spore) it files a `unity-close-editor` approval `{ projectId, path }` for the workspace's active
+     chat (created if the workspace has none) and waits. A question left open by a cancelled gate is reused, and an
+     approve may not change its folder. Approve checks again, and closes (above) without saving only if the user's editor is still open; decline fails the gate; quitting Unity by hand
+     also lets it go on. Cancelling the run ends the wait. Nothing closes without an approve.
+  2. Runs `unity test` with an argv array and a 30 minute `--timeout`; pi-spore stops the process itself a minute later. Output goes to the run's log, so a failed
+     gate shows the log tail to the pipeline (R6.5).
+  3. Stores the report (NUnit XML) as the workspace artifact `unity-tests/<run id>.xml`. Exit code 0 with no report
+     fails the run.
 - API under `/api/unity`: `GET /workspaces/:id` (Unity or not, the editor version, open editors, stale lock
-  files, the lease), `POST /workspaces/:id/open`, `POST /editors/close` `{ projectId, path, confirm: true }`. The
+  files, the lease, and `tests`: the last 5 gate runs with mode, status, and the report path), `POST /workspaces/:id/open`, `POST /editors/close` `{ projectId, path, confirm: true }`. The
   workspace view has a Unity panel for Unity projects.
 - unity-mcp per worktree: the relay accepts `--project-path`. Agents get `PI_SPORE_UNITY_PROJECT=<worktree>`, and
   `~/.unity/relay/unity-mcp.sh` passes it on when set (ADR 0011).
-- Gates for Unity projects come from a project pipeline. The module ships an example with `unity test` EditMode
-  gates.
+- A Unity project's pipeline lists the test gates in a gate stage, for example
+  `gates = ["check", "unity-test-editmode"]`. The Unity panel shows the last gate runs: mode, status, and the report
+  artifact. The log of a run is in the Actions panel.
 
 ## 12. Kanban
 
@@ -1214,8 +1280,7 @@ API under `/api/kanban`:
 - CLI: `pi-spore card list [--project p] [--label l]`, `pi-spore card add <title> [--project p] [--due YYYY-MM-DD]
   [--label l] [--column c]`, `pi-spore card move <id> <column>`, `pi-spore card rm <id>`, `pi-spore card start <id>
   --new [--mode m] [--line b] [--base b] | --workspace <id> | --run [--base b] [--blocked-ok]`.
-- Not built yet: custom columns, and overdue cards on Home (the attention module has no way for
-  other modules to add items yet).
+- Overdue and due-today cards show on Home (a `kanban` Home source, ADR 0155). Not built yet: custom columns.
 
 ## 13. Settings
 
@@ -1231,13 +1296,51 @@ API under `/api/kanban`:
 - The project file is checked on load and must not contain model keys. Model choices live in Pi settings, global
   settings, or local overrides.
 
-Global settings (`~/.pi-spore/settings.json`). The projects module reads them fresh on each use and shows them on
-the Projects page, in the Global settings panel, with their source (`GET /api/projects/settings`). The router reads
-its own `router` and `tiers` sections of the same file.
+The resolver is `createSettings` in `packages/server-core`; modules reach it as `host.settings`.
 
-| Key | Type | Meaning |
-|---|---|---|
-| `retention.days` | whole number, 0 or more, default 30 | Delete the data of finished work after this many days (section 14). `0` keeps everything. Any other value answers 422 `bad_settings`, which names `retention.days`, and retention deletes nothing. |
+- A module declares a key in its setup: `host.settings.declare({ key, schema, default, scope })`. The key is a dotted
+  path, the same in JSON and TOML (`agents.maxLive` is `{ "agents": { "maxLive": 4 } }` in `settings.json`). Scope
+  `global` means only `settings.json` may set it; scope `project` means the two TOML files may too.
+- `host.settings.resolve({ projectPath?, detected? })` reads the files fresh and returns each declared key as
+  `{ value, source }`. Without `projectPath` only `settings.json` counts. `detected` is a map of values a module
+  found, such as the worktree copy list for a Unity project. It sits above the default and below every file.
+- Unknown keys, wrong types, a global key in a TOML file, and broken JSON or TOML are errors that name the key and
+  the file: 422 `bad_settings` for `settings.json`, 422 `bad_project_config` for the TOML files. So is a model key
+  (`model`, `models`, `provider`, `thinking`) anywhere in `config.toml` (R17.3). `config.local.toml` and
+  `settings.json` may hold model choices, but only under a key a module declares. A bad file also stops anything
+  that reads settings, such as creating a workspace. Nothing falls back to a default. A key with a dot in its name
+  (`"a.b" = 1`) is an error: write nested keys as tables, so the model-key scan sees every path.
+- Modules declare in their setup, in dependency order, and one may resolve before a later module has declared. So
+  until every module is set up, a key nobody has declared yet is not an error. Then the server calls
+  `finishDeclaring`, which checks `settings.json` against every declaration. A bad file stops startup with the error
+  above, and a declaration after that throws.
+- A section another owner reads is reserved with `host.settings.reserve("global" | "project", section)`: the
+  projects module reserves `router` and `tiers` (the router extension reads them, section 10), the actions module
+  reserves `actions`. Reserved sections skip the unknown-key check. `host.settings.configFiles(projectPath)` and
+  `checkSection(schema, value, what)` give the owner the parsed file and the same 422 error.
+- The resolve order is a list of layers, so a run or workspace override can be added after the local override.
+
+Declared keys (`GET /api/projects/settings` lists them all with their source; the Settings page, `#/settings`, shows
+that list):
+
+| Key | Scope | Type | Meaning |
+|---|---|---|---|
+| `retention.days` | global | whole number, 0 or more, default 30 | Delete the data of finished work after this many days (section 14). `0` keeps everything. |
+| `worktree.copy` | project | array of patterns, default none; Unity adds its list as `detected` | Files a new copy needs (R2.6). |
+| `worktree.branch_prefix` | project | string, default `spore` | Prefix of the branches pi-spore creates. |
+| `agents.maxLive` | global | whole number, 1 or more, default 8 | Live agent processes at once (ADR 0026). |
+| `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
+| `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
+| `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
+
+The `agents.*` keys are read when the server starts. Change them, then restart.
+
+Not built yet:
+
+- Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
+- A nesting limit for agents (R3.6).
+- A desktop notification setting (R15.2). The browser's permission is the only switch today.
+- The run or workspace override (R17.2 step 5): no store table holds one.
 
 `config.toml` sketch:
 
@@ -1284,6 +1387,13 @@ See [ADR 0027](decisions/0027-actions.md). The `actions` module reads `[actions.
 - Triggers: `user`, `agent`, `create`, `archive`, `pipeline`. `ActionsKey.start(workspace, name, trigger, { key })`
   with a key the workspace used before returns that run and starts nothing, so a pipeline gate never runs a check
   twice.
+- Provided actions ([ADR 0156](decisions/0156-unity-test-gates.md)). `ActionsKey.provide(action)` adds an action
+  for projects with a trait; the unity module's test gates are the first. It is listed with source `default` and
+  is exclusive per folder. A run is an ordinary run, except that the module's `prepare` step runs first (wait, then
+  name the argv and an optional deadline `timeoutMs`) and its `after` step runs when the process has exited, also after
+  a cancel or timeout, which it is told about. A throw in either fails the run with its
+  message. Cancel aborts `prepare`. A project action of the same name replaces it. `ActionsKey.runs(workspace, { actions?, limit? })`
+  lists a workspace's runs for other modules; `actions` filters before the limit.
 
 API under `/api/actions`:
 
@@ -1415,7 +1525,7 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   The `agent:<id>` topic sends `{ type: "agent", agent }` when a chat's title or active flag changes.
 - Images in the chat (ADR 0060, R5.1):
   - A message may carry PNG, JPEG, WebP, or GIF images: at most 8, each at most 10 MiB decoded, with bytes that
-    match their type (module options `maxImagesPerMessage` and `maxImageBytes` until settings land). They go to Pi
+    match their type (settings `agents.maxImagesPerMessage` and `agents.maxImageBytes`). They go to Pi
     as `ImageContent` blocks with the prompt, steer, or follow-up. A message may be only images. Models list what
     they take (`input`), so the composer warns when the chat's model takes no images; Pi then sends a placeholder.
   - Image blocks never reach the page as data. In every Pi event the server relays and every message it reads from
