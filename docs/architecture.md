@@ -593,101 +593,128 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 ## 10. Model routing
 
 See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local-model-queue.md),
-[ADR 0023](decisions/0023-model-tiers.md), [ADR 0024](decisions/0024-routing-thresholds.md), and
-[ADR 0144](decisions/0144-routing-calibration.md).
+[ADR 0023](decisions/0023-model-tiers.md), [ADR 0024](decisions/0024-routing-thresholds.md),
+[ADR 0141](decisions/0141-router-ladders.md), and [ADR 0144](decisions/0144-routing-calibration.md).
 
 - `pi-extensions/router/` (package `@pi-spore/router`) registers the virtual model `spore/auto` with
   `pi.registerVirtualModel`. pi-spore agents load it with one more `-e` (section 2). Plain `pi` loads it with
   `pi -e <repo>/pi-extensions/router` or by adding the folder to Pi's `packages`.
-- On a session's first request (no router state yet):
-  1. Pick the first local target that is in Pi's model catalog.
-  2. Estimate tokens at about 4 characters per token: the conversation so far (system prompt and brief) plus the
-     size of every existing file the brief names. Above the target's budget (default 50% of its context), the task
-     goes to cloud and Jev is not asked.
-  3. Ask the classifier (`router.classifier`, default `openrouter/~typesafe/jev-latest`) four choice questions about
-     the brief: bounded, explicit requirements, visual, straightforward.
-  4. Go local only if every "good" answer is at least the threshold (0.7, or 0.55 under usage pressure; the visual
-     question always needs 0.7). Otherwise use the cloud model: `router.cloud`, else the pi-subagents `worker`
-     model from Pi's settings. If that model is `spore/auto`, the router throws an error that names `router.cloud`
-     and `settings.json`. It does not fall back (ADR 0120). Explore (ADR 0144): when "straightforward" is the only blocker, the session is a pipeline worker stage
-     (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), and a random draw is below `router.explore`,
-     the task goes local anyway. The reasons say `explore`, and the record has `explore: true`. Over-budget, visual,
-     and classifier-error tasks never explore.
-  5. If the cloud model's plan is full, spill (below).
-  6. Store the choice as router state on the session branch. Later requests stay on it, to keep the prompt cache.
-     Requests outside the agent loop (`direct`, such as compaction) go to the model that answered last.
-- Escalation: a local session moves to the cloud model at once on a context overflow, or on the second failed
-  request in a row. A `queue_wait_timeout` error (Strata busy, spike Q3) does not count as a failure.
-- The router never crashes a session. If it fails itself (bad settings, missing model), it routes to the cloud
-  model, pins the session there, records `kind: "error"` with the message, and shows a warning.
+- On every request the router loads the settings and checks each ladder entry and local target against Pi's catalog:
+  the model must be in it and must take the entry's thinking level (`getSupportedThinkingLevels`). A local target
+  missing from the catalog is allowed. A wrong setting ends the request with an error that names it, such as
+  `router.ladders[2].rungs[1].thinking`. It does not fall back.
+- Ladders (ADR 0141): `router.ladders` lists plans in order (default `claude`, `codex`, `openrouter`). Each plan has
+  three rungs, cheapest first, and each rung has a model and a thinking level. The router sends the entry's level,
+  never the level the user picked for `spore/auto`. Rung 1 tries the local target first. The router never routes to
+  a model of tier `top` (Fable) or to `spore/auto`.
+- On a session's first request (no router state yet, or a state from before ADR 0141):
+  1. Estimate tokens at about 4 characters per token: the conversation so far (system prompt and brief) plus the
+     size of every existing file the brief names.
+  2. Ask the classifier (`router.classifier`, default `openrouter/~typesafe/jev-latest`) six choice questions about
+     the brief in one call: bounded, explicit requirements, visual, straightforward, foundational (core, foundational,
+     or novel work), and design (design judgment, planning, or feel).
+  3. Pick the rung. Rung 3 if the good answer of visual, design, or foundational is below `router.heavyThreshold`,
+     the estimate is above `router.large`, or the classifier failed. Else rung 1 if bounded, explicit, and
+     straightforward reach `router.threshold` (`router.pressureThreshold` under usage pressure). Else rung 2.
+     Explore (ADR 0144): when "straightforward" is the only rung-1 blocker, the session is a pipeline worker stage
+     (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), the local target can take the task, and a
+     random draw is below `router.explore`, the task goes local anyway. The record has `explore: true`.
+  4. Pick the plan: the first ladder plan that is not full. A plan with no fresh numbers counts as having room; the
+     reason says "usage unknown". If every plan is full, the route is `wait`: the request ends with an error that
+     names the first reset, and no state is stored, so the next message routes again.
+  5. Rung 1 goes local when the first local target is in the catalog, the estimate fits its budget (default 50% of
+     its context), and the queue is short (below). Otherwise it goes to the plan's rung-1 cloud model.
+  6. Store the choice (rung, plan, model, thinking level) as router state on the session branch. Later requests stay
+     on it, to keep the prompt cache. Requests outside the agent loop (`direct`, such as compaction) go to the model
+     that answered last, at its level.
+- Escalation is the only move: on any rung below 3, a context overflow or the second failed request in a row moves
+  the session up one rung, on the first plan with room. A `queue_wait_timeout` error (Strata busy, spike Q3) does not
+  count as a failure. Rung 3 does not escalate.
+- If the router fails itself in another way, it routes to the first ladder's rung 3, pins the session there, records
+  `kind: "error"` with the message, and shows a warning.
 - Every decision is appended to `~/.pi-spore/usage/routing.jsonl`: time, kind (`initial`, `escalation`, `error`),
-  route (`local`, `cloud`, `spill`, `wait`), model, reasons, Jev's good-answer probabilities, the estimate and budget,
-  the threshold, `explore`, the plan windows it saw, and the session id, file, and folder. Inside pi-spore it also has the agent
-  and workspace ids. The chat shows each decision as a notice, which is live only. A new `info` notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. The model picker names the model
-  that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical model Pi records on each
-  assistant message, so it survives reloads and reconnects. The router state on the session holds the route and
-  reasons too.
-- Local targets are a list in settings: `{ model, contextWindow, budget, concurrency, healthUrl? }`. Default: Strata
-  `strata/qwen3.8-flash-next-unsloth-ud-iq2_xs`, 131072 tokens, budget 0.5, concurrency 1, health URL
-  `http://127.0.0.1:8080/health`. A second local server is one more entry.
-- Queue (ADR 0010): a session routed local takes a slot through a lock file,
+  route (`local`, `cloud`, `wait`; old lines may say `spill`), rung, plan, model, thinking level, reasons, Jev's
+  good-answer probabilities, the estimate and budget, `threshold` and `heavyThreshold`, `explore`, the plan windows it
+  saw, and the session id, file, and folder. Inside pi-spore it also has the agent and workspace ids. The chat shows
+  each decision as a notice (`spore/auto: rung 2 claude → <model> (high) (...)`), which is live only. A new `info`
+  notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. The model
+  picker names the model that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical
+  model Pi records on each assistant message, so it survives reloads and reconnects.
+- Local targets are a list in settings: `{ model, thinking, contextWindow, budget, concurrency, healthUrl? }`.
+  Default: Strata `strata/qwen3.8-flash-next-unsloth-ud-iq2_xs`, level `high`, 131072 tokens, budget 0.5,
+  concurrency 1, health URL `http://127.0.0.1:8080/health`. A second local server is one more entry.
+- Queue (ADR 0010, 0141): a session routed local takes a slot through a lock file,
   `$XDG_RUNTIME_DIR/pi-spore/<target>.<n>.lock`, one per slot up to `concurrency`. The file holds the pid; a lock of a
-  dead process is taken over. A busy target makes the request wait, with a "Waiting for <model>" status and notice.
-  In pi-spore the agents module forwards that status (key `pi-spore-router`) as the agent view's `routerStatus`,
-  cleared when the run settles or the process exits. The workspace list and Home's running list show it (tone
-  `warn`) while the agent is busy (R4.5).
-  The slot is held for the agent run and freed on `agent_settled`, on session shutdown, and on escalation. The same
-  files work in pi-spore and in plain `pi`. Without `XDG_RUNTIME_DIR` the router cannot lock and routes to cloud.
+  dead process is taken over. A busy target makes the request wait, with a "Waiting for <model>" status and notice,
+  and a wait file `<target>.wait.<pid>.lock` that other sessions count. When every slot is busy and
+  `router.maxQueued` sessions already wait, a new rung-1 task goes to the plan's rung-1 cloud model instead. Wait
+  files of dead processes do not count. In pi-spore the agents module forwards the status (key `pi-spore-router`) as
+  the agent view's `routerStatus`, cleared when the run settles or the process exits. The workspace list and Home's
+  running list show it (tone `warn`) while the agent is busy (R4.5). The slot is held for the agent run and freed on
+  `agent_settled`, on session shutdown, and on escalation. The same files work in pi-spore and in plain `pi`.
+  Without `XDG_RUNTIME_DIR` the router cannot lock, and rung 1 goes to the cloud model.
 - Starting a local target: before the first local request of a run, the router emits `pi-spore:local-route` on
   `pi.events` with `{ provider, modelId, ctx, wait(promise) }`. The extension that runs the target starts it and passes
   its "ready" promise to `wait`; the router awaits it. The user's `strata-model.ts` does this for Strata. Then the
-  router checks `healthUrl`. A failure frees the slot and routes to cloud. The router never starts or stops a server
-  itself.
-- Usage pressure (R4.10): the router reads the plan snapshots (section 11a). If the cloud model's plan has a fresh
-  weekly window above 75% or a 5-hour window at 100%, it lowers the threshold. It never relaxes the visual and
-  context-fit checks.
-- Spill (ADR 0024): when a fresh window of the cloud model's plan is at 100% and the task does not go local, the
-  router uses the first model in `router.spill` that is on another plan and in the same tier. A plan with no fresh
-  numbers counts as having room; the reason says "usage unknown". If the spill plan is full too, the route is `wait`:
-  the request ends with an error that names the first reset, and no state is stored, so the next message routes
-  again.
+  router checks `healthUrl`. A failure frees the slot; a new task goes to the rung-1 cloud model, a pinned session
+  escalates. The router never starts or stops a server itself.
+- Usage pressure (R4.10): the router reads the plan snapshots (section 11a). If the chosen plan has a fresh weekly
+  window above 75% or a 5-hour window at 100%, it lowers the rung-1 bar. It never lowers `heavyThreshold`, so the
+  visual check never relaxes.
 - Pipelines use the router through `tier = "route"`, the built-in default's implement stage (section 8, R4.9). A
   worker pinned to a cloud model under usage pressure gets the `pipeline-local-implementer` approval (section 8,
   R4.10).
 
 ### Router settings
 
-In `~/.pi-spore/settings.json` (or `$PI_SPORE_HOME/settings.json`), read by the extension on each routing decision.
-Built-in defaults apply to every key left out. Unknown `router` keys and wrong values are an error, which the router
-records and routes to cloud.
+In `~/.pi-spore/settings.json` (or `$PI_SPORE_HOME/settings.json`), read by the extension on each request. Built-in
+defaults apply to every key left out. Unknown `router` keys and wrong values are an error that ends the request.
 
 ```json
 {
   "router": {
     "classifier": "openrouter/~typesafe/jev-latest",
-    "cloud": "claude-bridge/claude-sonnet-5-5",
+    "ladders": [
+      { "plan": "claude", "rungs": [
+        { "model": "claude-bridge/claude-haiku-5-5", "thinking": "high" },
+        { "model": "claude-bridge/claude-sonnet-5-5", "thinking": "high" },
+        { "model": "claude-bridge/claude-opus-5-5", "thinking": "high" } ] },
+      { "plan": "codex", "rungs": [
+        { "model": "openai/gpt-6-luna", "thinking": "xhigh" },
+        { "model": "openai/gpt-6.1-sol", "thinking": "high" },
+        { "model": "openai/gpt-6-astra", "thinking": "high" } ] },
+      { "plan": "openrouter", "rungs": [
+        { "model": "openrouter/openai/gpt-6-luna", "thinking": "xhigh" },
+        { "model": "openrouter/deepseek/deepseek-v4.1-flash-1017", "thinking": "high" },
+        { "model": "openrouter/openai/gpt-6.1-sol", "thinking": "high" } ] }
+    ],
     "localTargets": [
-      { "model": "strata/qwen3.8-flash-next-unsloth-ud-iq2_xs", "contextWindow": 131072, "budget": 0.5,
-        "concurrency": 1, "healthUrl": "http://127.0.0.1:8080/health" }
+      { "model": "strata/qwen3.8-flash-next-unsloth-ud-iq2_xs", "thinking": "high", "contextWindow": 131072,
+        "budget": 0.5, "concurrency": 1, "healthUrl": "http://127.0.0.1:8080/health" }
     ],
     "threshold": 0.7,
+    "heavyThreshold": 0.7,
+    "large": 100000,
+    "maxQueued": 1,
     "explore": 0,
     "pressureThreshold": 0.55,
     "pressure": { "weekly": 0.75, "fiveHour": 1 },
     "usageMaxAgeMinutes": 60,
-    "spill": ["openai/gpt-6-luna", "openai/gpt-6.1-terra", "openai/gpt-6.1-sol"],
     "plans": { "claude-bridge": "claude", "anthropic": "claude", "openai": "codex", "openai-codex": "codex" }
   },
   "tiers": { "llama-cpp/qwen3.8-27b-m": "local" }
 }
 ```
 
-- `cloud` has no built-in default: unset means the pi-subagents `worker` model. `cloud` must not be `spore/auto`
-  (ADR 0120); set it when `worker` is `spore/auto`.
-- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes `threshold`; the
-  calibration report (section 11a) only suggests a value.
-- `plans` maps a provider to the subscription plan it draws on. `tiers` entries are added to the built-in tier list
-  (ADR 0023).
+- `ladders` replaces the whole default list when set. A ladder's `plan` names its usage file
+  (`~/.pi-spore/usage/<plan>.json`). OpenRouter sends no plan window, so its plan always has room.
+- `router.cloud` and `router.spill` are gone (ADR 0141). Either key is an error that names `router.ladders`.
+- `threshold` is the rung-1 bar, `heavyThreshold` the rung-3 bar for visual, design, and foundational, `large` the
+  rung-3 token estimate, and `maxQueued` the most sessions that may wait for a busy local target.
+- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes a bar; the
+  calibration report (section 11a) only suggests a `threshold`.
+- `plans` maps a provider to the subscription plan it draws on, for pipeline pressure checks (section 8). `tiers`
+  entries are added to the built-in tier list, `local < light < medium < heavy < top` (ADR 0023, 0141).
 
 ## 11a. Usage module
 
@@ -728,13 +755,16 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   - `GET /api/usage/calibration`: the routing calibration report (ADR 0144). It joins each outcome to the newest
     `initial` decision of its worker agent before the run ended. A `local` decision passed when the verdict is
     `approve` and no `escalation` record has its session id. The report has Jev's answers per question in ten
-    buckets (answers, local outcomes, passed), and for bars 0.1 to 0.9 how many decisions would have gone local and
-    how many of those passed. A share under 20 local outcomes has `enough: false`. `suggestedBar` is the lowest bar
-    with 20 local outcomes and 90% passed. It is only a suggestion.
+    buckets (answers, local outcomes, passed; old lines lack `foundational` and `design`), and for bars 0.1 to 0.9
+    how many decisions would have gone local and how many of those passed. A decision clears a bar when its bounded,
+    explicit, and straightforward answers reach it and its visual, design, and foundational answers reach
+    `heavyThreshold` (ADR 0141). A share under 20 local outcomes has `enough: false`. `suggestedBar` is the lowest bar
+    with 20 local outcomes and 90% passed. It is only a suggestion. `rungs` counts decisions, outcomes, and passes per
+    rung and place (`local` or the plan), for every decision with a rung.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
-  warnings at the top; the token table; the routing decisions with their reasons; and the routing calibration (the
-  bars table with "now" and "suggested" chips, and the buckets). It loads on open and on Refresh.
+  warnings at the top; the token table; the routing decisions with their rung, plan, model, thinking level, and reasons; and
+  the routing calibration (the bars table with "now" and "suggested" chips, the per-rung table, and the buckets). It loads on open and on Refresh.
 - CLI: `pi-spore usage calibration [--json]` prints the same report.
 - Not built yet: token use per role (every agent is a worker today), scanning `~/.pi/agent/sessions/` for plain `pi`
   work, and a warning on Home (Home has no module slots yet).

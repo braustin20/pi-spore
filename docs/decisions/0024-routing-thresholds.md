@@ -1,6 +1,6 @@
 # 0024. Starting router thresholds and spill to Codex
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [0141](0141-router-ladders.md)
 - Date: 2026-11-06
 - Requirements: R4.2, R4.3, R4.10
 

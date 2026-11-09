@@ -1,6 +1,6 @@
 # 0120. The workspace chat is an orchestrator; cards choose its model; workers are subagents on `spore/auto`
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [0141](0141-router-ladders.md)
 - Date: 2026-11-07
 - Requirements: R3.1, R3.2, R3.4, R4.1, R11.4
 

@@ -213,14 +213,20 @@ export function createUsageModule(): ServerModule {
       });
 
       host.routes.get("/calibration", async (c) => {
-        const { threshold } = await settings();
+        const { threshold, heavyThreshold } = await settings();
         const { records, skipped } = await readRecords(host.home.root, Number.POSITIVE_INFINITY);
         const outcomes = host.store
           .all<OutcomeRow>(
             "SELECT agent_id, verdict, ended_at FROM usage_outcomes WHERE verdict IS NOT NULL",
           )
           .map((row) => ({ agentId: row.agent_id, verdict: row.verdict, endedAt: row.ended_at }));
-        const body: CalibrationResponse = calibration(records, outcomes, threshold, skipped);
+        const body: CalibrationResponse = calibration(
+          records,
+          outcomes,
+          threshold,
+          heavyThreshold,
+          skipped,
+        );
         return c.json(body);
       });
     },

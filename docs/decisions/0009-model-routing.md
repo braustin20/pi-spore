@@ -1,6 +1,6 @@
 # 0009. A router virtual model sends bounded tasks to local models
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [0141](0141-router-ladders.md)
 - Date: 2026-11-06
 - Requirements: R4.1, R4.2, R4.3, R4.4, R4.7, R4.9, R4.10, R3.4
 

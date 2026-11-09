@@ -208,6 +208,7 @@ export {
   CalibrationBar,
   CalibrationBucket,
   CalibrationResponse,
+  CalibrationRung,
   RoutingDecision,
   RoutingDecisionsResponse,
   TokenUseResponse,

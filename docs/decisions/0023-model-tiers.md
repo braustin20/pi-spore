@@ -1,6 +1,6 @@
 # 0023. Models are ranked by an editable tier list
 
-- Status: Accepted
+- Status: Accepted; superseded in part by [0141](0141-router-ladders.md)
 - Date: 2026-11-06
 - Requirements: R4.4, R4.8
 

@@ -12,14 +12,21 @@ export const RoutingRecord = Type.Object({
   /** `initial` on a session's first request, `escalation` when a local session moves to the cloud, `error` when the
    * router itself failed and sent the request to the cloud model. */
   kind: Type.Union([Type.Literal("initial"), Type.Literal("escalation"), Type.Literal("error")]),
+  /** `spill` is no longer written (ADR 0141); it stays so old lines still parse. */
   route: Type.Union([
     Type.Literal("local"),
     Type.Literal("cloud"),
     Type.Literal("spill"),
     Type.Literal("wait"),
   ]),
+  /** Absent in lines from before ADR 0141. */
+  rung: Type.Optional(Type.Union([Type.Literal(1), Type.Literal(2), Type.Literal(3)])),
+  /** The ladder plan the task draws on. */
+  plan: Type.Optional(Type.String()),
   /** `provider/id`. Absent for `wait`. */
   model: Type.Optional(Type.String()),
+  /** The thinking level the router used for the model. Absent for `wait`. */
+  thinking: Type.Optional(Type.String()),
   reasons: Type.Array(Type.String()),
   sessionId: Type.Optional(Type.String()),
   sessionFile: Type.Optional(Type.String()),
@@ -36,11 +43,15 @@ export const RoutingRecord = Type.Object({
         explicit: Probability,
         visual: Probability,
         straightforward: Probability,
+        // Lines from before ADR 0141 lack these two.
+        foundational: Type.Optional(Probability),
+        design: Type.Optional(Probability),
       }),
       Type.Object({ error: Type.String() }),
     ]),
   ),
   threshold: Type.Optional(Type.Number()),
+  heavyThreshold: Type.Optional(Type.Number()),
   pressure: Type.Optional(Type.Boolean()),
   /** Set when the task went local only because of the `router.explore` draw (ADR 0144). */
   explore: Type.Optional(Type.Boolean()),
