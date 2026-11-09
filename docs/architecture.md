@@ -148,6 +148,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     0163): files a `workspace-pr` approval through `POST /api/bridge/workspace/pr` and ends the turn with
     `terminate: true`. The tool call id is the receipt (R16.3). The rules say to call it when card work passes check
     and the tests, and to report `not_supported` without a retry.
+  - `push_line` `{}`, only in the orchestrator chat (ADR 0164): pushes the workspace's branch through
+    `POST /api/bridge/workspace/push`, so the chat can push fixes for a PR that pi-spore merges when checks pass.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
     `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
@@ -1133,7 +1135,8 @@ Requirements R9.
 - The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
   --body= [--draft]` (the `=` form keeps a title starting with `-` a value), `gh run view --job <id>
   --log-failed`, `gh api --method=GET --paginate --slurp` for the PR's comments, reviews, and line comments, and
-  `gh pr merge <number> --merge --match-head-commit <sha>` from the merge route only. It never closes, enables
+  `gh pr merge <number> --merge --match-head-commit <sha>` from the merge route and the merge-when-ready watch
+  only (ADR 0164). It never closes, enables
   auto-merge, deletes a branch, merges with `--admin`, or force-pushes (R9.3). The tests fail on any other gh
   command.
 - Merge (ADR 0142), `confirm: true` and the head the user saw: reads the PR fresh and refuses with 409
@@ -1159,6 +1162,15 @@ Requirements R9.
   records it in `github_pr_asks`. On approve, where the user may edit only the title and body (422
   `approval_workspace_changed`), it opens the PR through the Publish path. `decided` deletes the ask row. Nothing is
   pushed before approve; decline pushes nothing. Without this module the route answers 422 `not_supported`.
+- Merge when checks pass (ADR 0164). The user may approve a `workspace-pr` approval with `mergeWhenReady: true`
+  ("Open and merge when checks pass"); the filed subject never has it. The PR row stores it (`merge_when_ready`).
+  For such a PR, each poll reads the row again after it reads GitHub and, while the choice and the watch are on and
+  `mergeBlocked` finds nothing, runs the Merge route's command with the head it just read, logs one line, and reads
+  the PR again, so the merged state ends the watch and moves the card. A refused merge stores gh's message, counts
+  no try, and backs off as a failed read does. Conflicts with the base go to the chat once per head (`conflict_head`),
+  also while checks run, in the same message and run of tries as failed checks. When the run of 3 tries ends, the
+  choice turns off and the waiting message names the PR and the reason. `DELETE .../merge-when-ready`, Stop
+  watching, and a merged or closed PR turn it off; only an approval turns it on.
 - A PR opened outside pi-spore for the workspace's branch (an agent's `gh pr create`) is found and shown, with the
   watch off. `gh pr view <branch>` looks at open, merged, and closed PRs: the newest open one, else the newest.
   pi-spore looks:
@@ -1171,7 +1183,8 @@ Requirements R9.
   it is followed to merged; the watch job follows a watched one. A found PR never turns the watch on. A gh failure
   (no GitHub remote, no login) is logged once per workspace, in one line, and the look goes on.
 - Tables: `github_pr_prs` (one per workspace: number, the last view as JSON, watch state, tries, the head whose
-  failures were sent, the last clean head, message, poll times), `github_pr_sent` (bot comments already sent), and
+  failures were sent, the last clean head, message, poll times, the merge-when-ready choice, the head whose
+  conflicts were sent), `github_pr_sent` (bot comments already sent), and
   `github_pr_tries` (each automatic message, for the tab), and `github_pr_asks` (the open `workspace-pr` approval
   of a workspace).
 - Watch (R9.2), a `github-pr.watch` job per watched PR (section 6), keyed by the workspace, with one `poll` step.
@@ -1201,6 +1214,7 @@ Requirements R9.
 | `POST /api/github-pr/workspaces/:id/push` `{ confirm: true }` | Pushes new commits to the PR's branch. |
 | `POST /api/github-pr/workspaces/:id/watch` `{ on }` | Turns the watch on (a new run of tries) or off. |
 | `POST /api/github-pr/workspaces/:id/merge` `{ confirm: true, headId }` | Merges the PR with a merge commit (ADR 0142). |
+| `DELETE /api/github-pr/workspaces/:id/merge-when-ready` | Turns off "merge when checks pass" (ADR 0164). No PR is 404 `no_pr`. |
 
 CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t] [--body b] [--base branch]
 [--draft]` (the form defaults fill what is not given), `pi-spore pr push <workspace>`, and `pi-spore pr watch
@@ -1214,7 +1228,9 @@ CLI: `pi-spore pr status <workspace>`, `pi-spore pr open <workspace> [--title t]
   and the watch: state, tries, last and next look, the message, Resume and send again, Stop watching, and the tries
   so far. A Merge button asks `Merge #n into <base> with a merge commit?` in the `useConfirm` dialog; while
   `mergeBlocked` is set it is off, with the reason in its tooltip. The Details panel shows the number, state,
-  failing checks, conflicts, and "Waiting for you".
+  failing checks, conflicts, and "Waiting for you". With the choice on, the watch shows "Will merge when checks
+  pass" and Turn off, with no confirm. Home shows a `workspace-pr` approval with the title and description to edit,
+  and Open PR, Open and merge when checks pass, and Decline.
 - "Waiting for you" is also a Home item (a `github-pr` Home source, ADR 0155). Not built yet: PR tools for agents
   (they come through spore-bridge).
 
@@ -1672,6 +1688,10 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - `POST /api/bridge/reports` takes a stage agent's `report` (section 8), read-only callers included.
 - `POST /api/bridge/workspace/pr` `{ title, body }` files a `workspace-pr` approval through the requester github-pr
   sets (section 11e); without one it is 422 `not_supported`.
+- `POST /api/bridge/workspace/push` `{}` pushes the caller's workspace branch with the VCS `publish` push, which never
+  forces, and answers `{ remote, line }`. It refuses a read-only chat (403 `read_only_chat`), a run's coordinator
+  (403 `run_coordinator`), and a workspace without its own branch of a Git project (422 `not_supported`). A
+  rejected push is 409 `push_failed`.
 - Run routes for spore-bridge are in section 9.
 - CLI for jobs: `pi-spore jobs [--all]` (id, kind, state, step, error), `pi-spore jobs retry <id>`, `pi-spore jobs
   cancel <id>`.

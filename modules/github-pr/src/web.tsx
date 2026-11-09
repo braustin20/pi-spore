@@ -1,3 +1,8 @@
+import {
+  type ApprovalViewProps,
+  type AttentionWeb,
+  AttentionWebKey,
+} from "@pi-spore/mod-attention/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
@@ -8,6 +13,7 @@ import {
   type PullRequest,
   parse,
   type Workspace,
+  WorkspacePrSubject,
 } from "@pi-spore/shared";
 import {
   Button,
@@ -105,7 +111,7 @@ function usePrStatus(workspace: Workspace, refreshOnOpen: boolean) {
   );
 
   /** Runs a request that answers with the status. */
-  const act = async (method: "POST", suffix: string, body: unknown) => {
+  const act = async (method: "POST" | "DELETE", suffix: string, body: unknown) => {
     setError(undefined);
     try {
       setStatus(parse(PrStatus, await api.send(method, `${path}/${suffix}`, body), "PR status"));
@@ -125,7 +131,7 @@ function PublishForm({
 }: {
   status: PrStatus;
   workspace: Workspace;
-  act: (method: "POST", suffix: string, body: unknown) => Promise<boolean>;
+  act: (method: "POST" | "DELETE", suffix: string, body: unknown) => Promise<boolean>;
 }) {
   const [title, setTitle] = useState(status.defaults.title);
   const [body, setBody] = useState(status.defaults.body);
@@ -225,7 +231,7 @@ function PrView({
 }: {
   status: PrStatus;
   pr: PullRequest;
-  act: (method: "POST", suffix: string, body: unknown) => Promise<boolean>;
+  act: (method: "POST" | "DELETE", suffix: string, body: unknown) => Promise<boolean>;
 }) {
   const { confirm, dialog } = useConfirm();
   const [confirmPush, setConfirmPush] = useState(false);
@@ -395,10 +401,24 @@ function PrView({
           </div>
           <p className="text-xs text-muted">
             pi-spore sends failed checks and review-bot comments to the worker, at most{" "}
-            {watch.maxTries} times in a row. It never merges by itself.
+            {watch.maxTries} times in a row. It merges only when you chose "Open and merge when
+            checks pass".
             {watch.polledAt ? ` Last look ${time(watch.polledAt)}.` : ""}
             {watch.nextPollAt && watch.state !== "off" ? ` Next ${time(watch.nextPollAt)}.` : ""}
           </p>
+          {status.mergeWhenReady && (
+            <div className="flex items-center gap-2 text-sm">
+              <span>Will merge when checks pass</span>
+              <Button
+                size="sm"
+                variant="ghost"
+                disabled={busy}
+                onClick={() => void run(() => act("DELETE", "merge-when-ready", undefined))}
+              >
+                Turn off
+              </Button>
+            </div>
+          )}
           {watch.message && (
             <Notice tone={watch.state === "waiting" ? "warn" : "info"}>{watch.message}</Notice>
           )}
@@ -520,11 +540,61 @@ function PrPanel({ workspace }: { workspace: Workspace }) {
   );
 }
 
+let DeclineNote: AttentionWeb["DeclineNote"] | undefined;
+
+/** A `workspace-pr` approval on Home: the PR a chat wants to open. Approve may change the title and body, and opt in to merging (ADR 0164). */
+function WorkspacePrView({ approval, busy, approve, decline }: ApprovalViewProps) {
+  const subject = parse(WorkspacePrSubject, approval.subject, "workspace-pr approval");
+  const [title, setTitle] = useState(subject.title);
+  const [body, setBody] = useState(subject.body);
+  const [note, setNote] = useState("");
+  const Note = DeclineNote as AttentionWeb["DeclineNote"];
+  return (
+    <div className="flex flex-col gap-2.5 text-sm">
+      <p className="m-0">
+        Into <code>{subject.base}</code>
+      </p>
+      <Field label="Title">
+        <Input value={title} onChange={(event) => setTitle(event.target.value)} maxLength={256} />
+      </Field>
+      <Field label="Description">
+        <Textarea rows={6} value={body} onChange={(event) => setBody(event.target.value)} />
+      </Field>
+      <Notice>
+        pi-spore merges this PR only if you pick Open and merge when checks pass. It never turns on
+        GitHub's auto-merge.
+      </Notice>
+      <Note note={note} onChange={setNote} />
+      <div className="flex gap-2 max-md:flex-wrap">
+        <Button
+          variant="primary"
+          disabled={busy || title.trim() === ""}
+          onClick={() => approve({ ...subject, title: title.trim(), body })}
+        >
+          Open PR
+        </Button>
+        <Button
+          disabled={busy || title.trim() === ""}
+          onClick={() => approve({ ...subject, title: title.trim(), body, mergeWhenReady: true })}
+        >
+          Open and merge when checks pass
+        </Button>
+        <Button disabled={busy} onClick={() => decline(note.trim() || undefined)}>
+          Decline
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export const githubPrWeb: WebModule = {
   id: "github-pr",
-  requires: ["workspaces"],
+  requires: ["workspaces", "attention"],
   core: false,
   setup(host) {
+    const attention = host.use(AttentionWebKey);
+    DeclineNote = attention.DeclineNote;
+    attention.addApprovalView("workspace-pr", WorkspacePrView);
     const view = host.use(WorkspaceViewKey);
     view.addTab({ id: "pr", title: "PR", order: 5, component: PrTab });
     view.addPanel({ id: "pr", order: 5, component: PrPanel });
