@@ -43,11 +43,13 @@ export interface Pipelines {
    */
   report(caller: BridgeCaller, report: StageReport): Promise<{ turn: PipelineTurn }>;
   /**
-   * Sets how a run's approvals name a lane workspace. The runs module sets it, because runs requires pipelines. At
-   * most one.
+   * Sets how a run's approvals name a lane workspace, and which chat hears that a lane's run is blocked. The runs
+   * module sets it, because runs requires pipelines. At most one.
    */
   setLaneLookup(
-    lookup: (workspaceId: string) => { run: string; laneId: string; lane: string } | undefined,
+    lookup: (
+      workspaceId: string,
+    ) => { run: string; laneId: string; lane: string; coordinatorAgentId: string } | undefined,
   ): void;
 }
 

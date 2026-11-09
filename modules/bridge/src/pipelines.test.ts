@@ -1697,6 +1697,31 @@ fail_first = "artifact"
     ]);
   });
 
+  it("tells the asking chat once that the run is blocked on a gate action config.toml lacks", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId, agentId, folder } = await workspace(server, "noaction", {
+      config: config({ test: "pass" }),
+    });
+    saveArtifact(server, workspaceId, "proofs/adds.md", "FAIL: adds\n");
+    userPipeline(server.paths.root, "p", GATES);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    const messages = async () =>
+      (await chat(server, agentId)).filter(
+        (line) => line.startsWith("user: ") && line.includes("is blocked at stage"),
+      );
+    await until(async () => (await messages()).length > 0);
+    const [message] = await messages();
+    expect(message).toContain(`Pipeline run ${run.id} on workspace "noaction" is blocked`);
+    expect(message).toContain('stage "gates"');
+    expect(message).toContain('no action "check"');
+    expect(message).toContain(join(folder, ".pi-spore", "config.toml"));
+    expect(message).toContain(`POST /api/pipelines/runs/${run.id}/retry`);
+    expect(await messages()).toHaveLength(1);
+  });
+
   it("ends the run failed with the log tail of the failing gate, and runs no later gate", async () => {
     const server = await start({ env: scriptEnv({ worker: [DONE] }) });
 

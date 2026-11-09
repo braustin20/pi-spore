@@ -1183,6 +1183,7 @@ export const runsModule: ServerModule = {
             run: workspaces.get(requireRun(lane.run_id).workspace_id).name,
             laneId: lane.id,
             lane: lane.name,
+            coordinatorAgentId: coordinatorOf(lane.run_id),
           }
         : undefined;
     });
