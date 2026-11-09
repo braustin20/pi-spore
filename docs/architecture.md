@@ -144,6 +144,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
     `new` unless another is given; `run: true` asks for a new run. A run's coordinator gets only the list and add
     tools (ADR 0154); see section 9.
+  - `open_pr` `{ title, body }`, only in the orchestrator chat (not side, stage, coordinator, or lane agents; ADR
+    0162): files a `workspace-pr` approval through `POST /api/bridge/workspace/pr` and ends the turn with
+    `terminate: true`. The tool call id is the receipt (R16.3). The rules say to call it when card work passes check
+    and the tests, and to report `not_supported` without a retry.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
     `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
@@ -987,11 +991,12 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   - `POST /api/attention/approvals/:id/decline` `{ note? }` stores the decline and delivers it with the note.
   - A kind's optional `decided(subject, approval, approved)` runs inside the transaction that stores either
     decision; a throw rolls it back and leaves the approval open. Pipelines use it for `pipeline-round-limit` and
-    `pipeline-local-implementer`; runs for `lane-model` and `run-pr`.
-  - Kinds now: `card-start` (kanban), `lane-model` and `run-pr` (runs, section 9), `pipeline-round-limit` and
-    `pipeline-local-implementer` (pipelines). A `pipeline-round-limit` subject is `{ runId, stage, action }` with
+    `pipeline-local-implementer`; runs for `lane-model` and `run-pr`; github-pr for `workspace-pr`.
+  - Kinds now: `card-start` (kanban), `lane-model` and `run-pr` (runs, section 9), `workspace-pr` (github-pr,
+    section 11e), `pipeline-round-limit` and `pipeline-local-implementer` (pipelines). A `pipeline-round-limit` subject is `{ runId, stage, action }` with
     `action` `fix` or `accept` (section 8). A `run-pr` subject is `{ runId, title, body, base, head }`; approve
     may change the title and body, and opens the run's PR through the opener the github-pr module sets (section 11e).
+    A `workspace-pr` subject is `{ workspaceId, title, body, base }`; approve may change the title and body.
   - These routes take only the user's token, and no bridge route decides an approval, so an agent cannot approve
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
@@ -1107,7 +1112,8 @@ counts, then its hunks in unified form.
 See [ADR 0090](decisions/0090-changes-and-pull-requests.md) and [ADR 0142](decisions/0142-merge-button.md).
 Requirements R9.
 
-- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `attention`, `kanban`, `runs`) talks to GitHub only
+- The `github-pr` module (not core, requires `projects`, `workspaces`, `agents`, `attention`, `kanban`, `runs`,
+  `bridge`) talks to GitHub only
   through `gh`, run with `execFile`, `GH_PROMPT_DISABLED=1`, and `--json` where gh has it. Output is checked with
   TypeBox; a value it does not know (a new check conclusion) is a 422 `gh_failed`, not a guess.
 - The only gh commands it runs: `gh pr view <number|branch> --json ...`, `gh pr create --base= --head= --title=
@@ -1131,6 +1137,14 @@ Requirements R9.
   with the same errors. The module also sets the same function as the runs module's PR opener with `RunsKey.setPrOpener`, so the runs
   module opens a run's PR when the user approves a `run-pr` approval (section 9) and does not depend on this module
   (kanban requires runs, and this module requires kanban).
+- Workspace PR by approval (ADR 0162). The module sets the bridge's requester with `BridgeKey.setPrRequester`, so
+  the bridge does not depend on it. `open_pr` (bridge `POST /api/bridge/workspace/pr`, not for read-only callers)
+  refuses, before it files anything, a workspace that cannot be published or has no base (422 `not_supported`), an
+  open PR (409 `pr_exists`), and an open request (409 `workspace_pr_asked`, naming it). Otherwise it files a
+  `workspace-pr` approval with the base the tab shows (the workspace's base, else the project's default) and
+  records it in `github_pr_asks`. On approve, where the user may edit only the title and body (422
+  `approval_workspace_changed`), it opens the PR through the Publish path. `decided` deletes the ask row. Nothing is
+  pushed before approve; decline pushes nothing. Without this module the route answers 422 `not_supported`.
 - A PR opened outside pi-spore for the workspace's branch (an agent's `gh pr create`) is found and shown, with the
   watch off. `gh pr view <branch>` looks at open, merged, and closed PRs: the newest open one, else the newest.
   pi-spore looks:
@@ -1144,7 +1158,8 @@ Requirements R9.
   (no GitHub remote, no login) is logged once per workspace, in one line, and the look goes on.
 - Tables: `github_pr_prs` (one per workspace: number, the last view as JSON, watch state, tries, the head whose
   failures were sent, the last clean head, message, poll times), `github_pr_sent` (bot comments already sent), and
-  `github_pr_tries` (each automatic message, for the tab).
+  `github_pr_tries` (each automatic message, for the tab), and `github_pr_asks` (the open `workspace-pr` approval
+  of a workspace).
 - Watch (R9.2), a `github-pr.watch` job per watched PR (section 6), keyed by the workspace, with one `poll` step.
   Each poll's writes (the view, the delivery, the sent marks, the try, the next poll time) commit with its
   checkpoint, so a restart resumes at the saved next poll time and never sends twice. Parking or archiving
@@ -1640,6 +1655,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - CLI for approvals: `pi-spore approvals list [--all]`, `pi-spore approvals approve <id>`, `pi-spore approvals
   decline <id> [--note text]`.
 - `POST /api/bridge/reports` takes a stage agent's `report` (section 8), read-only callers included.
+- `POST /api/bridge/workspace/pr` `{ title, body }` files a `workspace-pr` approval through the requester github-pr
+  sets (section 11e); without one it is 422 `not_supported`.
 - Run routes for spore-bridge are in section 9.
 - CLI for jobs: `pi-spore jobs [--all]` (id, kind, state, step, error), `pi-spore jobs retry <id>`, `pi-spore jobs
   cancel <id>`.
