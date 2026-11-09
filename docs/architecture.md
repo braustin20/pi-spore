@@ -280,7 +280,7 @@ export interface ServerHost {
 | Lane | A workspace inside a run | id, run, name, wave, depends on, brief artifact, pipeline, model, state, workspace, approval, message |
 | Pipeline | A declared stage list (file) | id, source (user, project, or built-in), stages |
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
-| Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer), error (the agent failed and Retry replaced it) |
+| Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer), error (the agent failed and Retry replaced it), model note (a reviewer default on a full plan was swapped) |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state; a lane's question is a `runs_questions` row |
 | Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, pipeline gates; later close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
@@ -503,6 +503,13 @@ fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
   for the asking chat, and no worker starts. Approve runs this run's worker on `spore/auto`; decline keeps the pinned
   model. The answer is stored on the run (`worker_model`), so a run asks once. Settings never change. A model with no
   tier or a provider with no plan is not asked about.
+- **Reviewer plan** (R4.4, R4.10, ADR 0140, 0141). Before a reviewer starts on its role default (the stage sets no
+  `model` and no `tier`), the default's plan (`router.plans`) is read. When it is `full` (a fresh window at 100%),
+  the reviewer takes another model: the rung models of `router.ladders`, same tier first, then each higher tier, in
+  ladder order, and the first whose plan is not full. A model with no plan (OpenRouter) or with no fresh numbers
+  counts as having room, as in the router. The review turn stores the swap as `modelNote`, and the Runs page shows
+  it. min_strength_over checks the chosen model. When no candidate has room, the step throws with the plan and its
+  reset, so the run is `blocked` until Retry. A pinned stage model is never swapped. Settings never change.
 - **Route** (R4.7). A worker report stores the newest `routing.jsonl` record for the worker agent on its turn
   (`routing`: route, model, reasons). A stage on a fixed model has none.
 - **Gates** (R6.5, ADR 0016). With `fail_first = "artifact"`, each test in the manifest needs a non-empty proof

@@ -116,6 +116,9 @@ export function TurnList({
               Open chat
             </a>
           </div>
+          {turn.modelNote && (
+            <p className="m-0 mt-1.5 whitespace-pre-wrap text-sm text-muted">{turn.modelNote}</p>
+          )}
           {turn.report ? (
             <Report report={turn.report} routing={turn.routing} />
           ) : turn.error ? (
