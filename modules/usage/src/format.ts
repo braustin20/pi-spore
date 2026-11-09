@@ -1,3 +1,5 @@
+import type { TokenUseRow } from "@pi-spore/shared";
+
 /** "just now", "12 min ago", "3 h ago", "2 d ago". */
 export function formatAge(ms: number): string {
   if (ms < 60_000) return "just now";
@@ -34,4 +36,50 @@ export function windowTitle(name: string): string {
 /** "23 of 30 (77%)": the sample size sits next to the share. */
 export function formatShare(count: number, total: number): string {
   return `${count} of ${total}${total > 0 ? ` (${Math.round((count / total) * 100)}%)` : ""}`;
+}
+
+/** The role a token row shows: its agent's role, "outside pi-spore" for a plain Pi session, else "unknown" (R18.3). */
+export function roleLabel(row: TokenUseRow): string {
+  return row.external ? "outside pi-spore" : (row.role ?? "unknown");
+}
+
+export interface RoleSum {
+  label: string;
+  provider: string;
+  model: string;
+  local: boolean;
+  requests: number;
+  input: number;
+  output: number;
+  cacheRead: number;
+  cost: number;
+}
+
+/** Sums token rows per role and model, for the "by role" view. */
+export function sumByRole(rows: readonly TokenUseRow[]): RoleSum[] {
+  const sums = new Map<string, RoleSum>();
+  for (const row of rows) {
+    const label = roleLabel(row);
+    const key = `${label}\u0000${row.provider}/${row.model}`;
+    const sum = sums.get(key) ?? {
+      label,
+      provider: row.provider,
+      model: row.model,
+      local: row.local,
+      requests: 0,
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cost: 0,
+    };
+    sum.requests += row.requests;
+    sum.input += row.input;
+    sum.output += row.output;
+    sum.cacheRead += row.cacheRead;
+    sum.cost += row.cost;
+    sums.set(key, sum);
+  }
+  return [...sums.values()].sort(
+    (a, b) => a.label.localeCompare(b.label) || b.input + b.output - (a.input + a.output),
+  );
 }

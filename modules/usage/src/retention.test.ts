@@ -1,6 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { agentsModule } from "@pi-spore/mod-agents/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
@@ -44,6 +45,7 @@ async function startWithLog(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      agentsModule,
       fakeAttention,
       createUsageModule(),
     ],
@@ -66,6 +68,7 @@ async function startWithOutcomes(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      agentsModule,
       fakeAttention,
       createUsageModule(),
     ],
@@ -87,6 +90,7 @@ async function startWithOutcomes(days: number): Promise<void> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      agentsModule,
       fakeAttention,
       createUsageModule(),
     ],
