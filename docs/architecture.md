@@ -236,7 +236,7 @@ export interface WebHost {
 }
 
 export interface ServerHost {
-  settings: SettingsReader;               // resolved values with their source
+  settings: Settings;                     // declare keys, resolve values with their source (section 13)
   store: Store;                           // SQLite, module-owned tables via migrations
   jobs: JobRunner;                        // durable jobs (section 6)
   events: EventBus;                       // typed server events, pushed to the web over ws
@@ -1204,13 +1204,51 @@ API under `/api/kanban`:
 - The project file is checked on load and must not contain model keys. Model choices live in Pi settings, global
   settings, or local overrides.
 
-Global settings (`~/.pi-spore/settings.json`). The projects module reads them fresh on each use and shows them on
-the Projects page, in the Global settings panel, with their source (`GET /api/projects/settings`). The router reads
-its own `router` and `tiers` sections of the same file.
+The resolver is `createSettings` in `packages/server-core`; modules reach it as `host.settings`.
 
-| Key | Type | Meaning |
-|---|---|---|
-| `retention.days` | whole number, 0 or more, default 30 | Delete the data of finished work after this many days (section 14). `0` keeps everything. Any other value answers 422 `bad_settings`, which names `retention.days`, and retention deletes nothing. |
+- A module declares a key in its setup: `host.settings.declare({ key, schema, default, scope })`. The key is a dotted
+  path, the same in JSON and TOML (`agents.maxLive` is `{ "agents": { "maxLive": 4 } }` in `settings.json`). Scope
+  `global` means only `settings.json` may set it; scope `project` means the two TOML files may too.
+- `host.settings.resolve({ projectPath?, detected? })` reads the files fresh and returns each declared key as
+  `{ value, source }`. Without `projectPath` only `settings.json` counts. `detected` is a map of values a module
+  found, such as the worktree copy list for a Unity project. It sits above the default and below every file.
+- Unknown keys, wrong types, a global key in a TOML file, and broken JSON or TOML are errors that name the key and
+  the file: 422 `bad_settings` for `settings.json`, 422 `bad_project_config` for the TOML files. So is a model key
+  (`model`, `models`, `provider`, `thinking`) anywhere in `config.toml` (R17.3). `config.local.toml` and
+  `settings.json` may hold model choices, but only under a key a module declares. A bad file also stops anything
+  that reads settings, such as creating a workspace. Nothing falls back to a default. A key with a dot in its name
+  (`"a.b" = 1`) is an error: write nested keys as tables, so the model-key scan sees every path.
+- Modules declare in their setup, in dependency order, and one may resolve before a later module has declared. So
+  until every module is set up, a key nobody has declared yet is not an error. Then the server calls
+  `finishDeclaring`, which checks `settings.json` against every declaration. A bad file stops startup with the error
+  above, and a declaration after that throws.
+- A section another owner reads is reserved with `host.settings.reserve("global" | "project", section)`: the
+  projects module reserves `router` and `tiers` (the router extension reads them, section 10), the actions module
+  reserves `actions`. Reserved sections skip the unknown-key check. `host.settings.configFiles(projectPath)` and
+  `checkSection(schema, value, what)` give the owner the parsed file and the same 422 error.
+- The resolve order is a list of layers, so a run or workspace override can be added after the local override.
+
+Declared keys (`GET /api/projects/settings` lists them all with their source; the Settings page, `#/settings`, shows
+that list):
+
+| Key | Scope | Type | Meaning |
+|---|---|---|---|
+| `retention.days` | global | whole number, 0 or more, default 30 | Delete the data of finished work after this many days (section 14). `0` keeps everything. |
+| `worktree.copy` | project | array of patterns, default none; Unity adds its list as `detected` | Files a new copy needs (R2.6). |
+| `worktree.branch_prefix` | project | string, default `spore` | Prefix of the branches pi-spore creates. |
+| `agents.maxLive` | global | whole number, 1 or more, default 8 | Live agent processes at once (ADR 0026). |
+| `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
+| `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
+| `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
+
+The `agents.*` keys are read when the server starts. Change them, then restart.
+
+Not built yet:
+
+- Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
+- A nesting limit for agents (R3.6).
+- A desktop notification setting (R15.2). The browser's permission is the only switch today.
+- The run or workspace override (R17.2 step 5): no store table holds one.
 
 `config.toml` sketch:
 
@@ -1392,7 +1430,7 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   The `agent:<id>` topic sends `{ type: "agent", agent }` when a chat's title or active flag changes.
 - Images in the chat (ADR 0060, R5.1):
   - A message may carry PNG, JPEG, WebP, or GIF images: at most 8, each at most 10 MiB decoded, with bytes that
-    match their type (module options `maxImagesPerMessage` and `maxImageBytes` until settings land). They go to Pi
+    match their type (settings `agents.maxImagesPerMessage` and `agents.maxImageBytes`). They go to Pi
     as `ImageContent` blocks with the prompt, steer, or follow-up. A message may be only images. Models list what
     they take (`input`), so the composer warns when the chat's model takes no images; Pi then sends a placeholder.
   - Image blocks never reach the page as data. In every Pi event the server relays and every message it reads from

@@ -412,6 +412,45 @@ describe("agents", () => {
     );
   });
 
+  describe("limits come from settings.json (R3.6)", () => {
+    const home = () => join(scratch, "home");
+    const writeSettings = (text: string) => {
+      mkdirSync(home(), { recursive: true });
+      writeFileSync(join(home(), "settings.json"), text);
+    };
+
+    it("reads agents.maxLive at startup", async () => {
+      writeSettings('{"agents":{"maxLive":1}}');
+      await setup({}, {}, { home: home() });
+      const first = await makeAgent("a");
+      const second = await makeAgent("b");
+      // A busy agent is never stopped for a waiting chat, so only stopping it frees the slot.
+      await json(await prompt(first.agentId, "slow:60000"));
+      await until(() => status(first.agentId) === "busy");
+
+      const pending = prompt(second.agentId, "two");
+      await until(() => status(second.agentId) === "waiting");
+      expect(statuses(second.agentId)).not.toContain("busy");
+
+      await json(await server.request("POST", `/api/agents/${first.agentId}/stop`));
+      expect(await json(await pending)).toEqual({ disposition: "started" });
+    });
+
+    it("lists the agents keys with their source on the settings route", async () => {
+      writeSettings('{"agents":{"maxImagesPerMessage":3}}');
+      await setup({}, {}, { home: home() });
+      const { settings } = await json<{
+        settings: { key: string; value: unknown; source: string }[];
+      }>(await server.request("GET", "/api/projects/settings"));
+      expect(settings.filter((entry) => entry.key.startsWith("agents."))).toEqual([
+        { key: "agents.idleStopMinutes", value: 10, source: "default" },
+        { key: "agents.maxImageBytes", value: 10 * 1024 * 1024, source: "default" },
+        { key: "agents.maxImagesPerMessage", value: 3, source: "global" },
+        { key: "agents.maxLive", value: 8, source: "default" },
+      ]);
+    });
+  });
+
   describe("a waiting chat takes the slot of an idle one (ADR 0026)", () => {
     const idleAfterPrompt = async (agentId: string, message: string) => {
       await json(await prompt(agentId, message));

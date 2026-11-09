@@ -145,13 +145,14 @@ export {
 } from "./pipelines.js";
 export {
   AddProjectRequest,
-  GlobalSettingsView,
   Project,
   ProjectConfigView,
   ProjectLines,
   ProjectList,
   ProjectTrait,
+  SettingEntry,
   SettingSource,
+  SettingsView,
 } from "./projects.js";
 export {
   PrCheck,

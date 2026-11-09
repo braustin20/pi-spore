@@ -44,6 +44,8 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
       host.store.migrate("actions", MIGRATIONS);
       const projects = host.use(ProjectsKey);
       const workspaces = host.use(WorkspacesKey);
+      // Another owner checks this section, so the settings resolver lets it pass (architecture 13).
+      host.settings.reserve("project", "actions");
       const runner = new ActionRunner({
         store: host.store,
         log: host.log,
@@ -69,7 +71,8 @@ export function createActionsModule(options: ActionsModuleOptions = {}): ServerM
             source: "default",
           });
         }
-        for (const action of await readActions(projects, project)) byName.set(action.name, action);
+        for (const action of await readActions(host.settings, project))
+          byName.set(action.name, action);
         return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
       };
 

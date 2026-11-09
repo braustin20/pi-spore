@@ -2,6 +2,7 @@ import type { Hono } from "hono";
 import type { ComponentType } from "react";
 import type { AgentTokens } from "./bridge.js";
 import type { ModuleInterfaces, ModuleManifest } from "./manifest.js";
+import type { Settings } from "./settings.js";
 
 export interface Logger {
   info(message: string, fields?: Record<string, unknown>): void;
@@ -167,7 +168,7 @@ export interface JobRunner {
   prune(before: number): number;
 }
 
-/** What a server module gets during setup. Settings are added with the modules that need them. */
+/** What a server module gets during setup. */
 export interface ServerHost extends ModuleInterfaces {
   readonly events: EventHub;
   readonly log: Logger;
@@ -185,6 +186,7 @@ export interface ServerHost extends ModuleInterfaces {
   readonly url: string;
   readonly agentTokens: AgentTokens;
   readonly jobs: JobRunner;
+  readonly settings: Settings;
   /** Runs after every module's setup, before the server listens. A throw is logged and does not stop startup. */
   onStarted(listener: () => Promise<void> | void): void;
   /** Deletes stored API responses (idempotency records) created before `before`, a time in ms. Returns the count. */

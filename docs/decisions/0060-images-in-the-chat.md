@@ -19,7 +19,7 @@ browser cannot load a local path, and a route that reads files from disk is a se
 - **Sending.** `POST /api/agents/:id/prompt` takes `images: [{ mimeType, data }]`: PNG, JPEG, WebP, or GIF as
   base64. The server checks the count (default at most 8), the decoded size (default at most 10 MiB each), and that
   the bytes start like the type they claim, then passes them to Pi with the prompt, steer, or follow-up. A message
-  may be only images. The limits are module options until the settings module lands.
+  may be only images. The limits are the settings `agents.maxImagesPerMessage` and `agents.maxImageBytes` (architecture 13).
 - **By reference.** Before the server keeps or relays a Pi event, and when it reads a session file, it replaces
   each image block's `data` with `ref`, the SHA-256 of the base64 data, plus the decoded size. Pages fetch the bytes
   from `GET /api/agents/:id/images/:ref`. The server keeps the decoded bytes in a memory cache (default 64 MiB); an

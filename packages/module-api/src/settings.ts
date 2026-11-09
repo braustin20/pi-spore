@@ -1,0 +1,51 @@
+import type { SettingEntry, SettingSource } from "@pi-spore/shared";
+import type { Static, TSchema } from "typebox";
+
+/** A setting a module declares (R17). Its key is a dotted path, the same in every file. */
+export interface SettingDef<S extends TSchema = TSchema> {
+  key: string;
+  schema: S;
+  default: Static<S>;
+  /** `global`: only `<home>/settings.json` may set it. `project`: the project file and the local override too. */
+  scope: "global" | "project";
+}
+
+/** A config file parsed as TOML and checked for model keys (R17.3). Each module checks its own sections. */
+export interface RawConfigFile {
+  path: string;
+  data: Record<string, unknown>;
+}
+
+export interface RawConfigFiles {
+  /** `<project>/.pi-spore/config.toml` */
+  project?: RawConfigFile;
+  /** `<project>/.pi-spore/config.local.toml`, which wins over the project file. */
+  local?: RawConfigFile;
+}
+
+export interface ResolvedSettings {
+  get<S extends TSchema>(def: SettingDef<S>): { value: Static<S>; source: SettingSource };
+  /** Every declared setting, sorted by key. */
+  entries(): SettingEntry[];
+}
+
+/**
+ * Settings from all sources (R17.2, architecture 13): defaults, detected values, `<home>/settings.json`, the project
+ * file, the local override. Files are read fresh on each call. A bad file answers 422 `bad_settings` (global) or
+ * `bad_project_config` (project), naming the key and the file.
+ */
+export interface Settings {
+  /** Declares a setting and returns it, to read with `ResolvedSettings.get`. A repeated key throws. */
+  declare<const S extends TSchema>(def: SettingDef<S>): SettingDef<S>;
+  /** Lets a top-level section of a file pass the unknown-key check, because another owner reads and checks it. */
+  reserve(file: "global" | "project", section: string): void;
+  /** With `projectPath`, the project's two files count too. `detected` maps keys to values a module found. */
+  resolve(options?: {
+    projectPath?: string;
+    detected?: Readonly<Record<string, unknown>>;
+  }): Promise<ResolvedSettings>;
+  /** The project file and the local override, parsed and checked for model keys, sections not yet checked. */
+  configFiles(projectPath: string): Promise<RawConfigFiles>;
+  /** Checks one section of a config file against its schema; a mismatch answers 422 `bad_project_config`. */
+  checkSection<const S extends TSchema>(schema: S, value: unknown, what: string): Static<S>;
+}
