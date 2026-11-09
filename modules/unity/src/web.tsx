@@ -4,14 +4,24 @@ import {
   type OpenEditor,
   OpenUnityResponse,
   parse,
+  type UnityTestRun,
   UnityWorkspaceView,
   type Workspace,
 } from "@pi-spore/shared";
-import { Button, Chip, CollapsibleSection, Notice } from "@pi-spore/ui";
+import { Button, Chip, CollapsibleSection, Notice, type Tone } from "@pi-spore/ui";
 import { Box, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
+const TEST_TONE: Record<UnityTestRun["status"], Tone> = {
+  queued: "neutral",
+  running: "run",
+  succeeded: "ok",
+  failed: "fail",
+  cancelled: "neutral",
+  interrupted: "warn",
+};
 
 function where(editor: OpenEditor, workspace: Workspace): string {
   if (editor.path === workspace.path) return "this workspace";
@@ -171,6 +181,26 @@ function UnityPanel({ workspace }: { workspace: Workspace }) {
             <RefreshCw />
           </Button>
         </div>
+        {view.tests.length > 0 && (
+          <div className="flex flex-col gap-1.5">
+            <span className="text-xs text-muted">
+              Test gates. The log of each run is in the Actions panel.
+            </span>
+            {view.tests.map((test) => (
+              <div key={test.runId} className="flex flex-wrap items-center gap-1.5">
+                <Chip tone={TEST_TONE[test.status]}>{test.status}</Chip>
+                <span>{test.mode}</span>
+                {test.report ? (
+                  <code className="text-xs [overflow-wrap:anywhere] text-muted">
+                    artifact {test.report}
+                  </code>
+                ) : (
+                  <span className="text-xs text-muted">no report</span>
+                )}
+              </div>
+            ))}
+          </div>
+        )}
         {note && <p className="m-0 text-muted">{note}</p>}
         {error && <Notice tone="fail">{error}</Notice>}
       </div>

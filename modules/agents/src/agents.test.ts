@@ -11,8 +11,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { projectsModule } from "@pi-spore/mod-projects/server";
-import { unityModule } from "@pi-spore/mod-unity/server";
+import { ProjectsKey, projectsModule } from "@pi-spore/mod-projects/server";
+import { unityTrait } from "@pi-spore/mod-unity/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
@@ -26,6 +26,14 @@ import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
 
 const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
+
+/** Only the Unity trait: the full unity module also needs the actions, artifacts, and attention modules. */
+const unityTraitModule: ServerModule = {
+  id: "unity",
+  requires: ["projects"],
+  core: false,
+  setup: (host) => host.use(ProjectsKey).registerTrait(unityTrait),
+};
 
 let server: TestServer;
 let scratch: string;
@@ -62,7 +70,7 @@ async function setup(
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
-      unityModule,
+      unityTraitModule,
       agentsModule,
       ...extraModules,
     ],

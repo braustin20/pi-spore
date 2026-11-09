@@ -277,7 +277,7 @@ export interface ServerHost {
 | PipelineRun | One pipeline execution on a workspace | id, workspace, pipeline id + content hash, stages, brief, asking chat, worker agent, state, current stage, message, test manifest, approval |
 | Turn | One prompt to a stage agent and its report | id, run, stage, round, kind (task, fix, review), role, agent, report (verdict, findings, tests, Jev answer) |
 | Question | A question going up the chain | id, from agent, to (coordinator or user), body, answer, state; a lane's question is a `runs_questions` row |
-| Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, pipeline gates; later close editor), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
+| Approval | A decision gate on Home (ADR 0100) | id, kind (`card-start`, `lane-model`, `run-pr`, `unity-close-editor`, pipeline gates), asking agent, workspace, title, reason, subject, state (open, approved, declined), outcome |
 | Card | A kanban card | id, project, column, position, title, body, labels, due, model, blocked by, workspace, archived at, created by and changed by (agent) |
 | EditorLease | Who holds the Unity editor of a project | project, worktree path, owner (user or agent), pid |
 | RoutingDecision | One router choice (a line in `usage/routing.jsonl`, not a table) | kind, route, model, reasons, Jev answers, token estimate, plan windows seen, explore, session, agent, workspace |
@@ -1010,8 +1010,10 @@ See [ADR 0011](decisions/0011-unity-support.md).
 - Editor control through the `unity` CLI (run with `host.exec`, plus `--no-banner --non-interactive`):
   - `unity open <path>` to open (it returns at once);
   - `unity status --json` to see open editors, their project paths, and pids;
-  - `unity close <path>` to close (exits without saving, so it is only run after an explicit yes);
-  - `unity test --mode <EditMode|PlayMode> --output <artifact>` for gates (not built yet).
+  - `unity close --json <path>` to close (exits without saving, so it is only run after an explicit yes). Without the
+    Pipeline package it fails with `PROJECTS_CLOSE_PIPELINE_MISSING`; pi-spore then runs it again with `--force`
+    (SIGTERM, then SIGKILL; [ADR 0153](decisions/0153-unity-test-gates.md), spike `spikes/q17-unity-close.md`);
+  - `unity test <folder> --mode <EditMode|PlayMode> --output <file> --timeout <s>` for the test gates.
 - Finding open editors (ADR 0028). For the main checkout and each workspace folder of the project, an editor is
   open when one of these sees it:
   - a `unity status --json` row with that `projectPath` (only editors whose project has the Pipeline package);
@@ -1030,15 +1032,27 @@ See [ADR 0011](decisions/0011-unity-support.md).
     `close(projectId, path)`.
   - Later: an agent that needs the editor (for unity-mcp work) creates an Approval and opens Unity only after a
     yes. If another agent holds the lease, it waits. If the user holds it, the Approval asks to share or close it.
-  - Later: a batch-mode gate needs the editor of its worktree closed. It waits for an agent lease to end, or
-    creates a "close Unity?" Approval for a user lease.
+- Test gates (R10.6, [ADR 0153](decisions/0153-unity-test-gates.md)). The module provides the actions
+  `unity-test-editmode` and `unity-test-playmode` for Unity projects (section 13, provided actions). A pipeline
+  gate stage lists them like any action. A run:
+  1. Looks every 5 s at the editors on the workspace's folder (other folders of the project do not block). With
+     none, it goes on. If an agent holds the lease, it waits. Otherwise (the user's lease, or an editor opened
+     outside pi-spore) it files a `unity-close-editor` approval `{ projectId, path }` for the workspace's active
+     chat (created if the workspace has none) and waits. A question left open by a cancelled gate is reused, and an
+     approve may not change its folder. Approve checks again, and closes (above) without saving only if the user's editor is still open; decline fails the gate; quitting Unity by hand
+     also lets it go on. Cancelling the run ends the wait. Nothing closes without an approve.
+  2. Runs `unity test` with an argv array and a 30 minute `--timeout`; pi-spore stops the process itself a minute later. Output goes to the run's log, so a failed
+     gate shows the log tail to the pipeline (R6.5).
+  3. Stores the report (NUnit XML) as the workspace artifact `unity-tests/<run id>.xml`. Exit code 0 with no report
+     fails the run.
 - API under `/api/unity`: `GET /workspaces/:id` (Unity or not, the editor version, open editors, stale lock
-  files, the lease), `POST /workspaces/:id/open`, `POST /editors/close` `{ projectId, path, confirm: true }`. The
+  files, the lease, and `tests`: the last 5 gate runs with mode, status, and the report path), `POST /workspaces/:id/open`, `POST /editors/close` `{ projectId, path, confirm: true }`. The
   workspace view has a Unity panel for Unity projects.
 - unity-mcp per worktree: the relay accepts `--project-path`. Agents get `PI_SPORE_UNITY_PROJECT=<worktree>`, and
   `~/.unity/relay/unity-mcp.sh` passes it on when set (ADR 0011).
-- Gates for Unity projects come from a project pipeline. The module ships an example with `unity test` EditMode
-  gates.
+- A Unity project's pipeline lists the test gates in a gate stage, for example
+  `gates = ["check", "unity-test-editmode"]`. The Unity panel shows the last gate runs: mode, status, and the report
+  artifact. The log of a run is in the Actions panel.
 
 ## 12. Kanban
 
@@ -1196,6 +1210,13 @@ See [ADR 0027](decisions/0027-actions.md). The `actions` module reads `[actions.
 - Triggers: `user`, `agent`, `create`, `archive`, `pipeline`. `ActionsKey.start(workspace, name, trigger, { key })`
   with a key the workspace used before returns that run and starts nothing, so a pipeline gate never runs a check
   twice.
+- Provided actions ([ADR 0153](decisions/0153-unity-test-gates.md)). `ActionsKey.provide(action)` adds an action
+  for projects with a trait; the unity module's test gates are the first. It is listed with source `default` and
+  is exclusive per folder. A run is an ordinary run, except that the module's `prepare` step runs first (wait, then
+  name the argv and an optional deadline `timeoutMs`) and its `after` step runs when the process has exited, also after
+  a cancel or timeout, which it is told about. A throw in either fails the run with its
+  message. Cancel aborts `prepare`. A project action of the same name replaces it. `ActionsKey.runs(workspace, { actions?, limit? })`
+  lists a workspace's runs for other modules; `actions` filters before the limit.
 
 API under `/api/actions`:
 
