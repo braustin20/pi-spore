@@ -25,7 +25,7 @@ export function Field({
 }
 
 export function Input({ className, ...props }: ComponentProps<"input">) {
-  return <input className={cn(control, "h-8 px-2.5", className)} {...props} />;
+  return <input className={cn(control, "h-8 px-2.5 max-md:min-h-11", className)} {...props} />;
 }
 
 export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
@@ -36,7 +36,10 @@ export function Textarea({ className, ...props }: ComponentProps<"textarea">) {
 export function Select({ className, ...props }: ComponentProps<"select">) {
   return (
     <span className={cn("relative inline-flex", className)}>
-      <select className={cn(control, "h-8 w-full appearance-none pr-7 pl-2.5")} {...props} />
+      <select
+        className={cn(control, "h-8 w-full appearance-none pr-7 pl-2.5 max-md:min-h-11")}
+        {...props}
+      />
       <ChevronDown
         aria-hidden="true"
         className="pointer-events-none absolute top-1/2 right-2 size-3.5 -translate-y-1/2 text-muted"

@@ -424,6 +424,7 @@ describe("web app", () => {
       "<html><head><title>x</title></head><body></body></html>",
     );
     writeFileSync(join(dist, "assets", "app.js"), "console.log(1)");
+    writeFileSync(join(dist, "manifest.webmanifest"), "{}");
     const store = new SqliteStore(":memory:");
     store.migrate("core", CORE_MIGRATIONS);
     const app = createApp({
@@ -452,6 +453,9 @@ describe("web app", () => {
     expect(index.headers.get("content-type")).toContain("text/html");
     expect(await index.text()).toContain(`<meta name="pi-spore-token" content="${TEST_TOKEN}" />`);
     expect(await (await get("/assets/app.js")).text()).toBe("console.log(1)");
+    expect((await get("/manifest.webmanifest")).headers.get("content-type")).toBe(
+      "application/manifest+json",
+    );
     expect((await get("/../../etc/passwd")).status).toBe(404);
     expect((await get("/assets/%2e%2e/%2e%2e/etc/passwd")).status).toBe(404);
 

@@ -8,6 +8,9 @@
 @import "@fontsource-variable/jetbrains-mono";
 @import "./themes.css";
 
+/* Hover-only controls use `touch:` to show on screens that cannot hover. */
+@custom-variant touch (@media (hover: none));
+
 @theme {
   --color-*: initial;
   --font-*: initial;
@@ -50,6 +53,22 @@
   }
   * {
     border-color: var(--line);
+  }
+  /* Phones only. iOS zooms the page when a field under 16px gets focus. The app sets --app-height and --app-top to
+     the visual viewport, so the page shrinks above the on-screen keyboard. */
+  @media (width < 48rem) {
+    input,
+    select,
+    textarea {
+      font-size: 16px;
+    }
+    #root {
+      position: fixed;
+      left: 0;
+      right: 0;
+      top: var(--app-top, 0);
+      height: var(--app-height, 100%);
+    }
   }
   code,
   kbd,

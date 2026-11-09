@@ -1,5 +1,5 @@
 import { useApi, type WebPage } from "@pi-spore/module-api";
-import { cn, EmptyState, Page, ThemeMenu, Tooltip, TooltipProvider } from "@pi-spore/ui";
+import { cn, EmptyState, Page, ThemeMenu, Tooltip, TooltipProvider, usePhone } from "@pi-spore/ui";
 import { MapPinOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { findPage, railActive, useHashPath } from "./router.js";
@@ -42,7 +42,40 @@ function ServerStatus() {
 
 const noBadge = () => 0;
 
-function RailLink({ page, path }: { page: WebPage; path: string }) {
+/** Follows the visual viewport on phones. See the phone rules in packages/ui/src/styles.css. */
+function useKeyboardInset() {
+  const phone = usePhone();
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!phone || !viewport) return;
+    // iOS Safari does not shrink the layout or dvh for the on-screen keyboard, so the composer would sit under it.
+    const root = document.documentElement.style;
+    const update = () => {
+      root.setProperty("--app-height", `${viewport.height}px`);
+      root.setProperty("--app-top", `${viewport.offsetTop}px`);
+    };
+    update();
+    viewport.addEventListener("resize", update);
+    viewport.addEventListener("scroll", update);
+    return () => {
+      viewport.removeEventListener("resize", update);
+      viewport.removeEventListener("scroll", update);
+      root.removeProperty("--app-height");
+      root.removeProperty("--app-top");
+    };
+  }, [phone]);
+}
+
+/** `inHeader` is the phone row in the top bar: bigger touch targets, and the lit mark sits under the icon. */
+function RailLink({
+  page,
+  path,
+  inHeader = false,
+}: {
+  page: WebPage;
+  path: string;
+  inHeader?: boolean;
+}) {
   const Icon = page.rail?.icon;
   // The page list never changes after load, so each link always calls the same hook.
   const count = (page.rail?.useBadge ?? noBadge)();
@@ -55,9 +88,14 @@ function RailLink({ page, path }: { page: WebPage; path: string }) {
         aria-label={label}
         aria-current={active ? "page" : undefined}
         className={cn(
-          "relative flex size-10 items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg",
+          "relative flex items-center justify-center rounded-lg text-muted hover:bg-raised hover:text-fg",
+          inHeader ? "size-11 shrink-0" : "size-10",
           active &&
-            "bg-raised text-accent-strong before:absolute before:inset-y-2 before:-left-2 before:w-0.5 before:rounded-full before:bg-accent hover:text-accent-strong",
+            "bg-raised text-accent-strong before:absolute before:rounded-full before:bg-accent hover:text-accent-strong",
+          active &&
+            (inHeader
+              ? "before:inset-x-2 before:bottom-0 before:h-0.5"
+              : "before:inset-y-2 before:-left-2 before:w-0.5"),
         )}
       >
         {Icon && <Icon className="size-5" />}
@@ -74,14 +112,18 @@ function RailLink({ page, path }: { page: WebPage; path: string }) {
   );
 }
 
-function Rail({ pages, path }: { pages: readonly WebPage[]; path: string }) {
-  const items = pages
+function railItems(pages: readonly WebPage[]): WebPage[] {
+  return pages
     .filter((page) => page.rail)
     .sort((a, b) => (a.rail?.order ?? 0) - (b.rail?.order ?? 0));
+}
+
+/** The rail on wide screens. Phones get the same links in the top bar instead. */
+function Rail({ items, path }: { items: readonly WebPage[]; path: string }) {
   return (
     <nav
       aria-label="Main"
-      className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2"
+      className="flex w-14 shrink-0 flex-col items-center gap-1 border-r border-line bg-panel py-2 max-md:hidden"
     >
       {items.map((page) => (
         <RailLink key={page.path} page={page} path={path} />
@@ -93,20 +135,34 @@ function Rail({ pages, path }: { pages: readonly WebPage[]; path: string }) {
 export function App({ pages }: { pages: readonly WebPage[] }) {
   const path = useHashPath();
   const found = findPage(pages, path);
+  const items = railItems(pages);
+  useKeyboardInset();
   return (
     <TooltipProvider delayDuration={300}>
       <div className="flex h-full flex-col">
-        <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-panel pr-2 pl-4">
-          <a href="#/" className="flex items-center gap-2 font-semibold text-fg no-underline">
+        <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-panel pr-2 pl-4 max-md:h-12 max-md:gap-1 max-md:pl-1">
+          {/* Phones: the Home link in the row below takes the logo's place, so all links fit. */}
+          <a
+            href="#/"
+            className="flex items-center gap-2 font-semibold text-fg no-underline max-md:hidden"
+          >
             <span aria-hidden="true" className="size-2.5 rounded-sm bg-accent" />
             pi-spore
           </a>
-          <div className="flex-1" />
+          <nav
+            aria-label="Main"
+            className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none] md:hidden"
+          >
+            {items.map((page) => (
+              <RailLink key={page.path} page={page} path={path} inHeader />
+            ))}
+          </nav>
+          <div className="flex-1 max-md:hidden" />
           <ThemeMenu />
           <ServerStatus />
         </header>
         <div className="flex min-h-0 flex-1">
-          <Rail pages={pages} path={path} />
+          <Rail items={items} path={path} />
           <main className="min-w-0 flex-1">
             {found ? (
               <found.page.component params={found.params} />

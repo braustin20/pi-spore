@@ -1,4 +1,5 @@
 import type { WebPage } from "@pi-spore/module-api";
+import { splitHash } from "@pi-spore/ui";
 import { useEffect, useState } from "react";
 
 /** Matches `/projects/:id` against `/projects/01ABC`. Returns the params, or undefined if it does not match. */
@@ -35,7 +36,7 @@ export function railActive(pagePath: string, path: string): boolean {
 }
 
 function readHashPath(): string {
-  return window.location.hash.replace(/^#/, "") || "/";
+  return splitHash(window.location.hash).path;
 }
 
 export function useHashPath(): string {
