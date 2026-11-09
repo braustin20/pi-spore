@@ -1,4 +1,4 @@
-# 0162. Card work ends with a PR, opened on the user's approval
+# 0163. Card work ends with a PR, opened on the user's approval
 
 - Status: Accepted
 - Date: 2026-11-09

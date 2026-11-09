@@ -82,7 +82,7 @@ agents across Git projects, with first-class Unity support. Read these before ch
 - `npm run check` and `npm test` pass before each commit.
 - Never commit secrets, `.env` files, `config.local.toml`, build output, or generated files.
 - Do not push or open PRs unless asked. A card's chat opens its PR only through `open_pr`, which waits for the user's
-  approval on Home (ADR 0162).
+  approval on Home (ADR 0163).
 
 ## Writing style
 

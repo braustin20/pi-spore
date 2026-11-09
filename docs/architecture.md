@@ -145,7 +145,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     `new` unless another is given; `run: true` asks for a new run. A run's coordinator gets only the list and add
     tools (ADR 0154); see section 9.
   - `open_pr` `{ title, body }`, only in the orchestrator chat (not side, stage, coordinator, or lane agents; ADR
-    0162): files a `workspace-pr` approval through `POST /api/bridge/workspace/pr` and ends the turn with
+    0163): files a `workspace-pr` approval through `POST /api/bridge/workspace/pr` and ends the turn with
     `terminate: true`. The tool call id is the receipt (R16.3). The rules say to call it when card work passes check
     and the tests, and to report `not_supported` without a retry.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
@@ -1151,7 +1151,7 @@ Requirements R9.
   with the same errors. The module also sets the same function as the runs module's PR opener with `RunsKey.setPrOpener`, so the runs
   module opens a run's PR when the user approves a `run-pr` approval (section 9) and does not depend on this module
   (kanban requires runs, and this module requires kanban).
-- Workspace PR by approval (ADR 0162). The module sets the bridge's requester with `BridgeKey.setPrRequester`, so
+- Workspace PR by approval (ADR 0163). The module sets the bridge's requester with `BridgeKey.setPrRequester`, so
   the bridge does not depend on it. `open_pr` (bridge `POST /api/bridge/workspace/pr`, not for read-only callers)
   refuses, before it files anything, a workspace that cannot be published or has no base (422 `not_supported`), an
   open PR (409 `pr_exists`), and an open request (409 `workspace_pr_asked`, naming it). Otherwise it files a
