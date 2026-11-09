@@ -5,6 +5,7 @@ import {
   mkdtempSync,
   realpathSync,
   rmSync,
+  utimesSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -419,8 +420,58 @@ describe("GET /api/usage/tokens: plain Pi sessions (R18.3)", () => {
     ]);
   });
 
+  it("keeps plain sessions of different projects apart, even with the same name or folder name", async () => {
+    const other = join(scratch, "other", "game");
+    mkdirSync(other, { recursive: true });
+    await json(await server.request("POST", "/api/projects", { path: other, name: "Game" }), 201);
+    await workspace();
+    plainSession("--one--", join(scratch, "game"), assistant("openai", "gpt-6.1-terra", 40, 4));
+    plainSession("--two--", other, assistant("openai", "gpt-6.1-terra", 7, 1));
+    plainSession("--three--", "/a/x/cli", assistant("openai", "gpt-6.1-terra", 3, 1));
+    const second = join(scratch, "pi-agent", "sessions", "--four--");
+    mkdirSync(second, { recursive: true });
+    writeFileSync(
+      join(second, "s.jsonl"),
+      [
+        JSON.stringify({ type: "session", cwd: "/b/y/cli" }),
+        assistant("openai", "gpt-6.1-terra", 5, 1),
+      ].join("\n"),
+    );
+    const body = await tokens();
+    expect(body.rows.map((row) => [row.projectName, row.input])).toEqual([
+      ["cli", 5],
+      ["cli", 3],
+      ["Game", 40],
+      ["Game", 7],
+    ]);
+    const ids = body.rows.filter((row) => row.projectName === "Game").map((row) => row.projectId);
+    expect(new Set(ids).size).toBe(2);
+  });
+
   it("shows no plain sessions when Pi's session folder does not exist", async () => {
     expect((await tokens()).rows).toEqual([]);
+  });
+});
+
+describe("GET /api/usage/tokens: cache (R18.2)", () => {
+  it("re-sums a file that changed with the same size and modification time", async () => {
+    const ws = await workspace();
+    const dir = join(server.paths.sessions, ws.id);
+    mkdirSync(dir, { recursive: true });
+    const file = join(dir, "a.jsonl");
+    const at = new Date(START);
+    writeFileSync(file, assistant("openai", "gpt-6.1-terra", 40, 4));
+    utimesSync(file, at, at);
+    const input = async () =>
+      parse(
+        TokenUseResponse,
+        await json(await server.request("GET", "/api/usage/tokens")),
+        "tokens",
+      ).rows[0]?.input;
+    expect(await input()).toBe(40);
+    writeFileSync(file, assistant("openai", "gpt-6.1-terra", 41, 4));
+    utimesSync(file, at, at);
+    expect(await input()).toBe(41);
   });
 });
 
@@ -449,8 +500,8 @@ describe("GET /api/usage/tokens: per role (R18.2)", () => {
     });
     await untilSessions(ws.id, 2);
     const [chatFile, reviewFile] = agentsApi.sessionRoles(ws.id).map((entry) => entry.sessionFile);
-    appendFileSync(chatFile as string, `\n${assistant("role-test", "chat-model", 100, 10)}\n`);
-    appendFileSync(reviewFile as string, `\n${assistant("role-test", "review-model", 30, 3)}\n`);
+    appendFileSync(chatFile as string, `\n${assistant("role-test", "same-model", 100, 10)}\n`);
+    appendFileSync(reviewFile as string, `\n${assistant("role-test", "same-model", 30, 3)}\n`);
 
     const body = parse(
       TokenUseResponse,
@@ -459,8 +510,8 @@ describe("GET /api/usage/tokens: per role (R18.2)", () => {
     );
     const mine = body.rows.filter((row) => row.provider === "role-test");
     expect(mine.map((row) => [row.role, row.model, row.input, row.external])).toEqual([
-      ["orchestrator", "chat-model", 100, false],
-      ["reviewer", "review-model", 30, false],
+      ["orchestrator", "same-model", 100, false],
+      ["reviewer", "same-model", 30, false],
     ]);
   });
 });

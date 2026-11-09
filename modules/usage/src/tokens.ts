@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readdir, readFile, stat } from "node:fs/promises";
 import { join } from "node:path";
 
@@ -109,10 +110,11 @@ export function sumSession(text: string): Omit<SessionUse, "path" | "workspaceId
 /**
  * Reads session files from two folders laid out the same way, `<folder>/<name>/*.jsonl`: pi-spore's own, where the
  * name is a workspace id, and Pi's default one, where it is the encoded folder a plain `pi` ran in (R18.3). It keeps
- * each file's sums until its size or modification time changes, so a page load does not re-read every transcript.
+ * each file's sums while its size and content hash stay the same, so a page load does not parse every transcript again.
+ * The hash, not the modification time, decides: a file can change and keep both its size and its time.
  */
 export class SessionIndex {
-  private readonly cache = new Map<string, { size: number; mtimeMs: number; use: SessionUse }>();
+  private readonly cache = new Map<string, { size: number; hash: string; use: SessionUse }>();
 
   constructor(
     private readonly sessionsDir: string,
@@ -138,12 +140,6 @@ export class SessionIndex {
         const path = join(dir, name);
         const info = await stat(path).catch(() => undefined);
         if (!info?.isFile()) continue;
-        const cached = this.cache.get(path);
-        if (cached && cached.size === info.size && cached.mtimeMs === info.mtimeMs) {
-          seen.add(path);
-          result.push(cached.use);
-          continue;
-        }
         // Retention can delete the file between the stat and the read.
         const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return undefined;
@@ -151,12 +147,19 @@ export class SessionIndex {
         });
         if (text === undefined) continue;
         seen.add(path);
+        const size = Buffer.byteLength(text);
+        const hash = createHash("sha256").update(text).digest("hex");
+        const cached = this.cache.get(path);
+        if (cached && cached.size === size && cached.hash === hash) {
+          result.push(cached.use);
+          continue;
+        }
         const use: SessionUse = {
           path,
           ...(named ? { workspaceId: folder } : {}),
           ...sumSession(text),
         };
-        this.cache.set(path, { size: info.size, mtimeMs: info.mtimeMs, use });
+        this.cache.set(path, { size, hash, use });
         result.push(use);
       }
     }

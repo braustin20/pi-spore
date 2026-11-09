@@ -733,7 +733,7 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     `external: true`, no workspace, and no role; its project is the registered project or workspace folder that holds
     the session's `cwd` (from its header), else the folder's own name. A pi-spore row gets its `role` from
     `AgentsKey.sessionRoles(workspaceId)`, which maps session files to the agent's role. A session whose agent row is
-    gone has no role. Sums are cached per file by size and modification time. Models in the `local` tier show as
+    gone has no role. Sums are cached per file by size and content hash (a file can change and keep its size and time). Models in the `local` tier show as
     free (R18.2). Lines that are not JSON are counted, not fatal. A forked session (a side chat) skips the entries
     copied from its parent, which are older than its header, so they count once.
   - `GET /api/usage/routing?limit=<1-500>`: the newest routing decisions (default 50), and how many lines did not

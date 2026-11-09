@@ -229,7 +229,8 @@ export function createUsageModule(options: UsageModuleOptions = {}): ServerModul
               "(unknown)";
           for (const model of session.models) {
             const key = [
-              session.workspaceId ?? `outside:${projectName}`,
+              // A plain session's identity is its project, else its folder: names can repeat.
+              session.workspaceId ?? `outside:${projectId ?? session.cwd ?? ""}`,
               role ?? "",
               `${model.provider}/${model.model}`,
             ].join("\u0000");

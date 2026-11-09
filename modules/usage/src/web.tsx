@@ -300,9 +300,11 @@ function TokenPanel({ tokens }: { tokens: TokenUseResponse }) {
                     <NumberCells row={sum} />
                   </tr>
                 ))
-              : rows.map((row) => (
+              : rows.map((row, index) => (
                   <tr
-                    key={`${row.workspaceId ?? row.projectName}/${row.role}/${row.provider}/${row.model}`}
+                    // Plain sessions of two folders can share a project name, so the position is part of the key.
+                    // biome-ignore lint/suspicious/noArrayIndexKey: the rows are rebuilt as a whole
+                    key={`${index}/${row.workspaceId ?? row.projectId ?? row.projectName}/${row.role}/${row.provider}/${row.model}`}
                   >
                     <TableCell>{row.projectName}</TableCell>
                     <TableCell>
