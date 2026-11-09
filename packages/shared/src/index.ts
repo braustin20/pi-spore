@@ -203,6 +203,8 @@ export {
   OpenEditor,
   OpenUnityResponse,
   ProjectEditors,
+  UnityTestMode,
+  UnityTestRun,
   UnityWorkspaceView,
 } from "./unity.js";
 export {

@@ -1,5 +1,10 @@
 import { readFile, stat } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
+import { ActionsKey } from "@pi-spore/mod-actions/server";
+import { AgentsKey } from "@pi-spore/mod-agents/server";
+import { ArtifactsKey } from "@pi-spore/mod-artifacts/server";
+import { ApprovalsKey } from "@pi-spore/mod-attention/server";
 import { ProjectsKey, type TraitDefinition } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
@@ -17,6 +22,7 @@ import {
   MIGRATIONS,
   type UnityCommand,
 } from "./editors.js";
+import { pause, registerGates, TEST_DEADLINE_MS } from "./gates.js";
 
 export * from "./contract.js";
 
@@ -54,28 +60,46 @@ export interface UnityModuleOptions {
   unity?: UnityCommand;
   /** Lists processes to find editors by `-projectpath`. Default: `/proc`. */
   processes?: ListProcesses;
+  /** How a test gate waits between looks at the editor. Default: a timer that a cancel ends. */
+  sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
+  /** How long `unity test` may run before pi-spore stops its process. Default: its own 30 minute timeout and a minute. */
+  testDeadlineMs?: number;
+  /** Where test reports are written before they move into the artifacts. Default: the temp folder. */
+  reportDir?: string;
 }
 
 export function createUnityModule(options: UnityModuleOptions = {}): ServerModule {
   return {
     id: "unity",
-    requires: ["projects", "workspaces"],
+    requires: ["projects", "workspaces", "actions", "agents", "artifacts", "attention"],
     core: false,
     setup(host) {
       host.store.migrate("unity", MIGRATIONS);
       const projects = host.use(ProjectsKey);
       const workspaces = host.use(WorkspacesKey);
       projects.registerTrait(unityTrait);
+      const unity = options.unity ?? { command: "unity", args: [] };
       const editors = createEditors({
         store: host.store,
         exec: host.exec,
-        unity: options.unity ?? { command: "unity", args: [] },
+        unity,
         processes: options.processes ?? listProcesses,
         now: host.now,
         projects,
         workspaces,
       });
       host.provide(UnityEditorsKey, editors);
+      const recentTests = registerGates({
+        actions: host.use(ActionsKey),
+        agents: host.use(AgentsKey),
+        approvals: host.use(ApprovalsKey),
+        artifacts: host.use(ArtifactsKey),
+        editors,
+        unity,
+        sleep: options.sleep ?? pause,
+        testDeadlineMs: options.testDeadlineMs ?? TEST_DEADLINE_MS,
+        reportDir: options.reportDir ?? tmpdir(),
+      });
 
       // Archiving removes the folder, which must not happen under an open editor. Force does not skip this.
       workspaces.beforeRemoveCopy(async (workspace) => {
@@ -106,6 +130,7 @@ export function createUnityModule(options: UnityModuleOptions = {}): ServerModul
               unity: true,
               editorVersion: trait.detail ?? "unknown",
               editors: await editors.editors(project.id),
+              tests: await recentTests(workspace),
             }
           : { unity: false };
         return c.json(view);

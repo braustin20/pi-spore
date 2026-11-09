@@ -11,15 +11,15 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
-import { projectsModule } from "@pi-spore/mod-projects/server";
-import { unityModule } from "@pi-spore/mod-unity/server";
+import { ProjectsKey, projectsModule } from "@pi-spore/mod-projects/server";
+import { unityTrait } from "@pi-spore/mod-unity/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FAKE_PNG } from "../test-fixtures/png.mjs";
 import type { Agents, LaunchHook } from "./contract.js";
 import type { AgentsModuleOptions } from "./server.js";
@@ -27,6 +27,14 @@ import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
 
 const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
+
+/** Only the Unity trait: the full unity module also needs the actions, artifacts, and attention modules. */
+const unityTraitModule: ServerModule = {
+  id: "unity",
+  requires: ["projects"],
+  core: false,
+  setup: (host) => host.use(ProjectsKey).registerTrait(unityTrait),
+};
 
 let server: TestServer;
 let scratch: string;
@@ -63,7 +71,7 @@ async function setup(
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
-      unityModule,
+      unityTraitModule,
       agentsModule,
       ...extraModules,
     ],
@@ -1415,7 +1423,9 @@ describe("deliveries on the job runner", () => {
 
   it("keeps a row pending with its error when the send fails, and sends it after a wake", async () => {
     const { deliver, flag } = await failingPi();
-    const { agentId, workspaceId } = await makeAgent();
+    const { agentId, workspaceId, folder } = await makeAgent();
+    const gate = join(folder, ".fake-pi-hold-turn");
+    writeFileSync(gate, "");
 
     deliver(agentId, "hello");
     await until(() => delivery()?.attempts === 1);
@@ -1423,9 +1433,28 @@ describe("deliveries on the job runner", () => {
 
     rmSync(flag);
     await json(await server.request("POST", `/api/workspaces/${workspaceId}/park`));
+    const settled = new Promise<void>((resolve) => {
+      const publish = server.events.publish.bind(server.events);
+      const listener = vi.spyOn(server.events, "publish").mockImplementation((topic, raw) => {
+        publish(topic, raw);
+        const event = raw as AgentEvent;
+        if (
+          topic === `agent:${agentId}` &&
+          event.type === "pi" &&
+          (event.event as { type: string }).type === "agent_settled"
+        ) {
+          listener.mockRestore();
+          resolve();
+        }
+      });
+    });
     await json(await server.request("POST", `/api/workspaces/${workspaceId}/resume`));
     await until(() => delivery()?.state === "done");
     expect(delivery()).toMatchObject({ attempts: 2, error: null });
+    // Acceptance does not imply a completed turn: Pi has not emitted its transcript yet.
+    expect(texts(await chat(agentId))).toEqual([]);
+    rmSync(gate);
+    await settled;
     expect(texts(await chat(agentId))).toEqual(["user: hello", "assistant: echo: hello"]);
   });
 

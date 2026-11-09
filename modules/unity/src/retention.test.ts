@@ -1,6 +1,10 @@
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { actionsModule } from "@pi-spore/mod-actions/server";
+import { agentsModule } from "@pi-spore/mod-agents/server";
+import { artifactsModule } from "@pi-spore/mod-artifacts/server";
+import { attentionModule } from "@pi-spore/mod-attention/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
@@ -37,6 +41,10 @@ async function start(startAt: number, firstId = 0): Promise<TestServer> {
       vcsGitModule,
       vcsFolderModule,
       workspacesModule,
+      artifactsModule,
+      agentsModule,
+      actionsModule,
+      attentionModule,
       createUnityModule({ processes: async () => [] }),
     ],
     { home, startAt, firstId },

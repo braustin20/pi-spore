@@ -29,6 +29,18 @@
     },
     {
       "path": "../../packages/server-core"
+    },
+    {
+      "path": "../actions"
+    },
+    {
+      "path": "../agents"
+    },
+    {
+      "path": "../artifacts"
+    },
+    {
+      "path": "../attention"
     }
   ]
 }
