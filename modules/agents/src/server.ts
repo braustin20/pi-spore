@@ -31,6 +31,7 @@ import { checkPromptImages, imageHeaders, readLinkedImage, servableType } from "
 import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
 import type { PiCommand } from "./rpc.js";
+import { declareAgentSettings } from "./settings.js";
 
 export * from "./contract.js";
 export type { AgentEvent } from "./manager.js";
@@ -135,7 +136,7 @@ export interface AgentsModuleOptions {
 const MIB = 1024 * 1024;
 const REF = /^[0-9a-f]{64}$/;
 
-/** Defaults from ADR 0025 and ADR 0026. Settings will override them once the settings module lands. */
+/** Limits come from the settings (`agents.*`, read at startup); options override them, for tests. */
 export function createAgentsModule(
   options: AgentsModuleOptions = {},
 ): ServerModule & { manager(): AgentManager } {
@@ -148,8 +149,10 @@ export function createAgentsModule(
       if (!manager) throw new Error("The agents module is not set up");
       return manager;
     },
-    setup(host) {
+    async setup(host) {
       host.store.migrate("agents", MIGRATIONS);
+      const keys = declareAgentSettings(host.settings);
+      const resolved = await host.settings.resolve();
       // The table has no updated_at, so chats closed before the migration count from now (ADR 0121).
       host.store.run(
         "UPDATE agents_agents SET closed_at = ? WHERE closed = 1 AND closed_at IS NULL",
@@ -228,8 +231,8 @@ export function createAgentsModule(
           if (change === "status" && agents.view(agentId).status === "idle")
             host.jobs.wake(DELIVERY_JOB, agentId);
         },
-        maxLive: options.maxLive ?? 8,
-        idleStopMs: options.idleStopMs ?? 10 * 60_000,
+        maxLive: options.maxLive ?? resolved.get(keys.maxLive).value,
+        idleStopMs: options.idleStopMs ?? resolved.get(keys.idleStopMinutes).value * 60_000,
         startTimeoutMs: options.startTimeoutMs ?? 30_000,
         modelsCacheMs: options.modelsCacheMs ?? 60_000,
         probe: async () => ({
@@ -241,8 +244,8 @@ export function createAgentsModule(
         imageCacheBytes: options.imageCacheBytes ?? 64 * MIB,
       });
       const imageLimits = {
-        maxBytes: options.maxImageBytes ?? 10 * MIB,
-        maxCount: options.maxImagesPerMessage ?? 8,
+        maxBytes: options.maxImageBytes ?? resolved.get(keys.maxImageBytes).value,
+        maxCount: options.maxImagesPerMessage ?? resolved.get(keys.maxImagesPerMessage).value,
       };
       manager = agents;
       for (const row of host.store.all<Row>("SELECT * FROM agents_agents"))
