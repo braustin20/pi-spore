@@ -88,6 +88,7 @@ export {
   DiffNote,
   FileDiff,
   SendCommentsResponse,
+  StageCommentsRequest,
 } from "./changes.js";
 export {
   applyPiEvent,

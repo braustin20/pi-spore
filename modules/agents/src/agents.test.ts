@@ -19,7 +19,8 @@ import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { Agent, ChatState, Workspace } from "@pi-spore/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { FAKE_PNG } from "../test-fixtures/png.mjs";
 import type { Agents, LaunchHook } from "./contract.js";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
@@ -1090,6 +1091,7 @@ describe("chats (ADR 0030)", () => {
       INSERT INTO agents_agents SELECT * FROM old;
       DROP TABLE old;
       ALTER TABLE agents_deliveries DROP COLUMN job_id;
+      ALTER TABLE agents_deliveries DROP COLUMN options;
       DELETE FROM core_migrations WHERE module = 'agents' AND version >= 4;
     `);
     db.close();
@@ -1421,7 +1423,9 @@ describe("deliveries on the job runner", () => {
 
   it("keeps a row pending with its error when the send fails, and sends it after a wake", async () => {
     const { deliver, flag } = await failingPi();
-    const { agentId, workspaceId } = await makeAgent();
+    const { agentId, workspaceId, folder } = await makeAgent();
+    const gate = join(folder, ".fake-pi-hold-turn");
+    writeFileSync(gate, "");
 
     deliver(agentId, "hello");
     await until(() => delivery()?.attempts === 1);
@@ -1429,9 +1433,28 @@ describe("deliveries on the job runner", () => {
 
     rmSync(flag);
     await json(await server.request("POST", `/api/workspaces/${workspaceId}/park`));
+    const settled = new Promise<void>((resolve) => {
+      const publish = server.events.publish.bind(server.events);
+      const listener = vi.spyOn(server.events, "publish").mockImplementation((topic, raw) => {
+        publish(topic, raw);
+        const event = raw as AgentEvent;
+        if (
+          topic === `agent:${agentId}` &&
+          event.type === "pi" &&
+          (event.event as { type: string }).type === "agent_settled"
+        ) {
+          listener.mockRestore();
+          resolve();
+        }
+      });
+    });
     await json(await server.request("POST", `/api/workspaces/${workspaceId}/resume`));
     await until(() => delivery()?.state === "done");
     expect(delivery()).toMatchObject({ attempts: 2, error: null });
+    // Acceptance does not imply a completed turn: Pi has not emitted its transcript yet.
+    expect(texts(await chat(agentId))).toEqual([]);
+    rmSync(gate);
+    await settled;
     expect(texts(await chat(agentId))).toEqual(["user: hello", "assistant: echo: hello"]);
   });
 
@@ -1452,6 +1475,28 @@ describe("deliveries on the job runner", () => {
       "user: second",
       "assistant: echo: second",
     ]);
+  });
+
+  it("keeps a typed prompt behind a pending row, with its images and steer choice", async () => {
+    const { deliver, flag } = await failingPi();
+    const { agentId } = await makeAgent();
+
+    deliver(agentId, "first");
+    await until(() => delivery()?.attempts === 1);
+    rmSync(flag);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/prompt`, {
+        message: "second",
+        images: [{ mimeType: "image/png", data: FAKE_PNG }],
+        whileBusy: "followUp",
+      }),
+    );
+    await until(
+      () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
+    );
+    const lines = texts(await chat(agentId));
+    expect(lines.slice(0, 2)).toEqual(["user: first", "assistant: echo: first"]);
+    expect(lines.slice(2)).toEqual(["user: second", "assistant: echo: second [1 images]"]);
   });
 
   describe("moving and dropping a chat's pending rows", () => {

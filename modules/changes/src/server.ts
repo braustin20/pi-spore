@@ -17,6 +17,7 @@ import {
   parse,
   parseJsonBody,
   type SendCommentsResponse,
+  StageCommentsRequest,
   type Workspace,
 } from "@pi-spore/shared";
 
@@ -36,6 +37,7 @@ const MIGRATIONS = [
     sent_at INTEGER
   )`,
   "CREATE INDEX changes_comments_by_workspace ON changes_comments (workspace_id, sent_at)",
+  "ALTER TABLE changes_comments ADD COLUMN staged INTEGER NOT NULL DEFAULT 0",
 ];
 
 interface CommentRow {
@@ -48,6 +50,7 @@ interface CommentRow {
   body: string;
   created_at: number;
   sent_at: number | null;
+  staged: number;
 }
 
 const toComment = (row: CommentRow): DiffComment => ({
@@ -59,6 +62,7 @@ const toComment = (row: CommentRow): DiffComment => ({
   code: row.code,
   body: row.body,
   createdAt: row.created_at,
+  staged: row.staged === 1,
   ...(row.sent_at === null ? {} : { sentAt: row.sent_at }),
 });
 
@@ -256,6 +260,7 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
           body: request.body.trim(),
           created_at: host.now(),
           sent_at: null,
+          staged: 0,
         };
         if (row.body === "") throw new ApiError(400, "empty_comment", "The comment is empty");
         host.store.run(
@@ -272,6 +277,51 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
         );
         publishComments(workspace.id);
         return c.json({ comment: toComment(row) }, 201);
+      });
+
+      /** Puts open comments in the chat composer's batch, or takes them out again (R8.3). */
+      host.routes.post("/workspaces/:id/comments/stage", async (c) => {
+        const request = parseJsonBody(StageCommentsRequest, await c.req.text(), "stage request");
+        const workspace = workspaces.get(c.req.param("id"));
+        const open = openComments(workspace.id);
+        const unknown = request.ids?.find((id) => !open.some((comment) => comment.id === id));
+        if (unknown) {
+          throw new ApiError(
+            404,
+            "comment_not_found",
+            `No open comment ${unknown} in this workspace`,
+          );
+        }
+        host.store.transaction(() => {
+          for (const comment of open) {
+            if (request.ids && !request.ids.includes(comment.id)) continue;
+            host.store.run(
+              "UPDATE changes_comments SET staged = ? WHERE id = ?",
+              request.staged ? 1 : 0,
+              comment.id,
+            );
+          }
+        });
+        publishComments(workspace.id);
+        return c.json({ comments: openComments(workspace.id) });
+      });
+
+      // R8.3: the staged comments ride along with the next message typed in the workspace's active worker chat.
+      agents.addPromptHook((agent) => {
+        if (agent.kind !== "worker" || !agent.active) return undefined;
+        const staged = openComments(agent.workspaceId).filter((comment) => comment.staged);
+        if (staged.length === 0) return undefined;
+        const sentAt = host.now();
+        for (const comment of staged) {
+          host.store.run(
+            "UPDATE changes_comments SET sent_at = ? WHERE id = ?",
+            sentAt,
+            comment.id,
+          );
+        }
+        // The hook runs inside the prompt's transaction, so subscribers hear of it after the commit.
+        queueMicrotask(() => publishComments(agent.workspaceId));
+        return commentsMessage(staged);
       });
 
       host.routes.delete("/comments/:id", (c) => {
