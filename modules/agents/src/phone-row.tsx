@@ -8,6 +8,7 @@ import {
   ICONS,
   isWorking,
   label,
+  NEW_CHATS,
   SR_LABELS,
   TitleForm,
 } from "./chats.js";
@@ -102,15 +103,15 @@ export function PhoneChatRow({
           Stop agent
         </MenuItem>
         <MenuItem onSelect={() => setRenaming(true)}>Rename</MenuItem>
-        <MenuItem onSelect={() => onNew("worker", false)} disabled={!canStart}>
-          New chat
-        </MenuItem>
-        <MenuItem onSelect={() => onNew("side", false)} disabled={!canStart}>
-          Side chat
-        </MenuItem>
-        <MenuItem onSelect={() => onNew("side", true)} disabled={!canStart}>
-          With context
-        </MenuItem>
+        {NEW_CHATS.map((item) => (
+          <MenuItem
+            key={item.label}
+            onSelect={() => onNew(item.kind, item.fork)}
+            disabled={!canStart}
+          >
+            {item.label}
+          </MenuItem>
+        ))}
         <MenuItem onSelect={() => onClose(selected)} disabled={isWorking(selected)}>
           Close this chat
         </MenuItem>

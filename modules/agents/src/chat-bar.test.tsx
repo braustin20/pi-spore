@@ -32,6 +32,44 @@ afterEach(() => {
 const tab = (id: string) =>
   container?.querySelector(`a[href="#/workspaces/w1/chats/${id}"]`)?.textContent;
 
+async function renderBar(
+  canStart: boolean,
+  onNew: (kind: "worker" | "side", fork: boolean) => void,
+) {
+  const main = { ...chat("main", "idle"), kind: "worker" as const, active: true };
+  container = document.body.appendChild(document.createElement("div"));
+  reactRoot = createRoot(container);
+  await act(async () =>
+    reactRoot?.render(
+      <TooltipProvider>
+        <ChatBar
+          workspaceId="w1"
+          chats={[main]}
+          selected={main}
+          canStart={canStart}
+          onNew={onNew}
+          onRename={async () => {}}
+          onClose={() => {}}
+        />
+      </TooltipProvider>,
+    ),
+  );
+}
+
+const buttons = () => [...(container?.querySelectorAll<HTMLButtonElement>("button") ?? [])];
+const plus = () => buttons().find((b) => b.getAttribute("aria-label") === "New chat or side chat");
+
+/** Radix menus open on a primary-button pointerdown, not on click. */
+async function openMenu(trigger: HTMLElement | undefined) {
+  if (!trigger) throw new Error("no menu trigger");
+  await act(async () => {
+    trigger.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true, button: 0 }));
+  });
+  const menu = document.querySelector<HTMLElement>("[role=menu]");
+  if (!menu) throw new Error("the menu did not open");
+  return menu;
+}
+
 describe("ChatBar", () => {
   it("marks the tab of a working chat as working", async () => {
     const busy = chat("busy", "busy");
@@ -55,6 +93,36 @@ describe("ChatBar", () => {
     );
     expect(tab("busy")).toContain("working");
     expect(tab("idle")).not.toContain("working");
+  });
+
+  it("starts new chats from one + menu", async () => {
+    const calls: [string, boolean][] = [];
+    await renderBar(true, (kind, fork) => calls.push([kind, fork]));
+    expect(
+      buttons().filter((b) => b.getAttribute("aria-label") === "New chat or side chat"),
+    ).toHaveLength(1);
+    const texts = buttons().map((b) => b.textContent?.trim());
+    for (const text of ["New chat", "Side chat", "Side chat with context"]) {
+      expect(texts).not.toContain(text);
+    }
+    for (const name of [/^New chat/, /^Side chat(?! with)/, /^Side chat with context/]) {
+      const menu = await openMenu(plus());
+      const item = [...menu.querySelectorAll<HTMLElement>("[role=menuitem]")].find((el) =>
+        name.test(el.textContent ?? ""),
+      );
+      if (!item) throw new Error(`no menu item ${String(name)}`);
+      await act(async () => item.click());
+    }
+    expect(calls).toEqual([
+      ["worker", false],
+      ["side", false],
+      ["side", true],
+    ]);
+  });
+
+  it("disables the + menu when no chat can start", async () => {
+    await renderBar(false, () => {});
+    expect(plus()?.disabled).toBe(true);
   });
 });
 

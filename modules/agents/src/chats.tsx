@@ -1,6 +1,16 @@
 import type { Agent } from "@pi-spore/shared";
-import { Button, cn, Input, Tooltip } from "@pi-spore/ui";
-import { Eye, History, MessageSquare, MessageSquarePlus, Pencil, Workflow, X } from "lucide-react";
+import { Button, cn, Input, Menu, MenuItem, Tooltip } from "@pi-spore/ui";
+import {
+  Copy,
+  Eye,
+  History,
+  MessageSquare,
+  MessageSquarePlus,
+  Pencil,
+  Plus,
+  Workflow,
+  X,
+} from "lucide-react";
 import { type FormEvent, useEffect, useRef, useState } from "react";
 
 export const label = (chat: Agent) => chat.title ?? "New chat";
@@ -87,9 +97,35 @@ function Title({ chat, onRename }: { chat: Agent; onRename: (title: string) => P
   );
 }
 
+/** The ways to start a chat, shared by the chat bar's "+" menu and the phone row's actions menu. */
+export const NEW_CHATS = [
+  {
+    label: "New chat",
+    icon: MessageSquarePlus,
+    hint: "Start a fresh orchestrator chat. The current one stops and stays readable.",
+    kind: "worker",
+    fork: false,
+  },
+  {
+    label: "Side chat",
+    icon: Eye,
+    hint: "A read-only chat next to the orchestrator, started empty.",
+    kind: "side",
+    fork: false,
+  },
+  {
+    label: "Side chat with context",
+    icon: Copy,
+    hint: "A read-only chat that starts with a copy of the orchestrator chat's context.",
+    kind: "side",
+    fork: true,
+  },
+] as const;
+
 /**
  * The workspace's chats as a row of links (ADR 0030): the active worker chat, then side chats, then older worker
- * chats, in the server's order. Buttons start a fresh worker chat or a side chat, empty or with the worker's context.
+ * chats, in the server's order. A "+" menu starts a fresh worker chat or a side chat, empty or with the worker's
+ * context.
  */
 export type ChatBarProps = {
   workspaceId: string;
@@ -178,37 +214,36 @@ export function ChatBar({
           })}
         </ul>
       </nav>
+      <Tooltip
+        label={canStart ? "New chat or side chat" : "Start a chat only in an active workspace"}
+        side="bottom"
+      >
+        <span className="inline-flex">
+          <Menu
+            trigger={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="New chat or side chat"
+                disabled={!canStart}
+              >
+                <Plus />
+              </Button>
+            }
+          >
+            {NEW_CHATS.map((item) => (
+              <MenuItem key={item.label} onSelect={() => onNew(item.kind, item.fork)}>
+                <item.icon aria-hidden="true" className="size-3.5 shrink-0" />
+                <span className="flex flex-col">
+                  {item.label}
+                  <span className="text-xs text-muted">{item.hint}</span>
+                </span>
+              </MenuItem>
+            ))}
+          </Menu>
+        </span>
+      </Tooltip>
       <Title key={selected.id} chat={selected} onRename={onRename} />
-      <Tooltip
-        label="Start a fresh orchestrator chat. The current one stops and stays readable."
-        side="bottom"
-      >
-        <Button
-          size="sm"
-          variant="ghost"
-          disabled={!canStart}
-          onClick={() => onNew("worker", false)}
-        >
-          <MessageSquarePlus />
-          <span className="max-md:sr-only">New chat</span>
-        </Button>
-      </Tooltip>
-      <Tooltip label="A read-only chat next to the orchestrator, started empty" side="bottom">
-        <Button size="sm" variant="ghost" disabled={!canStart} onClick={() => onNew("side", false)}>
-          <Eye />
-          <span className="max-md:sr-only">Side chat</span>
-        </Button>
-      </Tooltip>
-      <Tooltip
-        label="A read-only chat that starts with a copy of the orchestrator chat's context"
-        side="bottom"
-      >
-        <Button size="sm" variant="ghost" disabled={!canStart} onClick={() => onNew("side", true)}>
-          {/* Phones: short labels keep the chat buttons on one line under the tabs. */}
-          <span className="max-md:hidden">Side chat with context</span>
-          <span className="md:hidden">With context</span>
-        </Button>
-      </Tooltip>
     </div>
   );
 }

@@ -139,7 +139,7 @@ describe("the chat row on a phone", () => {
     await actions("Stop agent");
     await actions("New chat");
     await actions("Side chat");
-    await actions("With context");
+    await actions("Side chat with context");
     expect(sent.filter(({ path }) => path !== "agents")).toEqual([
       { path: "agents/a1/compact", body: undefined },
       { path: "agents/a1/stop", body: undefined },
