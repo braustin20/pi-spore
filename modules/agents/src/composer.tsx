@@ -1,5 +1,5 @@
 import { type AgentDialog, IMAGE_TYPES, type PromptImage } from "@pi-spore/shared";
-import { Button, cn, Notice, Select, Textarea } from "@pi-spore/ui";
+import { Button, cn, Notice, Select, Textarea, usePhone } from "@pi-spore/ui";
 import { ArrowUp, ImagePlus, Square, X } from "lucide-react";
 import {
   type ClipboardEvent,
@@ -54,7 +54,8 @@ function loadDraft(chatId: string): string {
  * The message box. Enter sends, Shift+Enter adds a line. Images come in by paste, drag and drop, or the image button
  * (PNG, JPEG, WebP, GIF); the server checks their size. While the agent works, a message goes in as a steer
  * (after the current turn) or a follow-up (after the run). Typing `/` lists slash commands. `controls` (model and
- * thinking) sit in the row under the text.
+ * thinking) sit in the row under the text. A phone keeps one button row, so while the agent works the busy controls
+ * take the place of `controls` there.
  */
 export function Composer({
   chatId,
@@ -81,6 +82,7 @@ export function Composer({
   ) => Promise<void>;
   onAbort: () => void;
 }) {
+  const phone = usePhone();
   const [text, setText] = useState(() => loadDraft(chatId));
   const [attachments, setAttachments] = useState<Attachment[]>([]);
   const [refused, setRefused] = useState<string | undefined>();
@@ -207,6 +209,24 @@ export function Composer({
     }
   };
 
+  const busyControls = (
+    <>
+      <Select
+        value={whileBusy}
+        onChange={(event) => setWhileBusy(event.target.value as "steer" | "followUp")}
+        aria-label="When a message sent now goes in"
+        className="max-md:min-w-0 max-md:flex-1"
+      >
+        <option value="steer">Steer: after this turn</option>
+        <option value="followUp">Follow up: after the run</option>
+      </Select>
+      <Button variant="secondary" onClick={onAbort} className="max-md:min-w-11 max-md:px-0">
+        <Square />
+        <span className="max-md:sr-only">Stop</span>
+      </Button>
+    </>
+  );
+
   return (
     <div className="relative">
       {matches.length > 0 && (
@@ -248,7 +268,7 @@ export function Composer({
       >
         {attachments.length > 0 && (
           <ul
-            className="m-0 flex list-none flex-wrap gap-2 px-3.5 pt-3"
+            className="m-0 flex list-none flex-wrap gap-2 px-3.5 pt-3 max-md:pt-2"
             aria-label="Images to send"
           >
             {attachments.map((attachment) => (
@@ -257,14 +277,16 @@ export function Composer({
                   src={attachment.url}
                   alt={attachment.name}
                   title={attachment.name}
-                  className="block size-16 rounded-lg border border-line object-cover"
+                  className="block size-16 rounded-lg border border-line object-cover max-md:size-11"
                 />
                 <Button
                   variant="secondary"
                   size="icon-sm"
                   aria-label={`Remove image ${attachment.name}`}
                   onClick={() => remove(attachment.id)}
-                  className="absolute -top-2 -right-2 size-5 rounded-full [&_svg]:size-3"
+                  // On a phone a 44 px button would hide the small thumbnail, so the circle stays small and a
+                  // transparent area around it takes the taps.
+                  className="absolute -top-2 -right-2 size-5 rounded-full max-md:min-h-0 max-md:min-w-0 max-md:before:absolute max-md:before:-inset-3 max-md:before:content-[''] [&_svg]:size-3"
                 >
                   <X />
                 </Button>
@@ -283,27 +305,15 @@ export function Composer({
               ? "The agent is working. Your message goes in as chosen below."
               : "Message the agent"
           }
-          rows={3}
+          // Fewer rows on a phone leave more of the chat above the on-screen keyboard.
+          rows={phone ? 2 : 3}
           disabled={disabled}
-          className="block w-full resize-none border-0 bg-transparent px-3.5 pt-3 text-[15px] focus-visible:outline-none"
+          className="block w-full resize-none border-0 bg-transparent px-3.5 pt-3 text-[15px] focus-visible:outline-none max-md:pt-2"
         />
-        {/* Only the busy controls wrap above the group; the model, thinking and Send controls stay on one line. */}
+        {/* Wide: only the busy controls wrap above the group; model, thinking and Send stay on one line. */}
         <div className="flex flex-wrap items-center gap-2 px-2.5 pb-2.5">
-          {busy && (
-            <div className="flex flex-wrap items-center gap-2">
-              <Select
-                value={whileBusy}
-                onChange={(event) => setWhileBusy(event.target.value as "steer" | "followUp")}
-                aria-label="When a message sent now goes in"
-              >
-                <option value="steer">Steer: after this turn</option>
-                <option value="followUp">Follow up: after the run</option>
-              </Select>
-              <Button variant="secondary" onClick={onAbort}>
-                <Square />
-                Stop
-              </Button>
-            </div>
+          {busy && !phone && (
+            <div className="flex flex-wrap items-center gap-2">{busyControls}</div>
           )}
           <div className="flex min-w-0 flex-[1_1_20rem] items-center gap-2">
             <input
@@ -327,7 +337,7 @@ export function Composer({
             >
               <ImagePlus />
             </Button>
-            {controls}
+            {busy && phone ? busyControls : controls}
             <Button
               variant="primary"
               className="ml-auto shrink-0 max-md:px-4"
