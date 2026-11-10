@@ -6,6 +6,7 @@ import {
   type PrReview,
   type PullRequest,
   parse,
+  stripAnsi,
 } from "@pi-spore/shared";
 import Type, { type Static, type TSchema } from "typebox";
 
@@ -175,10 +176,6 @@ function toPullRequest(pr: Static<typeof GhPullRequest>): PullRequest {
 export function jobIdOf(url: string | undefined): string | undefined {
   return url ? /\/actions\/runs\/\d+\/job\/(\d+)/.exec(url)?.[1] : undefined;
 }
-
-/** Drops terminal color codes, which a log tail does not need. */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: ANSI codes start with ESC, which is what this removes.
-const stripAnsi = (text: string) => text.replace(/\x1b\[[0-9;]*[A-Za-z]/g, "");
 
 /** The end of a log, at most `lines` lines and `bytes` characters. */
 export function tail(text: string, lines: number, chars: number): string {

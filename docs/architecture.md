@@ -600,7 +600,8 @@ fail_first = "artifact"
   artifact, or the run fails with `missing fail-first proof for <test>` before any action runs. Then each gate
   action runs once through `ActionsKey.start(..., "pipeline", { key })` with the key `<run>:<stage>:<action>:<attempt>`,
   so a step that runs again gets the same action run back. A run a restart cut off starts once more under the next
-  attempt. A failure ends the run `failed` with the last 4 KiB of its log. The failing tests are never run again.
+  attempt. A failure ends the run `failed` with the last 4 KiB of its log. The message has no color codes and lists
+  the failed vitest tests (up to 10) above the log. The failing tests are never run again.
   A gate action that config.toml does not declare blocks the run with the stage, the action, and the config.toml
   path to fix.
 - **Blocked message.** When a stage job waits with an error, the run's chat gets one message: the run, its

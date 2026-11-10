@@ -40,6 +40,7 @@ export {
   StageRole,
   ThinkingLevel,
 } from "./agents.js";
+export { logTail, stripAnsi } from "./ansi.js";
 export {
   ArtifactInfo,
   ArtifactList,
@@ -132,6 +133,7 @@ export {
 } from "./kanban.js";
 export {
   BridgeStartPipelineRequest,
+  GATE_LOG_HEADING,
   PIPELINE_ID_PATTERN,
   PipelineEvent,
   PipelineFile,
