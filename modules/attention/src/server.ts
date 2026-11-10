@@ -16,7 +16,9 @@ import {
   parse,
   parseJsonBody,
   type Question,
+  type QuestionStep,
   type RunningItem,
+  type StepAnswer,
 } from "@pi-spore/shared";
 import {
   type ApprovalKind,
@@ -63,6 +65,8 @@ const MIGRATIONS = [
   "CREATE INDEX attention_approvals_by_state ON attention_approvals (state, created_at)",
   // The agent's recommended choice (an index into `choices`); advice only.
   "ALTER TABLE attention_questions ADD COLUMN recommended INTEGER",
+  // A JSON array of QuestionStep. NULL for an old-form question: its one step comes from `question` and `choices`.
+  "ALTER TABLE attention_questions ADD COLUMN steps TEXT",
 ];
 
 interface ApprovalRow {
@@ -125,6 +129,8 @@ interface Row {
   /** A JSON array of strings, written only by this module. */
   choices: string | null;
   recommended: number | null;
+  /** A JSON array of QuestionStep, written only by this module. */
+  steps: string | null;
   state: "open" | "answered" | "closed";
   answer: string | null;
   created_at: number;
@@ -139,6 +145,27 @@ function readChoices(row: Row): string[] {
   }
 }
 
+/** An old-form question is one step: a select the user may answer in their own words, or free text. */
+function readSteps(row: Row): QuestionStep[] {
+  if (row.steps === null)
+    return [
+      row.choices === null
+        ? { type: "text", prompt: row.question }
+        : {
+            type: "select",
+            prompt: row.question,
+            options: readChoices(row).map((label) => ({ label })),
+            ...(row.recommended === null ? {} : { recommended: row.recommended }),
+            allowOther: true,
+          },
+    ];
+  try {
+    return JSON.parse(row.steps) as QuestionStep[];
+  } catch {
+    throw new Error(`Question ${row.id} has broken steps in the store`);
+  }
+}
+
 const toQuestion = (row: Row): Question => ({
   id: row.id,
   agentId: row.agent_id,
@@ -146,6 +173,7 @@ const toQuestion = (row: Row): Question => ({
   question: row.question,
   ...(row.choices === null ? {} : { choices: readChoices(row) }),
   ...(row.recommended === null ? {} : { recommended: row.recommended }),
+  steps: readSteps(row),
   state: row.state,
   ...(row.answer === null ? {} : { answer: row.answer }),
   createdAt: row.created_at,
@@ -159,15 +187,42 @@ const chatOf = (agent: Agent): InboxChat => ({
   active: agent.active,
 });
 
-/** The message that brings the answer to the agent. It names the question, so the agent can resume from it alone. */
+/**
+ * The message that brings the answer to the agent. It names the question, so the agent can resume from it alone.
+ * `answer`: the answer text of a one-step question, or the numbered steps and answers of a longer one.
+ */
 export function answerMessage(question: Question, answer: string): string {
+  const header = `The user answered your question (request_human_input, question ${question.id}).`;
+  if (question.steps.length > 1) return [header, "", answer].join("\n");
+  return [header, "", `Question: ${question.question}`, "", `Answer: ${answer}`].join("\n");
+}
+
+/** Checks one answer against its step (number `n`, from 1) and returns its text for the agent. */
+function answerText(step: QuestionStep, answer: StepAnswer, n: number): string {
+  const bad = (message: string) => new ApiError(400, "bad_answer", `Step ${n}: ${message}`);
+  if (answer.type !== step.type) throw bad(`expected a ${step.type} answer, got ${answer.type}`);
+  if (answer.type === "text") return answer.text;
+  if (answer.type === "confirm") return answer.yes ? "Yes" : "No";
+  // SAFETY: the answer is a select or multiselect, and the step has the same type, so it has options.
+  const { options, allowOther } = step as Extract<QuestionStep, { options: unknown }>;
+  const labels =
+    answer.type === "multiselect"
+      ? answer.labels
+      : answer.label === undefined
+        ? []
+        : [answer.label];
+  const known = new Set(options.map((option) => option.label));
+  const unknown = labels.find((label) => !known.has(label));
+  if (unknown !== undefined) throw bad(`"${unknown}" is not one of the options`);
+  if (new Set(labels).size !== labels.length) throw bad("an option is chosen twice");
+  if (answer.other !== undefined && !allowOther) throw bad("this step takes only its options");
+  const given = labels.length + (answer.other === undefined ? 0 : 1);
+  if (answer.type === "select" && given !== 1) throw bad("give exactly one of label and other");
+  if (given === 0) throw bad("choose at least one option or give other");
   return [
-    `The user answered your question (request_human_input, question ${question.id}).`,
-    "",
-    `Question: ${question.question}`,
-    "",
-    `Answer: ${answer}`,
-  ].join("\n");
+    ...(labels.length > 0 ? [labels.join(", ")] : []),
+    ...(answer.other === undefined ? [] : [`Other: ${answer.other}`]),
+  ].join("; ");
 }
 
 /**
@@ -347,38 +402,57 @@ export const attentionModule: ServerModule = {
 
     const questions: Questions = {
       file: (caller, request) => {
-        const { recommended } = request;
-        if (
-          recommended !== undefined &&
-          (!request.choices || recommended >= request.choices.length)
-        )
+        const { question, choices, recommended, steps } = request;
+        if (steps && (question !== undefined || choices || recommended !== undefined))
+          throw new ApiError(
+            400,
+            "bad_question",
+            "Use either steps or question, choices, and recommended, not both",
+          );
+        const prompt = steps?.[0]?.prompt ?? question;
+        if (prompt === undefined)
+          throw new ApiError(400, "bad_question", "Give steps or a question");
+        if (recommended !== undefined && (!choices || recommended >= choices.length))
           throw new ApiError(
             400,
             "bad_recommended",
-            `recommended index ${recommended} does not match ${request.choices?.length ?? 0} choices`,
+            `recommended index ${recommended} does not match ${choices?.length ?? 0} choices`,
           );
+        for (const [index, step] of (steps ?? []).entries()) {
+          if (step.type !== "select" && step.type !== "multiselect") continue;
+          if (step.recommended !== undefined && step.recommended >= step.options.length)
+            throw new ApiError(
+              400,
+              "bad_recommended",
+              `Step ${index + 1}: recommended index ${step.recommended} does not match ${step.options.length} options`,
+            );
+          if (new Set(step.options.map((option) => option.label)).size !== step.options.length)
+            throw new ApiError(400, "bad_question", `Step ${index + 1}: option labels must differ`);
+        }
         const workspace = workspaces.get(caller.workspaceId);
         const row: Row = {
           id: host.newId(),
           agent_id: caller.agentId,
           workspace_id: workspace.id,
-          question: request.question,
-          choices: request.choices ? JSON.stringify(request.choices) : null,
+          question: prompt,
+          choices: choices ? JSON.stringify(choices) : null,
           recommended: recommended ?? null,
+          steps: steps ? JSON.stringify(steps) : null,
           state: "open",
           answer: null,
           created_at: host.now(),
           answered_at: null,
         };
         host.store.run(
-          `INSERT INTO attention_questions (id, agent_id, workspace_id, question, choices, recommended, state, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+          `INSERT INTO attention_questions (id, agent_id, workspace_id, question, choices, recommended, steps, state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
           row.id,
           row.agent_id,
           row.workspace_id,
           row.question,
           row.choices,
           row.recommended,
+          row.steps,
           row.created_at,
         );
         changed();
@@ -555,20 +629,44 @@ export const attentionModule: ServerModule = {
         }
         if (row.state !== "open")
           throw new ApiError(409, "question_answered", "That question already has an answer");
+        const { steps } = toQuestion(row);
+        if ("answer" in request && steps.length > 1)
+          throw new ApiError(
+            400,
+            "bad_answer",
+            `This question has ${steps.length} steps: send one entry per step in "answers"`,
+          );
+        if ("answers" in request && request.answers.length !== steps.length)
+          throw new ApiError(
+            400,
+            "bad_answer",
+            `This question has ${steps.length} steps, not ${request.answers.length}`,
+          );
+        const texts =
+          "answer" in request
+            ? [request.answer]
+            : steps.map((step, index) =>
+                // SAFETY: the count was checked above.
+                answerText(step, request.answers[index] as StepAnswer, index + 1),
+              );
+        const answer =
+          steps.length === 1
+            ? texts.join("")
+            : steps
+                .map(
+                  (step, index) =>
+                    `${index + 1}. ${step.prompt.trim().split("\n")[0]}\nAnswer: ${texts[index]}`,
+                )
+                .join("\n\n");
         const now = host.now();
         host.store.run(
           "UPDATE attention_questions SET state = 'answered', answer = ?, answered_at = ? WHERE id = ?",
-          request.answer,
+          answer,
           now,
           row.id,
         );
-        const answered = toQuestion({
-          ...row,
-          state: "answered",
-          answer: request.answer,
-          answered_at: now,
-        });
-        agents.deliver(row.agent_id, answerMessage(answered, request.answer));
+        const answered = toQuestion({ ...row, state: "answered", answer, answered_at: now });
+        agents.deliver(row.agent_id, answerMessage(answered, answer));
         return answered;
       });
       changed();

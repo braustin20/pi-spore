@@ -18,6 +18,7 @@ const question = (extra: Partial<Question>): Question => ({
   agentId: "A1",
   workspaceId: "W1",
   question: "Which colour?",
+  steps: [{ type: "text", prompt: "Which colour?" }],
   state: "open",
   createdAt: 1,
   ...extra,

@@ -320,6 +320,168 @@ describe("request_human_input", () => {
     );
   });
 
+  const threeSteps = {
+    steps: [
+      {
+        type: "select",
+        prompt: "Which **color**?\nPick one.",
+        options: [
+          { label: "red", description: "Warm", preview: "`#f00`" },
+          { label: "blue", description: "Cool" },
+        ],
+        recommended: 1,
+        allowOther: true,
+      },
+      {
+        type: "multiselect",
+        prompt: "Which sizes?",
+        options: [{ label: "S" }, { label: "M" }, { label: "L" }],
+        allowOther: true,
+      },
+      { type: "text", prompt: "Any notes?" },
+    ],
+  };
+
+  /** Files `threeSteps` as the agent and returns the open question. */
+  async function fileThree(server: TestServer, name: string) {
+    const { agentId, workspaceId } = await workspace(server, name);
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", threeSteps),
+      201,
+    );
+    return { agentId, question };
+  }
+
+  const answerOf = (server: TestServer, id: string, body: unknown) =>
+    server.request("POST", `/api/attention/questions/${id}/answer`, body);
+
+  it("files a question with several steps and lists it on Home with its steps", async () => {
+    const server = await start();
+    const { question } = await fileThree(server, "steps");
+
+    expect(question).toMatchObject({
+      question: "Which **color**?\nPick one.",
+      steps: threeSteps.steps,
+      state: "open",
+    });
+    expect(question).not.toHaveProperty("choices");
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question).toEqual(question);
+  });
+
+  it("delivers the answers of several steps to the agent as one message, in step order", async () => {
+    const server = await start();
+    const { agentId, question } = await fileThree(server, "step-answers");
+
+    const { question: answered } = await json<{ question: Question }>(
+      await answerOf(server, question.id, {
+        answers: [
+          { type: "select", label: "blue" },
+          { type: "multiselect", labels: ["S", "L"], other: "XL" },
+          { type: "text", text: "Ship soon" },
+        ],
+      }),
+    );
+    const body = [
+      "1. Which **color**?",
+      "Answer: blue",
+      "",
+      "2. Which sizes?",
+      "Answer: S, L; Other: XL",
+      "",
+      "3. Any notes?",
+      "Answer: Ship soon",
+    ].join("\n");
+    const message = [
+      `The user answered your question (request_human_input, question ${question.id}).`,
+      "",
+      body,
+    ].join("\n");
+    await until(() => said(server, agentId).at(-1) === `assistant: echo: ${message}`);
+    expect(answered).toMatchObject({ state: "answered", answer: body });
+  });
+
+  it.each([
+    ["a wrong count", [{ type: "select", label: "blue" }]],
+    [
+      "a wrong type",
+      [
+        { type: "select", label: "blue" },
+        { type: "text", text: "S" },
+        { type: "text", text: "x" },
+      ],
+    ],
+    [
+      "an unknown label",
+      [
+        { type: "select", label: "blue" },
+        { type: "multiselect", labels: ["S", "XXL"] },
+        { type: "text", text: "x" },
+      ],
+    ],
+  ])("rejects answers with %s and keeps the question open", async (_name, answers) => {
+    const server = await start();
+    const { question } = await fileThree(server, "bad-answers");
+
+    const response = await answerOf(server, question.id, { answers });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("bad_answer");
+    const { question: after } = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${question.id}`),
+    );
+    expect(after.state).toBe("open");
+  });
+
+  it("rejects a single answer to a question with several steps", async () => {
+    const server = await start();
+    const { question } = await fileThree(server, "one-answer");
+
+    const response = await answerOf(server, question.id, { answer: "Blue" });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe("bad_answer");
+  });
+
+  it("lists an old-form question as one select step and still takes a single answer", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "old-form");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", {
+        question: "Ship it?",
+        choices: ["yes", "no"],
+        recommended: 0,
+      }),
+      201,
+    );
+
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question.steps).toEqual([
+      {
+        type: "select",
+        prompt: "Ship it?",
+        options: [{ label: "yes" }, { label: "no" }],
+        recommended: 0,
+        allowOther: true,
+      },
+    ]);
+    const { question: answered } = await json<{ question: Question }>(
+      await answerOf(server, question.id, { answer: "Later" }),
+    );
+    expect(answered).toMatchObject({ state: "answered", answer: "Later" });
+  });
+
+  it("rejects steps together with the old question field", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "both-forms");
+    const response = await asAgent(server, agentId, workspaceId)("POST", "questions", {
+      question: "Which?",
+      steps: [{ type: "text", prompt: "Which?" }],
+    });
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "bad_question",
+    );
+  });
+
   it("rejects a bad question with a clear 400", async () => {
     const server = await start();
     const { agentId, workspaceId } = await workspace(server, "bad");

@@ -70,8 +70,11 @@ export {
   InboxItem,
   InboxWorkspace,
   Question,
+  QuestionOption,
+  QuestionStep,
   RunningItem,
   StartBridgeRunRequest,
+  StepAnswer,
 } from "./attention.js";
 export {
   ChangedFile,

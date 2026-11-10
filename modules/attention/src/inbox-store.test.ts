@@ -17,6 +17,7 @@ const question = (id: string, at: number): InboxItem => ({
     agentId: "a1",
     workspaceId: "w1",
     question: `Question ${id}?`,
+    steps: [{ type: "text", prompt: `Question ${id}?` }],
     state: "open",
     createdAt: at,
   },

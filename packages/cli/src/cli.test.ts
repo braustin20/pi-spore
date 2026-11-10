@@ -1397,6 +1397,15 @@ describe("pi-spore inbox", () => {
           question: "Which palette?",
           choices: ["Dark", "Light"],
           recommended: 0,
+          steps: [
+            {
+              type: "select",
+              prompt: "Which palette?",
+              options: [{ label: "Dark" }, { label: "Light" }],
+              recommended: 0,
+              allowOther: true,
+            },
+          ],
           state: "open",
           createdAt: NOW - 5 * 60_000,
         },
