@@ -6,6 +6,7 @@ import { ApiError } from "@pi-spore/module-api";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   BUILT_IN_DEFAULT,
+  BUILT_IN_LIGHT,
   BUILT_IN_REVISE,
   loadPipelines,
   type PipelineEntry,
@@ -71,6 +72,7 @@ describe("pipeline files", () => {
 
     expect(entries.map((entry) => [entry.id, entry.source])).toEqual([
       ["default", "built-in"],
+      ["light", "built-in"],
       ["other", "user"],
       ["p", "project"],
       ["revise", "built-in"],
@@ -113,6 +115,35 @@ describe("pipeline files", () => {
       ],
     });
     expect(entry).not.toHaveProperty("path");
+  });
+
+  it("lists the built-in light pipeline: implement, review, then the gates, with no adversarial stage", async () => {
+    const entry = await entryOf("light");
+
+    expect(entry).toMatchObject({
+      source: "built-in",
+      hash: createHash("sha256").update(BUILT_IN_LIGHT).digest("hex"),
+      stages: [
+        { name: "implement", role: "worker", tier: "route" },
+        {
+          name: "review",
+          role: "reviewer",
+          rounds: 2,
+          fix_passes: 1,
+          early_stop: "jev",
+          min_strength_over: "implement",
+        },
+        { name: "gates", gates: ["check", "test"], fail_first: "artifact" },
+      ],
+    });
+    expect("stages" in entry && entry.stages).toHaveLength(3);
+    expect(entry).not.toHaveProperty("path");
+  });
+
+  it("uses a user file named light in place of the built-in one", async () => {
+    write(userDir, "light", implementOnly("light"));
+
+    expect(await entryOf("light")).toMatchObject({ source: "user" });
   });
 
   it("uses a project file named revise in place of the built-in one", async () => {
