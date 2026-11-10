@@ -62,6 +62,19 @@ agents across Git projects, with first-class Unity support. Read these before ch
 - Add a dependency only when code uses it, at an exact version. Check the current version with `npm view` first.
   Do not rely on memory for library APIs; read the installed package's docs or types.
 
+### Look at the UI (ADR 0172)
+
+happy-dom does not lay out the page. To check layout or visual work by eye, take a screenshot in real Chromium:
+
+1. Start the workspace's server: `run_action { name: "dev", background: true }`. Wait until its log prints
+   `pi-spore dev server: <url>`.
+2. Run `node scripts/screenshot.mjs /settings --width 1440 --out /tmp/settings.png`. Options: `--height <px>`,
+   `--theme <id>` (ids in `packages/ui/src/themes.ts`). It prints the PNG path and whether the page scrolls sideways.
+3. Read the PNG.
+4. Stop the server with `stop_action`.
+
+The script is not a test. It is not part of `npm test` or the pipeline gates.
+
 ## Testing rules
 
 - Tests are deterministic: no network, no real models, no real clock, no sleeps. Use fakes:
