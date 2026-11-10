@@ -1544,6 +1544,7 @@ the Settings page, `#/settings`, shows that list):
 | `worktree.branch_prefix` | project | string, default `spore` | Prefix of the branches pi-spore creates. |
 | `agents.maxLive` | global | whole number, 1 or more, default 8 | Live agent processes at once (ADR 0026). |
 | `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
+| `agents.maxSubagentDepth` | global | whole number, 0 or more, default 2 | How deep pi-subagents helpers may nest. Passed to each agent as `PI_SUBAGENT_MAX_DEPTH` (ADR 0168). |
 | `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
 | `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
 | `server.allowedHosts` | global | array of host names, default none | Tailnet hosts that `tailscale serve` forwards from (ADR 0143). |
@@ -1573,7 +1574,6 @@ The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale
 Not built yet:
 
 - Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
-- A nesting limit for agents (R3.6).
 
 `config.toml` sketch:
 
