@@ -6,7 +6,6 @@ import type {
   InboxItem,
   InboxWorkspace,
   Job,
-  Question,
   RunningItem,
 } from "@pi-spore/shared";
 import {
@@ -33,6 +32,7 @@ import {
   itemKey,
   notification,
 } from "./inbox-store.js";
+import { QuestionCard } from "./question-card.js";
 import { type ApprovalViewProps, AttentionWebKey } from "./web-contract.js";
 
 export * from "./web-contract.js";
@@ -140,83 +140,6 @@ function Where({
       <span className="ml-auto text-xs text-muted" title={new Date(at).toLocaleString()}>
         {ago(at, Date.now())}
       </span>
-    </div>
-  );
-}
-
-function QuestionCard({
-  question,
-  onError,
-}: {
-  question: Question;
-  onError: (text: string) => void;
-}) {
-  const api = useApi();
-  const [text, setText] = useState("");
-  const [sending, setSending] = useState(false);
-  const answer = (value: string) => {
-    setSending(true);
-    api
-      .send("POST", `attention/questions/${question.id}/answer`, { answer: value })
-      .catch((caught: unknown) => {
-        onError(message(caught));
-        setSending(false);
-      });
-  };
-  return (
-    <div className="flex flex-col gap-2.5">
-      <p className="m-0 text-sm whitespace-pre-wrap">{question.question}</p>
-      {question.choices && (
-        <div className="flex flex-col gap-1.5">
-          {question.choices.map((choice, index) => {
-            // Advice only: the agent's pick looks primary, but nothing is answered until the user clicks.
-            const recommended = index === question.recommended;
-            return (
-              <button
-                key={choice}
-                type="button"
-                disabled={sending}
-                onClick={() => answer(choice)}
-                aria-label={recommended ? `${choice} (recommended)` : undefined}
-                className={`flex cursor-pointer items-baseline gap-2.5 rounded-lg border px-3 py-2 text-left text-sm disabled:cursor-default disabled:opacity-60 ${
-                  recommended
-                    ? "border-transparent bg-accent text-on-accent hover:brightness-110"
-                    : "border-line bg-raised text-fg hover:border-accent"
-                }`}
-              >
-                <span
-                  className={`font-mono text-xs ${recommended ? "text-on-accent" : "text-muted"}`}
-                >
-                  {index + 1}
-                </span>
-                <span className="min-w-0 flex-1">{choice}</span>
-                {recommended && (
-                  // The accent chip's own colors vanish on the accent button, so it takes the button's text color.
-                  <Chip tone="accent" className="border-on-accent/50 bg-transparent text-on-accent">
-                    Recommended
-                  </Chip>
-                )}
-              </button>
-            );
-          })}
-        </div>
-      )}
-      <Textarea
-        value={text}
-        onChange={(event) => setText(event.target.value)}
-        placeholder={question.choices ? "Or answer in your own words" : "Your answer"}
-        aria-label="Your answer"
-        rows={2}
-      />
-      <div>
-        <Button
-          variant="primary"
-          disabled={sending || text.trim() === ""}
-          onClick={() => answer(text.trim())}
-        >
-          Send answer
-        </Button>
-      </div>
     </div>
   );
 }
