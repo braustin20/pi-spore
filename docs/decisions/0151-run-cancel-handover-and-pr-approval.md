@@ -1,6 +1,7 @@
 # 0151. A run can be cancelled, follows the active chat, and opens its PR on the user's approval
 
-- Status: Accepted; changed by [0157](0157-finished-run-follows-the-active-chat.md) for finished runs
+- Status: Accepted; changed by [0157](0157-finished-run-follows-the-active-chat.md) and
+  [0165](0165-finished-run-pushes-each-merge.md) for finished runs
 - Date: 2026-11-08
 - Requirements: R7.1 to R7.6, R9.3, R15
 
