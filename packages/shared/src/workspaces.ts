@@ -51,6 +51,8 @@ export const CreateWorkspaceRequest = Type.Object(
     line: Type.Optional(Type.String({ minLength: 1 })),
     /** For `new`: the line to start from. Default: the main copy's current line. For `existing`: recorded as the base. */
     base: Type.Optional(Type.String({ minLength: 1 })),
+    /** A nested table like the settings files; only project keys; checked by the resolver (R17.2). */
+    settings: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
   },
   { additionalProperties: false },
 );

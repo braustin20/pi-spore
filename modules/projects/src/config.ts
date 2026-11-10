@@ -1,5 +1,5 @@
-import type { Settings } from "@pi-spore/module-api";
-import type { ProjectConfigView, ProjectTrait } from "@pi-spore/shared";
+import type { Settings, SettingsOverride } from "@pi-spore/module-api";
+import type { ProjectConfigView, ProjectTrait, SettingEntry } from "@pi-spore/shared";
 import type { ProjectSettings } from "./settings.js";
 
 /**
@@ -12,14 +12,17 @@ export async function resolveConfig(
   projectPath: string,
   traits: readonly ProjectTrait[],
   traitCopy: (traitId: string) => readonly string[] | undefined,
-): Promise<ProjectConfigView> {
+  override?: SettingsOverride,
+): Promise<ProjectConfigView & { entries: SettingEntry[] }> {
   const copy = [...new Set(traits.flatMap((trait) => traitCopy(trait.id) ?? []))];
   const resolved = await settings.resolve({
     projectPath,
     ...(copy.length > 0 ? { detected: { [keys.worktreeCopy.key]: copy } } : {}),
+    ...(override ? { override } : {}),
   });
   return {
     worktreeCopy: resolved.get(keys.worktreeCopy),
     branchPrefix: resolved.get(keys.branchPrefix),
+    entries: resolved.entries(),
   };
 }

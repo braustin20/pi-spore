@@ -23,6 +23,12 @@ export interface RawConfigFiles {
   local?: RawConfigFile;
 }
 
+/** The last layer of a resolve: the settings a workspace or a run was made with (R17.2). */
+export interface SettingsOverride {
+  source: "workspace" | "run";
+  values: Readonly<Record<string, unknown>>;
+}
+
 export interface ResolvedSettings {
   get<S extends TSchema>(def: SettingDef<S>): { value: Static<S>; source: SettingSource };
   /** Every declared setting, sorted by key. */
@@ -48,7 +54,7 @@ export interface Settings {
   resolve(options?: {
     projectPath?: string;
     detected?: Readonly<Record<string, unknown>>;
-    override?: { source: "workspace" | "run"; values: Readonly<Record<string, unknown>> };
+    override?: SettingsOverride;
   }): Promise<ResolvedSettings>;
   /** The project file and the local override, parsed and checked for model keys, sections not yet checked. */
   configFiles(projectPath: string): Promise<RawConfigFiles>;
