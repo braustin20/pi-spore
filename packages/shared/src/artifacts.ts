@@ -34,6 +34,16 @@ export const PromoteArtifactRequest = Type.Object(
 );
 export type PromoteArtifactRequest = Static<typeof PromoteArtifactRequest>;
 
+export const OpenArtifactFolderRequest = Type.Object(
+  { path: Type.String() },
+  { additionalProperties: false },
+);
+export type OpenArtifactFolderRequest = Static<typeof OpenArtifactFolderRequest>;
+
+/** Whether the browser is on the computer that runs pi-spore, so "open folder" can work. */
+export const ArtifactsLocal = Type.Object({ local: Type.Boolean() });
+export type ArtifactsLocal = Static<typeof ArtifactsLocal>;
+
 /** The only event of topic `artifacts:<workspace id>`: both lists, on subscribe and after every write. */
 export const ArtifactsEvent = Type.Object({
   type: Type.Literal("artifacts"),

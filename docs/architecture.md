@@ -1258,6 +1258,8 @@ See [ADR 0070](decisions/0070-artifacts-per-workspace-and-project.md). Requireme
   | `GET /api/artifacts/{workspaces,projects}/:id/file?path=` | The bytes, typed by extension, with `nosniff` and a `sandbox` CSP. |
   | `POST /api/artifacts/{workspaces,projects}/:id/file` `{ path, content }` | Creates or replaces a text file, written by the user. |
   | `POST /api/artifacts/workspaces/:id/promote` `{ path }` | Copies a workspace file to the same path in its project. The original stays. 409 `artifact_exists` if the project has that path; a promotion never replaces. |
+  | `POST /api/artifacts/{workspaces,projects}/:id/open-folder` `{ path }` | Opens the folder that holds the file in the file manager of the server's computer (`xdg-open`, `open`, or `explorer`; 501 `unsupported_platform` elsewhere). The real path must be inside the owner's folder (403 `outside_root`). A request with `X-Forwarded-For` or `Tailscale-User-Login` answers 403 `not_local`. |
+  | `GET /api/artifacts/local` | `{ local }`: false when those headers are present, so the web can hide the button. |
   | `GET /api/artifacts/workspaces/:id/view?path=` | A Markdown or image file for the viewer, from the workspace folder or its two artifact folders. Other extensions answer 415 `not_viewable`, so `.env` and other repo files stay unreadable here. |
 
 - Topic `artifacts:<workspace id>` sends `{ type: "artifacts", workspace, project }` on subscribe and after every

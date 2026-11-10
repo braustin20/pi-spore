@@ -45,9 +45,11 @@ export {
   ArtifactList,
   ArtifactScope,
   ArtifactsEvent,
+  ArtifactsLocal,
   BridgeArtifactFile,
   BridgeArtifactList,
   BridgeWriteArtifactRequest,
+  OpenArtifactFolderRequest,
   PromoteArtifactRequest,
   WriteArtifactRequest,
 } from "./artifacts.js";
