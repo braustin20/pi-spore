@@ -98,7 +98,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     from their history when first read; side chats never take it from the copied history. The user can rename.
   - Chat bar: the tab of a working chat (busy, starting, or waiting) shows a pulsing dot that screen readers read as
     "working", and the selected tab scrolls into view when the selection changes. The chat pane takes live statuses
-    for the tabs from `agents:list`, and keeps the server's order.
+    for the tabs from `agents:list`, and keeps the server's order. One "+" button after the tabs ("New chat or side
+    chat") opens a `Menu` with New chat, Side chat, and Side chat with context, each with a one-line hint. It is
+    disabled while the workspace is not active. The rename pencil follows it. `NEW_CHATS` in
+    `modules/agents/src/chats.tsx` lists these items for this menu and for the phone row's "Chat actions" menu.
 - **Stage agents** (R6, [ADR 0140](decisions/0140-pipeline-stage-agents.md)). A pipeline runs each stage on its own
   agent: kind `stage`, with a role (`worker`, `reviewer`, or `adversarial-reviewer`), a title (`implement`,
   `Review 1`, ...; `<slice name> - implement` when the run has a name), and a fixed model. They show as chat tabs
@@ -308,7 +311,7 @@ export interface ServerHost {
   (the top bar and the workspace pane row) are hidden by one CSS `:has()` rule in `packages/ui/src/styles.css`;
   they come back on blur. The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
   and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,
-  Side chat, With context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
+  Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
   the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
   Hover-only controls also show with `touch:` (`@media (hover: none)`). `packages/web/public` holds the web app manifest and icons. At 768 px and above nothing changes.
 - Confirmations use `useConfirm()` from `@pi-spore/ui`, never `window.confirm`. It returns `{ confirm, dialog }`:
