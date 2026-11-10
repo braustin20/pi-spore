@@ -209,4 +209,11 @@ describe("the chat header on a wide screen", () => {
     expect(section.querySelector("nav[aria-label=Chats]")).not.toBeNull();
     expect(byName("Chat actions")).toBeUndefined();
   });
+
+  it("makes the Chats row the containing block of its hidden tab labels", async () => {
+    await render({ phone: false });
+    // sr-only labels are position: absolute. Without a positioned row they escape its scroll clip and widen
+    // the page. happy-dom has no layout, so the test checks the class.
+    expect(document.querySelector("nav[aria-label=Chats]")?.classList).toContain("relative");
+  });
 });

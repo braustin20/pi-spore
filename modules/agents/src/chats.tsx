@@ -115,7 +115,7 @@ export function ChatBar({
   // On a phone the tabs take the first line and the buttons wrap onto a second one.
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
-      <nav aria-label="Chats" className="min-w-0 flex-1 overflow-x-auto max-md:basis-full">
+      <nav aria-label="Chats" className="relative min-w-0 flex-1 overflow-x-auto max-md:basis-full">
         <ul className="m-0 flex list-none items-center gap-1 p-0">
           {chats.map((chat) => {
             const kind = group(chat);

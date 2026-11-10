@@ -163,7 +163,7 @@ export function App({ pages }: { pages: readonly WebPage[] }) {
           </a>
           <nav
             aria-label="Main"
-            className="flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none] md:hidden"
+            className="relative flex min-w-0 flex-1 items-center overflow-x-auto [scrollbar-width:none] md:hidden"
           >
             {items.map((page) => (
               <RailLink key={page.path} page={page} path={path} inHeader />
