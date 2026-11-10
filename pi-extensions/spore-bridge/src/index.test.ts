@@ -476,6 +476,15 @@ describe("spore-bridge", () => {
     expect(rules).not.toContain("the worker of one workspace");
   });
 
+  it("has the orchestrator pick light or default per slice and name it in the plan", () => {
+    expect(RULES).toContain("Pick a pipeline for each slice.");
+    expect(RULES).toContain("Use `light` for a small, clear slice");
+    expect(RULES).toContain("Use `default` for a new feature");
+    expect(RULES).toContain("Name the pipeline of each slice in the plan");
+    expect(RULES).toContain("Pass it as `pipeline` to start_pipeline");
+    expect(RULES).not.toContain("unless the plan names another");
+  });
+
   it("gives a side chat the side chat rules", async () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
     const options = { contextFiles: [], sections: {} as Record<string, string> };

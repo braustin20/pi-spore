@@ -484,6 +484,32 @@ gates = ["check", "test"] # action names from config.toml
 fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 ```
 
+A built-in `light` is used the same way when no file has id `light`. It is `default` without the `adversarial`
+stage. The orchestrator picks `light` or `default` for each slice and names it in the plan the user approves
+(ADR 0162):
+
+```toml
+id = "light"
+
+[[stage]]
+name = "implement"
+role = "worker"
+tier = "route"
+
+[[stage]]
+name = "review"
+role = "reviewer"
+rounds = 2
+fix_passes = 1
+early_stop = "jev"
+min_strength_over = "implement"
+
+[[stage]]
+name = "gates"
+gates = ["check", "test"]
+fail_first = "artifact"
+```
+
 A built-in `revise` is used the same way when no file has id `revise`. The runs module starts it for `revise_lane`
 (ADR 0158):
 
