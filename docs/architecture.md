@@ -210,7 +210,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     change of it is an `AgentChange` of kind `working`. `undefined` clears it. It never touches `waitingSince`.
     An idle or stopped chat with `workingFor` shows as working: Home has a running item with status `pipeline` and
     the label as its detail, and no `finished` item; the workspace line is `Working (<label>)`, and the chat header
-    `working (<label>)`. A wait for the user and a failed agent still win.
+    `working (<label>)`. A wait for the user and a failed agent still win. The pipelines module sets the label
+    for the chat of each `running` run.
   - `GET /api/agents/:id/children/:runId/transcript?child=<step id>` sends `/subagents-inspect-rpc` to the agent's
     process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
     `child_not_found` for a run not in the list or an agent that is not running, 400 `bad_child_id` for an id with
@@ -606,6 +607,12 @@ fail_first = "artifact"
   severity. The subject is `{ runId, stage, action }`, filed with `action: "fix"`. Its `decided` hook, in the
   decision's transaction, acts on the choice: `fix` starts one last fix turn with no review after it, then the stage
   ends; `accept` ends the stage without a fix; decline stops the run. Home shows the three as buttons, fix first.
+- **Working label.** While a run is `running`, the pipelines module marks its chat with `Agents.setWorkingFor`, so
+  Home does not show the chat as done: `Pipeline: <stage>`, with `, round <n>` from round 2 of a review stage, or
+  `Pipeline: <n> runs` for a coordinator with lanes. The chat is the lane's coordinator, else the asking chat. A
+  `waiting_user` or ended run gives no label. The module syncs it at every `publish`, at boot, and when the runs
+  module calls `Pipelines.refreshWorking` after a new coordinator took over. A target that retention deleted (the
+  chat, or the run workspace of a lane) is skipped.
 - **min_strength_over** (R4.4, ADR 0023, 0152). Before a reviewer starts, its model (stage `model`, `spore/auto`
   for `route`, else the role default) must have a tier at or above every model in `modelsUsed` of the worker, and
   strictly above it when that model's tier is `local`. A cloud model may be reviewed by its own tier, the same model

@@ -427,12 +427,64 @@ export const pipelinesModule: ServerModule = {
         )
         .map(viewOf);
 
+    // Chats that carry a "working" label for a running run. The label is in memory only, so boot sets it again.
+    const labelled = new Set<string>();
+    agents.beforeDeleteChat((agentId) => labelled.delete(agentId));
+    // Retention can delete a chat, or the run workspace of a lane, while a run still runs. One missing id must not
+    // stop the sync of the others; any other error still throws.
+    const unlessGone = <T>(read: () => T): T | undefined => {
+      try {
+        return read();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    };
+    /**
+     * Marks the chat of each running run as working, so Home does not show it as done while its run works. A
+     * waiting_user run gives no label (its approval is the Home item), and neither does an ended one (the chat
+     * has the end message). A lane's run belongs to the run's coordinator, as in `tellBlocked`.
+     */
+    const syncWorking = () => {
+      const byAgent = new Map<string, RunRow[]>();
+      for (const run of host.store.all<RunRow>(
+        "SELECT * FROM pipelines_runs WHERE state = 'running' ORDER BY created_at, id",
+      )) {
+        const agentId = unlessGone(
+          () => laneLookup?.(run.workspace_id)?.coordinatorAgentId ?? run.asking_agent_id,
+        );
+        if (agentId !== undefined && unlessGone(() => !agents.isClosed(agentId))) {
+          byAgent.set(agentId, [...(byAgent.get(agentId) ?? []), run]);
+        }
+      }
+      for (const [agentId, runs] of byAgent) {
+        const [run] = runs as [RunRow];
+        let label = `Pipeline: ${runs.length} runs`;
+        if (runs.length === 1) {
+          const stage = stageOf(run, run.stage_index);
+          const round = stageTurns(run, run.stage_index).filter(
+            (turn) => turn.kind === "review",
+          ).length;
+          label = `Pipeline: ${stage.name}${round >= 2 ? `, round ${round}` : ""}`;
+        }
+        agents.setWorkingFor(agentId, label);
+        labelled.add(agentId);
+      }
+      for (const agentId of labelled) {
+        if (byAgent.has(agentId)) continue;
+        labelled.delete(agentId);
+        unlessGone(() => agents.setWorkingFor(agentId, undefined));
+      }
+    };
+
     const changeListeners: ((workspaceId: string) => void)[] = [];
     const publish = (workspaceId: string) => {
       const event: PipelineEvent = { type: "runs", runs: runsOf(workspaceId) };
       host.events.publish(`${PIPELINES_TOPIC}${workspaceId}`, event);
       for (const listener of changeListeners) listener(workspaceId);
+      syncWorking();
     };
+    host.onStarted(syncWorking);
     host.events.onSubscribe(PIPELINES_TOPIC, (topic) => {
       const workspace = workspaces.get(topic.slice(PIPELINES_TOPIC.length));
       const event: PipelineEvent = { type: "runs", runs: runsOf(workspace.id) };
@@ -1405,6 +1457,7 @@ export const pipelinesModule: ServerModule = {
       onChange: (listener) => {
         changeListeners.push(listener);
       },
+      refreshWorking: syncWorking,
       setLaneLookup: (lookup) => {
         if (laneLookup) throw new Error("The pipelines module already has a lane lookup");
         laneLookup = lookup;

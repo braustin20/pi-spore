@@ -1142,6 +1142,7 @@ export const runsModule: ServerModule = {
         );
         agents.moveDeliveries(run.coordinator_agent_id, agent.id);
       });
+      pipelines.refreshWorking();
       publish();
     });
 

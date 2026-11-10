@@ -48,6 +48,11 @@ export interface Pipelines {
    */
   report(caller: BridgeCaller, report: StageReport): Promise<{ turn: PipelineTurn }>;
   /**
+   * Marks the chat of each running run as working again. The runs module calls it after a run's coordinator changed,
+   * because a lane's run belongs to its coordinator and nothing in the pipelines module changed.
+   */
+  refreshWorking(): void;
+  /**
    * Sets how a run's approvals name a lane workspace, and which chat hears that a lane's run is blocked. The runs
    * module sets it, because runs requires pipelines. At most one.
    */
