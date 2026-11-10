@@ -1470,6 +1470,8 @@ describe("deliveries on the job runner", () => {
     await until(
       () => server.store.all("SELECT 1 FROM agents_deliveries WHERE state = 'done'").length === 2,
     );
+    // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+    await until(async () => texts(await chat(agentId)).includes("assistant: echo: second"));
     expect(texts(await chat(agentId))).toEqual([
       "user: first",
       "assistant: echo: first",
@@ -1612,8 +1614,10 @@ describe("deliveries on the job runner", () => {
       expect(pendingOf(older)).toHaveLength(2);
 
       server.store.transaction(() => agents.moveDeliveries(older, newer));
-      await until(() => pendingOf(newer).length === 0);
+      // A row is done once Pi accepts it, before the reply lands in the transcript. Wait for the last line.
+      await until(async () => texts(await chat(newer)).includes("assistant: echo: second"));
 
+      expect(pendingOf(newer)).toEqual([]);
       expect(pendingOf(older)).toEqual([]);
       expect(texts(await chat(newer))).toEqual([
         "user: first",
@@ -1885,7 +1889,8 @@ describe("stage agents (R6)", () => {
       const { agentId } = await makeAgent();
       expect(await api.turnError(agentId)).toBeUndefined();
       await json(await prompt(agentId, "one"));
-      await replied(agentId, 1);
+      // The first idle is the start-up one.
+      await replied(agentId, 2);
       expect(await api.turnError(agentId)).toBeUndefined();
     });
 
@@ -1906,7 +1911,8 @@ describe("stage agents (R6)", () => {
       await setupStages();
       const { agentId } = await makeAgent();
       await json(await prompt(agentId, "one"));
-      await replied(agentId, 1);
+      // The first idle is the start-up one. Wait for the turn's own end, so Pi does not write the file after rmSync.
+      await replied(agentId, 2);
       const file = server.store.get<{ session_file: string }>(
         "SELECT session_file FROM agents_agents WHERE id = ?",
         agentId,
