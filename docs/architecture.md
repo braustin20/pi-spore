@@ -161,7 +161,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     reviewers, not at the final gates. The orchestrator rules say to start
     every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120),
     and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162).
-  - `start_pipeline` `{ brief, pipeline? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
+  - `start_pipeline` `{ brief, pipeline?, name? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
     posts `POST /api/bridge/pipelines` with the tool call id as receipt and ends the turn with `terminate: true`.
     The run's end arrives later as a message (section 8).
   - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
@@ -549,11 +549,13 @@ fail_first = "artifact"
   built (R6.1); it comes from the role default.
 - `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
   never falls back to the built-in one.
-- **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }`
+- **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }`
   stores the file's SHA-256, its parsed stages (an edit never changes a running run), the brief, and the asking chat
   (the active orchestrator chat). One run per workspace is `running` or `waiting_user` (409 `pipeline_running`).
-  States: `running`, `waiting_user`, `passed`, `failed`, `stopped`.
-- **From the orchestrator** (ADR 0162). The bridge route `POST /api/bridge/pipelines` `{ brief, pipeline? }` reads
+  States: `running`, `waiting_user`, `passed`, `failed`, `stopped`. `name` (1 to 80 characters, column `name`) is
+  the slice's label only; the run returns it when set. The orchestrator passes the slice's name from its plan; a lane
+  run gets the lane's name.
+- **From the orchestrator** (ADR 0162). The bridge route `POST /api/bridge/pipelines` `{ brief, pipeline?, name? }` reads
   `brief` as an artifact path of the caller's workspace (404 `brief_not_found`) and calls `PipelinesKey.start` with
   `pipeline` (default `default`) and the caller as the asking chat. Side chats are refused (403 `read_only_chat`).
   The tool call id is its Idempotency-Key, so a replayed call starts no second run.
@@ -652,16 +654,17 @@ fail_first = "artifact"
 | Route | Does |
 |---|---|
 | `GET /api/pipelines/workspaces/:id` | `{ pipelines }` |
-| `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }` | Starts a run (201). |
+| `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }` | Starts a run (201). |
 | `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
 | `GET /api/pipelines/runs/:id` | `{ run }` |
 | `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed gets a fresh agent. |
 | `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
 
 - Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.
-- Web: a Pipeline tab (after PR) with a start form when no run is active, and the runs, newest first. Only the
-  newest run is open; an older run shows its header and step bar until clicked. A run shows a header line (state,
-  elapsed time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage), the notices
+- Web: a Pipeline tab (after PR) with a start form (pipeline, optional name, brief) when no run is active, and the
+  runs, newest first. Only the newest run is open; an older run shows its header and step bar until clicked. A run
+  shows a header line (the name, then the pipeline id as a chip, or the pipeline id alone; source, state, elapsed
+  time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage), the notices
   (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
   and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
   block, ANSI codes removed. A fix row belongs to the worker stage. Each row is one line (kind and
@@ -670,8 +673,9 @@ fail_first = "artifact"
   at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its
   open findings.
 - CLI: `pi-spore pipeline list <workspace>`, `pipeline start <workspace> <pipeline> (--brief <text> | --brief-file
-  <path>)`, `pipeline runs <workspace>`, `pipeline show <run>`, `pipeline cancel <run>`, `pipeline retry <run>`.
-- Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, askingAgentId?, workerModel? })` does what
+  <path>) [--name <text>]`, `pipeline runs <workspace>`, `pipeline show <run>` (both print the name when set),
+  `pipeline cancel <run>`, `pipeline retry <run>`.
+- Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, name?, askingAgentId?, workerModel? })` does what
   the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`), so
   that run never asks about the local implementer.
   `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
