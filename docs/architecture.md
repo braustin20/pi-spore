@@ -620,9 +620,16 @@ fail_first = "artifact"
 | `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
 
 - Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.
-- Web: a Pipeline tab (after PR) with a start form when no run is active, and the runs: state, current stage,
-  message, `blocked` with Retry, Cancel, and each stage's turns with links to the agents' chats, verdicts, findings
-  by severity, tests with proofs, the worker's route, and Jev's answer. A Details panel shows the latest run and its open findings.
+- Web: a Pipeline tab (after PR) with a start form when no run is active, and the runs, newest first. Only the
+  newest run is open; an older run shows its header and step bar until clicked. A run shows a header line (state,
+  elapsed time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage), the notices
+  (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
+  and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
+  block, ANSI codes removed. A fix row belongs to the worker stage. Each row is one line (kind and
+  round, verdict, finding counts, model, duration) and opens to the summary, findings by severity (minor closed),
+  tests with proofs, the route, Jev's answer, and a link to the agent's chat. Only the newest or running row is open
+  at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its
+  open findings.
 - CLI: `pi-spore pipeline list <workspace>`, `pipeline start <workspace> <pipeline> (--brief <text> | --brief-file
   <path>)`, `pipeline runs <workspace>`, `pipeline show <run>`, `pipeline cancel <run>`, `pipeline retry <run>`.
 - Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, askingAgentId?, workerModel? })` does what
