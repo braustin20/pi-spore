@@ -291,6 +291,7 @@ export const bridgeModule: ServerModule = {
         pipeline: request.pipeline ?? "default",
         brief,
         askingAgentId: caller.agentId,
+        ...(request.name === undefined ? {} : { name: request.name }),
       });
       return c.json({ run }, 201);
     });

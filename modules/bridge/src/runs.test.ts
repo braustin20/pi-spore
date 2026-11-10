@@ -445,6 +445,22 @@ describe("a lane", () => {
     expect(runs.runOf(run.workspaceId)?.id).toBe(run.id);
   });
 
+  it("names the lane's pipeline run after the lane", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "lanename");
+    const { run, coordinator } = await createRun(server, projectId, "lanename");
+
+    const lane = await startLane(run, coordinator, "feature");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const started = await laneOf(server, run.id, lane.id);
+    await laneWorker(server, started);
+
+    const { runs: pipelineRuns } = await json<{ runs: PipelineRun[] }>(
+      await server.request("GET", `/api/pipelines/workspaces/${started.workspaceId}/runs`),
+    );
+    expect(pipelineRuns.map((entry) => entry.name)).toEqual(["feature"]);
+  });
+
   it("sends the coordinator no pipelines end message for its lane's run (ADR 0162)", async () => {
     const server = await start();
     const { projectId } = await project(server, "laneend");

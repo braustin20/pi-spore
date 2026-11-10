@@ -26,6 +26,13 @@ export function registerPipelineTool(pi: ExtensionAPI, client: BridgeClient, env
       pipeline: Type.Optional(
         Type.String({ minLength: 1, description: "Pipeline id; default: default" }),
       ),
+      name: Type.Optional(
+        Type.String({
+          minLength: 1,
+          maxLength: 80,
+          description: "Short name of this slice, such as 'push_line tool'",
+        }),
+      ),
     }),
     async execute(toolCallId, params, signal) {
       const { run } = await client.call(PipelineRunAnswer, "pipelines", {

@@ -4,6 +4,8 @@ import type { PipelineRun, PipelineTurn, StageReport } from "@pi-spore/shared";
 export interface StartRunRequest {
   pipeline: string;
   brief: string;
+  /** The slice's name, a label only. */
+  name?: string;
   /** The agent that asked for the run and gets its approvals. Defaults to the workspace's active worker chat. */
   askingAgentId?: string;
   /** `provider/id`. The model of the worker stage (stage 0) for this run only, instead of the stage's own. */
