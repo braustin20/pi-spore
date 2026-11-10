@@ -638,8 +638,8 @@ fail_first = "artifact"
 See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-questions-up-the-chain.md),
 [ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
 [ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md),
-[ADR 0154](decisions/0154-coordinator-adds-cards.md), and [ADR 0157](decisions/0157-finished-run-follows-the-active-chat.md).
-Requirements R7, R4.8.
+[ADR 0154](decisions/0154-coordinator-adds-cards.md), [ADR 0157](decisions/0157-finished-run-follows-the-active-chat.md), and
+[ADR 0165](decisions/0165-finished-run-pushes-each-merge.md). Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
@@ -682,7 +682,10 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `ActionsKey.start` with a key per merge job and attempt. `finish` commits when all passed (`merged`, wakes waiting
   lanes); on a red gate it writes the diff to `runs/<run>/lanes/<lane>-gates.diff`, aborts, puts the lane back to
   `passed`, and sends the diff path and the last 4 KiB of the log. The run line only holds merges whose gates passed.
-  When every lane is `merged` or `declined`, the coordinator is told to call `open_run_pr`.
+  When every lane is `merged` or `declined`, the coordinator of a `running` run is told to call `open_run_pr`. In a
+  `finished` run, `finish` pushes the run line after the commit with the VCS `publish` push, never forced, so the
+  open PR shows the merge (ADR 0165). The message says so and never names `open_run_pr`. A failed push leaves the
+  lane `merged`, and the message gives the error and says the PR does not show the merge.
 - **Run states.** `running`, `cancelled`, or `finished` (its PR opened).
 - **Cancel.** `POST /api/runs/:id/cancel` (user token) ends a run. In one transaction the run becomes `cancelled`,
   every lane not `merged` becomes `cancelled`, the `runs.lane` and `runs.merge` jobs are cancelled, each lane's
@@ -707,7 +710,7 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   module sets with `RunsKey.setPrOpener`, the same path as the PR tab's publish, and the run becomes `finished`.
   Without that module the approve is 409 `pr_not_supported` and the approval stays open. The outcome or the
   decline note goes to the coordinator, as for every approval. No agent runs `gh`; nothing merges the PR but a
-  human.
+  human. Later merges into the finished run are pushed to that PR (see Merge).
 - **Questions** (R7.5, R7.6, ADR 0008). `ask_coordinator` from a lane agent inserts a `runs_questions` row and
   delivers it to the coordinator in one transaction (403 `not_in_lane` outside a lane). The coordinator answers
   with `answer_lane` from the spec, or asks the user with `request_human_input` first; the answer is stored and
