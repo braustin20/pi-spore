@@ -162,7 +162,8 @@ export interface EditorsDeps {
 }
 
 export interface EditorsOptions {
-  /** Ask `unity status` too. Without it only local signs count, and the lease is not dropped. */
+  /** Ask `unity status` too. Without it only local signs count, and a lease is dropped only when the
+   * process list ran and its editor was seen before. */
   status?: boolean;
 }
 
@@ -248,8 +249,9 @@ export function createEditors(deps: EditorsDeps): UnityEditors & {
         deps.store.run("UPDATE unity_leases SET seen_at = ? WHERE project_id = ?", now, projectId);
         lease = { ...lease, seenAt: now };
       } else if (
-        options.status !== false &&
-        (row.seen_at !== null || now - row.opened_at > STARTUP_GRACE_MS)
+        (options.status !== false &&
+          (row.seen_at !== null || now - row.opened_at > STARTUP_GRACE_MS)) ||
+        (processes !== undefined && row.seen_at !== null)
       ) {
         // The editor was seen and is gone now, or it never came up: it was closed outside pi-spore.
         deps.store.run("DELETE FROM unity_leases WHERE project_id = ?", projectId);

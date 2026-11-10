@@ -354,6 +354,35 @@ describe("Open in Unity", () => {
     await json(await server.request("POST", `/api/workspaces/${a.id}/archive`, {}));
     expect(existsSync(a.path)).toBe(false);
   });
+
+  it("archives a worktree whose editor was seen and then closed outside pi-spore", async () => {
+    const { a } = await setup();
+    await json(await open(a));
+    processes = [{ pid: 4242, argv: ["/opt/Unity/Editor/Unity", "-projectpath", a.path] }];
+    await view(a);
+    // The user quits Unity by hand, and no read of the Unity tab happens before the archive.
+    processes = [];
+    writeState({ instances: [] });
+    rmSync(join(a.path, "Temp"), { recursive: true });
+
+    await json(await server.request("POST", `/api/workspaces/${a.id}/archive`, {}));
+    expect(existsSync(a.path)).toBe(false);
+  });
+
+  it("refuses to archive a worktree whose editor is still starting", async () => {
+    const { a } = await setup();
+    await json(await open(a));
+    // Unity has not written its lock file, started its process, or answered status yet.
+    writeState({ instances: [] });
+    rmSync(join(a.path, "Temp"), { recursive: true });
+
+    const error = await errorOf(
+      await server.request("POST", `/api/workspaces/${a.id}/archive`, {}),
+      409,
+    );
+    expect(error.code).toBe("editor_open");
+    expect(existsSync(a.path)).toBe(true);
+  });
 });
 
 describe("close without the Pipeline package (Q17)", () => {
