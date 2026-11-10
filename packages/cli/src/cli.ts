@@ -114,7 +114,7 @@ Commands:
   jobs retry <job>                         Run an interrupted or waiting job again now
   jobs cancel <job>
   pipeline list <workspace>                Pipelines the workspace can start; a broken one shows its error
-  pipeline start <workspace> <pipeline> (--brief <text> | --brief-file <path>)
+  pipeline start <workspace> <pipeline> (--brief <text> | --brief-file <path>) [--name <text>]
                                            Start a run; a workspace has one active run at a time
   pipeline runs <workspace>                The workspace's runs, newest first
   pipeline show <run>                      A run's stages, turns, verdicts, and findings
@@ -956,7 +956,7 @@ const RunBody = Type.Object({ run: PipelineRunSchema });
 function runLine(run: PipelineRun): string {
   const stage = run.stages[run.stageIndex]?.name ?? "-";
   const note = run.blocked ? `  blocked: ${run.blocked}` : run.message ? `  ${run.message}` : "";
-  return `${run.id}  ${run.state.padEnd(12)} ${run.pipelineId}  stage ${stage}${note.split("\n")[0]}`;
+  return `${run.id}  ${run.state.padEnd(12)} ${run.pipelineId}${run.name ? ` "${run.name}"` : ""}  stage ${stage}${note.split("\n")[0]}`;
 }
 
 function turnLines(turn: PipelineTurn): string[] {
@@ -985,6 +985,7 @@ function turnLines(turn: PipelineTurn): string[] {
 
 function printRun(deps: CliDeps, run: PipelineRun): void {
   deps.out(`Run ${run.id}  ${run.pipelineId} (${run.source})  ${run.state}`);
+  if (run.name) deps.out(`Name ${run.name}`);
   deps.out(`Workspace ${run.workspaceId}`);
   if (run.message) deps.out(`Message: ${run.message}`);
   if (run.blocked)
@@ -1020,7 +1021,7 @@ async function pipelineCommand(
     return;
   }
   if (sub === "start") {
-    const { positional, options } = parseArgs(rest, ["brief", "brief-file"]);
+    const { positional, options } = parseArgs(rest, ["brief", "brief-file", "name"]);
     if (positional.length !== 2)
       throw usageError("pipeline start takes a workspace and a pipeline");
     if ((options.brief === undefined) === (options["brief-file"] === undefined))
@@ -1029,6 +1030,7 @@ async function pipelineCommand(
     const { run } = await api.call("POST", `pipelines/workspaces/${positional[0]}/runs`, RunBody, {
       pipeline: positional[1],
       brief,
+      ...(options.name === undefined ? {} : { name: options.name }),
     });
     return show(run, "Started");
   }
