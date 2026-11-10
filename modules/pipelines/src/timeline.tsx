@@ -105,7 +105,7 @@ function entriesOf(run: PipelineRun): Entry[] {
   return entries;
 }
 
-function formatDuration(ms: number): string {
+export function formatDuration(ms: number): string {
   const seconds = Math.round(Math.max(0, ms) / 1000);
   if (seconds < 60) return `${seconds} s`;
   const minutes = Math.round(seconds / 60);
@@ -114,7 +114,8 @@ function formatDuration(ms: number): string {
   return minutes % 60 === 0 ? `${hours} h` : `${hours} h ${minutes % 60} min`;
 }
 
-const isActive = (run: PipelineRun) => run.state === "running" || run.state === "waiting_user";
+export const isActive = (run: PipelineRun) =>
+  run.state === "running" || run.state === "waiting_user";
 
 /** A turn of an ended run that never reported is not running any more. */
 const isRunning = (run: PipelineRun, turn: PipelineTurn) =>

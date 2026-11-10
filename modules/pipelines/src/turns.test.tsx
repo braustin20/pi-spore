@@ -1,11 +1,7 @@
 // @vitest-environment happy-dom
 import type { PipelineRun, PipelineTurn } from "@pi-spore/shared";
-import { act } from "react";
-import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
-import { openFindings, TurnList } from "./turns.js";
-
-(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
+import { describe, expect, it } from "vitest";
+import { openFindings } from "./turns.js";
 
 const turn = (more: Partial<PipelineTurn>): PipelineTurn => ({
   id: "t1",
@@ -31,66 +27,6 @@ const REVIEW = turn({
     ],
     earlyStop: { stop: false, probability: 0.2 },
   },
-});
-
-let container: HTMLElement | undefined;
-afterEach(() => container?.remove());
-
-async function render(turns: PipelineTurn[]) {
-  container = document.body.appendChild(document.createElement("div"));
-  await act(async () => {
-    createRoot(container as HTMLElement).render(<TurnList turns={turns} workspaceId="w1" />);
-  });
-  return container;
-}
-
-describe("TurnList", () => {
-  it("shows a review's verdict, findings by severity with file:line, and the chat link", async () => {
-    const root = await render([
-      turn({ id: "t0", kind: "task", role: "worker", agentId: "a0", round: 1 }),
-      REVIEW,
-    ]);
-
-    const text = root.textContent ?? "";
-    expect(text).toContain("Revise");
-    expect(text).toContain("Blocking · 1");
-    expect(text).toContain("src/a.ts:12");
-    expect(text.indexOf("Blocking")).toBeLessThan(text.indexOf("Minor"));
-    expect(text).toContain("Jev: keep reviewing (20%)");
-    expect(text).toContain("Waiting for the report.");
-    expect([...root.querySelectorAll("a")].map((a) => a.getAttribute("href"))).toEqual([
-      "#/workspaces/w1/chats/a0",
-      "#/workspaces/w1/chats/a1",
-    ]);
-  });
-
-  it("lists the worker's tests with their proof paths", async () => {
-    const root = await render([
-      turn({
-        kind: "task",
-        role: "worker",
-        report: {
-          turn: "t1",
-          summary: "Done",
-          tests: [{ name: "adds", proof: "proofs/adds.txt" }],
-        },
-      }),
-    ]);
-    expect(root.textContent).toContain("adds");
-    expect(root.textContent).toContain("proofs/adds.txt");
-  });
-
-  it("shows the route a worker ran on, with the router's reasons", async () => {
-    const root = await render([
-      turn({
-        kind: "task",
-        role: "worker",
-        report: { turn: "t1", summary: "Done" },
-        routing: { route: "local", model: "strata/qwen", reasons: ["bounded", "free quota"] },
-      }),
-    ]);
-    expect(root.textContent).toContain("Route: local → strata/qwen. bounded. free quota");
-  });
 });
 
 describe("openFindings", () => {

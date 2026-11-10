@@ -27,9 +27,10 @@ import {
   Textarea,
   type Tone,
 } from "@pi-spore/ui";
-import { Workflow } from "lucide-react";
+import { ChevronRight, Workflow } from "lucide-react";
 import { type SubmitEvent, useEffect, useState } from "react";
-import { openFindings, SEVERITIES, TurnList } from "./turns.js";
+import { formatDuration, isActive, StepBar, Timeline } from "./timeline.js";
+import { openFindings, SEVERITIES } from "./turns.js";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
@@ -40,8 +41,6 @@ const STATES: Record<PipelineRunState, { text: string; tone: Tone }> = {
   failed: { text: "Failed", tone: "fail" },
   stopped: { text: "Stopped", tone: "neutral" },
 };
-
-const isActive = (run: PipelineRun) => run.state === "running" || run.state === "waiting_user";
 
 /** The workspace's runs, newest first: the topic sends the snapshot, then every change. */
 function useRuns(workspaceId: string): PipelineRun[] | undefined {
@@ -130,11 +129,46 @@ function StartForm({ workspace }: { workspace: Workspace }) {
   );
 }
 
-function RunCard({ run, workspaceId }: { run: PipelineRun; workspaceId: string }) {
+/** From the first turn to the end of the run, or to now while it is active. */
+function elapsed(run: PipelineRun, now: number): string {
+  const start =
+    run.turns.length > 0 ? Math.min(...run.turns.map((turn) => turn.createdAt)) : run.createdAt;
+  const reported = run.turns.flatMap((turn) =>
+    turn.reportedAt === undefined ? [] : [turn.reportedAt],
+  );
+  const end = isActive(run)
+    ? now
+    : (run.endedAt ?? (reported.length > 0 ? Math.max(...reported) : start));
+  return formatDuration(end - start);
+}
+
+function RunCard({
+  run,
+  workspaceId,
+  now,
+  defaultOpen,
+}: {
+  run: PipelineRun;
+  workspaceId: string;
+  now: number;
+  defaultOpen: boolean;
+}) {
   const api = useApi();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [open, setOpen] = useState(defaultOpen);
+  // A step click on a closed card opens it; the row exists only after that render.
+  const [pendingStep, setPendingStep] = useState<number | undefined>();
   const shown = STATES[run.state];
+
+  useEffect(() => {
+    if (pendingStep === undefined) return;
+    document
+      .getElementById(`step-${run.id}-${pendingStep}`)
+      ?.scrollIntoView?.({ block: "nearest" });
+    setPendingStep(undefined);
+  }, [pendingStep, run.id]);
+
   const act = async (action: "retry" | "cancel") => {
     setBusy(true);
     setError(undefined);
@@ -146,18 +180,31 @@ function RunCard({ run, workspaceId }: { run: PipelineRun; workspaceId: string }
     setBusy(false);
   };
 
+  // The Gates row holds the full log, so the notice keeps only the first line.
+  const failedAtGates = run.state === "failed" && Boolean(run.stages[run.stageIndex]?.gates);
+  const notice = failedAtGates ? run.message?.split("\n", 1)[0] : run.message;
+
   return (
     <section
       aria-label={`Run of ${run.pipelineId}`}
       className="flex flex-col gap-2 rounded-xl border border-line bg-raised/40 p-3"
     >
       <div className="flex flex-wrap items-center gap-1.5">
-        <span className="font-medium">{run.pipelineId}</span>
+        <button
+          type="button"
+          aria-expanded={open}
+          onClick={() => setOpen(!open)}
+          className="flex cursor-pointer items-center gap-1.5 font-medium"
+        >
+          <ChevronRight
+            aria-hidden="true"
+            className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
+          />
+          {run.pipelineId}
+        </button>
         <Chip>{run.source}</Chip>
         <Chip tone={shown.tone}>{shown.text}</Chip>
-        {isActive(run) && run.stages[run.stageIndex] && (
-          <Chip mono>stage {run.stages[run.stageIndex]?.name}</Chip>
-        )}
+        <span className="text-xs text-muted">{elapsed(run, now)}</span>
         <span className="flex-1" />
         {isActive(run) && (
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act("cancel")}>
@@ -165,15 +212,22 @@ function RunCard({ run, workspaceId }: { run: PipelineRun; workspaceId: string }
           </Button>
         )}
       </div>
-      {run.state === "waiting_user" && (
+      <StepBar
+        run={run}
+        onStep={(index) => {
+          setOpen(true);
+          setPendingStep(index);
+        }}
+      />
+      {open && run.state === "waiting_user" && (
         <Notice tone="warn">The decision is on Home. {run.message}</Notice>
       )}
-      {run.state !== "waiting_user" && run.message && (
+      {open && run.state !== "waiting_user" && notice && (
         <Notice tone={run.state === "failed" ? "fail" : "info"}>
-          <span className="whitespace-pre-wrap">{run.message}</span>
+          <span className="whitespace-pre-wrap">{notice}</span>
         </Notice>
       )}
-      {run.blocked && (
+      {open && run.blocked && (
         <Notice tone="warn">
           <p className="m-0">The run is stuck: {run.blocked}</p>
           <Button size="sm" className="mt-2" disabled={busy} onClick={() => void act("retry")}>
@@ -182,28 +236,22 @@ function RunCard({ run, workspaceId }: { run: PipelineRun; workspaceId: string }
         </Notice>
       )}
       {error && <Notice tone="fail">{error}</Notice>}
-      {run.stages.map((stage, index) => {
-        const turns = run.turns.filter((turn) => turn.stageIndex === index);
-        return (
-          <div key={stage.name}>
-            <SectionLabel>{stage.name}</SectionLabel>
-            {turns.length === 0 ? (
-              <p className="m-0 text-xs text-muted">
-                {stage.gates ? `Gates: ${stage.gates.join(", ")}` : "Not started."}
-              </p>
-            ) : (
-              <TurnList turns={turns} workspaceId={workspaceId} />
-            )}
-          </div>
-        );
-      })}
+      {open && <Timeline run={run} workspaceId={workspaceId} now={now} />}
     </section>
   );
 }
 
-/** The Pipeline tab (R6.7): start a run, then watch its stages and turns. */
+/** The Pipeline tab (R6.7): start a run, then watch its steps and turns. */
 function PipelineTab({ workspace }: { workspace: Workspace }) {
   const runs = useRuns(workspace.id);
+  const [now, setNow] = useState(() => Date.now());
+  const anyActive = runs?.some(isActive) ?? false;
+  useEffect(() => {
+    if (!anyActive) return;
+    setNow(Date.now());
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, [anyActive]);
   if (!runs) {
     return (
       <div className="p-4">
@@ -213,15 +261,21 @@ function PipelineTab({ workspace }: { workspace: Workspace }) {
   }
   return (
     <div className="min-h-0 flex-1 overflow-y-auto">
-      {!runs.some(isActive) && <StartForm key={workspace.id} workspace={workspace} />}
+      {!anyActive && <StartForm key={workspace.id} workspace={workspace} />}
       {runs.length === 0 ? (
         <EmptyState icon={Workflow} title="No runs yet">
           Start a pipeline above.
         </EmptyState>
       ) : (
         <div className="flex flex-col gap-3 p-4">
-          {runs.map((run) => (
-            <RunCard key={run.id} run={run} workspaceId={workspace.id} />
+          {runs.map((run, index) => (
+            <RunCard
+              key={run.id}
+              run={run}
+              workspaceId={workspace.id}
+              now={now}
+              defaultOpen={index === 0}
+            />
           ))}
         </div>
       )}

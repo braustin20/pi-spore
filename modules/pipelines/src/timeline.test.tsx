@@ -177,6 +177,37 @@ describe("Timeline", () => {
     expect(log?.textContent).not.toContain("\u001b");
   });
 
+  it("shows Jev's answer, the worker's tests with proofs, the route, and the chat link in an open row", async () => {
+    const worker = turn({
+      id: "t-w",
+      stageIndex: 0,
+      stage: "implement",
+      kind: "task",
+      role: "worker",
+      agentId: "a-w",
+      createdAt: 0,
+      reportedAt: 1000,
+      report: {
+        turn: "t-w",
+        summary: "Done",
+        tests: [{ name: "adds", proof: "proofs/adds.txt" }],
+        earlyStop: { stop: false, probability: 0.2 },
+      },
+      routing: { route: "local", model: "strata/qwen", reasons: ["bounded", "free quota"] },
+    });
+    const root = await mount(<Timeline run={run({ turns: [worker] })} workspaceId="w1" now={0} />);
+    // The tests and the route sit in closed groups.
+    for (const group of root.querySelectorAll('button[data-state="closed"]')) {
+      await act(async () => (group as HTMLElement).click());
+    }
+    const text = root.textContent ?? "";
+    expect(text).toContain("Jev: keep reviewing (20%)");
+    expect(text).toContain("adds");
+    expect(text).toContain("proofs/adds.txt");
+    expect(text).toContain("Route: local → strata/qwen. bounded. free quota");
+    expect(root.querySelector("a")?.getAttribute("href")).toBe("#/workspaces/w1/chats/a-w");
+  });
+
   it("says how long a turn without a report has been running, from now", async () => {
     const running = turn({ id: "t-run", createdAt: 100_000 });
     const root = await mount(
