@@ -36,6 +36,7 @@ import {
   ProjectList,
   PrStatus,
   parse,
+  type QuestionStep,
   type Run,
   RunList,
   type RunningItem,
@@ -842,26 +843,60 @@ function age(ms: number): string {
   return `${Math.floor(seconds / 86_400)}d`;
 }
 
+/** Markdown from the step, on one line, so the terminal keeps one entry per line. */
+const flat = (text: string) => text.replace(/\n/g, " ");
+
+/**
+ * One step of a question with several steps: its prompt, then its options. Previews are long Markdown for the
+ * browser, so they stay out of the terminal.
+ */
+function stepLines(step: QuestionStep, index: number, total: number): string[] {
+  const recommended =
+    step.type === "confirm" && step.recommended !== undefined
+      ? ` (recommended: ${step.recommended ? "yes" : "no"})`
+      : "";
+  const lines = [
+    `step ${index + 1} of ${total} (${step.type}): ${flat(step.prompt)}${recommended}`,
+  ];
+  if (step.type === "select" || step.type === "multiselect")
+    step.options.forEach((option, i) => {
+      lines.push(`  - ${option.label}${i === step.recommended ? " (recommended)" : ""}`);
+      if (option.description) lines.push(`    ${flat(option.description)}`);
+    });
+  return lines;
+}
+
 const placeOf = ({ item }: InboxEntry) =>
   "workspace" in item ? `${item.workspace.projectName} / ${item.workspace.name}` : item.source;
 
-function inboxDetails({ item }: InboxEntry): string[] {
+function inboxDetails(entry: InboxEntry): string[] {
+  const { item } = entry;
   if ("status" in item)
     return [`status: ${item.status}`, ...(item.detail ? [`detail: ${item.detail}`] : [])];
   switch (item.kind) {
-    case "question":
+    case "question": {
+      const { question } = item;
+      // The old form (`choices`) and a lone text step print as before; any other step needs its own lines.
+      const [first] = question.steps;
+      if (question.steps.length === 1 && (question.choices || first?.type === "text"))
+        return [
+          `question: ${question.question}`,
+          ...(question.choices
+            ? [
+                `choices: ${question.choices
+                  .map((choice, i) =>
+                    i === question.recommended ? `${choice} (recommended)` : choice,
+                  )
+                  .join(", ")}`,
+              ]
+            : []),
+        ];
       return [
-        `question: ${item.question.question}`,
-        ...(item.question.choices
-          ? [
-              `choices: ${item.question.choices
-                .map((choice, i) =>
-                  i === item.question.recommended ? `${choice} (recommended)` : choice,
-                )
-                .join(", ")}`,
-            ]
-          : []),
+        `question: ${question.question}`,
+        ...question.steps.flatMap((step, i) => stepLines(step, i, question.steps.length)),
+        `answer: on Home, at ${entry.link}`,
       ];
+    }
     case "approval":
       return [
         `gate: ${item.approval.kind}`,

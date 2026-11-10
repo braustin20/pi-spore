@@ -80,6 +80,7 @@ const reply = (key: string, ...answers: Reply[]) => replies.set(key, answers);
 interface Tool {
   name: string;
   parameters?: { properties?: Record<string, unknown> };
+  promptGuidelines?: string[];
   executionMode?: "sequential" | "parallel";
   execute(
     id: string,
@@ -178,6 +179,26 @@ describe("spore-bridge", () => {
       choices: ["red", "blue"],
       recommended: 1,
     });
+  });
+
+  it("sends the steps of a multi-step question, and no question of its own", async () => {
+    reply("POST /api/bridge/questions", { status: 201, body: { question: { id: "q1" } } });
+    const steps = [
+      {
+        type: "select",
+        prompt: "Which palette?",
+        options: [
+          { label: "Dark", description: "Easier on the eyes", preview: "```css\n--bg: #111;\n```" },
+          { label: "Light" },
+        ],
+        recommended: 0,
+        allowOther: true,
+      },
+      { type: "confirm", prompt: "Ship it today?", recommended: true },
+    ];
+    await fakePi().tool("request_human_input").execute("toolu_1", { steps });
+
+    expect(seen[0]?.body).toEqual({ steps });
   });
 
   it("runs check until it ends and returns the outcome with the log tail", async () => {
@@ -499,6 +520,22 @@ describe("spore-bridge", () => {
     expect(RULES).toContain("Name the pipeline of each slice in the plan");
     expect(RULES).toContain("Pass it as `pipeline` to start_pipeline");
     expect(RULES).not.toContain("unless the plan names another");
+  });
+
+  it("tells the orchestrator to ask related decisions in one call with steps", () => {
+    expect(RULES).toContain("Ask related decisions in one request_human_input call with steps");
+  });
+
+  it("tells a run coordinator to ask related decisions in one call with steps", () => {
+    expect(COORDINATOR_RULES).toContain(
+      "Ask related decisions in one request_human_input call with steps",
+    );
+  });
+
+  it("names request_human_input in the guideline that teaches steps", () => {
+    const guidelines = fakePi().tool("request_human_input").promptGuidelines ?? [];
+    const aboutSteps = guidelines.find((line) => line.includes("with steps")) ?? "";
+    expect(aboutSteps).toContain("request_human_input");
   });
 
   it("gives a side chat the side chat rules", async () => {

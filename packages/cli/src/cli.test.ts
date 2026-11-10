@@ -1397,6 +1397,15 @@ describe("pi-spore inbox", () => {
           question: "Which palette?",
           choices: ["Dark", "Light"],
           recommended: 0,
+          steps: [
+            {
+              type: "select",
+              prompt: "Which palette?",
+              options: [{ label: "Dark" }, { label: "Light" }],
+              recommended: 0,
+              allowOther: true,
+            },
+          ],
           state: "open",
           createdAt: NOW - 5 * 60_000,
         },
@@ -1479,6 +1488,112 @@ describe("pi-spore inbox", () => {
     expect(await run(["inbox", "show", "question:Q1"], deps)).toBe(0);
     expect(out.join("\n")).toContain("question: Which palette?");
     expect(out.join("\n")).toContain("choices: Dark (recommended), Light");
+  });
+
+  it("shows each step and option of a multi-step question", async () => {
+    const steps = [
+      {
+        type: "select",
+        prompt: "Which palette?\nPick one.",
+        options: [
+          {
+            label: "Dark",
+            description: "Easier\non the eyes",
+            preview: "```css\n--bg: #111;\n```",
+          },
+          { label: "Light" },
+        ],
+        recommended: 0,
+      },
+      {
+        type: "multiselect",
+        prompt: "Which accents?",
+        options: [{ label: "Blue" }, { label: "Green" }],
+      },
+      { type: "confirm", prompt: "Ship it today?", recommended: true },
+    ];
+    const { deps, out } = fakeDeps(() =>
+      Response.json({
+        items: [
+          {
+            kind: "question",
+            at: NOW,
+            ...place,
+            question: {
+              id: "Q9",
+              agentId: "A1",
+              workspaceId: "W1",
+              question: "Which palette?",
+              steps,
+              state: "open",
+              createdAt: NOW,
+            },
+          },
+        ],
+        interrupted: [],
+        running: [],
+      }),
+    );
+    expect(await run(["inbox", "show", "question:Q9"], deps)).toBe(0);
+    expect(out).toEqual([
+      "id: question:Q9",
+      "kind: question",
+      "age: 0s",
+      "workspace: Game / Fix UI",
+      "chat: Worker (worker)",
+      "link: #/workspaces/W1/chats/A1",
+      "question: Which palette?",
+      "step 1 of 3 (select): Which palette? Pick one.",
+      "  - Dark (recommended)",
+      "    Easier on the eyes",
+      "  - Light",
+      "step 2 of 3 (multiselect): Which accents?",
+      "  - Blue",
+      "  - Green",
+      "step 3 of 3 (confirm): Ship it today? (recommended: yes)",
+      "answer: on Home, at #/workspaces/W1/chats/A1",
+    ]);
+    // Previews are Markdown for the browser; the terminal leaves them out.
+    expect(out.join("\n")).not.toContain("--bg");
+  });
+
+  it("shows the options of a one-step question that uses steps", async () => {
+    const { deps, out } = fakeDeps(() =>
+      Response.json({
+        items: [
+          {
+            kind: "question",
+            at: NOW,
+            ...place,
+            question: {
+              id: "Q8",
+              agentId: "A1",
+              workspaceId: "W1",
+              question: "Which accents?",
+              steps: [
+                {
+                  type: "multiselect",
+                  prompt: "Which accents?",
+                  options: [{ label: "Blue" }, { label: "Green" }],
+                },
+              ],
+              state: "open",
+              createdAt: NOW,
+            },
+          },
+        ],
+        interrupted: [],
+        running: [],
+      }),
+    );
+    expect(await run(["inbox", "show", "question:Q8"], deps)).toBe(0);
+    expect(out.slice(6)).toEqual([
+      "question: Which accents?",
+      "step 1 of 1 (multiselect): Which accents?",
+      "  - Blue",
+      "  - Green",
+      "answer: on Home, at #/workspaces/W1/chats/A1",
+    ]);
   });
 
   it("shows an approval's reason and subject", async () => {

@@ -27,6 +27,69 @@ const ENDED = new Set(["succeeded", "failed", "cancelled", "interrupted"]);
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
+/** One option of a `select` or `multiselect` step. Same shape and limits as shared's `QuestionOption`. */
+const questionOption = Type.Object(
+  {
+    label: Type.String({
+      minLength: 1,
+      maxLength: 200,
+      description: "The short text the user picks",
+    }),
+    description: Type.Optional(
+      Type.String({
+        maxLength: 1_000,
+        description: "What picking this option means, in Markdown",
+      }),
+    ),
+    preview: Type.Optional(
+      Type.String({
+        maxLength: 4_000,
+        description: "A code example or text diagram for this option, in a code block",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
+
+const stepPrompt = Type.String({
+  minLength: 1,
+  maxLength: 4_000,
+  description: "The question of this step, in Markdown",
+});
+
+const choiceStep = <T extends "select" | "multiselect">(type: T) =>
+  Type.Object(
+    {
+      type: Type.Literal(type),
+      prompt: stepPrompt,
+      options: Type.Array(questionOption, { minItems: 2, maxItems: 8 }),
+      recommended: Type.Optional(
+        Type.Integer({ minimum: 0, description: "Index of the option you recommend, if any" }),
+      ),
+      allowOther: Type.Optional(
+        Type.Boolean({ description: "Whether the user may answer in their own words" }),
+      ),
+    },
+    { additionalProperties: false },
+  );
+
+/** One step of a multi-step question. Same shape and limits as shared's `QuestionStep`. */
+const questionStep = Type.Union([
+  Type.Object({ type: Type.Literal("text"), prompt: stepPrompt }, { additionalProperties: false }),
+  choiceStep("select"),
+  choiceStep("multiselect"),
+  Type.Object(
+    {
+      type: Type.Literal("confirm"),
+      prompt: stepPrompt,
+      recommended: Type.Optional(
+        Type.Boolean({ description: "The answer you recommend: true for yes, false for no" }),
+      ),
+    },
+    { additionalProperties: false },
+  ),
+]);
+
 function outcome(run: Run): string {
   if (run.status === "succeeded") return "succeeded";
   if (run.status === "failed") {
@@ -105,19 +168,25 @@ export default function sporeBridge(pi: ExtensionAPI) {
         "File a question for the user on pi-spore's Home page and end your turn. The user answers when they can, " +
         "maybe hours later or after a restart; the answer arrives as a new user message. Write the question so you " +
         "can continue from the answer alone. Give choices when there are a few clear options; the user may still " +
-        "answer in their own words.",
+        "answer in their own words. For several related decisions, use steps: each step is one question of type " +
+        "text, select, multiselect, or confirm. Put each option's details in its description, and a code example " +
+        "or a text diagram in a code block in its preview. Keep each prompt short.",
       promptSnippet:
         "Ask the user a question that waits on Home; the answer arrives later as a message",
       promptGuidelines: [
         "Use request_human_input when you need a decision or information only the user has. Call it alone, as the last tool call of your turn, then stop.",
         "If an ask_user tool is also available, use ask_user only for a quick choice while the user is watching the chat; it blocks and is lost if the process stops. Prefer request_human_input otherwise.",
+        "Ask several related decisions in one request_human_input call with steps; put each option's details in its description and a code example or text diagram in its preview.",
       ],
       parameters: Type.Object({
-        question: Type.String({
-          minLength: 1,
-          maxLength: 4_000,
-          description: "The question, with the context needed to answer it",
-        }),
+        question: Type.Optional(
+          Type.String({
+            minLength: 1,
+            maxLength: 4_000,
+            description:
+              "The question, with the context needed to answer it. Use it with `choices` and `recommended`, never with `steps`",
+          }),
+        ),
         choices: Type.Optional(
           Type.Array(Type.String({ minLength: 1, maxLength: 200 }), {
             minItems: 2,
@@ -128,13 +197,22 @@ export default function sporeBridge(pi: ExtensionAPI) {
         recommended: Type.Optional(
           Type.Integer({ minimum: 0, description: "Index of the choice you recommend, if any" }),
         ),
+        steps: Type.Optional(
+          Type.Array(questionStep, {
+            minItems: 1,
+            maxItems: 6,
+            description:
+              "Related decisions the user answers in order, instead of `question` and `choices`",
+          }),
+        ),
       }),
       async execute(toolCallId, params, signal) {
         const { question } = await client.call(QuestionAnswer, "questions", {
           body: {
-            question: params.question,
+            ...(params.question !== undefined ? { question: params.question } : {}),
             ...(params.choices ? { choices: params.choices } : {}),
             ...(params.recommended !== undefined ? { recommended: params.recommended } : {}),
+            ...(params.steps ? { steps: params.steps } : {}),
           },
           receipt: toolCallId,
           ...(signal ? { signal } : {}),

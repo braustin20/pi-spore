@@ -9,6 +9,7 @@ export { EmptyState } from "./components/empty-state.js";
 export { Checkbox, Field, Input, Select, Textarea } from "./components/field.js";
 export { ImageViewer } from "./components/image-viewer.js";
 export { ListRow } from "./components/list-row.js";
+export { Markdown } from "./components/markdown.js";
 export { ModelPicker, type PickerModel } from "./components/model-picker.js";
 export { Notice } from "./components/notice.js";
 export { Page, PageHeader } from "./components/page.js";

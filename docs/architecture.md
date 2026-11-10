@@ -122,8 +122,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - **spore-bridge** (`pi-extensions/spore-bridge/`, package `@pi-spore/spore-bridge`) is a Pi extension that adds
   the workbench tools. It calls the `bridge` module's routes (`/api/bridge/`) with `PI_SPORE_URL` and the agent
   token (ADR 0032). A failed call reaches the model as a tool error that quotes the server.
-  - `request_human_input` `{ question, choices?, recommended? }`: files a question for the user (Home) and ends the
-    turn with `terminate: true`. The answer arrives later as a new user message, through a delivery (section 6), so
+  - `request_human_input` `{ question, choices?, recommended? }` or `{ steps }` (section 11b): files a question for
+    the user (Home) and ends the turn with `terminate: true`. Its guidelines and the rules say to ask related
+    decisions in one call with steps. The answer arrives later as a new user message, through a delivery (section 6), so
     a long wait survives restarts. Its guidelines say to use the user's `ask_user` only for a quick choice while the user watches.
   - `check`: runs the project's `check` action and returns its outcome and log tail (ADR 0025).
   - `run_action` `{ name, background? }`: runs a named project action the same way.
@@ -1005,15 +1006,27 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.6, R15.
 
 - The `attention` module (core, requires `projects`, `workspaces`, `agents`) owns questions (`attention_questions`:
-  agent, workspace, question, choices, recommended, state `open`, `answered`, or `closed`, answer, times).
-  `recommended` is the index of the choice the agent recommends. It is advice only: Home shows that choice with the
-  primary style and a "Recommended" chip, and `pi-spore inbox` marks it `(recommended)`. Filing it without `choices`,
-  or with an index past the last choice, is 400 `bad_recommended`. A question closes when
+  agent, workspace, question, choices, recommended, steps, state `open`, `answered`, or `closed`, answer, times).
+- A question has 1 to 6 **steps** (`QuestionStep`). Each has a Markdown `prompt` and a `type`: `text`, `select`,
+  `multiselect`, or `confirm`. `select` and `multiselect` have 2 to 8 `options` (`label`, Markdown `description`,
+  Markdown `preview` for a code example or a text diagram), an optional `recommended` index, and `allowOther` (the
+  user may write their own answer). `confirm` may recommend `true` or `false`. The agent files either `steps` or the
+  old form `question`, `choices`, `recommended`; both together, or neither, is 400 `bad_question`. Duplicate labels
+  in a step are 400 `bad_question`. The old form is stored with `steps` NULL and reads as one `select` step with
+  `allowOther` (or one `text` step without choices), so old rows read the same way. `question` always holds the
+  first prompt, for lists and notifications.
+- `recommended` is advice only: Home shows a "Recommended" chip and never picks for the user, and `pi-spore inbox`
+  marks it `(recommended)`. An index without choices, or past the last option, is 400 `bad_recommended`. A question
+  closes when
   its orchestrator chat stops being the active one; answering it then is 409 `question_closed` (ADR 0033). The bridge module files them
   through `QuestionsKey`.
-- `POST /api/attention/questions/:id/answer` `{ answer }` stores the answer and queues it for the agent through
-  `AgentsKey.deliver`, in one transaction. A second answer is 409 `question_answered`. The agent gets a message that
-  names the question, the question text, and the answer.
+- `POST /api/attention/questions/:id/answer` takes `{ answers }`, one `StepAnswer` per step in order (`text`,
+  `select` with a `label` or an `other` text, `multiselect` with `labels` and an optional `other`, `confirm` with
+  `yes`), or the old `{ answer }` free text for a one-step question. A wrong count, a wrong type, an unknown label, or
+  `other` on a step without `allowOther` is 400 `bad_answer` that names the step. It stores the answer and queues it
+  for the agent through `AgentsKey.deliver`, in one transaction. A second answer is 409 `question_answered`. The
+  agent gets one message that names the question. For one step it has the question text and the answer; for more
+  steps it lists each step's prompt (first line) and its answer, in order.
 - `GET /api/attention/inbox` and topic `attention:inbox` give the inbox. The topic sends the whole inbox on subscribe
   and after every change (at most once per tick). It has:
   - Every item names its chat (`chat`: id, title, kind, active) and links to `#/workspaces/<id>/chats/<chat>`.
@@ -1029,8 +1042,14 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   and cleared when the user sends a message, opens the chat, the chat page sees the run end while it is visible, or
   the user dismisses it (`POST /api/agents/:id/seen`). Statuses and dialogs live in memory; after a restart every
   agent is stopped.
-- The Home page (`#/`, attention web module) shows the items as cards: a question with its choices and a text
-  answer; the same dialog card as the chat (from the agents web interface `AgentsWebKey`); a failure with its error;
+- The Home page (`#/`, attention web module) shows the items as cards: a question one step at a time (`QuestionCard`
+  in `question-card.tsx`): "Step 2 of 4", Back, Next, and Send answer on the last step, which sends every answer in
+  one request. Nothing is sent before that. Answers are kept while the user moves, and in `sessionStorage`
+  (`pi-spore:question:<id>`) across a reload. Option rows show the label, the description, and the chip; the
+  selected option's preview shows beside the list on a wide screen and under it on a narrow one. Arrow keys move,
+  Enter picks and goes Next, Escape goes Back, Ctrl+Enter goes Next from a text box. Prompts, descriptions, and
+  previews render with `Markdown` from `@pi-spore/ui` (react-markdown with remark-gfm; no raw HTML; links open in
+  a new tab; images show as links, ADR 0061); the same dialog card as the chat (from the agents web interface `AgentsWebKey`); a failure with its error;
   a finished agent with Open chat and Dismiss. The inbox also has `interrupted`: jobs a restart cut off (section
   6), read through `host.jobs` and shown as "Interrupted work" with Retry and Cancel. Running work is a short list
   below. The Home rail icon shows the count of items and interrupted jobs through `RailItem.useBadge`.
@@ -1099,7 +1118,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     plain one (title, reason, approve, decline with a note).
 - The CLI reads the same route: `pi-spore inbox list` prints each item and each running agent with an id, its kind
   (`question`, `approval`, `dialog`, `failed`, `finished`, `running`, `notice`), age, `project / workspace`, and the
-  chat link. `pi-spore inbox show <id>` prints one in full: a question's text and choices, an approval's gate, title,
+  chat link. `pi-spore inbox show <id>` prints one in full: a question's text and choices (a question with steps: each
+  step with its options, and that it is answered on Home), an approval's gate, title,
   reason, and subject, a dialog's prompt, a failure's error. Ids are `<kind>:<id>` (a dialog is
   `dialog:<agent>:<dialog>`; `failed`, `finished`, and `running` use the agent id). A notice is
   `notice:<source>:<id>`; it has no workspace or chat, so its place column is the source name, its link is its

@@ -4,9 +4,82 @@ import { AgentDialog, AgentStatus, ChatKind } from "./agents.js";
 import { Job } from "./jobs.js";
 import { WorkspaceState } from "./workspaces.js";
 
+/** One option of a `select` or `multiselect` step. `description` and `preview` are Markdown. */
+export const QuestionOption = Type.Object(
+  {
+    label: Type.String({ minLength: 1, maxLength: 200 }),
+    description: Type.Optional(Type.String({ maxLength: 1_000 })),
+    preview: Type.Optional(Type.String({ maxLength: 4_000 })),
+  },
+  { additionalProperties: false },
+);
+export type QuestionOption = Static<typeof QuestionOption>;
+
+/** Markdown. */
+const prompt = Type.String({ minLength: 1, maxLength: 4_000 });
+const choiceStep = <T extends "select" | "multiselect">(type: T) =>
+  Type.Object(
+    {
+      type: Type.Literal(type),
+      prompt,
+      options: Type.Array(QuestionOption, { minItems: 2, maxItems: 8 }),
+      /** Index into `options` of the option the agent recommends. Advice only. */
+      recommended: Type.Optional(Type.Integer({ minimum: 0 })),
+      /** The user may answer in their own words. */
+      allowOther: Type.Optional(Type.Boolean()),
+    },
+    { additionalProperties: false },
+  );
+
+/** One step of a question. The user answers every step, in order, before the agent gets anything. */
+export const QuestionStep = Type.Union([
+  Type.Object({ type: Type.Literal("text"), prompt }, { additionalProperties: false }),
+  choiceStep("select"),
+  choiceStep("multiselect"),
+  Type.Object(
+    {
+      type: Type.Literal("confirm"),
+      prompt,
+      /** The answer the agent recommends. Advice only. */
+      recommended: Type.Optional(Type.Boolean()),
+    },
+    { additionalProperties: false },
+  ),
+]);
+export type QuestionStep = Static<typeof QuestionStep>;
+
+const answerText = Type.String({ minLength: 1, maxLength: 20_000 });
+
+/** The user's answer to one step. The server checks it against the step (exactly one of `label` and `other`). */
+export const StepAnswer = Type.Union([
+  Type.Object({ type: Type.Literal("text"), text: answerText }, { additionalProperties: false }),
+  Type.Object(
+    {
+      type: Type.Literal("select"),
+      label: Type.Optional(Type.String()),
+      other: Type.Optional(answerText),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("multiselect"),
+      labels: Type.Array(Type.String()),
+      other: Type.Optional(answerText),
+    },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { type: Type.Literal("confirm"), yes: Type.Boolean() },
+    { additionalProperties: false },
+  ),
+]);
+export type StepAnswer = Static<typeof StepAnswer>;
+
 /**
  * A question an agent filed for the user with `request_human_input` (R3.5, ADR 0008). `closed`: its chat stopped
- * being the active worker chat before an answer came (ADR 0033).
+ * being the active worker chat before an answer came (ADR 0033). `steps` is always set: an old-form question is one
+ * step. `question` is the first step's prompt; `choices` and `recommended` are set only for the old form.
  */
 export const Question = Type.Object({
   id: Type.String(),
@@ -16,6 +89,7 @@ export const Question = Type.Object({
   choices: Type.Optional(Type.Array(Type.String())),
   /** Index into `choices` of the choice the agent recommends. Advice only. */
   recommended: Type.Optional(Type.Integer({ minimum: 0 })),
+  steps: Type.Array(QuestionStep),
   state: Type.Union([Type.Literal("open"), Type.Literal("answered"), Type.Literal("closed")]),
   answer: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
@@ -23,24 +97,32 @@ export const Question = Type.Object({
 });
 export type Question = Static<typeof Question>;
 
-/** What spore-bridge's `request_human_input` sends. */
+/**
+ * What spore-bridge's `request_human_input` sends: `steps`, or the old form `question`, `choices`, and
+ * `recommended`. The attention module checks that exactly one form is used.
+ */
 export const FileQuestionRequest = Type.Object(
   {
-    question: Type.String({ minLength: 1, maxLength: 4_000 }),
+    question: Type.Optional(Type.String({ minLength: 1, maxLength: 4_000 })),
     choices: Type.Optional(
       Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 2, maxItems: 8 }),
     ),
     /** Index into `choices` of the choice the agent recommends. Advice only. */
     recommended: Type.Optional(Type.Integer({ minimum: 0 })),
+    steps: Type.Optional(Type.Array(QuestionStep, { minItems: 1, maxItems: 6 })),
   },
   { additionalProperties: false },
 );
 export type FileQuestionRequest = Static<typeof FileQuestionRequest>;
 
-export const AnswerQuestionRequest = Type.Object(
-  { answer: Type.String({ minLength: 1, maxLength: 20_000 }) },
-  { additionalProperties: false },
-);
+/** `answer`: free text, for a one-step question only. `answers`: one per step, in order. */
+export const AnswerQuestionRequest = Type.Union([
+  Type.Object({ answer: answerText }, { additionalProperties: false }),
+  Type.Object(
+    { answers: Type.Array(StepAnswer, { minItems: 1, maxItems: 6 }) },
+    { additionalProperties: false },
+  ),
+]);
 export type AnswerQuestionRequest = Static<typeof AnswerQuestionRequest>;
 
 /**
