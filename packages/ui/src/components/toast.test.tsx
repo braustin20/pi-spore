@@ -44,6 +44,15 @@ describe("Toaster", () => {
     expect(link?.textContent).toBe("Open");
   });
 
+  it("clamps the body to 4 lines and keeps long words wrapping", () => {
+    act(() => showToast({ title: "Long", body: "Many words", tone: "warn", href: "#/w/a" }));
+    const body = [...document.querySelectorAll("div")].find(
+      (el) => el.textContent === "Many words",
+    );
+    expect(body?.classList).toContain("line-clamp-4");
+    expect(body?.classList).toContain("[overflow-wrap:anywhere]");
+  });
+
   it("closes by itself after 8 seconds, not before", () => {
     push("Soon gone");
     act(() => {
