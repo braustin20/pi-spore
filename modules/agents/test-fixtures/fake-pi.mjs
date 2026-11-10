@@ -51,7 +51,9 @@ const arg = (name) => {
 };
 if (process.env.FAKE_PI_RECORD) {
   const env = Object.fromEntries(
-    Object.entries(process.env).filter(([key]) => /^(PI_SPORE_|ORCA_|HERDR_)/.test(key)),
+    Object.entries(process.env).filter(([key]) =>
+      /^(PI_SPORE_|PI_SUBAGENT_|ORCA_|HERDR_)/.test(key),
+    ),
   );
   appendFileSync(
     process.env.FAKE_PI_RECORD,

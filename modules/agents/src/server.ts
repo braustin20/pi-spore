@@ -209,6 +209,8 @@ export function createAgentsModule(
             PI_SPORE_WORKSPACE_ID: workspace.id,
             // spore-bridge gives side chats and stage agents their own rules (ADR 0033, R6).
             PI_SPORE_CHAT_KIND: agent.kind,
+            // pi-subagents refuses helpers deeper than this (ADR 0167).
+            PI_SUBAGENT_MAX_DEPTH: String(resolved.get(keys.maxSubagentDepth).value),
           };
           if (agent.kind === "stage") extra.PI_SPORE_STAGE_ROLE = agent.role;
           // Unity worktrees tell unity-mcp which editor is theirs (ADR 0011).
