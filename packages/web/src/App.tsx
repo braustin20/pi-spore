@@ -3,6 +3,7 @@ import {
   cn,
   EmptyState,
   Page,
+  SporeLogo,
   ThemeMenu,
   Toaster,
   Tooltip,
@@ -158,7 +159,7 @@ export function App({ pages }: { pages: readonly WebPage[] }) {
             href="#/"
             className="flex items-center gap-2 font-semibold text-fg no-underline max-md:hidden"
           >
-            <span aria-hidden="true" className="size-2.5 rounded-sm bg-accent" />
+            <SporeLogo className="size-5 text-accent" />
             pi-spore
           </a>
           <nav

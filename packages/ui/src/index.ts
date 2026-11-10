@@ -18,6 +18,7 @@ export { Panel, PanelHeader } from "./components/panel.js";
 export { isPanelResizing, onPanelResizeEnd, ResizeHandle } from "./components/resize-handle.js";
 export { SectionLabel } from "./components/section-label.js";
 export { Spinner } from "./components/spinner.js";
+export { SporeLogo, sporeLogoSvg } from "./components/spore-logo.js";
 export { StatusLine } from "./components/status-line.js";
 export { Table, TableCell, TableHead } from "./components/table.js";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/tabs.js";

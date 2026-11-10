@@ -134,7 +134,11 @@ What exists now:
   that opens a "Terminal font" field, the terminal, and a note that terminals end when the server stops. It can be hidden to a thin strip. The PR tab has a header card
   (number, title, state chip, branch → base, review and conflict chips), the checks as rows with a state chip and a
   link, and the watch with its state chip and tries.
-- **Top bar:** brand, theme menu, server status dot. The command bar comes later.
+- **Top bar:** brand, theme menu, server status dot. The command bar comes later. The brand is the spore logo in
+  `--accent` before the "pi-spore" name.
+- **Icons:** the favicon is the spore logo in the theme's `--accent`. The page redraws it when the theme changes.
+  `/icon.svg` is the static fallback, in the Spore Night accent. The home screen and PWA icons are fixed PNGs: the
+  Spore Night accent logo on `#15131b`.
 - Widths: from 1100 px all three panes fit; from 1280 px the side columns get wider. Below 1100 px, hide a side
   column with its button.
 
@@ -159,6 +163,7 @@ In `@pi-spore/ui` (`packages/ui/src/components`):
 | `Table`, `TableHead`, `TableCell` | dense tables |
 | `Page`, `PageHeader` | a full page inside the shell |
 | `ImageViewer` | a full-size image over a dimmed page (Radix Dialog); Escape or the close button closes it |
+| `SporeLogo` | the pi-spore logo in the text color; `sporeLogoSvg(color)` gives it as a standalone SVG |
 | `Spinner`, `Tooltip`, `ThemeMenu` | |
 
 The PR header card lives in the `github-pr` module.
