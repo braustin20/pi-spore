@@ -621,6 +621,9 @@ export const pipelinesModule: ServerModule = {
     const modelOf = (stage: PipelineStage) =>
       stage.model ?? (stage.tier === "route" ? ROUTE_MODEL : undefined);
     const rolesTitle = (role: StageRole) => (role === "reviewer" ? "Review" : "Adversarial");
+    // The tab shows the slice, so a user can tell which run a stage chat belongs to.
+    const stageTitle = (run: RunRow, title: string) =>
+      run.name === null ? title : `${run.name} - ${title}`;
 
     /** The plan a model draws on (`router.plans`) and its usage now. A provider with no plan has none. */
     const planOf = (
@@ -771,7 +774,14 @@ export const pipelinesModule: ServerModule = {
       // The reused worker keeps its model, so there is no pin to question.
       if (stage.worker === "reuse") {
         const worker = requireRun(run.previous_run_id as string).worker_agent_id as string;
-        return { checkpoint: { boot: bootId }, commit: () => giveTask(worker) };
+        return {
+          checkpoint: { boot: bootId },
+          commit: () => {
+            // The tab names the slice that uses the chat now, not the run that made it.
+            if (run.name !== null) agents.rename(worker, stageTitle(run, stage.name));
+            giveTask(worker);
+          },
+        };
       }
       const pinned = run.worker_model === null ? await pressuredPin(stage) : undefined;
       if (pinned) {
@@ -804,7 +814,7 @@ export const pipelinesModule: ServerModule = {
         commit: () => {
           const agent = agents.createStage(run.workspace_id, {
             role: "worker",
-            title: stage.name,
+            title: stageTitle(run, stage.name),
             ...(model ? { model } : {}),
           });
           giveTask(agent.id);
@@ -930,7 +940,7 @@ export const pipelinesModule: ServerModule = {
         commit: () => {
           const agent = agents.createStage(run.workspace_id, {
             role,
-            title: `${rolesTitle(role)} ${round}`,
+            title: stageTitle(run, `${rolesTitle(role)} ${round}`),
             ...(model ? { model } : {}),
           });
           const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id, note);
@@ -1103,7 +1113,7 @@ export const pipelinesModule: ServerModule = {
           rename();
           const worker = agents.createStage(run.workspace_id, {
             role: "worker",
-            title: stage.name,
+            title: stageTitle(run, stage.name),
             ...(model ? { model } : {}),
           });
           host.store.run(

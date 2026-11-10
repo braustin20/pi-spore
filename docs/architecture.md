@@ -98,8 +98,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     from their history when first read; side chats never take it from the copied history. The user can rename.
 - **Stage agents** (R6, [ADR 0140](decisions/0140-pipeline-stage-agents.md)). A pipeline runs each stage on its own
   agent: kind `stage`, with a role (`worker`, `reviewer`, or `adversarial-reviewer`), a title (`implement`,
-  `Review 1`, ...), and a fixed model. They show as chat tabs after side chats. A busy, starting, or waiting stage
-  agent sets the workspace's status line (section 13).
+  `Review 1`, ...; `<slice name> - implement` when the run has a name), and a fixed model. They show as chat tabs
+  after side chats. A busy, starting, or waiting stage agent sets the workspace's status line (section 13).
   - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
     pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
     `subagents.agentOverrides.<role>`; `modelsUsed(agentId)` lists the physical models Pi recorded on the agent's
@@ -599,6 +599,10 @@ fail_first = "artifact"
   one and tells the agent once to continue and call `report`. If the agent ends its turn without a report, the step
   reminds it once per turn (`reminded` in the checkpoint, also across a restart); a second such end blocks the stage
   (ADR 0169). There are no other automatic reminders.
+- **Stage chat titles.** A run with a slice name (`name`) titles its stage agents `<slice name> - <stage title>`, such
+  as `push_line tool - Review 1`. Without a name the titles stay `implement`, `Review 1`, ... A reused worker (`worker =
+  "reuse"`) is renamed to the new run's slice name when the run has one, in the same commit that gives it the task, so
+  its tab names the run that uses it now. Without a name it keeps its title. The `(failed)` suffix goes on the end.
 - **Failed turns** (ADR 0140). The pipeline listens to the stage agents' status. When the open turn's agent fails
   (`turnError`: a crash, or a turn that ended with `stopReason: "error"`), the `await` step throws
   `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The job
