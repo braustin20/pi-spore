@@ -122,9 +122,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - **spore-bridge** (`pi-extensions/spore-bridge/`, package `@pi-spore/spore-bridge`) is a Pi extension that adds
   the workbench tools. It calls the `bridge` module's routes (`/api/bridge/`) with `PI_SPORE_URL` and the agent
   token (ADR 0032). A failed call reaches the model as a tool error that quotes the server.
-  - `request_human_input` `{ question, choices? }`: files a question for the user (Home) and ends the turn with
-    `terminate: true`. The answer arrives later as a new user message, through a delivery (section 6), so a long wait
-    survives restarts. Its guidelines say to use the user's `ask_user` only for a quick choice while the user watches.
+  - `request_human_input` `{ question, choices?, recommended? }`: files a question for the user (Home) and ends the
+    turn with `terminate: true`. The answer arrives later as a new user message, through a delivery (section 6), so
+    a long wait survives restarts. Its guidelines say to use the user's `ask_user` only for a quick choice while the user watches.
   - `check`: runs the project's `check` action and returns its outcome and log tail (ADR 0025).
   - `run_action` `{ name, background? }`: runs a named project action the same way.
   - Both start the run, follow it with `GET /api/bridge/runs/:id?wait=25000` until it ends, then read the last
@@ -983,7 +983,10 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.6, R15.
 
 - The `attention` module (core, requires `projects`, `workspaces`, `agents`) owns questions (`attention_questions`:
-  agent, workspace, question, choices, state `open`, `answered`, or `closed`, answer, times). A question closes when
+  agent, workspace, question, choices, recommended, state `open`, `answered`, or `closed`, answer, times).
+  `recommended` is the index of the choice the agent recommends. It is advice only: Home shows that choice with the
+  primary style and a "Recommended" chip, and `pi-spore inbox` marks it `(recommended)`. Filing it without `choices`,
+  or with an index past the last choice, is 400 `bad_recommended`. A question closes when
   its orchestrator chat stops being the active one; answering it then is 409 `question_closed` (ADR 0033). The bridge module files them
   through `QuestionsKey`.
 - `POST /api/attention/questions/:id/answer` `{ answer }` stores the answer and queues it for the agent through

@@ -274,6 +274,52 @@ describe("request_human_input", () => {
     expect((await inbox(server)).items).toHaveLength(1);
   });
 
+  it("stores and lists the recommended choice of a question", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "advice");
+    const call = asAgent(server, agentId, workspaceId);
+
+    const filed = await json<{ question: Question }>(
+      await call("POST", "questions", {
+        question: "Which color?",
+        choices: ["red", "blue"],
+        recommended: 1,
+      }),
+      201,
+    );
+    expect(filed.question.recommended).toBe(1);
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question.recommended).toBe(1);
+  });
+
+  it("lists a question without a recommended key when the agent gave none", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "no-advice");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", {
+        question: "Which color?",
+        choices: ["red", "blue"],
+      }),
+      201,
+    );
+    expect(question).not.toHaveProperty("recommended");
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question).not.toHaveProperty("recommended");
+  });
+
+  it.each([
+    ["has no choices", { question: "Which?", recommended: 0 }],
+    ["is past the last choice", { question: "Which?", choices: ["a", "b"], recommended: 5 }],
+  ])("rejects a recommended index that %s", async (_name, body) => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "bad-advice");
+    const response = await asAgent(server, agentId, workspaceId)("POST", "questions", body);
+    expect(response.status).toBe(400);
+    expect(((await response.json()) as { error: { code: string } }).error.code).toBe(
+      "bad_recommended",
+    );
+  });
+
   it("rejects a bad question with a clear 400", async () => {
     const server = await start();
     const { agentId, workspaceId } = await workspace(server, "bad");

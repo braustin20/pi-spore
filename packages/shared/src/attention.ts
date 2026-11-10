@@ -14,6 +14,8 @@ export const Question = Type.Object({
   workspaceId: Type.String(),
   question: Type.String(),
   choices: Type.Optional(Type.Array(Type.String())),
+  /** Index into `choices` of the choice the agent recommends. Advice only. */
+  recommended: Type.Optional(Type.Integer({ minimum: 0 })),
   state: Type.Union([Type.Literal("open"), Type.Literal("answered"), Type.Literal("closed")]),
   answer: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
@@ -28,6 +30,8 @@ export const FileQuestionRequest = Type.Object(
     choices: Type.Optional(
       Type.Array(Type.String({ minLength: 1, maxLength: 200 }), { minItems: 2, maxItems: 8 }),
     ),
+    /** Index into `choices` of the choice the agent recommends. Advice only. */
+    recommended: Type.Optional(Type.Integer({ minimum: 0 })),
   },
   { additionalProperties: false },
 );
