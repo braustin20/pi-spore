@@ -18,6 +18,8 @@ import {
   PageHeader,
   Panel,
   PanelHeader,
+  showToast,
+  splitHash,
   Textarea,
   usePhone,
 } from "@pi-spore/ui";
@@ -54,7 +56,6 @@ let notificationFailureWarned = false;
 
 function showNotification(item: InboxItem): void {
   if (typeof Notification === "undefined" || Notification.permission !== "granted") return;
-  if (document.hasFocus()) return;
   const { title, body } = notification(item);
   let shown: Notification;
   try {
@@ -77,6 +78,33 @@ function showNotification(item: InboxItem): void {
 /** Where a chat opens: `#/workspaces/<workspace>/chats/<chat>`. */
 const chatHref = (workspace: InboxWorkspace, chat: InboxChat) =>
   `#/workspaces/${workspace.id}/chats/${chat.id}`;
+
+const DESKTOP_QUERY = "(hover: hover) and (pointer: fine)";
+
+/** Where an item leads: the link of a notice, else its chat. */
+const itemHref = (item: InboxItem) =>
+  item.kind === "notice" ? item.href : chatHref(item.workspace, item.chat);
+
+const TONES = {
+  question: "warn",
+  approval: "warn",
+  dialog: "warn",
+  failed: "fail",
+  finished: "ok",
+  notice: "warn",
+} as const;
+
+/** Each new item makes one signal: a toast while the user looks at the page on a desktop, else a notification. */
+function notifyItem(item: InboxItem): void {
+  if (!document.hasFocus()) {
+    showNotification(item);
+    return;
+  }
+  if (!window.matchMedia(DESKTOP_QUERY).matches) return;
+  const href = itemHref(item);
+  if (`#${splitHash(window.location.hash).path}` === href) return; // the chat page shows its own asks
+  showToast({ ...notification(item), tone: TONES[item.kind], href });
+}
 
 /** The chat's name as Home shows it: its title, and what kind of chat it is when that is not the worker chat. */
 function chatName(chat: InboxChat): string {
@@ -265,15 +293,6 @@ const TITLES: Record<InboxItem["kind"], string> = {
   notice: "Needs you",
 };
 
-const TONES = {
-  question: "warn",
-  approval: "warn",
-  dialog: "warn",
-  failed: "fail",
-  finished: "ok",
-  notice: "warn",
-} as const;
-
 /** An item a module added to Home (ADR 0155): a title, what is wrong, and a link to where to fix it. */
 function NoticeCard({ item }: { item: Extract<InboxItem, { kind: "notice" }> }) {
   return (
@@ -289,7 +308,7 @@ function NoticeCard({ item }: { item: Extract<InboxItem, { kind: "notice" }> }) 
         {item.detail && <p className="m-0 text-sm text-muted">{item.detail}</p>}
         <div>
           <Button size="sm" asChild>
-            <a href={item.href} className="no-underline">
+            <a href={itemHref(item)} className="no-underline">
               Open
             </a>
           </Button>
@@ -335,7 +354,7 @@ function ItemCard({
         {(item.kind === "failed" || item.kind === "finished") && (
           <div className="flex gap-2">
             <Button size="sm" asChild>
-              <a href={chatHref(item.workspace, item.chat)} className="no-underline">
+              <a href={itemHref(item)} className="no-underline">
                 Open chat
               </a>
             </Button>
@@ -545,7 +564,7 @@ export const attentionWeb: WebModule = {
   requires: ["agents"],
   core: true,
   setup(host) {
-    const store = createInboxStore(host.api, showNotification);
+    const store = createInboxStore(host.api, notifyItem);
     const { DialogCard, addChatPanel, setUserWaits } = host.use(AgentsWebKey);
     setUserWaits(() => {
       const inbox = useSyncExternalStore(store.subscribe, store.get);
