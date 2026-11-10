@@ -33,7 +33,7 @@ export function ThemeMenu() {
         <DropdownMenu.Content
           align="end"
           sideOffset={6}
-          className="z-50 min-w-56 rounded-xl border border-line bg-panel p-1 text-sm text-fg"
+          className="z-50 max-h-[var(--radix-dropdown-menu-content-available-height)] min-w-56 overflow-y-auto rounded-xl border border-line bg-panel p-1 text-sm text-fg"
         >
           <DropdownMenu.Label className="px-2 py-1.5 text-[11px] font-semibold tracking-wider text-muted uppercase">
             Theme

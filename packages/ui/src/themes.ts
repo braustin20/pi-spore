@@ -10,6 +10,16 @@ export interface Theme {
 export const THEMES: readonly Theme[] = [
   { id: "spore-night", name: "Spore Night" },
   { id: "ayu-dark", name: "Ayu Dark" },
+  { id: "catppuccin-mocha", name: "Catppuccin Mocha" },
+  { id: "dracula", name: "Dracula" },
+  { id: "everforest-dark", name: "Everforest Dark" },
+  { id: "gruvbox-dark", name: "Gruvbox Dark" },
+  { id: "monokai", name: "Monokai" },
+  { id: "nord", name: "Nord" },
+  { id: "one-dark", name: "One Dark" },
+  { id: "primer-dark", name: "Primer Dark" },
+  { id: "solarized-dark", name: "Solarized Dark" },
+  { id: "tokyo-night", name: "Tokyo Night" },
   { id: "spore-day", name: "Spore Day" },
 ];
 

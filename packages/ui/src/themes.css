@@ -42,6 +42,266 @@
   --diff-del: hsl(355 84% 69%);
 }
 
+/*
+ * Catppuccin Mocha. Palette: https://github.com/catppuccin/palette
+ * License: MIT, https://github.com/catppuccin/palette/blob/main/LICENSE
+ */
+[data-theme="catppuccin-mocha"] {
+  color-scheme: dark;
+  --bg: hsl(240 21% 15%);
+  --panel: hsl(240 21% 12%);
+  --raised: hsl(237 16% 23%);
+  --line: hsl(234 13% 31%);
+  --text: hsl(226 64% 88%);
+  --text-muted: hsl(228 24% 72%);
+  --accent: hsl(267 84% 81%);
+  --accent-strong: hsl(267 84% 81%);
+  --on-accent: hsl(240 21% 15%);
+  --ok: hsl(115 54% 76%);
+  --fail: hsl(343 81% 75%);
+  --warn: hsl(41 86% 83%);
+  --run: hsl(217 92% 76%);
+  --diff-add: hsl(115 54% 76%);
+  --diff-del: hsl(343 81% 75%);
+}
+
+/*
+ * Dracula. Palette: https://draculatheme.com/spec
+ * License: MIT, https://github.com/dracula/dracula-theme/blob/main/LICENSE
+ * --run is Cyan; Dracula has no blue.
+ * Changed for WCAG AA: --text-muted (Comment) lightness 51% -> 67%. --fail and --diff-del (Red) lightness 67% -> 73%.
+ */
+[data-theme="dracula"] {
+  color-scheme: dark;
+  --bg: hsl(231 15% 18%);
+  --panel: hsl(235 14% 15%);
+  --raised: hsl(230 15% 24%);
+  --line: hsl(232 14% 31%);
+  --text: hsl(60 30% 96%);
+  --text-muted: hsl(225 27% 67%);
+  --accent: hsl(265 89% 78%);
+  --accent-strong: hsl(265 89% 78%);
+  --on-accent: hsl(231 15% 18%);
+  --ok: hsl(135 94% 65%);
+  --fail: hsl(0 100% 73%);
+  --warn: hsl(65 92% 76%);
+  --run: hsl(191 97% 77%);
+  --diff-add: hsl(135 94% 65%);
+  --diff-del: hsl(0 100% 73%);
+}
+
+/*
+ * Everforest Dark (medium). Palette: https://github.com/sainnhe/everforest/blob/master/palette.md
+ * License: MIT, https://github.com/sainnhe/everforest/blob/master/LICENSE
+ * Changed for WCAG AA: --text-muted (grey1) lightness 55% -> 66%. --fail and --diff-del (red) lightness 70% -> 75%.
+ */
+[data-theme="everforest-dark"] {
+  color-scheme: dark;
+  --bg: hsl(206 13% 20%);
+  --panel: hsl(202 14% 16%);
+  --raised: hsl(199 13% 24%);
+  --line: hsl(201 11% 31%);
+  --text: hsl(41 32% 75%);
+  --text-muted: hsl(138 6% 66%);
+  --accent: hsl(83 34% 63%);
+  --accent-strong: hsl(83 34% 63%);
+  --on-accent: hsl(206 13% 20%);
+  --ok: hsl(83 34% 63%);
+  --fail: hsl(359 68% 75%);
+  --warn: hsl(40 56% 68%);
+  --run: hsl(172 31% 62%);
+  --diff-add: hsl(83 34% 63%);
+  --diff-del: hsl(359 68% 75%);
+}
+
+/*
+ * Gruvbox Dark (medium contrast). gruvbox by Pavel Pertsev (morhetz).
+ * Palette: https://github.com/morhetz/gruvbox/blob/master/colors/gruvbox.vim
+ * License: MIT/X11 per the README, https://github.com/morhetz/gruvbox#license (the repo has no LICENSE file).
+ * --panel is dark0_hard, --raised is dark1, --line is dark2.
+ * Changed for WCAG AA: --text-muted (gray) lightness 51% -> 63%. --fail and --diff-del (bright_red) lightness
+ * 59% -> 71%. --run (bright_blue) lightness 58% -> 60%.
+ */
+[data-theme="gruvbox-dark"] {
+  color-scheme: dark;
+  --bg: hsl(0 0% 16%);
+  --panel: hsl(195 6% 12%);
+  --raised: hsl(20 5% 22%);
+  --line: hsl(22 7% 29%);
+  --text: hsl(43 59% 81%);
+  --text-muted: hsl(30 12% 63%);
+  --accent: hsl(42 95% 58%);
+  --accent-strong: hsl(42 95% 58%);
+  --on-accent: hsl(0 0% 16%);
+  --ok: hsl(61 66% 44%);
+  --fail: hsl(6 96% 71%);
+  --warn: hsl(27 99% 55%);
+  --run: hsl(157 16% 60%);
+  --diff-add: hsl(61 66% 44%);
+  --diff-del: hsl(6 96% 71%);
+}
+
+/*
+ * Monokai by Wimer Hazenberg (2006). The original has no license; VS Code ships it under MIT
+ * (https://github.com/microsoft/vscode/tree/main/extensions/theme-monokai). Only the 2006 values; not Monokai Pro.
+ * Palette: https://web.archive.org/web/20071214014707id_/http://www.monokai.nl:80/blog/wp-content/asdev/Monokai.tmTheme
+ * --raised is lineHighlight, --line is selection. Pink is both --accent and --fail.
+ * Changed: --panel and --on-accent are background with lightness 15% -> 10%, a darker panel and AA text on pink.
+ * Changed for WCAG AA: --text-muted (comment) lightness 41% -> 63%. --accent-strong, --fail, and --diff-del (pink)
+ * lightness 56% -> 74%.
+ */
+[data-theme="monokai"] {
+  color-scheme: dark;
+  --bg: hsl(70 8% 15%);
+  --panel: hsl(70 8% 10%);
+  --raised: hsl(55 11% 22%);
+  --line: hsl(55 8% 26%);
+  --text: hsl(60 30% 96%);
+  --text-muted: hsl(50 11% 63%);
+  --accent: hsl(338 95% 56%);
+  --accent-strong: hsl(338 95% 74%);
+  --on-accent: hsl(70 8% 10%);
+  --ok: hsl(80 76% 53%);
+  --fail: hsl(338 95% 74%);
+  --warn: hsl(54 70% 68%);
+  --run: hsl(190 81% 67%);
+  --diff-add: hsl(80 76% 53%);
+  --diff-del: hsl(338 95% 74%);
+}
+
+/*
+ * Nord. Palette: https://www.nordtheme.com/docs/colors-and-palettes
+ * License: MIT, https://github.com/nordtheme/nord/blob/develop/license
+ * Changed for WCAG AA: --text-muted (nord3) lightness 36% -> 76%. --accent-strong (nord8) lightness 67% -> 70%.
+ * --ok and --diff-add (nord14) lightness 65% -> 69%. --fail and --diff-del (nord11) lightness 56% -> 79%.
+ * --run (nord9) lightness 63% -> 75%.
+ */
+[data-theme="nord"] {
+  color-scheme: dark;
+  --bg: hsl(220 16% 22%);
+  --panel: hsl(222 16% 28%);
+  --raised: hsl(220 17% 32%);
+  --line: hsl(220 16% 36%);
+  --text: hsl(219 28% 88%);
+  --text-muted: hsl(220 16% 76%);
+  --accent: hsl(193 43% 67%);
+  --accent-strong: hsl(193 43% 70%);
+  --on-accent: hsl(220 16% 22%);
+  --ok: hsl(92 28% 69%);
+  --fail: hsl(354 42% 79%);
+  --warn: hsl(40 71% 73%);
+  --run: hsl(210 34% 75%);
+  --diff-add: hsl(92 28% 69%);
+  --diff-del: hsl(354 42% 79%);
+}
+
+/*
+ * One Dark. Palette: https://github.com/atom/atom/tree/master/packages/one-dark-syntax and packages/one-dark-ui
+ * License: MIT, https://github.com/atom/atom/blob/master/packages/one-dark-syntax/LICENSE.md
+ * --raised is one-dark-ui @level-1-color (syntax-bg lightened 6%), not selection, so muted text can stay dimmer
+ * than --text.
+ * --accent-strong and --run are blue (hue-2).
+ * Changed for WCAG AA: --text-muted (mono-3) lightness 40% -> 66%. --accent lightness 66% -> 67%.
+ * --fail and --diff-del (red) lightness 65% -> 72%.
+ */
+[data-theme="one-dark"] {
+  color-scheme: dark;
+  --bg: hsl(220 13% 18%);
+  --panel: hsl(216 13% 15%);
+  --raised: hsl(220 13% 24%);
+  --line: hsl(221 14% 45%);
+  --text: hsl(219 14% 71%);
+  --text-muted: hsl(219 10% 66%);
+  --accent: hsl(220 100% 67%);
+  --accent-strong: hsl(207 82% 66%);
+  --on-accent: hsl(220 13% 18%);
+  --ok: hsl(95 38% 62%);
+  --fail: hsl(355 65% 72%);
+  --warn: hsl(39 67% 69%);
+  --run: hsl(207 82% 66%);
+  --diff-add: hsl(95 38% 62%);
+  --diff-del: hsl(355 65% 72%);
+}
+
+/*
+ * Primer Dark. Palette: https://github.com/primer/primitives (dark theme tokens)
+ * License: MIT, https://github.com/primer/primitives/blob/main/LICENSE
+ * Not affiliated with or endorsed by GitHub.
+ * --accent is the button blue #1f6feb with white text.
+ * Changed for WCAG AA: --fail and --diff-del (danger) lightness 63% -> 64%.
+ */
+[data-theme="primer-dark"] {
+  color-scheme: dark;
+  --bg: hsl(216 28% 7%);
+  --panel: hsl(214 25% 11%);
+  --raised: hsl(212 19% 16%);
+  --line: hsl(214 12% 27%);
+  --text: hsl(210 67% 96%);
+  --text-muted: hsl(214 8% 60%);
+  --accent: hsl(216 84% 52%);
+  --accent-strong: hsl(214 93% 62%);
+  --on-accent: hsl(0 0% 100%);
+  --ok: hsl(128 49% 49%);
+  --fail: hsl(3 93% 64%);
+  --warn: hsl(41 72% 48%);
+  --run: hsl(214 93% 62%);
+  --diff-add: hsl(128 49% 49%);
+  --diff-del: hsl(3 93% 64%);
+}
+
+/*
+ * Solarized Dark. Palette: https://github.com/altercation/solarized
+ * License: MIT, https://github.com/altercation/solarized/blob/master/LICENSE
+ * --raised is base02. --text is base1 and --text-muted is base0, since base0 and base01 fail AA on base02.
+ * Changed: --panel is base03 with lightness 11% -> 8%, a darker panel below base02.
+ * Changed for WCAG AA: --text-muted (base0) lightness 55% -> 58%. --accent (blue) lightness 49% -> 53%.
+ * --accent-strong and --run (blue) lightness 49% -> 57%. --ok and --diff-add (green) lightness 30% -> 32%.
+ * --fail and --diff-del (red) lightness 52% -> 68%. --warn (yellow) lightness 35% -> 38%.
+ */
+[data-theme="solarized-dark"] {
+  color-scheme: dark;
+  --bg: hsl(192 100% 11%);
+  --panel: hsl(192 100% 8%);
+  --raised: hsl(192 81% 14%);
+  --line: hsl(194 14% 40%);
+  --text: hsl(180 7% 60%);
+  --text-muted: hsl(186 8% 58%);
+  --accent: hsl(205 69% 53%);
+  --accent-strong: hsl(205 69% 57%);
+  --on-accent: hsl(192 100% 11%);
+  --ok: hsl(68 100% 32%);
+  --fail: hsl(1 71% 68%);
+  --warn: hsl(45 100% 38%);
+  --run: hsl(205 69% 57%);
+  --diff-add: hsl(68 100% 32%);
+  --diff-del: hsl(1 71% 68%);
+}
+
+/*
+ * Tokyo Night. Palette: https://github.com/tokyo-night/tokyo-night-vscode-theme
+ * License: MIT, https://github.com/tokyo-night/tokyo-night-vscode-theme/blob/master/LICENSE.txt
+ * UI surface values from https://github.com/folke/tokyonight.nvim (Apache-2.0).
+ * Changed for WCAG AA: --text-muted (comment) lightness 44% -> 64%.
+ */
+[data-theme="tokyo-night"] {
+  color-scheme: dark;
+  --bg: hsl(235 19% 13%);
+  --panel: hsl(240 15% 10%);
+  --raised: hsl(228 23% 21%);
+  --line: hsl(229 24% 31%);
+  --text: hsl(229 73% 86%);
+  --text-muted: hsl(229 23% 64%);
+  --accent: hsl(221 89% 72%);
+  --accent-strong: hsl(221 89% 72%);
+  --on-accent: hsl(235 19% 13%);
+  --ok: hsl(89 51% 61%);
+  --fail: hsl(349 89% 72%);
+  --warn: hsl(36 66% 64%);
+  --run: hsl(221 89% 72%);
+  --diff-add: hsl(89 51% 61%);
+  --diff-del: hsl(349 89% 72%);
+}
+
 [data-theme="spore-day"] {
   color-scheme: light;
   --bg: hsl(250 25% 97%);
