@@ -462,6 +462,18 @@ export class AgentManager {
       : "the model returned an error";
   }
 
+  /** True when the agent is idle and its last assistant message ended on its own; see `Agents.endedRun`. */
+  async endedRun(id: string): Promise<boolean> {
+    const live = this.get(id);
+    if (live.status !== "idle") return false;
+    const last = (await writtenMessages(live.record.sessionFile)).findLast(
+      (message) => message.role === "assistant",
+    );
+    // A delivery can start a run while the file is read; the caller's pending check would then find no row.
+    if (live.status !== "idle") return false;
+    return last !== undefined && last.stopReason !== "error" && last.stopReason !== "aborted";
+  }
+
   async setModel(id: string, provider: string, modelId: string): Promise<AgentModel | undefined> {
     const live = this.get(id);
     // The pipeline judges a stage by the model it ran on (R4.4), so the model is fixed at creation.

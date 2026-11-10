@@ -115,6 +115,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - `turnError(agentId)` says why the agent's last run failed: the error of a `failed` status, or the
     `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a provider that
     refused, such as a full usage window). `rename(agentId, title)` sets the title.
+  - `endedRun(agentId)` says the agent's last run ended on its own and nothing new waits for it: the agent is
+    `idle`, it has no pending delivery, and its last assistant message did not end with `stopReason` "error" or
+    "aborted". A pending delivery counts because a process goes idle once at start-up, before Pi takes its prompt.
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
   CLI with `pi --session <path>`.
 - Extension dialogs (`extension_ui_request`) become pending prompts on the chat and on Home. The answer goes back as

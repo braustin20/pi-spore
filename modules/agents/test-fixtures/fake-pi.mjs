@@ -20,7 +20,9 @@
 //   { "worker": [...], "reviewer": [...], "adversarial-reviewer": [...] }
 // Each prompt takes the next entry for the agent's PI_SPORE_STAGE_ROLE. A cursor file `<file>.<role>.cursor` keeps the
 // position, so a new process (a fresh reviewer, or after a restart) continues the script. An entry is
-//   "hang"    replies with plain text and sends no report
+//   "hang"    replies with plain text, sends no report, and keeps the run open (no agent_end, no agent_settled)
+//             until an abort, which ends it as an aborted run (stopReason "aborted"). Follow-ups queue meanwhile.
+//   "silent"  replies with plain text, ends the turn with stopReason "stop", and sends no report
 //   "crash"   after Pi accepted the prompt, writes to stderr and exits with code 3, as the "crash" prompt does
 //   { "error": "<text>" }  ends the turn as Pi does when the provider refused it: the last assistant message has
 //             stopReason "error", errorMessage <text>, and no text. No report is sent.
@@ -316,7 +318,8 @@ async function scripted(text) {
     return `script exhausted for ${role}`;
   }
   writeFileSync(cursorFile, String(position + 1));
-  if (entry === "hang") return `waiting (${role} ${position})`;
+  if (entry === "hang") return { hang: `waiting (${role} ${position})` };
+  if (entry === "silent") return `waiting (${role} ${position})`;
   if (entry === "crash") {
     process.stderr.write("boom: the fake agent crashed\n");
     process.exit(3);
@@ -405,10 +408,14 @@ async function run(text, images = []) {
   if (text === "tools") reply = `tools: ${arg("--tools") ?? "read,bash,edit,write"}`;
   if (text.startsWith("ask:")) reply = await ask(text.slice(4), `toolu_${entryCount}`);
   let refusal;
+  let hang = false;
   if (process.env.FAKE_PI_SCRIPT && process.env.PI_SPORE_CHAT_KIND === "stage") {
     const scriptedReply = await scripted(text);
     if (typeof scriptedReply === "string") reply = scriptedReply;
-    else {
+    else if (scriptedReply.hang !== undefined) {
+      hang = true;
+      reply = scriptedReply.hang;
+    } else {
       refusal = scriptedReply.error;
       reply = "";
     }
@@ -454,6 +461,22 @@ async function run(text, images = []) {
   };
   write({ type: "message_end", message: final });
   appendMessage(final);
+  if (hang) {
+    // The reply is written, but the run stays open, as when a tool never returns, until an abort.
+    if (!aborted) await new Promise((resolve) => (abortRun = resolve));
+    aborted = true;
+    const stopped = {
+      role: "assistant",
+      content: [],
+      provider: model.provider,
+      model: model.id,
+      stopReason: "aborted",
+      timestamp: ++clock,
+    };
+    write({ type: "message_start", message: stopped });
+    write({ type: "message_end", message: stopped });
+    appendMessage(stopped);
+  }
   streaming = false;
   abortRun = null;
   write({ type: "agent_end", messages: [] });

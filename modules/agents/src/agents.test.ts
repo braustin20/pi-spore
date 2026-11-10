@@ -29,6 +29,21 @@ import { reduceAgentList, workspaceStatus } from "./status.js";
 
 const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
 
+/** Set it to make the next session file read wait for the promise, so a test can change state while it waits. */
+const heldRead = vi.hoisted(() => ({ next: undefined as Promise<void> | undefined }));
+vi.mock("./transcript.js", async (importOriginal) => {
+  const real = await importOriginal<typeof import("./transcript.js")>();
+  return {
+    ...real,
+    readTranscript: async (path: string) => {
+      const hold = heldRead.next;
+      heldRead.next = undefined;
+      await hold;
+      return real.readTranscript(path);
+    },
+  };
+});
+
 /** Only the Unity trait: the full unity module also needs the actions, artifacts, and attention modules. */
 const unityTraitModule: ServerModule = {
   id: "unity",
@@ -1980,6 +1995,108 @@ describe("stage agents (R6)", () => {
     it("throws a 404 for an unknown agent", async () => {
       await setupStages();
       await expect(api.turnError("nope")).rejects.toMatchObject({ status: 404 });
+    });
+  });
+
+  describe("endedRun", () => {
+    /** A stage agent whose turns follow a fake Pi script, started the way a pipeline does. */
+    const scripted = async (entries: unknown[]) => {
+      const script = join(scratch, "script.json");
+      writeFileSync(script, JSON.stringify({ worker: entries }));
+      await setup(
+        { roleDefaults: async () => ({ provider: "fake", modelId: "fake-1", thinking: "high" }) },
+        { FAKE_PI_SCRIPT: script },
+        {},
+        [probe],
+      );
+      const { workspaceId } = await makeAgent();
+      return start(workspaceId, { role: "worker", title: "Implement" }, "go");
+    };
+    const assistantReplies = (agentId: string) =>
+      events(agentId).filter(
+        (event) =>
+          event.type === "pi" &&
+          (event.event as { type: string; message?: { role?: string } }).type === "message_end" &&
+          (event.event as { message?: { role?: string } }).message?.role === "assistant",
+      ).length;
+
+    it("is false before a session and true after a plain turn ends", async () => {
+      await setupStages();
+      const { agentId } = await makeAgent();
+      expect(await api.endedRun(agentId)).toBe(false);
+      await json(await prompt(agentId, "one"));
+      // The first idle is the start-up one.
+      await replied(agentId, 2);
+      expect(await api.endedRun(agentId)).toBe(true);
+    });
+
+    it("is false after an aborted run", async () => {
+      await setupStages();
+      const { agentId } = await makeAgent();
+      // The fake checks for an abort between the two halves of its reply, so the run must outlast the request.
+      await json(await prompt(agentId, "slow:1000"));
+      await until(() => status(agentId) === "busy");
+      await json(await server.request("POST", `/api/agents/${agentId}/abort`));
+      await replied(agentId, 2);
+      expect(await api.endedRun(agentId)).toBe(false);
+    });
+
+    it("is false for a turn the provider refused", async () => {
+      const stage = await scripted([{ error: "usage limit reached" }]);
+      await until(async () => (await api.turnError(stage.id)) !== undefined);
+      expect(await api.endedRun(stage.id)).toBe(false);
+    });
+
+    it("is false while a hang turn is open, and the turn ends only on abort", async () => {
+      const stage = await scripted(["hang"]);
+      await until(() => assistantReplies(stage.id) >= 1);
+      expect(await api.endedRun(stage.id)).toBe(false);
+
+      await json(await server.request("POST", `/api/agents/${stage.id}/abort`));
+      const settled = () =>
+        events(stage.id).flatMap((event) =>
+          event.type === "pi" && (event.event as { type: string }).type === "agent_settled"
+            ? [event.event as { aborted?: boolean }]
+            : [],
+        );
+      await until(() => settled().length === 1 && status(stage.id) === "idle");
+      expect(settled()).toEqual([expect.objectContaining({ aborted: true })]);
+      expect(await api.endedRun(stage.id)).toBe(false);
+    });
+
+    it("is true after a silent turn", async () => {
+      const stage = await scripted(["silent"]);
+      await until(() => assistantReplies(stage.id) >= 1 && status(stage.id) === "idle");
+      expect(JSON.stringify(events(stage.id))).toContain("waiting (worker 0)");
+      expect(await api.endedRun(stage.id)).toBe(true);
+    });
+
+    it("is false when a delivery starts a run while it reads the session file", async () => {
+      const stage = await scripted(["silent", "hang"]);
+      await until(() => assistantReplies(stage.id) >= 1 && status(stage.id) === "idle");
+      expect(await api.endedRun(stage.id)).toBe(true);
+      let release = () => {};
+      heldRead.next = new Promise((resolve) => {
+        release = resolve;
+      });
+
+      // The call reads the status and starts the held read before it yields.
+      const answer = api.endedRun(stage.id);
+      api.deliver(stage.id, "next");
+      const pending = () =>
+        server.store.get<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
+          stage.id,
+        )?.count;
+      await until(() => status(stage.id) === "busy" && pending() === 0);
+      release();
+
+      expect(await answer).toBe(false);
+    });
+
+    it("throws a 404 for an unknown agent", async () => {
+      await setupStages();
+      await expect(api.endedRun("nope")).rejects.toMatchObject({ status: 404 });
     });
   });
 
