@@ -1,7 +1,13 @@
 import { AgentsWebKey } from "@pi-spore/mod-agents/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
-import { type ArtifactInfo, ArtifactsEvent, parse, type Workspace } from "@pi-spore/shared";
+import {
+  type ArtifactInfo,
+  ArtifactsEvent,
+  ArtifactsLocal,
+  parse,
+  type Workspace,
+} from "@pi-spore/shared";
 import { Button, ContentDialog, EmptyState, ListRow, Notice, SectionLabel } from "@pi-spore/ui";
 import { FileText } from "lucide-react";
 import { type ReactNode, useEffect, useState } from "react";
@@ -23,12 +29,15 @@ function ArtifactRow({
   selected,
   onSelect,
   onPromote,
+  onOpenFolder,
 }: {
   artifact: ArtifactInfo;
   selected: boolean;
   onSelect: () => void;
   /** Only workspace rows can be promoted. */
   onPromote?: () => void;
+  /** Set only when the server says the request is local. */
+  onOpenFolder?: () => void;
 }) {
   return (
     <li className="flex items-center gap-2">
@@ -54,6 +63,11 @@ function ArtifactRow({
           Promote to project
         </Button>
       )}
+      {onOpenFolder && (
+        <Button size="sm" variant="ghost" onClick={onOpenFolder}>
+          Open folder
+        </Button>
+      )}
     </li>
   );
 }
@@ -65,6 +79,7 @@ function ArtifactList({
   selected,
   onSelect,
   onPromote,
+  onOpenFolder,
 }: {
   label: string;
   empty: string;
@@ -72,6 +87,7 @@ function ArtifactList({
   selected: ArtifactInfo | undefined;
   onSelect: (artifact: ArtifactInfo) => void;
   onPromote?: (artifact: ArtifactInfo) => void;
+  onOpenFolder?: (artifact: ArtifactInfo) => void;
 }) {
   return (
     <section className="px-3 py-2" aria-label={label}>
@@ -87,6 +103,7 @@ function ArtifactList({
               selected={selected?.scope === artifact.scope && selected.path === artifact.path}
               onSelect={() => onSelect(artifact)}
               {...(onPromote ? { onPromote: () => onPromote(artifact) } : {})}
+              {...(onOpenFolder ? { onOpenFolder: () => onOpenFolder(artifact) } : {})}
             />
           ))}
         </ul>
@@ -101,6 +118,14 @@ function ArtifactsTab({ workspace }: { workspace: Workspace }) {
   const [lists, setLists] = useState<ArtifactsEvent | undefined>();
   const [selected, setSelected] = useState<ArtifactInfo | undefined>();
   const [error, setError] = useState<string | undefined>();
+  const [local, setLocal] = useState(false);
+
+  useEffect(() => {
+    api
+      .get("artifacts/local")
+      .then((raw) => setLocal(parse(ArtifactsLocal, raw, "artifacts local").local))
+      .catch(() => setLocal(false));
+  }, [api]);
 
   useEffect(
     () =>
@@ -114,6 +139,17 @@ function ArtifactsTab({ workspace }: { workspace: Workspace }) {
     setError(undefined);
     api
       .send("POST", `artifacts/workspaces/${workspace.id}/promote`, { path: artifact.path })
+      .catch((caught: unknown) => setError(`${artifact.path}: ${message(caught)}`));
+  };
+
+  const openFolder = (artifact: ArtifactInfo) => {
+    setError(undefined);
+    api
+      .send(
+        "POST",
+        `artifacts/${artifact.scope === "workspace" ? "workspaces" : "projects"}/${artifact.ownerId}/open-folder`,
+        { path: artifact.path },
+      )
       .catch((caught: unknown) => setError(`${artifact.path}: ${message(caught)}`));
   };
 
@@ -140,6 +176,7 @@ function ArtifactsTab({ workspace }: { workspace: Workspace }) {
           selected={selected}
           onSelect={setSelected}
           onPromote={promote}
+          {...(local ? { onOpenFolder: openFolder } : {})}
         />
         <ArtifactList
           label="Project"
@@ -147,6 +184,7 @@ function ArtifactsTab({ workspace }: { workspace: Workspace }) {
           artifacts={lists.project}
           selected={selected}
           onSelect={setSelected}
+          {...(local ? { onOpenFolder: openFolder } : {})}
         />
       </div>
       <div className="min-h-0 flex-1 overflow-auto">

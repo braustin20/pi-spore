@@ -17,8 +17,8 @@ import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type { ArtifactInfo, ArtifactList, ArtifactsEvent, Workspace } from "@pi-spore/shared";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ARTIFACTS_TOPIC, createArtifactsModule } from "./server.js";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ARTIFACTS_TOPIC, createArtifactsModule, createFolderOpener } from "./server.js";
 
 let server: TestServer;
 let scratch: string;
@@ -281,5 +281,125 @@ describe("artifacts", () => {
     expect(events[0]?.project).toEqual([]);
     expect(events[1]?.workspace.map((a) => a.path)).toEqual(["a.md"]);
     expect(events[1]?.project.map((a) => a.path)).toEqual(["b.md"]);
+  });
+});
+
+describe("open folder", () => {
+  const opened = vi.fn<(folder: string) => Promise<void>>();
+
+  beforeEach(async () => {
+    opened.mockReset();
+    opened.mockResolvedValue(undefined);
+    server.close();
+    server = await createTestServer([
+      projectsModule,
+      vcsGitModule,
+      vcsFolderModule,
+      workspacesModule,
+      createArtifactsModule({ maxBytes: 1024, openFolder: opened }),
+    ]);
+  });
+
+  const openFolder = (
+    scope: "workspaces" | "projects",
+    id: string,
+    path: string,
+    headers?: Record<string, string>,
+  ) => server.request("POST", `/api/artifacts/${scope}/${id}/open-folder`, { path }, headers);
+
+  it("opens the real folder that holds a workspace or project artifact", async () => {
+    const workspace = await gitWorkspace();
+    await json(await write("workspaces", workspace.id, "runs/spec.md", "# Spec\n"));
+    await json(await write("projects", workspace.projectId, "notes/a.md", "shared"));
+
+    expect(await json(await openFolder("workspaces", workspace.id, "runs/spec.md"))).toEqual({
+      ok: true,
+    });
+    expect(opened).toHaveBeenCalledTimes(1);
+    expect(opened).toHaveBeenCalledWith(
+      realpathSync(join(server.paths.artifacts, "workspaces", workspace.id, "runs")),
+    );
+
+    await json(await openFolder("projects", workspace.projectId, "notes/a.md"));
+    expect(opened).toHaveBeenCalledTimes(2);
+    expect(opened).toHaveBeenLastCalledWith(
+      realpathSync(join(server.paths.artifacts, "projects", workspace.projectId, "notes")),
+    );
+  });
+
+  it("refuses a bad path with 400 bad_path", async () => {
+    const workspace = await gitWorkspace();
+    expect(await errorCode(await openFolder("workspaces", workspace.id, "../x.md"), 400)).toBe(
+      "bad_path",
+    );
+    expect(opened).not.toHaveBeenCalled();
+  });
+
+  it("refuses a symlink that leads out of the artifacts folder", async () => {
+    const workspace = await gitWorkspace();
+    await json(await write("workspaces", workspace.id, "keep.md", "ok"));
+    const outside = join(scratch, "outside");
+    mkdirSync(outside);
+    writeFileSync(join(outside, "secret.txt"), "secret");
+    symlinkSync(
+      join(outside, "secret.txt"),
+      join(server.paths.artifacts, "workspaces", workspace.id, "file-link.md"),
+    );
+    expect(await errorCode(await openFolder("workspaces", workspace.id, "file-link.md"), 403)).toBe(
+      "outside_root",
+    );
+    expect(opened).not.toHaveBeenCalled();
+  });
+
+  it("refuses a link to the artifacts folder itself, so the parent never opens", async () => {
+    const workspace = await gitWorkspace();
+    await json(await write("workspaces", workspace.id, "keep.md", "ok"));
+    const root = join(server.paths.artifacts, "workspaces", workspace.id);
+    symlinkSync(root, join(root, "self.md"));
+    expect(await errorCode(await openFolder("workspaces", workspace.id, "self.md"), 403)).toBe(
+      "outside_root",
+    );
+    expect(opened).not.toHaveBeenCalled();
+  });
+
+  it("refuses a request that came through tailscale serve with 403 not_local", async () => {
+    const workspace = await gitWorkspace();
+    await json(await write("workspaces", workspace.id, "a.md", "x"));
+    for (const headers of [
+      { "x-forwarded-for": "1.2.3.4" },
+      { "tailscale-user-login": "me@example.com" },
+    ]) {
+      expect(
+        await errorCode(await openFolder("workspaces", workspace.id, "a.md", headers), 403),
+      ).toBe("not_local");
+    }
+    expect(opened).not.toHaveBeenCalled();
+  });
+
+  it("answers 404 artifact_not_found for a missing file", async () => {
+    const workspace = await gitWorkspace();
+    expect(await errorCode(await openFolder("workspaces", workspace.id, "nope.md"), 404)).toBe(
+      "artifact_not_found",
+    );
+    await json(await write("workspaces", workspace.id, "a.md", "x"));
+    expect(await errorCode(await openFolder("workspaces", workspace.id, "a.md/b.md"), 404)).toBe(
+      "artifact_not_found",
+    );
+    expect(opened).not.toHaveBeenCalled();
+  });
+
+  it("tells a browser on this computer from a remote one", async () => {
+    const local = await server.request("GET", "/api/artifacts/local");
+    expect(await json(local)).toEqual({ local: true });
+    const remote = await server.request("GET", "/api/artifacts/local", undefined, {
+      "x-forwarded-for": "1.2.3.4",
+    });
+    expect(await json(remote)).toEqual({ local: false });
+  });
+
+  it("rejects an unsupported platform with 501 unsupported_platform that names it", async () => {
+    const error = await createFolderOpener("aix")("/tmp").catch((e: unknown) => e);
+    expect(error).toMatchObject({ status: 501, code: "unsupported_platform" });
+    expect((error as Error).message).toContain("aix");
   });
 });

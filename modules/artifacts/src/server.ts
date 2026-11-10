@@ -1,6 +1,7 @@
+import { spawn } from "node:child_process";
 import { constants } from "node:fs";
 import { mkdir, open, readdir, realpath, stat } from "node:fs/promises";
-import { extname, isAbsolute, join, resolve, sep } from "node:path";
+import { dirname, extname, isAbsolute, join, resolve, sep } from "node:path";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
@@ -8,6 +9,7 @@ import { readFileInside } from "@pi-spore/module-api/node";
 import {
   type ArtifactInfo,
   type ArtifactsEvent,
+  OpenArtifactFolderRequest,
   PromoteArtifactRequest,
   parseJsonBody,
   WriteArtifactRequest,
@@ -42,6 +44,38 @@ interface ArtifactRow {
 export interface ArtifactsModuleOptions {
   /** Most bytes in one artifact, for a write and a read. */
   maxBytes?: number;
+  /** Opens a folder in the file manager of this computer. Tests pass a fake. */
+  openFolder?: (folder: string) => Promise<void>;
+}
+
+const FILE_MANAGERS: Readonly<Partial<Record<NodeJS.Platform, string>>> = {
+  linux: "xdg-open",
+  darwin: "open",
+  win32: "explorer",
+};
+
+/** Starts the platform's file manager on a folder and returns once it has started, not when it exits. */
+export function createFolderOpener(platform: NodeJS.Platform): (folder: string) => Promise<void> {
+  return async (folder) => {
+    const program = FILE_MANAGERS[platform];
+    if (program === undefined) {
+      throw new ApiError(
+        501,
+        "unsupported_platform",
+        `Open folder is not supported on ${platform}`,
+      );
+    }
+    await new Promise<void>((resolveStart, reject) => {
+      const child = spawn(program, [folder], { detached: true, stdio: "ignore" });
+      child.once("error", (error) =>
+        reject(new ApiError(500, "open_failed", `Could not start ${program}: ${error.message}`)),
+      );
+      child.once("spawn", () => {
+        child.unref();
+        resolveStart();
+      });
+    });
+  };
 }
 
 const MAX_PATH_CHARS = 255;
@@ -136,6 +170,7 @@ async function walk(root: string, prefix = ""): Promise<Found[]> {
 /** Defaults: 10 MiB per artifact. */
 export function createArtifactsModule(options: ArtifactsModuleOptions = {}): ServerModule {
   const maxBytes = options.maxBytes ?? 10 * 1024 * 1024;
+  const openFolder = options.openFolder ?? createFolderOpener(process.platform);
   return {
     id: "artifacts",
     requires: ["projects", "workspaces"],
@@ -332,6 +367,14 @@ export function createArtifactsModule(options: ArtifactsModuleOptions = {}): Ser
         bytes: Buffer,
       ) => c.body(new Uint8Array(bytes), 200, byteHeaders(name, bytes));
 
+      // The core guard (ADR 0143, `guardRequest`) already refuses a non-loopback peer. `tailscale serve` connects
+      // from loopback, so its headers are what mark a remote request.
+      const isLocal = (c: { req: { header(name: string): string | undefined } }) =>
+        c.req.header("x-forwarded-for") === undefined &&
+        c.req.header("tailscale-user-login") === undefined;
+
+      host.routes.get("/local", (c) => c.json({ local: isLocal(c) }));
+
       for (const scope of ["workspace", "project"] as const) {
         const owner = (id: string): ArtifactOwner => ({ scope, id });
 
@@ -350,6 +393,38 @@ export function createArtifactsModule(options: ArtifactsModuleOptions = {}): Ser
           return c.json(
             await artifacts.write(owner(c.req.param("id")), request.path, request.content),
           );
+        });
+
+        host.routes.post(`/${scope}s/:id/open-folder`, async (c) => {
+          if (!isLocal(c)) {
+            throw new ApiError(
+              403,
+              "not_local",
+              "Open folder works only in a browser on the computer that runs pi-spore",
+            );
+          }
+          const { path } = parseJsonBody(
+            OpenArtifactFolderRequest,
+            await c.req.text(),
+            "open folder request",
+          );
+          checkPath(path);
+          const target = owner(c.req.param("id"));
+          await checkOwner(target);
+          const root = rootOf(target);
+          const notFound = (error: unknown) => {
+            if (errnoOf(error) === "ENOENT" || errnoOf(error) === "ENOTDIR") {
+              throw new ApiError(404, "artifact_not_found", `${scope} ${target.id} has no ${path}`);
+            }
+            throw error;
+          };
+          const real = await realpath(join(root, path)).catch(notFound);
+          const realRoot = await realpath(root).catch(notFound);
+          // Check the folder that opens, not the file: a link to the root itself would open the root's parent.
+          const folder = dirname(real);
+          if (!inside(folder, realRoot)) throw outsideRoot(path);
+          await openFolder(folder);
+          return c.json({ ok: true });
         });
       }
 

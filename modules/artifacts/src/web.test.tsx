@@ -52,6 +52,8 @@ async function render(node: React.ReactNode, api: Partial<ApiClient>) {
   return container;
 }
 
+const local = (value: boolean) => vi.fn(async () => ({ local: value }));
+
 const bytes = (text: string) => async () => new Blob([text]);
 
 describe("ArtifactView", () => {
@@ -133,6 +135,7 @@ describe("the Artifacts tab", () => {
         onEvent(event);
         return () => {};
       },
+      get: local(false),
       send,
     });
     expect(root.textContent).toContain("This workspace");
@@ -156,6 +159,7 @@ describe("the Artifacts tab", () => {
         onEvent(event);
         return () => {};
       },
+      get: local(false),
       send: async () => {
         throw new ApiRequestError(409, "artifact_exists", "The project already has notes/plan.md");
       },
@@ -166,6 +170,57 @@ describe("the Artifacts tab", () => {
     );
   });
 
+  const openFolderButtons = (root: HTMLElement) =>
+    [...root.querySelectorAll("button")].filter((b) => b.textContent === "Open folder");
+
+  it("shows Open folder on every row when the request is local, and sends the path", async () => {
+    const send = vi.fn(async () => ({ ok: true }));
+    const Tab = tab().component;
+    const root = await render(<Tab workspace={workspace} />, {
+      subscribe: (_topic, onEvent) => {
+        onEvent(event);
+        return () => {};
+      },
+      get: local(true),
+      send,
+    });
+    const buttons = openFolderButtons(root);
+    expect(buttons).toHaveLength(3);
+    const design = buttons.find((b) => b.closest("li")?.textContent?.includes("design.md"));
+    await act(async () => design?.click());
+    expect(send).toHaveBeenCalledWith("POST", "artifacts/projects/p1/open-folder", {
+      path: "design.md",
+    });
+  });
+
+  it("hides Open folder when the request is not local", async () => {
+    const Tab = tab().component;
+    const root = await render(<Tab workspace={workspace} />, {
+      subscribe: (_topic, onEvent) => {
+        onEvent(event);
+        return () => {};
+      },
+      get: local(false),
+    });
+    expect(openFolderButtons(root)).toHaveLength(0);
+  });
+
+  it("shows the message of a failed Open folder", async () => {
+    const Tab = tab().component;
+    const root = await render(<Tab workspace={workspace} />, {
+      subscribe: (_topic, onEvent) => {
+        onEvent(event);
+        return () => {};
+      },
+      get: local(true),
+      send: async () => {
+        throw new ApiRequestError(500, "open_failed", "No file manager found");
+      },
+    });
+    await act(async () => openFolderButtons(root)[0]?.click());
+    expect(root.querySelector("[role=alert]")?.textContent).toContain("No file manager found");
+  });
+
   it("opens a row in the viewer", async () => {
     const getBlob = vi.fn(async () => new Blob(["# Design"]));
     const Tab = tab().component;
@@ -174,6 +229,7 @@ describe("the Artifacts tab", () => {
         onEvent(event);
         return () => {};
       },
+      get: local(false),
       getBlob,
     });
     const row = [...root.querySelectorAll("a")].find((a) => a.textContent?.includes("design.md"));
@@ -189,6 +245,7 @@ describe("the Artifacts tab", () => {
         onEvent({ type: "artifacts", workspace: [], project: [] });
         return () => {};
       },
+      get: local(false),
     });
     expect(root.textContent).toContain("No artifacts yet");
   });
