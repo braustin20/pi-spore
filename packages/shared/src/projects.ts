@@ -39,6 +39,8 @@ export const SettingSource = Type.Union([
   Type.Literal("project file"),
   Type.Literal("local override"),
   Type.Literal("global"),
+  Type.Literal("workspace"),
+  Type.Literal("run"),
 ]);
 export type SettingSource = Static<typeof SettingSource>;
 

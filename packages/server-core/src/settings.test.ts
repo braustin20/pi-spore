@@ -281,6 +281,95 @@ describe("bad files name the key and the file", () => {
   });
 });
 
+describe("run and workspace overrides (R17.2)", () => {
+  it("lets a workspace override beat the local override", async () => {
+    const { settings, prefix } = await makeSettings();
+    localFile('[worktree]\nbranch_prefix = "loc"\n');
+    const resolved = await settings.resolve({
+      projectPath: project,
+      override: { source: "workspace", values: { worktree: { branch_prefix: "ws" } } },
+    });
+    expect(resolved.get(prefix)).toEqual({ value: "ws", source: "workspace" });
+  });
+
+  it("shows a run override with source run, and leaves other keys to the files", async () => {
+    const { settings, prefix, days } = await makeSettings();
+    global('{"retention":{"days":5}}');
+    const resolved = await settings.resolve({
+      projectPath: project,
+      override: { source: "run", values: { worktree: { branch_prefix: "lane" } } },
+    });
+    expect(resolved.get(prefix)).toEqual({ value: "lane", source: "run" });
+    expect(resolved.get(days)).toEqual({ value: 5, source: "global" });
+  });
+
+  it("rejects a global-only key with 422 bad_override", async () => {
+    const { settings } = await makeSettings();
+    await expectError(
+      settings.resolve({
+        projectPath: project,
+        override: { source: "workspace", values: { retention: { days: 1 } } },
+      }),
+      "bad_override",
+      "retention.days",
+      "workspace override",
+    );
+  });
+
+  it("rejects a wrong type and an unknown key with 422 bad_override", async () => {
+    const { settings } = await makeSettings();
+    await expectError(
+      settings.resolve({
+        projectPath: project,
+        override: { source: "run", values: { worktree: { branch_prefix: 7 } } },
+      }),
+      "bad_override",
+      "worktree.branch_prefix",
+      "run override",
+    );
+    await expectError(
+      settings.resolve({
+        projectPath: project,
+        override: { source: "workspace", values: { nope: 1 } },
+      }),
+      "bad_override",
+      'unknown key "nope"',
+    );
+  });
+
+  it("does not let a reserved section through, because no owner reads it there", async () => {
+    const { settings } = await makeSettings();
+    await expectError(
+      settings.resolve({
+        projectPath: project,
+        override: { source: "workspace", values: { actions: { test: { run: ["x"] } } } },
+      }),
+      "bad_override",
+      'unknown key "actions"',
+    );
+  });
+
+  it("never takes a model choice, even for a declared key (R17.3)", async () => {
+    const settings = createSettings(home);
+    settings.declare({
+      key: "worker.model",
+      schema: Type.String(),
+      default: "none",
+      scope: "project",
+    });
+    await settings.finishDeclaring();
+    await expectError(
+      settings.resolve({
+        projectPath: project,
+        override: { source: "workspace", values: { worker: { model: "a/b" } } },
+      }),
+      "bad_override",
+      "worker.model",
+      "never chooses models",
+    );
+  });
+});
+
 describe("raw files for modules that own a section", () => {
   it("gives the parsed project file and local override, and checks a section", async () => {
     const { settings } = await makeSettings();
