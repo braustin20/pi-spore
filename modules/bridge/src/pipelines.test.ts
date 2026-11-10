@@ -1156,7 +1156,7 @@ describe("a stage agent whose turn failed", () => {
   });
 });
 
-describe("a stage agent that ends its turn without a report (R6.6)", () => {
+describe("a stage agent that ends its turn without a report (ADR 0169)", () => {
   const reminderOf = (turnId: string) =>
     `user: You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
   const reminders = async (server: TestServer, agentId: string, turnId: string) =>
@@ -1228,24 +1228,28 @@ describe("a stage agent that ends its turn without a report (R6.6)", () => {
     expect(agent.title).toBe("implement (failed)");
   });
 
-  it("does not block a worker that is busy with the reminder, and sends no second one", async () => {
-    const server = await start({ env: scriptEnv({ worker: ["silent", "hang"] }) });
-    const { workspaceId } = await workspace(server, "busy");
-    userPipeline(server.paths.root, "p", IMPLEMENT);
-    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
-    await until(async () => (await getRun(server, run.id)).turns.length > 0);
-    const { workerAgentId, turns } = await getRun(server, run.id);
+  it("keeps the reminder across a restart, so the next end without a report blocks", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({ worker: ["silent", "hang", "silent"] });
+    const first = await start({ home, env });
+    const { workspaceId } = await workspace(first, "restart");
+    userPipeline(home, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(first, workspaceId), 201);
+    await until(async () => (await getRun(first, run.id)).turns.length > 0);
+    const { workerAgentId, turns } = await getRun(first, run.id);
     const turnId = turns[0]?.id as string;
+    await until(async () => (await reminders(first, workerAgentId as string, turnId)).length > 0);
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
 
-    await until(async () => (await reminders(server, workerAgentId as string, turnId)).length > 0);
+    const second = await start({ home, env, firstId: 1_000 });
+    await until(async () => (await getRun(second, run.id)).blocked !== undefined);
 
-    const working = await getRun(server, run.id);
-    expect(working.state).toBe("running");
-    expect(working.blocked).toBeUndefined();
-    expect(await reminders(server, workerAgentId as string, turnId)).toHaveLength(1);
-    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/cancel`));
-    expect((await getRun(server, run.id)).state).toBe("stopped");
-    expect(await reminders(server, workerAgentId as string, turnId)).toHaveLength(1);
+    expect((await getRun(second, run.id)).blocked).toContain(
+      "ended its turn twice without a report",
+    );
+    expect(await reminders(second, workerAgentId as string, turnId)).toHaveLength(1);
   });
 });
 

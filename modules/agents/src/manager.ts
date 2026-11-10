@@ -148,6 +148,12 @@ interface Live {
   childrenError?: string;
   /** Waiting `/subagents-inspect-rpc` requests, by request id. */
   inspects: Map<string, (result: InspectResult) => void>;
+  /**
+   * One token per user prompt from just before it is sent until its run's `agent_start`: Pi may have taken it and
+   * not started. A prompt that starts no run removes only its own token. `agent_start` and `agent_settled` clear all:
+   * their line can come before the continuation of a prompt Pi answered "started", so a token kept there could stay.
+   */
+  unstarted: Set<symbol>;
 }
 
 /**
@@ -255,6 +261,7 @@ export class AgentManager {
         dialogs: new Map(),
         children: [],
         inspects: new Map(),
+        unstarted: new Set(),
       });
     }
   }
@@ -405,8 +412,19 @@ export class AgentManager {
       ...(images.length > 0 ? { images } : {}),
       ...(live.chat.busy ? { streamingBehavior: whileBusy } : {}),
     };
-    const result = await process.request<{ disposition?: string }>("prompt", fields);
-    return result?.disposition ?? "started";
+    const token = Symbol("prompt");
+    live.unstarted.add(token);
+    let result: { disposition?: string } | undefined;
+    try {
+      result = await process.request<{ disposition?: string }>("prompt", fields);
+    } catch (error) {
+      live.unstarted.delete(token);
+      throw error;
+    }
+    const disposition = result?.disposition ?? "started";
+    // Only a started run sends the `agent_start` that clears it; a command or a queued message never does.
+    if (disposition !== "started") live.unstarted.delete(token);
+    return disposition;
   }
 
   /**
@@ -465,13 +483,16 @@ export class AgentManager {
   /** True when the agent is idle and its last assistant message ended on its own; see `Agents.endedRun`. */
   async endedRun(id: string): Promise<boolean> {
     const live = this.get(id);
-    if (live.status !== "idle") return false;
     const last = (await writtenMessages(live.record.sessionFile)).findLast(
       (message) => message.role === "assistant",
     );
-    // A delivery can start a run while the file is read; the caller's pending check would then find no row.
-    if (live.status !== "idle") return false;
-    return last !== undefined && last.stopReason !== "error" && last.stopReason !== "aborted";
+    return (
+      live.status === "idle" &&
+      live.unstarted.size === 0 &&
+      last !== undefined &&
+      last.stopReason !== "error" &&
+      last.stopReason !== "aborted"
+    );
   }
 
   async setModel(id: string, provider: string, modelId: string): Promise<AgentModel | undefined> {
@@ -977,9 +998,11 @@ export class AgentManager {
     live.chat = applyPiEvent(live.chat, event);
     this.publish(live, { type: "pi", event });
     if (event.type === "agent_start") {
+      live.unstarted.clear();
       this.clearIdle(live);
       this.setStatus(live, "busy");
     } else if (event.type === "agent_settled") {
+      live.unstarted.clear();
       this.setRouterStatus(live, undefined);
       if (event.aborted !== true) this.setWaiting(live, this.options.now());
       this.setStatus(live, "idle");
@@ -1068,6 +1091,7 @@ export class AgentManager {
   private onExit(live: Live, process: PiProcess, code: number | null, signal: string | null): void {
     if (live.process !== process) return;
     this.clearIdle(live);
+    live.unstarted.clear();
     delete live.process;
     // The helpers' status came from this process. Their runners may live on, but nothing reports them now.
     if (live.children.length > 0) {

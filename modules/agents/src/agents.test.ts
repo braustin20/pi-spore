@@ -29,21 +29,6 @@ import { reduceAgentList, workspaceStatus } from "./status.js";
 
 const FAKE_PI = fileURLToPath(new URL("../test-fixtures/fake-pi.mjs", import.meta.url));
 
-/** Set it to make the next session file read wait for the promise, so a test can change state while it waits. */
-const heldRead = vi.hoisted(() => ({ next: undefined as Promise<void> | undefined }));
-vi.mock("./transcript.js", async (importOriginal) => {
-  const real = await importOriginal<typeof import("./transcript.js")>();
-  return {
-    ...real,
-    readTranscript: async (path: string) => {
-      const hold = heldRead.next;
-      heldRead.next = undefined;
-      await hold;
-      return real.readTranscript(path);
-    },
-  };
-});
-
 /** Only the Unity trait: the full unity module also needs the actions, artifacts, and attention modules. */
 const unityTraitModule: ServerModule = {
   id: "unity",
@@ -2071,27 +2056,52 @@ describe("stage agents (R6)", () => {
       expect(await api.endedRun(stage.id)).toBe(true);
     });
 
-    it("is false when a delivery starts a run while it reads the session file", async () => {
-      const stage = await scripted(["silent", "hang"]);
+    it("is false for a prompt Pi accepted but has not started", async () => {
+      const stage = await scripted(["silent", "silent"]);
       await until(() => assistantReplies(stage.id) >= 1 && status(stage.id) === "idle");
       expect(await api.endedRun(stage.id)).toBe(true);
-      let release = () => {};
-      heldRead.next = new Promise((resolve) => {
-        release = resolve;
-      });
+      const gate = join(scratch, "notes", ".fake-pi-hold-turn");
+      writeFileSync(gate, "");
 
-      // The call reads the status and starts the held read before it yields.
-      const answer = api.endedRun(stage.id);
       api.deliver(stage.id, "next");
       const pending = () =>
         server.store.get<{ count: number }>(
           "SELECT COUNT(*) AS count FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
           stage.id,
         )?.count;
-      await until(() => status(stage.id) === "busy" && pending() === 0);
-      release();
+      await until(() => pending() === 0);
+      expect(status(stage.id)).toBe("idle");
+      expect(await api.endedRun(stage.id)).toBe(false);
 
-      expect(await answer).toBe(false);
+      rmSync(gate);
+      await until(() => assistantReplies(stage.id) >= 2 && status(stage.id) === "idle");
+      expect(await api.endedRun(stage.id)).toBe(true);
+    });
+
+    // Pi answers a command at once ("handled"), and rejects a plain prompt while it streams; neither starts a run.
+    it.each([
+      ["a command it handled", "helper-clear"],
+      ["a prompt it rejected", "plain"],
+    ])("stays false for a held prompt after %s", async (_name, message) => {
+      const stage = await scripted(["silent", "silent"]);
+      await until(() => assistantReplies(stage.id) >= 1 && status(stage.id) === "idle");
+      const gate = join(scratch, "notes", ".fake-pi-hold-turn");
+      writeFileSync(gate, "");
+      api.deliver(stage.id, "next");
+      const pending = () =>
+        server.store.get<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
+          stage.id,
+        )?.count;
+      await until(() => pending() === 0);
+
+      await prompt(stage.id, message);
+      expect(status(stage.id)).toBe("idle");
+      expect(await api.endedRun(stage.id)).toBe(false);
+
+      rmSync(gate);
+      await until(() => assistantReplies(stage.id) >= 2 && status(stage.id) === "idle");
+      expect(await api.endedRun(stage.id)).toBe(true);
     });
 
     it("throws a 404 for an unknown agent", async () => {

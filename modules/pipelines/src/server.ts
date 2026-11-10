@@ -1069,6 +1069,8 @@ export const pipelinesModule: ServerModule = {
         };
       }
       if (!(await agents.endedRun(turn.agent_id))) return { wait: true };
+      // The agent may have done the whole turn and reported while the awaits above read its session file.
+      if (latestTurn(run.id)?.report !== null) return {};
       // The agent ended its turn without a report: one reminder, then the stage blocks (ADR 0169).
       if (checkpoint.reminded === turn.id) {
         throw new Error(
