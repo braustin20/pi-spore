@@ -265,7 +265,13 @@ function mergeTests(manifest: readonly TestProof[], reported: readonly TestProof
   return [...byName.values()];
 }
 
-const taskPrompt = (stage: PipelineStage, pipeline: string, turnId: string, briefPath: string) =>
+const taskPrompt = (
+  stage: PipelineStage,
+  pipeline: string,
+  turnId: string,
+  briefPath: string,
+  brief: string,
+) =>
   [
     stage.worker === "reuse"
       ? `Your change came back with a new brief. You are the "${stage.name}" stage of pipeline "${pipeline}". Do what the brief asks.`
@@ -273,10 +279,14 @@ const taskPrompt = (stage: PipelineStage, pipeline: string, turnId: string, brie
     "",
     `Turn: ${turnId}`,
     "",
-    `The brief is the workspace artifact ${briefPath}. Read it first.`,
+    `The brief is the workspace artifact ${briefPath}. Its text is below.`,
     "Write each new test first and keep the output of its failing run as a workspace artifact: that is its proof.",
     `When you are done, call report with turn ${turnId}, a short summary, and tests: one entry for each test you added, with its name and the artifact path of its proof.`,
     "Your turn ends only with that report.",
+    "",
+    "## Brief",
+    "",
+    brief,
   ].join("\n");
 
 const bullets = (tests: readonly TestProof[]) =>
@@ -751,7 +761,7 @@ export const pipelinesModule: ServerModule = {
           agentId,
           run.id,
         );
-        agents.deliver(agentId, taskPrompt(stage, run.pipeline_id, turnId, briefPath));
+        agents.deliver(agentId, taskPrompt(stage, run.pipeline_id, turnId, briefPath, run.brief));
       };
       // The reused worker keeps its model, so there is no pin to question.
       if (stage.worker === "reuse") {

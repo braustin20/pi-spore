@@ -578,7 +578,8 @@ fail_first = "artifact"
   turn), `await` (wait for its report), `decide` (apply the verdict), `gate`, and `finish` (start the next stage's
   job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
   together. Prompts name the turn on a `Turn: <id>` line, and the brief is the workspace artifact
-  `pipelines/<run>/brief.md`.
+  `pipelines/<run>/brief.md`. A worker's task prompt also holds the brief's full text under `## Brief`, so
+  `spore/auto` scores the real task on a new worker's first message (ADR 0144).
 - **Reports.** The bridge passes `report` calls to `PipelinesKey.report`. Only the turn's agent may report (403
   `not_your_turn`), once per turn (a repeat returns the stored turn; an older turn is 409 `turn_closed`). Reviewers
   must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
