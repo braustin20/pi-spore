@@ -1378,7 +1378,8 @@ See [ADR 0011](decisions/0011-unity-support.md).
     has another folder of the project open. The UI then offers "Close without saving" with a confirm that says
     unsaved changes are lost. The close request must carry `confirm: true`.
   - The lease is reconciled on every read. An editor that was seen and is gone drops the lease. A lease whose
-    editor was never seen counts as a starting editor for 10 minutes, then is dropped.
+    editor was never seen counts as a starting editor for 10 minutes, then is dropped. The archive check skips
+    `unity status`; it still drops a lease whose editor was seen and is gone, where processes can be listed.
   - Archiving a workspace whose folder has an editor open fails with 409 `editor_open`, even with force.
   - Other modules use the `UnityEditorsKey` interface: `editors(projectId)`, `open(workspaceId, owner)`,
     `close(projectId, path)`.
