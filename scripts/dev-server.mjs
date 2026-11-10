@@ -2,9 +2,10 @@
 // worktree's server on a free port. The home is <worktree>/.pi-spore-dev/home and is kept between runs, so test
 // data survives restarts. Delete .pi-spore-dev/ to reset. The server never touches ~/.pi-spore: devEnv sets its
 // own home and drops the outer server's PI_SPORE_* names. The sample project is its own git repo, because a project
-// that shared .git with the real repo would show the dev server's branches there (ADR 0161).
+// that shared .git with the real repo would show the dev server's branches there (ADR 0161). Once the server is
+// ready, its URL goes to <worktree>/.pi-spore-dev/url, for scripts/screenshot.mjs (ADR 0172).
 import { spawn } from "node:child_process";
-import { mkdir, readFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
@@ -68,6 +69,8 @@ try {
   const token = (await readFile(join(home, "token"), "utf8")).trim();
   await ensureSampleRepo(sampleRepo);
   await ensureSampleProject(url, token, sampleRepo);
+  // The port is random, so tools that look at this server need a place to find it.
+  await writeFile(join(devRoot, "url"), `${url}\n`);
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   signalChild("SIGTERM");
