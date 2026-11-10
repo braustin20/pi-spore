@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "description": "Local agent workbench for Pi coding agents",
+  "license": "MIT",
   "engines": {
     "node": ">=26"
   },
