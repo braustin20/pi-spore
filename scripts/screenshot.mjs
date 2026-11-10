@@ -2,7 +2,8 @@
 // saves a full-page PNG, and says whether the page scrolls sideways. Start the server first with
 // run_action { name: "dev", background: true }; it leaves its URL in <worktree>/.pi-spore-dev/url. The page is
 // served with its token already in a meta tag, so this script never reads the token. Only the server's origin
-// is loaded. The app routes by URL hash, so "/settings" opens <server>/#/settings.
+// is loaded. The app routes by URL hash, so "/settings" opens <server>/#/settings. The app scrolls inside inner
+// panes, not the document, so the viewport grows by their hidden height to get the whole page into one shot.
 import { mkdir, readFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -81,6 +82,41 @@ const findServer = async () => {
 /** Turns a page path into a file name part: "/settings/models" becomes "settings-models". */
 const slug = (path) => path.replace(/[^A-Za-z0-9]+/g, "-").replace(/^-|-$/g, "") || "root";
 
+/** Chromium cannot make a screenshot taller than this. */
+const MAX_HEIGHT = 16384;
+
+/** Returns the largest hidden height of any vertical scroll area on the page. */
+const hiddenHeight = (page) =>
+  page.evaluate(() => {
+    let most = 0;
+    for (const element of document.querySelectorAll("*")) {
+      const { overflowY } = getComputedStyle(element);
+      if (overflowY === "auto" || overflowY === "scroll") {
+        most = Math.max(most, element.scrollHeight - element.clientHeight);
+      }
+    }
+    return most;
+  });
+
+/** Returns the document and every horizontal scroll area that is wider than its box, at most 10. */
+const sidewaysScrolls = (page) =>
+  page.evaluate(() => {
+    const root = document.documentElement;
+    const areas = [root];
+    for (const element of document.querySelectorAll("*")) {
+      const { overflowX } = getComputedStyle(element);
+      if (element !== root && (overflowX === "auto" || overflowX === "scroll")) areas.push(element);
+    }
+    return areas
+      .filter((element) => element.scrollWidth > element.clientWidth)
+      .slice(0, 10)
+      .map((element) => ({
+        name: [element.tagName.toLowerCase(), ...[...element.classList].slice(0, 3)].join("."),
+        scrollWidth: element.scrollWidth,
+        clientWidth: element.clientWidth,
+      }));
+  });
+
 /** Launches headless Chromium. A missing browser prints the install command and exits 1. */
 const launch = async () => {
   try {
@@ -117,18 +153,22 @@ try {
   const response = await page.goto(target, { waitUntil: "networkidle" });
   if (!response?.ok()) throw new Error(`${target} answered ${response?.status() ?? "nothing"}`);
 
-  const { scrollWidth, clientWidth } = await page.evaluate(() => ({
-    scrollWidth: document.documentElement.scrollWidth,
-    clientWidth: document.documentElement.clientWidth,
-  }));
-  await page.screenshot({ path: out, fullPage: true });
+  const extra = await hiddenHeight(page);
+  if (extra > 0) {
+    await page.setViewportSize({
+      width: args.width,
+      height: Math.min(args.height + extra, MAX_HEIGHT),
+    });
+    await page.evaluate(() => new Promise((done) => requestAnimationFrame(() => done())));
+  }
+  const wide = await sidewaysScrolls(page);
+  await page.screenshot({ path: out, type: "png", fullPage: true });
 
   console.log(`screenshot: ${out}`);
-  console.log(
-    scrollWidth > clientWidth
-      ? `sideways scroll: yes (scrollWidth ${scrollWidth} > clientWidth ${clientWidth})`
-      : "sideways scroll: no",
-  );
+  console.log(`sideways scroll: ${wide.length > 0 ? "yes" : "no"}`);
+  for (const { name, scrollWidth, clientWidth } of wide) {
+    console.log(`  ${name}: scrollWidth ${scrollWidth} > clientWidth ${clientWidth}`);
+  }
 } catch (error) {
   console.error(error instanceof Error ? error.message : error);
   process.exitCode = 1;

@@ -69,7 +69,8 @@ happy-dom does not lay out the page. To check layout or visual work by eye, take
 1. Start the workspace's server: `run_action { name: "dev", background: true }`. Wait until its log prints
    `pi-spore dev server: <url>`.
 2. Run `node scripts/screenshot.mjs /settings --width 1440 --out /tmp/settings.png`. Options: `--height <px>`,
-   `--theme <id>` (ids in `packages/ui/src/themes.ts`). It prints the PNG path and whether the page scrolls sideways.
+   `--theme <id>` (ids in `packages/ui/src/themes.ts`). It prints the PNG path and whether the page scrolls sideways,
+   with each element that does.
 3. Read the PNG.
 4. Stop the server with `stop_action`.
 
