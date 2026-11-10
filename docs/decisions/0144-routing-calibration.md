@@ -33,7 +33,9 @@ model. That needs outcomes, and outcomes need some local runs.
   "straightforward" answer is its only blocker. It applies only to a pipeline worker stage (`PI_SPORE_STAGE_ROLE`
   is `worker`), so a stronger reviewer checks the work (ADR 0009). A task over the local budget, a visual task, or a
   classifier error never goes local through explore. The decision record says `explore: true`.
-- pi-spore never changes a bar. The report only suggests one. The user sets `router.threshold`.
+- pi-spore never changes a bar by itself. The report only suggests one. The user sets `router.threshold` by hand in
+  `settings.json`, or with the "Apply suggested bar" button on the Usage page after a confirm. The same page can turn
+  `router.explore` off after a confirm; it cannot set explore to any other value.
 
 ## Consequences
 

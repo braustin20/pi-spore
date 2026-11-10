@@ -23,6 +23,7 @@ import {
   Table,
   TableCell,
   TableHead,
+  useConfirm,
 } from "@pi-spore/ui";
 import { Gauge, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
@@ -103,23 +104,52 @@ function RungRow({ row, minSample }: { row: CalibrationRung; minSample: number }
   );
 }
 
-function CalibrationPanel({ calibration }: { calibration: CalibrationResponse }) {
+function CalibrationPanel({
+  calibration,
+  reload,
+  onError,
+}: {
+  calibration: CalibrationResponse;
+  reload: () => void;
+  onError: (message: string) => void;
+}) {
+  const api = useApi();
   const questions = Object.entries(calibration.buckets);
+  const { confirm, dialog } = useConfirm();
+  const { suggestedBar, threshold, explore } = calibration;
+  const canApply = suggestedBar !== undefined && suggestedBar !== threshold;
+  // The request goes out only after the user says yes (ADR 0144).
+  const change = async (
+    title: string,
+    message: string,
+    confirmLabel: string,
+    body: { threshold: number } | { explore: 0 },
+  ) => {
+    if (!(await confirm({ title, message, confirmLabel }))) return;
+    try {
+      await api.send("PATCH", "usage/router", body);
+      reload();
+    } catch (caught) {
+      onError(caught instanceof Error ? caught.message : String(caught));
+    }
+  };
   return (
     <Panel>
       <PanelHeader title="Routing calibration" />
       {calibration.decisions === 0 ? (
         <p className="m-0 text-sm text-muted">
-          No decisions with Jev answers yet. The report fills in as spore/auto routes tasks.
+          No decisions with Jev answers yet. The report fills in as spore/auto routes tasks. Explore
+          now: {explore}.
         </p>
       ) : (
         <div className="flex flex-col gap-3">
           <p className="m-0 text-sm">
             {calibration.decisions} decisions with Jev answers, {calibration.outcomes} local
-            outcomes. Bar now: {calibration.threshold}, heavy bar now: {calibration.heavyThreshold}.{" "}
-            {calibration.suggestedBar === undefined
+            outcomes. Bar now: {threshold}, heavy bar now: {calibration.heavyThreshold}. Explore
+            now: {explore}.{" "}
+            {suggestedBar === undefined
               ? `No suggested bar: no bar has ${calibration.minSample} local outcomes with 90% passed.`
-              : `Suggested bar: ${calibration.suggestedBar}. pi-spore never changes the bar; set router.threshold in settings.json.`}
+              : `Suggested bar: ${suggestedBar}. pi-spore never changes the bar by itself.`}
           </p>
           <Table>
             <thead>
@@ -190,11 +220,44 @@ function CalibrationPanel({ calibration }: { calibration: CalibrationResponse })
           </Table>
         </div>
       )}
+      {(canApply || explore > 0) && (
+        <div className="mt-3 flex gap-2">
+          {canApply && (
+            <Button
+              onClick={() =>
+                void change(
+                  "Apply suggested bar?",
+                  `Set router.threshold from ${threshold} to ${suggestedBar}?`,
+                  "Apply",
+                  { threshold: suggestedBar },
+                )
+              }
+            >
+              Apply suggested bar
+            </Button>
+          )}
+          {explore > 0 && (
+            <Button
+              onClick={() =>
+                void change(
+                  "Turn off explore?",
+                  `Set router.explore from ${explore} to 0?`,
+                  "Turn off",
+                  { explore: 0 },
+                )
+              }
+            >
+              Turn off explore
+            </Button>
+          )}
+        </div>
+      )}
       {calibration.skipped > 0 && (
         <p className="mt-2 mb-0 text-xs text-muted">
           {calibration.skipped} lines of the decision file did not parse.
         </p>
       )}
+      {dialog}
     </Panel>
   );
 }
@@ -515,7 +578,7 @@ function UsagePage() {
             )}
           </Panel>
 
-          <CalibrationPanel calibration={data.calibration} />
+          <CalibrationPanel calibration={data.calibration} reload={load} onError={setError} />
         </>
       )}
     </Page>

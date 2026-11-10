@@ -48,7 +48,7 @@ export function calibration(
   threshold: number,
   heavyThreshold: number,
   skipped: number,
-): CalibrationResponse {
+): Omit<CalibrationResponse, "explore"> {
   const decisions: Decision[] = records.flatMap((record) => {
     const answers = record.kind === "initial" ? answersOf(record) : undefined;
     return answers ? [{ record, answers }] : [];
