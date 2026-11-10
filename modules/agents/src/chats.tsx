@@ -3,58 +3,55 @@ import { Button, cn, Input, Tooltip } from "@pi-spore/ui";
 import { Eye, History, MessageSquare, MessageSquarePlus, Pencil, Workflow, X } from "lucide-react";
 import { type FormEvent, useState } from "react";
 
-const label = (chat: Agent) => chat.title ?? "New chat";
+export const label = (chat: Agent) => chat.title ?? "New chat";
 
-const ICONS = { worker: MessageSquare, side: Eye, stage: Workflow, older: History } as const;
+export const ICONS = { worker: MessageSquare, side: Eye, stage: Workflow, older: History } as const;
 
-const group = (chat: Agent) => {
+export const group = (chat: Agent) => {
   if (chat.kind === "side") return "side";
   if (chat.kind === "stage") return "stage";
   return chat.active ? "worker" : "older";
 };
 
-const HINTS = {
+export const HINTS = {
   worker: "Orchestrator chat: the one chat that can change files",
   side: "Side chat: read-only",
   stage: "Pipeline stage agent",
   older: "Older orchestrator chat: read-only history",
 } as const;
 
-const SR_LABELS = {
+/** A chat that runs or waits for a slot; it must be aborted or stopped before it can close. */
+export const isWorking = (chat: Agent) => ["busy", "starting", "waiting"].includes(chat.status);
+
+export const SR_LABELS = {
   side: "(side chat)",
   stage: "(pipeline stage)",
   older: "(older, read-only)",
 } as const;
 
-/** The chat's title, with a pencil that turns it into a text field. */
-function Title({ chat, onRename }: { chat: Agent; onRename: (title: string) => Promise<void> }) {
-  const [editing, setEditing] = useState<string | undefined>();
-  if (editing === undefined) {
-    return (
-      <Tooltip label="Rename this chat" side="bottom">
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="Rename this chat"
-          onClick={() => setEditing(chat.title ?? "")}
-        >
-          <Pencil />
-        </Button>
-      </Tooltip>
-    );
-  }
+/** The form that renames a chat. Escape or Cancel ends it without a change. */
+export function TitleForm({
+  chat,
+  onRename,
+  onDone,
+}: {
+  chat: Agent;
+  onRename: (title: string) => Promise<void>;
+  onDone: () => void;
+}) {
+  const [editing, setEditing] = useState(chat.title ?? "");
   const save = (event: FormEvent) => {
     event.preventDefault();
     const title = editing.trim();
     if (!title) return;
-    void onRename(title).then(() => setEditing(undefined));
+    void onRename(title).then(onDone);
   };
   return (
     <form onSubmit={save} className="flex items-center gap-1.5 max-md:w-full">
       <Input
         value={editing}
         onChange={(event) => setEditing(event.target.value)}
-        onKeyDown={(event) => event.key === "Escape" && setEditing(undefined)}
+        onKeyDown={(event) => event.key === "Escape" && onDone()}
         aria-label="Chat title"
         maxLength={120}
         className="w-56 max-md:min-w-0 max-md:flex-1"
@@ -63,10 +60,30 @@ function Title({ chat, onRename }: { chat: Agent; onRename: (title: string) => P
       <Button size="sm" type="submit" disabled={!editing.trim()}>
         Save
       </Button>
-      <Button size="sm" variant="ghost" onClick={() => setEditing(undefined)}>
+      <Button size="sm" variant="ghost" onClick={onDone}>
         Cancel
       </Button>
     </form>
+  );
+}
+
+/** The chat's title, with a pencil that turns it into a text field. */
+function Title({ chat, onRename }: { chat: Agent; onRename: (title: string) => Promise<void> }) {
+  const [editing, setEditing] = useState(false);
+  if (editing) {
+    return <TitleForm chat={chat} onRename={onRename} onDone={() => setEditing(false)} />;
+  }
+  return (
+    <Tooltip label="Rename this chat" side="bottom">
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        aria-label="Rename this chat"
+        onClick={() => setEditing(true)}
+      >
+        <Pencil />
+      </Button>
+    </Tooltip>
   );
 }
 
@@ -74,15 +91,7 @@ function Title({ chat, onRename }: { chat: Agent; onRename: (title: string) => P
  * The workspace's chats as a row of links (ADR 0030): the active worker chat, then side chats, then older worker
  * chats, in the server's order. Buttons start a fresh worker chat or a side chat, empty or with the worker's context.
  */
-export function ChatBar({
-  workspaceId,
-  chats,
-  selected,
-  canStart,
-  onNew,
-  onRename,
-  onClose,
-}: {
+export type ChatBarProps = {
   workspaceId: string;
   chats: readonly Agent[];
   selected: Agent;
@@ -92,7 +101,17 @@ export function ChatBar({
   onRename: (title: string) => Promise<void>;
   /** Closes a chat for good (ADR 0110). */
   onClose: (chat: Agent) => void;
-}) {
+};
+
+export function ChatBar({
+  workspaceId,
+  chats,
+  selected,
+  canStart,
+  onNew,
+  onRename,
+  onClose,
+}: ChatBarProps) {
   // On a phone the tabs take the first line and the buttons wrap onto a second one.
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
@@ -102,7 +121,7 @@ export function ChatBar({
             const kind = group(chat);
             const Icon = ICONS[kind];
             const current = chat.id === selected.id;
-            const working = ["busy", "starting", "waiting"].includes(chat.status);
+            const working = isWorking(chat);
             return (
               <li
                 key={chat.id}
