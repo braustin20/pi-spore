@@ -1594,6 +1594,14 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   (`resolveSettings`) on the whole file, so a bad `router.*` or `tiers` value answers 422 `bad_settings`. The page
   sets only the router keys it lists, never a whole `router` section, and never the `actions` section.
   Idempotency keys work as for every PUT (R16.2).
+- The Settings page (`#/settings`) gives each global row Edit and Reset; the project page does the same for
+  `worktree.copy` and `worktree.branch_prefix`. Edit opens a field in the row: text for a string, JSON for a number
+  or boolean, a JSON text area for an array or object. Save sends `{ key, value }` and Reset sends
+  `{ key, unset: true }` to the PUT route above. After it works, the panel loads again from its GET route, so the
+  row shows the server's value and source. A failure shows the server's message in the row. After a save of an
+  `agents.*` or `server.*` key, the row says "Restart pi-spore to apply". A change to `server.allowedHosts` or
+  `server.allowedLogins` asks first ("Change remote access?"), because a wrong value can lock you out. The
+  "Workspace settings" panel stays read-only.
 
 Declared keys (`GET /api/projects/settings` lists them all with their source, plus the router keys of section 10;
 the Settings page, `#/settings`, shows that list):
@@ -1631,10 +1639,6 @@ once; it proxies `https://<machine>.<tailnet>.ts.net/` to the loopback port and 
 
 The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale` and never uses Funnel.
 `pi-spore remote` prints the serve command and the URLs.
-
-Not built yet:
-
-- Edit controls on the Settings page. The save routes above exist; the page does not call them yet.
 
 `config.toml` sketch:
 
