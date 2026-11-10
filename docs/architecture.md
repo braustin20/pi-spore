@@ -300,8 +300,13 @@ export interface ServerHost {
   move into the top bar, controls are at least 44 px tall, and fields use 16 px text. A page that shows one pane
   at a time keeps the open pane in the hash, `#/<path>?pane=<name>`; the router ignores the query. `openPane`,
   `switchPane`, and `closePane` change it, and Back closes a pane. The root follows `visualViewport` so the
-  composer stays above the on-screen keyboard. Hover-only controls also show with `touch:` (`@media (hover:
-  none)`). `packages/web/public` holds the web app manifest and icons. At 768 px and above nothing changes.
+  composer stays above the on-screen keyboard. While a text field has focus, rows marked `data-hide-while-typing`
+  (the top bar and the workspace pane row) are hidden by one CSS `:has()` rule in `packages/ui/src/styles.css`;
+  they come back on blur. The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
+  and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,
+  Side chat, With context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
+  the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
+  Hover-only controls also show with `touch:` (`@media (hover: none)`). `packages/web/public` holds the web app manifest and icons. At 768 px and above nothing changes.
 - Confirmations use `useConfirm()` from `@pi-spore/ui`, never `window.confirm`. It returns `{ confirm, dialog }`:
   render `dialog` once, and `await confirm({ message, title?, confirmLabel?, tone?: "danger" })` for a boolean.
   The dialog is themed, focuses Cancel first, and answers false on Cancel or Escape. A test fails if

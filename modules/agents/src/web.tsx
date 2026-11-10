@@ -19,11 +19,11 @@ import {
   Spinner,
   Tooltip,
   useConfirm,
+  usePhone,
 } from "@pi-spore/ui";
 import { MessageSquare } from "lucide-react";
 import {
   type ComponentType,
-  type ReactNode,
   useCallback,
   useEffect,
   useLayoutEffect,
@@ -33,11 +33,12 @@ import {
   useState,
 } from "react";
 import Type from "typebox";
-import { ChatBar } from "./chats.js";
+import { ChatBar, type ChatBarProps } from "./chats.js";
 import { Composer, DialogCard } from "./composer.js";
 import { Helpers } from "./helpers.js";
 import { MessageList, setFileLink } from "./messages.js";
 import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
+import { PhoneChatRow } from "./phone-row.js";
 import { reduceAgentList, workspaceStatuses } from "./status.js";
 import { type AgentsWeb, AgentsWebKey, type UserWait, type UseUserWaits } from "./web-contract.js";
 
@@ -57,6 +58,9 @@ const STATUS_TONE = {
   failed: "fail",
 } as const;
 
+const contextText = (percent: number | null) =>
+  `context ${percent === null ? "-" : `${Math.round(percent)}%`}`;
+
 function ContextMeter({
   percent,
   tokens,
@@ -66,7 +70,6 @@ function ContextMeter({
   tokens: number | null;
   window: number;
 }) {
-  const shown = percent === null ? "-" : `${Math.round(percent)}%`;
   const title =
     tokens === null
       ? "Unknown until the next reply"
@@ -81,10 +84,21 @@ function ContextMeter({
             style={{ width: `${Math.min(100, percent ?? 0)}%` }}
           />
         </span>
-        context {shown}
+        {contextText(percent)}
       </span>
     </Tooltip>
   );
+}
+
+/** What the agent does now. A helper run or a pipeline keeps an idle chat "working". */
+function StateChip({ agent }: { agent: Agent }) {
+  if (agent.status === "idle" && agent.helpersRunning) {
+    return <Chip tone="run">working (helper running)</Chip>;
+  }
+  if ((agent.status === "idle" || agent.status === "stopped") && agent.workingFor) {
+    return <Chip tone="run">working ({agent.workingFor})</Chip>;
+  }
+  return <Chip tone={STATUS_TONE[agent.status]}>{agent.status}</Chip>;
 }
 
 /** A spinner with what the agent is doing and how long it has been at it. */
@@ -202,25 +216,23 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
         key={selected.id}
         workspace={workspace}
         agentId={selected.id}
-        bar={
-          <ChatBar
-            workspaceId={workspaceId}
-            chats={chats ?? []}
-            selected={selected}
-            canStart={workspace.state === "active"}
-            onNew={startChat}
-            onClose={(chat) => void closeChat(chat)}
-            onRename={async (title) => {
-              try {
-                await api.send("POST", `agents/${selected.id}/title`, { title });
-                await load();
-              } catch (caught) {
-                setError(message(caught));
-                throw caught;
-              }
-            }}
-          />
-        }
+        bar={{
+          workspaceId,
+          chats: chats ?? [],
+          selected,
+          canStart: workspace.state === "active",
+          onNew: startChat,
+          onClose: (chat) => void closeChat(chat),
+          onRename: async (title) => {
+            try {
+              await api.send("POST", `agents/${selected.id}/title`, { title });
+              await load();
+            } catch (caught) {
+              setError(message(caught));
+              throw caught;
+            }
+          },
+        }}
         outerError={error}
         onDismissOuterError={() => setError(undefined)}
         onChatChanged={() => void load()}
@@ -243,7 +255,8 @@ function ChatView({
 }: {
   workspace: Workspace;
   agentId: string;
-  bar: ReactNode;
+  /** The chat bar. A phone merges it with the header into one row. */
+  bar: ChatBarProps;
   /** An error from the chat list, such as a refused "New chat". */
   outerError: string | undefined;
   onDismissOuterError: () => void;
@@ -251,6 +264,7 @@ function ChatView({
   onChatChanged: () => void;
 }) {
   const api = useApi();
+  const phone = usePhone();
   const [state, dispatch] = useReducer(reducePage, undefined, emptyPage);
   const [models, setModels] = useState<ModelList | undefined>();
   const [error, setError] = useState<string | undefined>();
@@ -323,6 +337,16 @@ function ChatView({
     ? `${current.name ?? current.id} (${current.provider})${routedTo ? ` → ${routedTo.id}` : ""}`
     : "Model";
 
+  const canCompact = !busy && active;
+  const canStop =
+    agent !== undefined &&
+    agent.status !== "stopped" &&
+    !busy &&
+    !children.some((run) => run.state === "running");
+  const compact = () => void call("POST", "compact");
+  const stop = () => void call("POST", "stop");
+  const chip = agent && <StateChip agent={agent} />;
+
   const controls = (
     <>
       {agent?.kind !== "stage" && (
@@ -365,53 +389,54 @@ function ChatView({
 
   return (
     <section aria-label="Chat" className="flex h-full min-h-0 flex-col">
-      <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
-        <h1 className="m-0 min-w-0 truncate text-sm font-semibold">{workspace.name}</h1>
-        {workspace.line && (
-          <Chip mono title={workspace.line} className="hidden max-w-48 xl:inline-block">
-            {workspace.line}
-          </Chip>
-        )}
-        {agent &&
-          (agent.status === "idle" && agent.helpersRunning ? (
-            <Chip tone="run">working (helper running)</Chip>
-          ) : (agent.status === "idle" || agent.status === "stopped") && agent.workingFor ? (
-            <Chip tone="run">working ({agent.workingFor})</Chip>
-          ) : (
-            <Chip tone={STATUS_TONE[agent.status]}>{agent.status}</Chip>
-          ))}
-        <div className="flex-1" />
-        {contextUsage && (
-          <ContextMeter
-            percent={contextUsage.percent}
-            tokens={contextUsage.tokens}
-            window={contextUsage.contextWindow}
-          />
-        )}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => void call("POST", "compact")}
-          disabled={busy || !active}
-        >
-          Compact
-        </Button>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => void call("POST", "stop")}
-          disabled={
-            !agent ||
-            agent.status === "stopped" ||
-            busy ||
-            children.some((run) => run.state === "running")
+      {phone ? (
+        <PhoneChatRow
+          {...bar}
+          chip={chip}
+          context={
+            contextUsage && contextUsage.percent !== null
+              ? contextText(contextUsage.percent)
+              : undefined
           }
-          title="Stop the agent process; the chat is kept. Not while a helper runs."
-        >
-          Stop agent
-        </Button>
-      </header>
-      {bar}
+          onCompact={compact}
+          canCompact={canCompact}
+          onStop={stop}
+          canStop={canStop}
+        />
+      ) : (
+        <>
+          <header className="flex h-11 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
+            <h1 className="m-0 min-w-0 truncate text-sm font-semibold">{workspace.name}</h1>
+            {workspace.line && (
+              <Chip mono title={workspace.line} className="hidden max-w-48 xl:inline-block">
+                {workspace.line}
+              </Chip>
+            )}
+            {chip}
+            <div className="flex-1" />
+            {contextUsage && (
+              <ContextMeter
+                percent={contextUsage.percent}
+                tokens={contextUsage.tokens}
+                window={contextUsage.contextWindow}
+              />
+            )}
+            <Button variant="ghost" size="sm" onClick={compact} disabled={!canCompact}>
+              Compact
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={stop}
+              disabled={!canStop}
+              title="Stop the agent process; the chat is kept. Not while a helper runs."
+            >
+              Stop agent
+            </Button>
+          </header>
+          <ChatBar {...bar} />
+        </>
+      )}
 
       <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="flex flex-col gap-3 px-4 py-5 xl:px-6">

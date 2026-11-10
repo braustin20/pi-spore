@@ -874,7 +874,10 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
         ))}
       <div className="flex min-w-0 flex-1 flex-col">
         {phone && (
-          <div className="flex h-11 shrink-0 items-center border-b border-line">
+          <div
+            data-hide-while-typing
+            className="flex h-11 shrink-0 items-center border-b border-line"
+          >
             <Button
               variant="ghost"
               size="icon-sm"

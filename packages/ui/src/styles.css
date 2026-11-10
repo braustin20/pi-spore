@@ -108,6 +108,20 @@
   }
 }
 
+/* Phones only. The on-screen keyboard leaves too little height, so the top rows step aside while the user types
+   (ADR 0159). Unlayered on purpose: a rule in any @layer loses to the `flex` utility these rows carry. */
+@media (width < 48rem) {
+  body:has(
+      :is(
+          textarea,
+          input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"])
+        ):focus
+    )
+    [data-hide-while-typing] {
+    display: none;
+  }
+}
+
 /* Rendered Markdown from agents. Markup comes from react-markdown, so it is styled by element. */
 @layer components {
   .md {
