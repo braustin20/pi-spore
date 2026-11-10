@@ -8,6 +8,7 @@ import {
   ActionRun as ActionRunSchema,
   type ActionView,
   parse,
+  stripAnsi,
   type Workspace,
 } from "@pi-spore/shared";
 import { Button, Chip, CollapsibleSection, Notice, SectionLabel, type Tone } from "@pi-spore/ui";
@@ -75,7 +76,7 @@ function RunLog({ runId, onEnded }: { runId: string; onEnded: () => void }) {
     };
   }, [api, runId, onEnded]);
 
-  const parts = text.split(LOOPBACK_URL);
+  const parts = stripAnsi(text).split(LOOPBACK_URL);
   const newestUrl = parts.findLast((_, index) => index % 2 === 1);
   return (
     <div className="flex flex-col gap-2">

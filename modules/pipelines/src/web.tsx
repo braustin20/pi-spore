@@ -29,6 +29,7 @@ import {
 } from "@pi-spore/ui";
 import { Workflow } from "lucide-react";
 import { type SubmitEvent, useEffect, useState } from "react";
+import { RunMessage } from "./gate-log.js";
 import { openFindings, SEVERITIES, TurnList } from "./turns.js";
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
@@ -169,9 +170,7 @@ function RunCard({ run, workspaceId }: { run: PipelineRun; workspaceId: string }
         <Notice tone="warn">The decision is on Home. {run.message}</Notice>
       )}
       {run.state !== "waiting_user" && run.message && (
-        <Notice tone={run.state === "failed" ? "fail" : "info"}>
-          <span className="whitespace-pre-wrap">{run.message}</span>
-        </Notice>
+        <RunMessage message={run.message} failed={run.state === "failed"} />
       )}
       {run.blocked && (
         <Notice tone="warn">
