@@ -1,7 +1,7 @@
 import { realpath, stat } from "node:fs/promises";
 import { basename, isAbsolute } from "node:path";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
-import { routerSettingEntries } from "@pi-spore/router";
+import { DEFAULT_SETTINGS, resolveSettings, routerSettingEntries } from "@pi-spore/router";
 import {
   AddProjectRequest,
   type Project,
@@ -9,6 +9,9 @@ import {
   type ProjectLines,
   type ProjectTrait,
   parseJsonBody,
+  SaveSettingRequest,
+  type SaveSettingResponse,
+  type SettingEntry,
   slugify,
 } from "@pi-spore/shared";
 import { resolveConfig } from "./config.js";
@@ -205,16 +208,70 @@ export const projectsModule: ServerModule = {
     });
 
     // The router parses its own keys, so the page shows them through the router (R17.1).
-    host.routes.get("/settings", async (c) => {
+    const globalEntries = async (): Promise<SettingEntry[]> => {
       // One after the other: both parsers refuse some files, and the server's message must win every time.
       const resolved = await host.settings.resolve();
       const routerEntries = await routerSettingEntries(host.home.root).catch((error: unknown) => {
         throw new ApiError(422, "bad_settings", (error as Error).message);
       });
-      const settings = [...resolved.entries(), ...routerEntries].sort((a, b) =>
+      return [...resolved.entries(), ...routerEntries].sort((a, b) =>
         a.key < b.key ? -1 : a.key > b.key ? 1 : 0,
       );
-      return c.json({ settings });
+    };
+
+    host.routes.get("/settings", async (c) => c.json({ settings: await globalEntries() }));
+
+    const changeOf = (body: SaveSettingRequest): { value: unknown } | { unset: true } =>
+      "unset" in body ? { unset: true } : { value: body.value };
+
+    // A key like router.pressure.weekly sits inside the entry router.pressure.
+    const entryOf = (entries: SettingEntry[], key: string): SettingEntry | undefined =>
+      entries.find((entry) => entry.key === key) ??
+      entries.find((entry) => key.startsWith(`${entry.key}.`));
+
+    // The seam lets a whole reserved section through for its owner, but the page changes only keys it lists
+    // (ADR 0170). These checks read no file: a save must still be able to repair a bad value on disk.
+    const refuse = (code: string, key: string): never => {
+      throw new ApiError(422, code, `unknown key "${key}"; the Settings page cannot change it`);
+    };
+    const routerKeys = Object.keys(DEFAULT_SETTINGS)
+      .filter((name) => name !== "tiers")
+      .map((name) => `router.${name}`);
+    const checkGlobalKey = (key: string): void => {
+      const inside = routerKeys.some((name) => key === name || key.startsWith(`${name}.`));
+      if (key.split(".")[0] === "router" && !inside) refuse("bad_settings", key);
+    };
+    // The actions module owns that section and checks it itself.
+    const checkProjectKey = (key: string): void => {
+      if (key.split(".")[0] === "actions") refuse("bad_project_config", key);
+    };
+
+    const savedEntry = (entries: SettingEntry[], key: string): SaveSettingResponse => {
+      const setting = entryOf(entries, key);
+      if (!setting) throw new Error(`Saved setting ${key} is not in the settings list`);
+      return { setting };
+    };
+
+    host.routes.put("/settings", async (c) => {
+      const body = parseJsonBody(SaveSettingRequest, await c.req.text(), "save setting request");
+      checkGlobalKey(body.key);
+      // The router reads this file too, so its parser checks every save, not only router keys.
+      await host.settings.write({ file: "global" }, body.key, changeOf(body), (data, path) => {
+        resolveSettings(data, path);
+      });
+      return c.json(savedEntry(await globalEntries(), body.key));
+    });
+
+    host.routes.put("/:id/settings", async (c) => {
+      const body = parseJsonBody(SaveSettingRequest, await c.req.text(), "save setting request");
+      const project = await projects.get(c.req.param("id"));
+      checkProjectKey(body.key);
+      await host.settings.write(
+        { file: "local", projectPath: project.path },
+        body.key,
+        changeOf(body),
+      );
+      return c.json(savedEntry((await projects.config(project)).entries, body.key));
     });
 
     host.routes.get("/:id", async (c) =>

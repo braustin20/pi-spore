@@ -63,6 +63,23 @@ export type SettingEntry = Static<typeof SettingEntry>;
 export const SettingsView = Type.Object({ settings: Type.Array(SettingEntry) });
 export type SettingsView = Static<typeof SettingsView>;
 
+/** One setting change from the Settings page (ADR 0170): set `key` to `value`, or unset it. */
+export const SaveSettingRequest = Type.Union([
+  Type.Object(
+    { key: Type.String({ minLength: 1 }), value: Type.Unknown() },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { key: Type.String({ minLength: 1 }), unset: Type.Literal(true) },
+    { additionalProperties: false },
+  ),
+]);
+export type SaveSettingRequest = Static<typeof SaveSettingRequest>;
+
+/** The saved key, resolved again, with its new source. */
+export const SaveSettingResponse = Type.Object({ setting: SettingEntry });
+export type SaveSettingResponse = Static<typeof SaveSettingResponse>;
+
 /** A nested table like the settings files; only project keys; checked by the resolver (R17.2). */
 export const SettingsOverrideValues = Type.Record(Type.String(), Type.Unknown());
 
