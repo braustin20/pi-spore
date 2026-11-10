@@ -1,19 +1,34 @@
 import { DropdownMenu } from "radix-ui";
-import type { ReactElement, ReactNode } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
+import { Tooltip } from "./tooltip.js";
 
-/** A dropdown menu. The trigger must be one element that takes a ref, such as a `Button`. */
+/**
+ * A dropdown menu. The trigger must be one element that takes a ref, such as a `Button`.
+ * With `tooltip`, the trigger shows it on hover, and the menu hides it while open so it does not cover the items.
+ */
 export function Menu({
   trigger,
+  tooltip,
   align = "start",
   children,
 }: {
   trigger: ReactElement;
+  tooltip?: ReactNode;
   align?: "start" | "end";
   children: ReactNode;
 }) {
+  const [open, setOpen] = useState(false);
+  const triggerEl = <DropdownMenu.Trigger asChild>{trigger}</DropdownMenu.Trigger>;
   return (
-    <DropdownMenu.Root>
-      <DropdownMenu.Trigger asChild>{trigger}</DropdownMenu.Trigger>
+    <DropdownMenu.Root open={open} onOpenChange={setOpen}>
+      {tooltip === undefined ? (
+        triggerEl
+      ) : (
+        <Tooltip label={tooltip} side="bottom" hidden={open}>
+          {/* A disabled button gets no pointer events, so the span takes the hover. */}
+          <span className="inline-flex">{triggerEl}</span>
+        </Tooltip>
+      )}
       <DropdownMenu.Portal>
         <DropdownMenu.Content
           align={align}
