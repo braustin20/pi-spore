@@ -911,7 +911,8 @@ describe("questions up the chain (R7.5, ADR 0008)", () => {
   });
 
   it("delivers the coordinator's answer to the asking agent, and refuses a second answer with 409", async () => {
-    const server = await start();
+    // The worker's turn must end, so the answer arrives as a new prompt, not a follow-up queued behind an open run.
+    const server = await start({ script: { worker: ["silent", "silent", "silent"] } });
     const { projectId } = await project(server, "answer");
     const { run, coordinator } = await createRun(server, projectId, "answer");
     const { worker, asWorker, asCoordinator } = await laneWithWorker(server, run, coordinator);

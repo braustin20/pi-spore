@@ -426,6 +426,9 @@ export function createAgentsModule(
         roleDefaults: (role) => agents.roleDefaults(role),
         modelsUsed: (agentId) => agents.modelsUsed(agentId),
         turnError: (agentId) => agents.turnError(agentId),
+        // The pending row covers the idle of a process that starts before its prompt is sent; the manager's
+        // `unstarted` covers the gap from Pi taking the prompt until its `agent_start`.
+        endedRun: async (agentId) => (await agents.endedRun(agentId)) && !queue.hasPending(agentId),
         rename: (agentId, title) => agents.rename(agentId, title),
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,

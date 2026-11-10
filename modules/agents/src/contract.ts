@@ -71,6 +71,13 @@ export interface Agents {
    * the message has none. Undefined without a session. Throws a 404 ApiError for an unknown id.
    */
   turnError(agentId: string): Promise<string | undefined>;
+  /**
+   * True when the agent's last run ended on its own and nothing new waits for it: the agent is `idle`, it has no
+   * pending delivery, and the last assistant message in its session ended with a `stopReason` other than "error"
+   * or "aborted". A prompt Pi took but has not started counts as not ended. False without a session or an
+   * assistant message. Throws a 404 ApiError for an unknown id.
+   */
+  endedRun(agentId: string): Promise<boolean>;
   /** Sets the agent's title. It joins the caller's `store.transaction`. Throws a 404 ApiError for an unknown id. */
   rename(agentId: string, title: string): void;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */

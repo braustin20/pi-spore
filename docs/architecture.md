@@ -115,6 +115,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - `turnError(agentId)` says why the agent's last run failed: the error of a `failed` status, or the
     `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a provider that
     refused, such as a full usage window). `rename(agentId, title)` sets the title.
+  - `endedRun(agentId)` says the agent's last run ended on its own and nothing new waits for it: the agent is
+    `idle`, it has no pending delivery, and its last assistant message did not end with `stopReason` "error" or
+    "aborted". A pending delivery counts because a process goes idle once at start-up, before Pi takes its prompt.
+    A prompt Pi took but has not started yet counts as not ended too.
 - Transcripts are Pi session JSONL files in `~/.pi-spore/sessions/<workspace id>/`. They can still be opened in the
   CLI with `pi --session <path>`.
 - Extension dialogs (`extension_ui_request`) become pending prompts on the chat and on Home. The answer goes back as
@@ -586,19 +590,22 @@ fail_first = "artifact"
   must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
   later report never drops a test.
 - **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
-  one and tells the agent once to continue and call `report`. There are no other automatic reminders.
+  one and tells the agent once to continue and call `report`. If the agent ends its turn without a report, the step
+  reminds it once per turn (`reminded` in the checkpoint, also across a restart); a second such end blocks the stage
+  (ADR 0169). There are no other automatic reminders.
 - **Failed turns** (ADR 0140). The pipeline listens to the stage agents' status. When the open turn's agent fails
   (`turnError`: a crash, or a turn that ended with `stopReason: "error"`), the `await` step throws
-  `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The
-  job waits with that error, so the run stays `running` and shows it as `blocked`. The old agent may still report
-  while the run is blocked. Retry (`POST /api/pipelines/runs/:id/retry`) writes the error on the turn, and `await`
-  then replaces it in one commit: the old agent is renamed `<title> (failed)` and keeps its tab, and a fresh agent
-  takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
-  is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The
-  fresh agent has the stage's or run's model, else the role default read when it starts, so a settings fix works.
-  A restart or another wake does not mark the turn, so it only blocks again. Retry also works while such a wake runs
-  the blocked step again: it marks the turn and wakes the job, so the step runs once more after it settles. Failed
-  turns do not count as rounds.
+  `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The job
+  waits with that error, so the run stays `running` and shows it as `blocked`. A turn that ended twice without a report
+  blocks the same way (`... ended its turn twice without a report ...`, ADR 0169), and Retry covers it. The old agent
+  may still report while the run is blocked. Retry (`POST /api/pipelines/runs/:id/retry`) writes the error on the turn,
+  and `await` then replaces it in one commit: the old agent is renamed `<title> (failed)` and keeps its tab, and a fresh
+  agent takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
+  is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The fresh
+  agent has the stage's or run's model, else the role default read when it starts, so a settings fix works. A restart or
+  another wake does not mark the turn, so it only blocks again. Retry also works while such a wake runs the blocked step
+  again: it marks the turn and wakes the job, so the step runs once more after it settles. Failed turns do not count as
+  rounds.
 - **Review rounds** (R6.3, R6.4). Round r starts a fresh reviewer with the brief, the manifest with proof paths, and
   a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
   from the provider's `changes`). From round 2 on, the prompt also has the previous round's summary and findings and
