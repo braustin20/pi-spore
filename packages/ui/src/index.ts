@@ -20,6 +20,7 @@ export { StatusLine } from "./components/status-line.js";
 export { Table, TableCell, TableHead } from "./components/table.js";
 export { Tabs, TabsContent, TabsList, TabsTrigger } from "./components/tabs.js";
 export { ThemeMenu } from "./components/theme-menu.js";
+export { showToast, type Toast, Toaster } from "./components/toast.js";
 export { Tooltip, TooltipProvider } from "./components/tooltip.js";
 export {
   clampWidth,

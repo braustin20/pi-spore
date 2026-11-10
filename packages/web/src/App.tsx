@@ -1,5 +1,14 @@
 import { useApi, type WebPage } from "@pi-spore/module-api";
-import { cn, EmptyState, Page, ThemeMenu, Tooltip, TooltipProvider, usePhone } from "@pi-spore/ui";
+import {
+  cn,
+  EmptyState,
+  Page,
+  ThemeMenu,
+  Toaster,
+  Tooltip,
+  TooltipProvider,
+  usePhone,
+} from "@pi-spore/ui";
 import { MapPinOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { findPage, railActive, useHashPath } from "./router.js";
@@ -176,6 +185,7 @@ export function App({ pages }: { pages: readonly WebPage[] }) {
           </main>
         </div>
       </div>
+      <Toaster />
     </TooltipProvider>
   );
 }

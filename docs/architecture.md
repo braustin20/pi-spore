@@ -1066,6 +1066,12 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   browsers show notifications only from a service worker, which pi-spore does not have, so the button hides on
   phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on. The browser's
   permission is the only switch; pi-spore has no notification setting (ADR 0167).
+- Toasts (R15.2): while the page has focus, each new item shows an in-page toast instead (`showToast` and
+  `Toaster` in `packages/ui`, mounted once in `App.tsx`). One item gives a toast or a notification, never both;
+  `notifyItem` in the attention web module makes that choice. Toasts show only on desktop screens
+  (`(hover: hover) and (pointer: fine)`), and not for an item whose chat is the open page, because that page shows
+  its own asks. A toast has the item's title and body, an Open link to the same place as on Home, and a close
+  button. It closes after 8 seconds, and hover pauses that. At most 3 show at once.
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
   subject as JSON, state `open`, `approved`, or `declined`, outcome, times). The module that owns a gate registers
   its kind through `ApprovalsKey.register({ kind, subject, approve, decided? })` and files approvals with
