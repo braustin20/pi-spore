@@ -1,7 +1,7 @@
 import type { Agent } from "@pi-spore/shared";
 import { Button, cn, Input, Tooltip } from "@pi-spore/ui";
 import { Eye, History, MessageSquare, MessageSquarePlus, Pencil, Workflow, X } from "lucide-react";
-import { type FormEvent, useState } from "react";
+import { type FormEvent, useEffect, useRef, useState } from "react";
 
 export const label = (chat: Agent) => chat.title ?? "New chat";
 
@@ -112,6 +112,12 @@ export function ChatBar({
   onRename,
   onClose,
 }: ChatBarProps) {
+  // A link (from the Pipeline panel, say) can select a tab that is off screen.
+  const currentTab = useRef<HTMLAnchorElement>(null);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: scroll only when the selected chat changes.
+  useEffect(() => {
+    currentTab.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
+  }, [selected.id]);
   // On a phone the tabs take the first line and the buttons wrap onto a second one.
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
@@ -132,6 +138,7 @@ export function ChatBar({
                 )}
               >
                 <a
+                  ref={current ? currentTab : undefined}
                   href={`#/workspaces/${workspaceId}/chats/${chat.id}`}
                   aria-current={current ? "page" : undefined}
                   title={`${label(chat)}. ${HINTS[kind]}`}
@@ -140,6 +147,15 @@ export function ChatBar({
                   <Icon aria-hidden="true" className="size-3.5 shrink-0" />
                   <span className="truncate">{label(chat)}</span>
                   {kind !== "worker" && <span className="sr-only">{SR_LABELS[kind]}</span>}
+                  {working && (
+                    <>
+                      <span
+                        aria-hidden="true"
+                        className="size-1.5 shrink-0 rounded-full bg-run animate-pulse"
+                      />
+                      <span className="sr-only">working</span>
+                    </>
+                  )}
                 </a>
                 <Tooltip
                   label={

@@ -642,6 +642,30 @@ describe("a review stage", () => {
     expect(one.tools).not.toMatch(/bash|edit|write/);
   });
 
+  it("titles the stage chats with the slice name when the run has one", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+    const { workspaceId } = await workspace(server, "named-titles");
+    userPipeline(server.paths.root, "p", withReview());
+    const { run: started } = await json<{ run: PipelineRun }>(
+      await server.request("POST", `/api/pipelines/workspaces/${workspaceId}/runs`, {
+        pipeline: "p",
+        brief: "Build the thing",
+        name: "push_line tool",
+      }),
+      201,
+    );
+    await until(async () => (await getRun(server, started.id)).state === "passed");
+
+    const run = await getRun(server, started.id);
+    const [task, review] = run.turns as [PipelineTurn, PipelineTurn];
+    expect((await stageAgent(server, task.agentId)).agent.title).toBe("push_line tool - implement");
+    expect((await stageAgent(server, review.agentId)).agent.title).toBe(
+      "push_line tool - Review 1",
+    );
+  });
+
   it("tells the round 2 reviewer what round 1 found and when to answer revise", async () => {
     const server = await start({
       env: scriptEnv({
@@ -2194,6 +2218,19 @@ describe("a revise run", () => {
     expect(prompt).toContain('Your change came back with a new brief. You are the "fix" stage');
     expect(prompt).toContain(`pipelines/${run.id}/brief.md`);
     expect(prompt).toContain("## Brief\n\nFix the thing");
+  });
+
+  it("renames the reused worker to the slice name of a named revise run", async () => {
+    const { server, first, revise } = await afterFirstRun("reuse-title", {
+      worker: [DONE, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+
+    const run = await revise({ name: "push_line tool" });
+    await untilState(server, run.id, "passed");
+
+    const worker = await stageAgent(server, first.workerAgentId as string);
+    expect(worker.agent.title).toBe("push_line tool - fix");
   });
 
   it("shows the reviewer the earlier review and a diff of the fix alone", async () => {

@@ -70,7 +70,8 @@ async function render({ phone, agent = worker }: { phone: boolean; agent?: Agent
       sent.push({ path, body });
       return path === "agents/chats" ? { agent: { id: "a3" } } : {};
     },
-    subscribe: (_topic: string, onEvent: (event: unknown) => void) => {
+    subscribe: (topic: string, onEvent: (event: unknown) => void) => {
+      if (topic !== `agent:${agent.id}`) return () => {};
       onEvent({
         type: "snapshot",
         agent,

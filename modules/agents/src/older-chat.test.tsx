@@ -53,8 +53,8 @@ async function render(agent: Agent, state: Workspace["state"]) {
   const api = {
     get: async () => ({ agents: [agent] }),
     send: async () => ({}),
-    subscribe: (_topic: string, onEvent: (event: unknown) => void) => {
-      onEvent({ type: "snapshot", agent });
+    subscribe: (topic: string, onEvent: (event: unknown) => void) => {
+      if (topic === `agent:${agent.id}`) onEvent({ type: "snapshot", agent });
       return () => {};
     },
   } as unknown as ApiClient;

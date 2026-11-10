@@ -161,6 +161,17 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
     return () => window.removeEventListener("focus", load);
   }, [load]);
 
+  // The tabs' working dots follow live statuses. Only chats already in the list change, so their order stays the
+  // server's; new and closed chats come with the next load.
+  useEffect(
+    () =>
+      api.subscribe("agents:list", (event) => {
+        const fresh = new Map(reduceAgentList([], event).map((agent) => [agent.id, agent]));
+        setChats((current) => current?.map((chat) => fresh.get(chat.id) ?? chat));
+      }),
+    [api],
+  );
+
   const selected =
     chats?.find((chat) => chat.id === chatId) ??
     chats?.find((chat) => chat.kind === "worker" && chat.active);
