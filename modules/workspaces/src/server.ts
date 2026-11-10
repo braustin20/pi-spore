@@ -1,7 +1,7 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
-import { ApiError, type ServerModule } from "@pi-spore/module-api";
+import { ApiError, type ServerModule, type SettingsOverride } from "@pi-spore/module-api";
 import {
   ArchiveWorkspaceRequest,
   type ArchiveWorkspaceResponse,
@@ -10,6 +10,7 @@ import {
   type Isolation,
   parseJsonBody,
   RenameWorkspaceRequest,
+  type SettingsView,
   type StepReport,
   slugify,
   type Workspace,
@@ -47,6 +48,8 @@ const MIGRATIONS = [
   "ALTER TABLE workspaces_workspaces ADD COLUMN base TEXT",
   "ALTER TABLE workspaces_workspaces ADD COLUMN archived_at INTEGER",
   "UPDATE workspaces_workspaces SET archived_at = updated_at WHERE state = 'archived'",
+  "ALTER TABLE workspaces_workspaces ADD COLUMN settings TEXT",
+  "ALTER TABLE workspaces_workspaces ADD COLUMN settings_source TEXT",
 ];
 
 const DAY_MS = 86_400_000;
@@ -64,7 +67,15 @@ interface Row {
   created_at: number;
   updated_at: number;
   archived_at: number | null;
+  /** JSON of the settings override, checked by the resolver at creation. */
+  settings: string | null;
+  settings_source: "workspace" | "run" | null;
 }
+
+const overrideOf = (row: Row): SettingsOverride | undefined =>
+  row.settings === null || row.settings_source === null
+    ? undefined
+    : { source: row.settings_source, values: JSON.parse(row.settings) };
 
 const toWorkspace = (row: Row): Workspace => ({
   id: row.id,
@@ -129,7 +140,10 @@ export const workspacesModule: ServerModule = {
       );
     };
 
-    const create = async (request: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse> => {
+    const create = async (
+      request: CreateWorkspaceRequest,
+      options: { overrideSource?: "run" } = {},
+    ): Promise<CreateWorkspaceResponse> => {
       const project = await projects.get(request.projectId);
       const provider = projects.vcsFor(project);
       if (!provider.isolationModes.includes(request.isolation)) {
@@ -150,7 +164,11 @@ export const workspacesModule: ServerModule = {
       const id = host.newId();
       const slug = slugify(request.name);
       const short = id.slice(-6).toLowerCase();
-      const config = await projects.config(project);
+      const source = options.overrideSource ?? "workspace";
+      const config = await projects.config(
+        project,
+        request.settings ? { source, values: request.settings } : undefined,
+      );
       const warnings = await config.copyWarnings();
 
       let path = project.path;
@@ -203,11 +221,14 @@ export const workspacesModule: ServerModule = {
         created_at: now,
         updated_at: now,
         archived_at: null,
+        settings: request.settings ? JSON.stringify(request.settings) : null,
+        settings_source: request.settings ? source : null,
       };
       host.store.run(
         `INSERT INTO workspaces_workspaces
-          (id, project_id, name, slug, isolation, path, line, base, state, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          (id, project_id, name, slug, isolation, path, line, base, state, created_at, updated_at,
+           settings, settings_source)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         row.id,
         row.project_id,
         row.name,
@@ -219,6 +240,8 @@ export const workspacesModule: ServerModule = {
         row.state,
         row.created_at,
         row.updated_at,
+        row.settings,
+        row.settings_source,
       );
       const workspace = toWorkspace(row);
       publish(workspace);
@@ -377,6 +400,13 @@ export const workspacesModule: ServerModule = {
     });
 
     host.routes.get("/:id", (c) => c.json({ workspace: toWorkspace(load(c.req.param("id"))) }));
+
+    host.routes.get("/:id/settings", async (c) => {
+      const row = load(c.req.param("id"));
+      const config = await projects.config(await projects.get(row.project_id), overrideOf(row));
+      const body: SettingsView = { settings: config.entries };
+      return c.json(body);
+    });
 
     host.routes.patch("/:id", async (c) => {
       const request = parseJsonBody(RenameWorkspaceRequest, await c.req.text(), "rename request");

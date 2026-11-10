@@ -41,5 +41,6 @@ export type {
   ResolvedSettings,
   SettingDef,
   Settings,
+  SettingsOverride,
 } from "./settings.js";
 export { ApiContext, useApi } from "./web-context.js";

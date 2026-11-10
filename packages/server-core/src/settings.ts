@@ -96,6 +96,9 @@ function checkSection<const S extends TSchema>(
 
 type Layer = { file: RawConfigFile; source: SettingSource; code: string };
 
+const isFileSource = (source: SettingSource): boolean =>
+  source === "global" || source === "project file" || source === "local override";
+
 /**
  * The settings of one install (R17, architecture 13). `home` is the pi-spore home folder. Modules declare keys in
  * their setup, so until `finishDeclaring` runs, a key nobody declared yet is not an error. `finishDeclaring` then
@@ -127,7 +130,13 @@ export function createSettings(
         // A quoted "a.b" would match the setting path a.b and skip the model-key scan of the nested form.
         if (name.includes(".")) fail(`key "${name}" has a dot; write it as a nested table`);
         const key = prefix ? `${prefix}.${name}` : name;
-        if (!prefix && reserved[source === "global" ? "global" : "project"].has(name)) continue;
+        // Only a file has an owner that reads its reserved sections; an override has none.
+        if (
+          !prefix &&
+          isFileSource(source) &&
+          reserved[source === "global" ? "global" : "project"].has(name)
+        )
+          continue;
         const def = defs.get(key);
         if (def) {
           if (def.scope === "global" && source !== "global")
@@ -158,7 +167,7 @@ export function createSettings(
     },
     configFiles,
     checkSection: (schema, value, what) => checkSection(schema, value, what),
-    async resolve({ projectPath, detected = {} } = {}): Promise<ResolvedSettings> {
+    async resolve({ projectPath, detected = {}, override } = {}): Promise<ResolvedSettings> {
       const values = new Map<string, { value: unknown; source: SettingSource }>();
       for (const def of defs.values())
         values.set(def.key, { value: def.default, source: "default" });
@@ -166,7 +175,7 @@ export function createSettings(
         if (!defs.has(key)) throw new Error(`A module detected "${key}", which no module declares`);
         values.set(key, { value, source: "detected" });
       }
-      // Later layers win (R17.2). Run or workspace overrides will go after the local override.
+      // Later layers win (R17.2). A workspace or run override goes last.
       const layers: Layer[] = [];
       const global = await readGlobal(globalPath);
       if (global) layers.push({ file: global, source: "global", code: "bad_settings" });
@@ -175,6 +184,21 @@ export function createSettings(
         layers.push({ file: files.project, source: "project file", code: "bad_project_config" });
       if (files.local)
         layers.push({ file: files.local, source: "local override", code: "bad_project_config" });
+      if (override) {
+        const modelKey = findModelKey(override.values, "");
+        if (modelKey) {
+          throw new ApiError(
+            422,
+            "bad_override",
+            `${override.source} override sets "${modelKey}". An override never chooses models; use Pi settings, global settings, or a local override.`,
+          );
+        }
+        layers.push({
+          file: { path: `${override.source} override`, data: { ...override.values } },
+          source: override.source,
+          code: "bad_override",
+        });
+      }
       for (const layer of layers)
         for (const [key, value] of read(layer)) values.set(key, { value, source: layer.source });
 

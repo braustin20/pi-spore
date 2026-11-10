@@ -212,7 +212,7 @@ not built in v1.
 ## R17. Settings
 
 - R17.1 Global settings and per-project settings. Each value shows where it came from: default, global, project
-  file, local override, or detected.
+  file, local override, detected, workspace, or run.
 - R17.2 Resolve order, later wins: defaults → global → project file → local override → run/workspace override.
 - R17.3 The project file may be committed and never holds model choices. Model choices live in Pi settings or in
   pi-spore's global or local settings.

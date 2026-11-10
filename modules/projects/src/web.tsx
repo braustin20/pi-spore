@@ -1,5 +1,13 @@
 import { useApi, type WebModule } from "@pi-spore/module-api";
-import { Project, ProjectConfigView, ProjectList, parse, SettingsView } from "@pi-spore/shared";
+import {
+  Project,
+  ProjectConfigView,
+  ProjectList,
+  parse,
+  SettingsView,
+  type Workspace,
+  WorkspaceList,
+} from "@pi-spore/shared";
 import {
   Button,
   Chip,
@@ -11,6 +19,7 @@ import {
   PageHeader,
   Panel,
   PanelHeader,
+  Select,
   Table,
   TableCell,
   TableHead,
@@ -249,6 +258,91 @@ function showValue(value: unknown): string {
   return typeof value === "string" ? value : JSON.stringify(value);
 }
 
+function SettingsTable({ entries }: { entries: SettingsView["settings"] }) {
+  return (
+    <Table>
+      <tbody>
+        {entries.map((entry) => (
+          <tr key={entry.key}>
+            <TableHead className="w-72">
+              <code>{entry.key}</code>
+            </TableHead>
+            <TableCell>
+              <code>{showValue(entry.value)}</code>
+            </TableCell>
+            <TableCell className="w-32 text-right">
+              <Chip>{entry.source}</Chip>
+            </TableCell>
+          </tr>
+        ))}
+      </tbody>
+    </Table>
+  );
+}
+
+const errorText = (caught: unknown) => (caught instanceof Error ? caught.message : String(caught));
+
+function WorkspaceSettingsPanel() {
+  const api = useApi();
+  const [workspaces, setWorkspaces] = useState<Workspace[]>([]);
+  const [picked, setPicked] = useState("");
+  const [view, setView] = useState<SettingsView | undefined>();
+  const [error, setError] = useState<string | undefined>();
+
+  useEffect(() => {
+    api
+      .get("workspaces?state=active")
+      .then((body) => setWorkspaces(parse(WorkspaceList, body, "workspace list").workspaces))
+      .catch((caught: unknown) => setError(errorText(caught)));
+  }, [api]);
+
+  // The cleanup drops the answer of an earlier pick, so a slow request cannot show under a later one.
+  useEffect(() => {
+    setView(undefined);
+    setError(undefined);
+    if (!picked) return;
+    let current = true;
+    api
+      .get(`workspaces/${picked}/settings`)
+      .then((body) => {
+        if (current) setView(parse(SettingsView, body, "workspace settings"));
+      })
+      .catch((caught: unknown) => {
+        if (current) setError(errorText(caught));
+      });
+    return () => {
+      current = false;
+    };
+  }, [api, picked]);
+
+  return (
+    <Panel>
+      <PanelHeader title="Workspace settings" />
+      <div className="flex flex-col gap-3">
+        <Select
+          value={picked}
+          onChange={(event) => setPicked(event.target.value)}
+          aria-label="Workspace"
+        >
+          <option value="">Pick a workspace</option>
+          {workspaces.map((workspace) => (
+            <option key={workspace.id} value={workspace.id}>
+              {workspace.name}
+            </option>
+          ))}
+        </Select>
+        {error && <Notice tone="fail">{error}</Notice>}
+        {picked && !view && !error && <p className="text-muted">Loading...</p>}
+        {view && <SettingsTable entries={view.settings} />}
+        <p className="m-0 text-sm text-muted">
+          A workspace or run gets an override when it is made, with <code>--set key=value</code> in
+          the CLI. It beats every file.
+        </p>
+      </div>
+    </Panel>
+  );
+}
+
 function SettingsPage() {
   const api = useApi();
   const [view, setView] = useState<SettingsView | undefined>();
@@ -258,9 +352,7 @@ function SettingsPage() {
     api
       .get("projects/settings")
       .then((body) => setView(parse(SettingsView, body, "settings")))
-      .catch((caught: unknown) =>
-        setError(caught instanceof Error ? caught.message : String(caught)),
-      );
+      .catch((caught: unknown) => setError(errorText(caught)));
   }, [api]);
 
   return (
@@ -271,25 +363,7 @@ function SettingsPage() {
         <div className="flex flex-col gap-3">
           {error && <Notice tone="fail">{error}</Notice>}
           {!view && !error && <p className="text-muted">Loading...</p>}
-          {view && (
-            <Table>
-              <tbody>
-                {view.settings.map((entry) => (
-                  <tr key={entry.key}>
-                    <TableHead className="w-72">
-                      <code>{entry.key}</code>
-                    </TableHead>
-                    <TableCell>
-                      <code>{showValue(entry.value)}</code>
-                    </TableCell>
-                    <TableCell className="w-32 text-right">
-                      <Chip>{entry.source}</Chip>
-                    </TableCell>
-                  </tr>
-                ))}
-              </tbody>
-            </Table>
-          )}
+          {view && <SettingsTable entries={view.settings} />}
           <p className="m-0 text-sm text-muted">
             Set a value in <code>~/.pi-spore/settings.json</code>, in nested form such as{" "}
             <code>{'{ "agents": { "maxLive": 4 } }'}</code>. Settings that a project can set also go
@@ -300,6 +374,7 @@ function SettingsPage() {
           </p>
         </div>
       </Panel>
+      <WorkspaceSettingsPanel />
     </Page>
   );
 }

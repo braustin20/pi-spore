@@ -1,4 +1,4 @@
-import { defineInterface } from "@pi-spore/module-api";
+import { defineInterface, type SettingsOverride } from "@pi-spore/module-api";
 import type {
   ChangedFile,
   ChangeRecord,
@@ -9,6 +9,7 @@ import type {
   Project,
   ProjectConfigView,
   ProjectTrait,
+  SettingEntry,
 } from "@pi-spore/shared";
 
 /** Where a workspace's copy lives, as a provider made it. */
@@ -129,6 +130,8 @@ export interface TraitDefinition {
 }
 
 export interface ResolvedProjectConfig extends ProjectConfigView {
+  /** Every declared setting, resolved (R17.1). */
+  entries: SettingEntry[];
   /** Warnings from traits about copying from the main copy now. */
   copyWarnings(): Promise<string[]>;
 }
@@ -144,7 +147,8 @@ export interface Projects {
   get(id: string): Promise<Project>;
   list(): Promise<Project[]>;
   vcsFor(project: Project): VcsProvider;
-  config(project: Project): Promise<ResolvedProjectConfig>;
+  /** `override` is a workspace's or run's settings, the last layer (R17.2). A bad one answers 422 `bad_override`. */
+  config(project: Project, override?: SettingsOverride): Promise<ResolvedProjectConfig>;
   /** `retention.days` from the settings (section 14). A bad settings file answers 422 `bad_settings`. */
   retentionDays(): Promise<number>;
 }

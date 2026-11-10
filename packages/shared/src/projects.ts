@@ -39,6 +39,8 @@ export const SettingSource = Type.Union([
   Type.Literal("project file"),
   Type.Literal("local override"),
   Type.Literal("global"),
+  Type.Literal("workspace"),
+  Type.Literal("run"),
 ]);
 export type SettingSource = Static<typeof SettingSource>;
 
@@ -60,6 +62,9 @@ export type SettingEntry = Static<typeof SettingEntry>;
 /** Every setting with its source, from `~/.pi-spore/settings.json` and the defaults. */
 export const SettingsView = Type.Object({ settings: Type.Array(SettingEntry) });
 export type SettingsView = Static<typeof SettingsView>;
+
+/** A nested table like the settings files; only project keys; checked by the resolver (R17.2). */
+export const SettingsOverrideValues = Type.Record(Type.String(), Type.Unknown());
 
 export const ProjectLines = Type.Object({
   lines: Type.Array(Type.String()),

@@ -76,6 +76,7 @@ Commands:
   project rm <project>                     Unregister a project (files stay)
   ws list [--project <project>] [--state active|parked|archived]
   ws new <project> <name> [--mode new|existing|in-place] [--line <branch>] [--base <branch>]
+         [--set <key>=<value>]...
                                            Start a workspace. new: worktree on a new branch (default)
   ws rename <id> <name>
   ws park <id> | ws resume <id>
@@ -119,7 +120,7 @@ Commands:
   pipeline show <run>                      A run's stages, turns, verdicts, and findings
   pipeline cancel <run>
   pipeline retry <run>                     Run a stuck run's step again now, after fixing what blocked it
-  run start <project> <name> [--base <branch>] [--gate <action>]...
+  run start <project> <name> [--base <branch>] [--gate <action>]... [--set <key>=<value>]...
                                            Start a run: a run workspace and a coordinator chat. Default
                                            gates: check and test
   run list [--project <project>]           Runs, newest first
@@ -181,6 +182,34 @@ function parseArgs(
     } else throw usageError(`Unknown option ${arg}`);
   }
   return { positional, options, on, lists };
+}
+
+/** Builds the nested `settings` table from `--set key=value` items. A value that parses as JSON is JSON. */
+function settingsFrom(list: readonly string[] | undefined): Record<string, unknown> | undefined {
+  if (!list) return undefined;
+  const settings: Record<string, unknown> = {};
+  for (const item of list) {
+    const eq = item.indexOf("=");
+    const path = item.slice(0, eq).split(".");
+    // `__proto__` would set a prototype instead of a key, and the key would vanish from the request.
+    if (eq <= 0 || path.some((part) => part === "" || part === "__proto__"))
+      throw usageError(`--set takes <key>=<value> with a dotted key, got "${item}"`);
+    const raw = item.slice(eq + 1);
+    let value: unknown;
+    try {
+      value = JSON.parse(raw);
+    } catch {
+      value = raw;
+    }
+    let table = settings;
+    for (const part of path.slice(0, -1)) {
+      const next = table[part];
+      if (typeof next !== "object" || next === null || Array.isArray(next)) table[part] = {};
+      table = table[part] as Record<string, unknown>;
+    }
+    table[path[path.length - 1] as string] = value;
+  }
+  return settings;
 }
 
 class Api {
@@ -399,10 +428,11 @@ async function workspaceCommand(
     return;
   }
   if (sub === "new") {
-    const { positional, options } = parseArgs(rest, ["mode", "line", "base"]);
+    const { positional, options, lists } = parseArgs(rest, ["mode", "line", "base"], [], ["set"]);
     if (positional.length < 2) throw usageError("ws new takes a project and a name");
     const mode = (options.mode ?? "new") as Isolation;
     if (!MODES.includes(mode)) throw usageError(`--mode must be one of ${MODES.join(", ")}`);
+    const settings = settingsFrom(lists.set);
     const project = await api.project(positional[0] as string);
     const result = await api.call("POST", "workspaces", CreateWorkspaceResponse, {
       projectId: project.id,
@@ -410,6 +440,7 @@ async function workspaceCommand(
       isolation: mode,
       ...(options.line ? { line: options.line } : {}),
       ...(options.base ? { base: options.base } : {}),
+      ...(settings ? { settings } : {}),
     });
     if (json) deps.out(JSON.stringify(result));
     else {
@@ -1068,14 +1099,16 @@ function laneLines(run: Run): string[] {
 async function runCommand(api: Api, deps: CliDeps, args: string[], json: boolean): Promise<void> {
   const [sub, ...rest] = args;
   if (sub === "start") {
-    const { positional, options, lists } = parseArgs(rest, ["base"], [], ["gate"]);
+    const { positional, options, lists } = parseArgs(rest, ["base"], [], ["gate", "set"]);
     if (positional.length !== 2) throw usageError("run start takes a project and a name");
+    const settings = settingsFrom(lists.set);
     const project = await api.project(positional[0] as string);
     const { run } = await api.call("POST", "runs", CoordinatedRunBody, {
       projectId: project.id,
       name: positional[1],
       ...(options.base ? { base: options.base } : {}),
       ...(lists.gate ? { gates: lists.gate } : {}),
+      ...(settings ? { settings } : {}),
     });
     return deps.out(
       json

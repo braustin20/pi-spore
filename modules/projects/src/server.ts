@@ -113,13 +113,14 @@ export const projectsModule: ServerModule = {
       vcsFor(project) {
         return providerOf(project.vcs);
       },
-      async config(project): Promise<ResolvedProjectConfig> {
+      async config(project, override): Promise<ResolvedProjectConfig> {
         const view = await resolveConfig(
           host.settings,
           keys,
           project.path,
           project.traits,
           (id) => traits.find((trait) => trait.id === id)?.worktreeCopy,
+          override,
         );
         return {
           ...view,

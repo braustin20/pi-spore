@@ -22,6 +22,7 @@ import {
   ProjectConfigView,
   ProjectLines,
   parse,
+  SettingsView,
   Workspace,
   WorkspaceList,
 } from "@pi-spore/shared";
@@ -416,6 +417,103 @@ describe("workspaces with Git", () => {
     expect(await errorCode(response, 422)).toBe("bad_copy_pattern");
     // The half-made worktree was cleaned up.
     expect(git(project.path, "worktree", "list").trim().split("\n")).toHaveLength(1);
+  });
+
+  describe("settings override (R17.2)", () => {
+    const settingsOf = async (id: string) =>
+      parse(
+        SettingsView,
+        await json(await server.request("GET", `/api/workspaces/${id}/settings`), 200),
+        "settings",
+      ).settings;
+    const entry = (settings: { key: string }[], key: string) =>
+      settings.find((found) => found.key === key);
+
+    it("uses the override at creation and lists it with source workspace", async () => {
+      const repo = makeUnityRepo();
+      mkdirSync(join(repo, ".pi-spore"));
+      writeFileSync(
+        join(repo, ".pi-spore", "config.local.toml"),
+        '[worktree]\nbranch_prefix = "loc"\n',
+      );
+      const project = await addProject(repo);
+      const { workspace } = await createWorkspace({
+        projectId: project.id,
+        name: "Over",
+        isolation: "new",
+        settings: { worktree: { branch_prefix: "ws" } },
+      });
+      expect(workspace.line?.startsWith("ws/")).toBe(true);
+      expect(entry(await settingsOf(workspace.id), "worktree.branch_prefix")).toMatchObject({
+        value: "ws",
+        source: "workspace",
+      });
+    });
+
+    it("lists the file source for a workspace made without an override", async () => {
+      const repo = makeUnityRepo();
+      mkdirSync(join(repo, ".pi-spore"));
+      writeFileSync(
+        join(repo, ".pi-spore", "config.local.toml"),
+        '[worktree]\nbranch_prefix = "loc"\n',
+      );
+      const project = await addProject(repo);
+      const { workspace } = await createWorkspace({
+        projectId: project.id,
+        name: "Plain",
+        isolation: "new",
+      });
+      expect(entry(await settingsOf(workspace.id), "worktree.branch_prefix")).toMatchObject({
+        value: "loc",
+        source: "local override",
+      });
+    });
+
+    it("rejects a bad override and leaves no workspace", async () => {
+      const project = await addProject(makeUnityRepo());
+      const response = await server.request("POST", "/api/workspaces", {
+        projectId: project.id,
+        name: "Bad",
+        isolation: "new",
+        settings: { retention: { days: 1 } },
+      });
+      expect(await errorCode(response, 422)).toBe("bad_override");
+      const list = parse(
+        WorkspaceList,
+        await json(await server.request("GET", "/api/workspaces"), 200),
+        "list",
+      );
+      expect(list.workspaces).toEqual([]);
+    });
+
+    it("stores the source a caller of the interface gives", async () => {
+      let workspaces: Workspaces | undefined;
+      const caller: ServerModule = {
+        id: "caller",
+        requires: ["workspaces"],
+        core: false,
+        setup: (host) => {
+          workspaces = host.use(WorkspacesKey);
+        },
+      };
+      server.close();
+      server = await createTestServer([...ALL, caller]);
+      const project = await addProject(makeUnityRepo());
+      const { workspace } = await (workspaces as Workspaces).create(
+        {
+          projectId: project.id,
+          name: "Run",
+          isolation: "new",
+          settings: { worktree: { branch_prefix: "rn" } },
+        },
+        { overrideSource: "run" },
+      );
+      expect(workspace.line?.startsWith("rn/")).toBe(true);
+      expect(entry(await settingsOf(workspace.id), "worktree.branch_prefix")).toMatchObject({
+        value: "rn",
+        source: "run",
+      });
+    });
   });
 });
 

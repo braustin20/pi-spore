@@ -51,8 +51,14 @@ export interface Workspaces {
   /** Throws ApiError 404 if there is no such workspace. */
   get(id: string): Workspace;
   list(filter?: { projectId?: string; state?: WorkspaceState }): Workspace[];
-  /** Creates a workspace as `POST /api/workspaces` does. Throws ApiError on a bad request. */
-  create(request: CreateWorkspaceRequest): Promise<CreateWorkspaceResponse>;
+  /**
+   * Creates a workspace as `POST /api/workspaces` does. Throws ApiError on a bad request. The settings in the
+   * request count as source `workspace`, or `run` when `overrideSource` says so (R17.2).
+   */
+  create(
+    request: CreateWorkspaceRequest,
+    options?: { overrideSource?: "run" },
+  ): Promise<CreateWorkspaceResponse>;
   beforeLeaveActive(listener: LeaveListener): void;
   afterCopyCreated(listener: CopyCreatedListener): void;
   beforeRemoveCopy(listener: RemoveCopyListener): void;
