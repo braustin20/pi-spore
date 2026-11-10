@@ -343,6 +343,48 @@ describe("pi-spore ws", () => {
     });
   });
 
+  it("sends --set overrides as a nested settings table on ws new", async () => {
+    const { deps, sent } = fakeDeps((key) =>
+      key === "GET /api/projects"
+        ? Response.json({ projects: [project] })
+        : Response.json({ workspace, copied: [], warnings: [], steps: [] }, { status: 201 }),
+    );
+    await run(
+      [
+        "ws",
+        "new",
+        "game",
+        "x",
+        "--set",
+        "worktree.branch_prefix=x",
+        "--set",
+        'worktree.copy=[".env"]',
+      ],
+      deps,
+    );
+    expect(sent[1]?.body).toEqual({
+      projectId: "P1",
+      name: "x",
+      isolation: "new",
+      settings: { worktree: { branch_prefix: "x", copy: [".env"] } },
+    });
+  });
+
+  it("rejects a --set without = before calling the server", async () => {
+    const { deps, sent } = fakeDeps(healthy);
+    expect(await run(["ws", "new", "game", "x", "--set", "nokey"], deps)).toBe(2);
+    expect(sent).toEqual([]);
+  });
+
+  it.each(["=x", "a..b=1", ".a=1", "a.=1", "__proto__.a=1", "a.__proto__=1"])(
+    "rejects the malformed --set %s before calling the server",
+    async (item) => {
+      const { deps, sent } = fakeDeps(healthy);
+      expect(await run(["ws", "new", "game", "x", "--set", item], deps)).toBe(2);
+      expect(sent).toEqual([]);
+    },
+  );
+
   it("rejects an unknown mode before calling the server", async () => {
     const { deps, sent } = fakeDeps(healthy);
     expect(await run(["ws", "new", "game", "x", "--mode", "copy"], deps)).toBe(2);
@@ -1183,6 +1225,18 @@ describe("pi-spore run", () => {
       body: { projectId: "P1", name: "Big feature", base: "dev", gates: ["check", "lint"] },
     });
     expect(out.join("\n")).toContain("Workspace W9");
+  });
+
+  it("sends --set overrides as a nested settings table on run start", async () => {
+    const { deps, sent } = fakeDeps(answer);
+    expect(
+      await run(["run", "start", "game", "r", "--set", "worktree.branch_prefix=x"], deps),
+    ).toBe(0);
+    expect(sent.at(-1)?.body).toEqual({
+      projectId: "P1",
+      name: "r",
+      settings: { worktree: { branch_prefix: "x" } },
+    });
   });
 
   it("lists runs of one project", async () => {
