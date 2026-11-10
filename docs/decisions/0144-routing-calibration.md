@@ -42,4 +42,6 @@ model. That needs outcomes, and outcomes need some local runs.
 - A small `explore` buys outcomes at the cost of some review rounds on local work.
 - Plain chats on `spore/auto` have no outcome. They count as answers in the buckets, not in pass shares.
 - The `usage` module now owns a table and requires `pipelines`.
+- A pipeline worker's task prompt holds the brief's full text, not only its artifact path, so Jev scores the brief.
+  Before this, Jev saw only a link to the brief and explore never fired for a pipeline worker.
 - The suggestion is only as good as Jev's answers stay stable. A new Jev version may need a new sample.

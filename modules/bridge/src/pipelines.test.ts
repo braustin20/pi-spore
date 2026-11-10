@@ -310,6 +310,19 @@ describe("a pipeline run", () => {
     expect(prompt).toContain(`\nTurn: ${turn.id}\n`);
   });
 
+  it("puts the brief's text and its artifact path in the worker's first message", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId } = await workspace(server, "inline");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const prompt = (await chat(server, (await getRun(server, run.id)).workerAgentId as string))[0];
+    expect(prompt).toContain(`pipelines/${run.id}/brief.md`);
+    expect(prompt).toContain("## Brief\n\nBuild the thing");
+  });
+
   it("keeps the route the worker ran on, taking only the record of its own agent", async () => {
     const home = join(scratch, "fake-home");
     const routing = { route: "local", model: "strata/qwen", reasons: ["bounded", "free quota"] };
@@ -2083,6 +2096,7 @@ describe("a revise run", () => {
     );
     expect(prompt).toContain('Your change came back with a new brief. You are the "fix" stage');
     expect(prompt).toContain(`pipelines/${run.id}/brief.md`);
+    expect(prompt).toContain("## Brief\n\nFix the thing");
   });
 
   it("shows the reviewer the earlier review and a diff of the fix alone", async () => {
