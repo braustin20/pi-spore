@@ -407,8 +407,16 @@ export class AgentManager {
     this.clearIdle(live);
     this.setWaiting(live, null);
     if (live.record.title === null) this.setTitle(live, chatTitle(message));
+    // Pi 1.5.0 removes a queued steer on delivery by its text, and only when that text is not empty
+    // (`@earendil-works/pi-coding-agent/dist/core/agent-session.js` ~746), so a picture-only steer stays queued
+    // forever. A placeholder text works around it; drop this once Pi removes empty queue entries too. Only a queued
+    // message gets it, so a picture-only first message keeps its empty text and the chat stays untitled.
+    const piMessage =
+      live.chat.busy && images.length > 0 && message.trim() === ""
+        ? `(${images.length > 1 ? "images" : "image"})`
+        : message;
     const fields = {
-      message,
+      message: piMessage,
       ...(images.length > 0 ? { images } : {}),
       ...(live.chat.busy ? { streamingBehavior: whileBusy } : {}),
     };
