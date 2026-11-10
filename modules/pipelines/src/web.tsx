@@ -29,6 +29,7 @@ import {
 } from "@pi-spore/ui";
 import { ChevronRight, Workflow } from "lucide-react";
 import { type SubmitEvent, useEffect, useState } from "react";
+import { splitRunMessage } from "./gate-log.js";
 import { formatDuration, isActive, StepBar, Timeline } from "./timeline.js";
 import { openFindings, SEVERITIES } from "./turns.js";
 
@@ -180,9 +181,8 @@ function RunCard({
     setBusy(false);
   };
 
-  // The Gates row holds the full log, so the notice keeps only the first line.
-  const failedAtGates = run.state === "failed" && Boolean(run.stages[run.stageIndex]?.gates);
-  const notice = failedAtGates ? run.message?.split("\n", 1)[0] : run.message;
+  // A failed gate's log sits in the timeline's Gates row; the notice keeps the headline and the failed tests.
+  const notice = run.message && splitRunMessage(run.message).notice;
 
   return (
     <section

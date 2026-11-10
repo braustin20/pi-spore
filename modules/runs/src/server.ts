@@ -916,8 +916,9 @@ export const runsModule: ServerModule = {
 
     /** The run's worktree and the lane's branch: where a merge happens, and what it merges. */
     const mergeSite = async (run: RunRow, lane: LaneRow) => {
-      const { integrate } = await integrateOf(run.project_id);
+      const { project, integrate } = await integrateOf(run.project_id);
       return {
+        project,
         integrate,
         location: { path: workspaces.get(run.workspace_id).path, line: run.line },
         laneLine: workspaces.get(lane.workspace_id as string).line as string,
@@ -1011,7 +1012,7 @@ export const runsModule: ServerModule = {
       const lane = mergingLane(subject);
       if (!lane) return { next: null };
       const run = requireRun(lane.run_id);
-      const { integrate, location, laneLine } = await mergeSite(run, lane);
+      const { project, integrate, location, laneLine } = await mergeSite(run, lane);
       const failure = checkpoint?.failure;
       if (failure) {
         const path = `runs/${run.id}/lanes/${lane.id}-gates.diff`;
@@ -1043,6 +1044,36 @@ export const runsModule: ServerModule = {
       if ((await integrate.diff(location, laneLine)) !== "") {
         await integrate.commit(location, `Merge lane ${lane.name} (${lane.id})`);
       }
+      // ADR 0165: the user approved this branch on GitHub with the run PR, so each green merge goes to it. A failed
+      // push leaves the lane merged and goes into the message.
+      let pushError: string | undefined;
+      if (run.state === "finished") {
+        try {
+          const publish = projects.vcsFor(project).publish;
+          if (!publish) {
+            throw new ApiError(
+              422,
+              "not_supported",
+              `${project.vcs} projects do not support publish: the provider has no publish capability`,
+            );
+          }
+          await publish.push(location, run.line);
+        } catch (error) {
+          if (!(error instanceof ApiError)) throw error;
+          pushError = `${error.code}: ${error.message}`;
+        }
+      }
+      const tail =
+        run.state !== "finished"
+          ? [
+              "All lanes of the run are merged or declined. Call open_run_pr with a title and a body to ask the user to open the run's one PR. pi-spore never merges to the base line.",
+            ]
+          : pushError === undefined
+            ? [`pi-spore pushed ${run.line}. The run's PR is open and now shows this merge.`]
+            : [
+                `pi-spore could not push ${run.line}: ${pushError}`,
+                "The run's PR does not show this merge. Tell the user.",
+              ];
       return {
         next: null,
         commit: () => {
@@ -1058,11 +1089,7 @@ export const runsModule: ServerModule = {
             coordinatorOf(run.id),
             [
               `Lane "${lane.name}" (${lane.id}) is merged into ${run.line}. The gates passed on the merged tree.`,
-              ...(done
-                ? [
-                    "All lanes of the run are merged or declined. Call open_run_pr with a title and a body to ask the user to open the run's one PR. pi-spore never merges to the base line.",
-                  ]
-                : []),
+              ...(run.state === "finished" || done ? tail : []),
             ].join("\n"),
           );
         },

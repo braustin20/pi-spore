@@ -1,6 +1,11 @@
 // @vitest-environment happy-dom
 import { type ApiClient, ApiContext, type WebHost } from "@pi-spore/module-api";
-import type { PipelineRun, PipelineTurn, Workspace } from "@pi-spore/shared";
+import {
+  GATE_LOG_HEADING,
+  type PipelineRun,
+  type PipelineTurn,
+  type Workspace,
+} from "@pi-spore/shared";
 import type { ComponentType } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
@@ -153,19 +158,29 @@ describe("Pipeline tab", () => {
     expect(text).not.toContain("15 min");
   });
 
-  it("keeps the log in the Gates row and only the first line in the notice", async () => {
+  it("keeps the log in a closed block in the Gates row, and the failed tests in the notice", async () => {
     const failed = run({
       state: "failed",
       stageIndex: 2,
-      message: "gate test failed\nFAIL src/a.test.ts\nexpected 1",
+      message: [
+        "gate test failed",
+        "1 test failed:",
+        "src/a.test.ts > adds",
+        "",
+        GATE_LOG_HEADING,
+        "RAW LOG LINE",
+      ].join("\n"),
       turns: [TASK, REVIEW],
     });
     const { root } = await mount([failed]);
 
     const notice = root.querySelector('[role="alert"]');
     expect(notice?.textContent).toContain("gate test failed");
-    expect(notice?.textContent).not.toContain("FAIL src/a.test.ts");
-    expect(root.querySelector("pre")?.textContent).toContain("FAIL src/a.test.ts");
+    expect(notice?.textContent).toContain("src/a.test.ts > adds");
+    expect(notice?.textContent).not.toContain("RAW LOG LINE");
+    const log = rows(root)[2]?.closest("li")?.querySelector("details");
+    expect(log?.open).toBe(false);
+    expect(log?.textContent).toContain("RAW LOG LINE");
   });
 
   it("keeps a row the user opened open when new data arrives", async () => {

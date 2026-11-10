@@ -1,7 +1,8 @@
-import type { PipelineRun, PipelineTurn } from "@pi-spore/shared";
+import { type PipelineRun, type PipelineTurn, stripAnsi } from "@pi-spore/shared";
 import { Chip, CollapsibleSection, Spinner } from "@pi-spore/ui";
 import { Check, ChevronRight, Circle, Hourglass, Square, TriangleAlert, X } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
+import { GateLog, splitRunMessage } from "./gate-log.js";
 import { EarlyStopLine, FindingItems, routeText, SEVERITIES, TestList } from "./turns.js";
 
 type StepState = "done" | "running" | "blocked" | "waiting" | "failed" | "stopped" | "not started";
@@ -128,10 +129,6 @@ const kindLabel = (turn: PipelineTurn) =>
       ? `Review, round ${turn.round}`
       : `Fix for ${turn.stage} round ${turn.round}`;
 
-/** Color codes in a gate log are noise in a page. */
-// biome-ignore lint/suspicious/noControlCharactersInRegex: the escape character is what this matches
-const ANSI = /\u001b\[[0-9;?]*[ -/]*[@-~]/g;
-
 function Counts({ turn }: { turn: PipelineTurn }) {
   const text = SEVERITIES.flatMap(({ severity }) => {
     const count = (turn.report?.findings ?? []).filter((f) => f.severity === severity).length;
@@ -218,9 +215,10 @@ function TurnBody({ turn, workspaceId }: { turn: PipelineTurn; workspaceId: stri
 function GatesBody({ run, state }: { run: PipelineRun; state: StepState }) {
   if (state === "failed") {
     return (
-      <pre className="m-0 mt-1.5 max-h-80 overflow-auto whitespace-pre-wrap text-xs">
-        {(run.message ?? "").replace(ANSI, "")}
-      </pre>
+      <div className="mt-1.5">
+        {/* Runs from before the log heading carry the whole log in the message, maybe with color codes. */}
+        <GateLog text={stripAnsi(splitRunMessage(run.message ?? "").log ?? run.message ?? "")} />
+      </div>
     );
   }
   return (

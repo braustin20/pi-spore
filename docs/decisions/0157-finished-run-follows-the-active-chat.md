@@ -1,6 +1,7 @@
 # 0157. A finished run follows the active chat too
 
-- Status: Accepted; changes [0151](0151-run-cancel-handover-and-pr-approval.md) for finished runs
+- Status: Accepted; changes [0151](0151-run-cancel-handover-and-pr-approval.md) for finished runs; changed by
+  [0165](0165-finished-run-pushes-each-merge.md)
 - Date: 2026-11-09
 - Requirements: R7.3
 
@@ -23,5 +24,5 @@ never got it and the run stalled.
 ## Consequences
 
 - Lane reports, failures, and questions of a finished run reach the chat the user works in.
-- Lane tools still take a finished run. When its new lanes are merged, the coordinator is told to call
-  `open_run_pr`, which answers 409 `run_finished`.
+- Lane tools still take a finished run. ADR 0165 pushes its new merges to the open PR and stops telling the
+  coordinator to call `open_run_pr`.

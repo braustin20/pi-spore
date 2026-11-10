@@ -1332,7 +1332,7 @@ describe("the run PR (ADR 0100, ADR 0130)", () => {
     await laneChanges(server, run, lane.id, "feature.txt", "x\n");
     await runs.mergeLane(coordinator, { laneId: lane.id });
     await until(async () => (await laneOf(server, run.id, lane.id)).state === "merged");
-    return { server, run, coordinator, origin, lane };
+    return { server, run, coordinator, origin, lane, folder };
   }
 
   it("files one run-pr approval and opens nothing until the user approves", async () => {
@@ -1433,6 +1433,55 @@ describe("the run PR (ADR 0100, ADR 0130)", () => {
     );
     expect(reports).toHaveLength(1);
     expect(await laneOf(server, run.id, lane.id)).toMatchObject({ state: "failed" });
+  });
+
+  /** A run whose PR is open, with a new chat as its coordinator and a second lane that passed. */
+  async function finishedRunWithLane(name: string) {
+    const { server, run, coordinator, origin, folder } = await mergedRun(name);
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "" });
+    await json(await decide(server, filed.id, "approve", {}));
+    await deliveredWith(server, run.coordinatorAgentId, "Opened PR #1");
+    await stopped(server, run.coordinatorAgentId);
+    const chatId = await newWorkerChat(server, run.workspaceId);
+    const caller = { agentId: chatId, workspaceId: run.workspaceId };
+    const lane = await startLane(run, caller, "more");
+    await laneChanges(server, run, lane.id, "more.txt", "more\n");
+    return { server, run, chatId, caller, origin, lane, folder };
+  }
+
+  // ADR 0165: the user approved this branch on GitHub when they approved the PR, so pi-spore pushes each green merge.
+  it("pushes a lane merged into a finished run to its open PR, and does not ask for open_run_pr", async () => {
+    const { server, run, chatId, caller, origin, lane, folder } =
+      await finishedRunWithLane("pr-push");
+
+    await runs.mergeLane(caller, { laneId: lane.id });
+
+    const delivery = await deliveredWith(server, chatId, `"more" (${lane.id}) is merged`);
+    expect(git(origin, "rev-parse", run.line)).toBe(git(folder, "rev-parse", run.line));
+    expect(git(origin, "show", `${run.line}:more.txt`)).toBe("more");
+    expect(delivery).toContain(`pushed ${run.line}`);
+    expect(delivery).toContain("PR is open");
+    expect(delivery).not.toContain("open_run_pr");
+    expect(prCreates()).toHaveLength(1);
+    expect(git(folder, "rev-parse", "main")).toBe(git(origin, "rev-parse", "main"));
+  });
+
+  it("keeps the lane merged and tells the coordinator when the push to the open PR fails", async () => {
+    const { server, run, chatId, caller, origin, lane } = await finishedRunWithLane("pr-push-fail");
+    const other = join(scratch, "pr-push-fail-other");
+    git(scratch, "clone", "-q", "--branch", run.line, origin, other);
+    git(other, "commit", "-q", "--allow-empty", "-m", "someone else");
+    git(other, "push", "-q", "origin", run.line);
+    const remoteHead = git(origin, "rev-parse", run.line);
+
+    await runs.mergeLane(caller, { laneId: lane.id });
+
+    const delivery = await deliveredWith(server, chatId, `"more" (${lane.id}) is merged`);
+    expect(delivery).toContain(`could not push ${run.line}`);
+    expect(delivery).toContain("push_failed");
+    expect(delivery).not.toContain("open_run_pr");
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({ state: "merged" });
+    expect(git(origin, "rev-parse", run.line)).toBe(remoteHead);
   });
 
   it("answers 409 pr_not_supported on approve without the github-pr module, and the approval stays open", async () => {
