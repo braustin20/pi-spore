@@ -92,6 +92,8 @@ export const Agent = Type.Object({
   error: Type.Optional(Type.String()),
   /** How many background helper runs are running. Missing when none. */
   helpersRunning: Type.Optional(Type.Integer()),
+  /** What the agent waits on while it is idle, such as a pipeline run. Set by another module; in memory only. */
+  workingFor: Type.Optional(Type.String()),
   /** "Waiting for <model>" while the router waits for a busy local model (R4.5). Missing otherwise. */
   routerStatus: Type.Optional(Type.String()),
   createdAt: Type.Integer(),

@@ -428,6 +428,7 @@ export function createAgentsModule(
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),
+        setWorkingFor: (agentId, label) => agents.setWorkingFor(agentId, label),
         isClosed: (agentId) => agents.isClosed(agentId),
         inWorkspace: (workspaceId) =>
           host.store

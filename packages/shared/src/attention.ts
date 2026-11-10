@@ -144,7 +144,7 @@ export const RunningItem = Type.Object({
   agentId: Type.String(),
   workspace: InboxWorkspace,
   chat: InboxChat,
-  status: Type.Union([AgentStatus, Type.Literal("helpers")]),
+  status: Type.Union([AgentStatus, Type.Literal("helpers"), Type.Literal("pipeline")]),
   /** Replaces the status text, e.g. "Waiting for <model>" from the router (R4.5). */
   detail: Type.Optional(Type.String()),
   since: Type.Integer(),

@@ -205,6 +205,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     an `AgentChange` of kind `helpers`, so `agents:list` and Home follow it. An idle chat with a running helper shows
     as working: "Working (helper running)" in the workspace list and on Home, `working (helper running)` in the chat
     header. It is not done; its process gets the helper's result.
+  - Another module can mark an agent as working for something with `Agents.setWorkingFor(agentId, label)`, for
+    example a chat that waits on a pipeline run. The label is `workingFor` on the agent view, in memory only, and a
+    change of it is an `AgentChange` of kind `working`. `undefined` clears it. It never touches `waitingSince`.
+    An idle or stopped chat with `workingFor` shows as working: Home has a running item with status `pipeline` and
+    the label as its detail, and no `finished` item; the workspace line is `Working (<label>)`, and the chat header
+    `working (<label>)`. A wait for the user and a failed agent still win.
   - `GET /api/agents/:id/children/:runId/transcript?child=<step id>` sends `/subagents-inspect-rpc` to the agent's
     process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
     `child_not_found` for a run not in the list or an agent that is not running, 400 `bad_child_id` for an id with

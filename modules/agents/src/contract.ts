@@ -2,8 +2,11 @@ import { defineInterface } from "@pi-spore/module-api";
 import type { Agent, AgentDialog, AgentRole, StageRole, Workspace } from "@pi-spore/shared";
 import type { RoleDefaults } from "./launch.js";
 
-/** What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers. */
-export type AgentChange = "status" | "dialog" | "waiting" | "chat" | "helpers";
+/**
+ * What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers.
+ * `working`: its `workingFor` label.
+ */
+export type AgentChange = "status" | "dialog" | "waiting" | "chat" | "helpers" | "working";
 
 /** One agent with what Home shows about it (R15). */
 export interface AgentAttention {
@@ -72,6 +75,12 @@ export interface Agents {
   rename(agentId: string, title: string): void;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
+  /**
+   * Marks the agent as working for something while it is idle or stopped, such as a pipeline run, so Home and the
+   * workspace list show it as working, not done. `undefined` clears it. The label is in memory only. It does not
+   * touch the wait for the user. Does nothing when the label is unchanged. Throws a 404 ApiError for an unknown id.
+   */
+  setWorkingFor(agentId: string, label: string | undefined): void;
   /** True for a chat the user closed (ADR 0110). Throws a 404 ApiError for an unknown id. */
   isClosed(agentId: string): boolean;
   /**

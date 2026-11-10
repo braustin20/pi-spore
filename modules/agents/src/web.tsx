@@ -375,6 +375,8 @@ function ChatView({
         {agent &&
           (agent.status === "idle" && agent.helpersRunning ? (
             <Chip tone="run">working (helper running)</Chip>
+          ) : (agent.status === "idle" || agent.status === "stopped") && agent.workingFor ? (
+            <Chip tone="run">working ({agent.workingFor})</Chip>
           ) : (
             <Chip tone={STATUS_TONE[agent.status]}>{agent.status}</Chip>
           ))}

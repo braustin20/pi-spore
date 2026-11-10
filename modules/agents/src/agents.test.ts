@@ -1313,6 +1313,47 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
     expect(await view()).not.toHaveProperty("helpersRunning");
   });
 
+  it("puts the working-for label on the agent view and the list, and removes it with undefined", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    const view = async () =>
+      (await json<{ agent: Agent }>(await server.request("GET", `/api/agents/${agentId}`))).agent;
+    const before = server.events.eventsOf("agents:list").length;
+    const listed = () =>
+      (server.events.eventsOf("agents:list").slice(before) as { agent?: Agent }[]).flatMap(
+        (event) => (event.agent ? [event.agent.workingFor] : []),
+      );
+
+    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
+    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
+    expect((await view()).workingFor).toBe("Pipeline: gates");
+    await until(() => listed().length >= 1);
+    expect(listed()).toEqual(["Pipeline: gates"]);
+
+    probe.agents().setWorkingFor(agentId, undefined);
+    probe.agents().setWorkingFor(agentId, undefined);
+    expect(await view()).not.toHaveProperty("workingFor");
+    await until(() => listed().length >= 2);
+    expect(listed()).toEqual(["Pipeline: gates", undefined]);
+  });
+
+  it("publishes the working-for label on the agent's own stream, so an open chat follows it", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    const before = events(agentId).length;
+    const labels = () =>
+      events(agentId)
+        .slice(before)
+        .flatMap((event) => (event.type === "agent" ? [event.agent.workingFor] : []));
+
+    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
+    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
+    probe.agents().setWorkingFor(agentId, undefined);
+    expect(labels()).toEqual(["Pipeline: gates", undefined]);
+  });
+
   describe("router status (R4.5)", () => {
     const routerStatus = async (agentId: string) =>
       (await json<{ agent: Agent }>(await server.request("GET", `/api/agents/${agentId}`))).agent
