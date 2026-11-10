@@ -163,7 +163,10 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162).
   - `start_pipeline` `{ brief, pipeline?, name? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
     posts `POST /api/bridge/pipelines` with the tool call id as receipt and ends the turn with `terminate: true`.
-    The run's end arrives later as a message (section 8).
+    The run's end arrives later as a message (section 8). `start_pipeline`, `start_lane`, and `revise_lane` read a
+    brief artifact, so they are registered with `executionMode: "sequential"`. Pi then runs every tool call of that
+    assistant message one by one, in order, so an `artifacts_write` of the brief earlier in the same message is done
+    first. The rules also say to call them in a later message than the write.
   - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
     `terminate: true` through `POST /api/bridge/reports` (open to read-only reviewers). Reviewers give a verdict
     (`approve`, `revise`) and findings (`blocking`, `important`, `minor`); the worker lists each new test with the
@@ -1061,7 +1064,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not. Phone
   browsers show notifications only from a service worker, which pi-spore does not have, so the button hides on
-  phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on.
+  phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on. The browser's
+  permission is the only switch; pi-spore has no notification setting (ADR 0167).
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
   subject as JSON, state `open`, `approved`, or `declined`, outcome, times). The module that owns a gate registers
   its kind through `ApprovalsKey.register({ kind, subject, approve, decided? })` and files approvals with
@@ -1547,6 +1551,7 @@ the Settings page, `#/settings`, shows that list):
 | `worktree.branch_prefix` | project | string, default `spore` | Prefix of the branches pi-spore creates. |
 | `agents.maxLive` | global | whole number, 1 or more, default 8 | Live agent processes at once (ADR 0026). |
 | `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
+| `agents.maxSubagentDepth` | global | whole number, 0 or more, default 2 | How deep pi-subagents helpers may nest. Passed to each agent as `PI_SUBAGENT_MAX_DEPTH` (ADR 0168). |
 | `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
 | `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
 | `server.allowedHosts` | global | array of host names, default none | Tailnet hosts that `tailscale serve` forwards from (ADR 0143). |
@@ -1576,8 +1581,6 @@ The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale
 Not built yet:
 
 - Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
-- A nesting limit for agents (R3.6).
-- A desktop notification setting (R15.2). The browser's permission is the only switch today.
 
 `config.toml` sketch:
 

@@ -18,6 +18,8 @@ export function registerPipelineTool(pi: ExtensionAPI, client: BridgeClient, env
       "check it. The brief is an artifact you wrote in this workspace. One run per workspace at a time. The end " +
       "comes back to this chat as a message.",
     promptSnippet: "Start a pipeline run for one slice from a brief artifact",
+    // Pi then runs this message's tool calls one by one, so an artifacts_write before it is done first.
+    executionMode: "sequential",
     promptGuidelines: [
       "Write the slice's brief with artifacts_write first, then call start_pipeline with its path. Then stop and wait for the end message; do not poll.",
     ],

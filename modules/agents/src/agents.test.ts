@@ -241,6 +241,8 @@ describe("agents", () => {
       PI_SPORE_URL: server.url,
       PI_SPORE_SERVER_PID: String(process.pid),
       PI_SPORE_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/),
+      // pi-subagents refuses deeper helpers itself (ADR 0168).
+      PI_SUBAGENT_MAX_DEPTH: "2",
     });
     expect(statuses(agentId)).toEqual(["starting", "idle", "busy", "idle"]);
     // The process's bridge token works until the process ends.
@@ -438,6 +440,16 @@ describe("agents", () => {
       expect(await json(await pending)).toEqual({ disposition: "started" });
     });
 
+    it("passes agents.maxSubagentDepth to Pi as PI_SUBAGENT_MAX_DEPTH (ADR 0168)", async () => {
+      writeSettings('{"agents":{"maxSubagentDepth":0}}');
+      await setup({}, { PI_SUBAGENT_MAX_DEPTH: "5" }, { home: home() });
+      const { agentId } = await makeAgent();
+      await json(await prompt(agentId, "hello"));
+      await until(() => statuses(agentId).filter((s) => s === "idle").length >= 2);
+      // The setting beats the value in the server's own env.
+      expect(launches()[0]?.env.PI_SUBAGENT_MAX_DEPTH).toBe("0");
+    });
+
     it("lists the agents keys with their source on the settings route", async () => {
       writeSettings('{"agents":{"maxImagesPerMessage":3}}');
       await setup({}, {}, { home: home() });
@@ -449,6 +461,7 @@ describe("agents", () => {
         { key: "agents.maxImageBytes", value: 10 * 1024 * 1024, source: "default" },
         { key: "agents.maxImagesPerMessage", value: 3, source: "global" },
         { key: "agents.maxLive", value: 8, source: "default" },
+        { key: "agents.maxSubagentDepth", value: 2, source: "default" },
       ]);
     });
   });

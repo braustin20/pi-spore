@@ -24,3 +24,12 @@ it("refuses to start on a bad agents value, naming the key and the file", async 
   );
   await expect(start).rejects.toThrow(/settings\.json: agents\.maxLive/);
 });
+
+it("refuses a negative agents.maxSubagentDepth, naming the key and the file", async () => {
+  writeFileSync(join(home, "settings.json"), '{"agents":{"maxSubagentDepth":-1}}');
+  const start = createTestServer(
+    [projectsModule, vcsGitModule, vcsFolderModule, workspacesModule, createAgentsModule()],
+    { home },
+  );
+  await expect(start).rejects.toThrow(/settings\.json: agents\.maxSubagentDepth/);
+});
