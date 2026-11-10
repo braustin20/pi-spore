@@ -1266,6 +1266,7 @@ See [ADR 0070](decisions/0070-artifacts-per-workspace-and-project.md). Requireme
   write or promotion. A project change goes to every workspace of the project.
 - Nothing deletes artifacts: not archive, not retention, not removing a project (R14.3, ADR 0121).
 - Web: an Artifacts tab on the workspace lists both scopes, shows the selected file, and promotes workspace files.
+  When `GET /api/artifacts/local` says `local`, each row also has Open folder; otherwise the button is hidden.
   The viewer renders Markdown (images in it show as links and never load, ADR 0061), shows images, puts HTML in an
   `<iframe sandbox="">` (no scripts, no same origin), and shows other text as code. In the chat, a link to a local
   `.md` or `.markdown` file opens the same viewer in a dialog through the `view` route. The agents module offers this
