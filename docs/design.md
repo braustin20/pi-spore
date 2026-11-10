@@ -3,8 +3,8 @@
 - Date: 2026-11-06
 - Status: built in the styling slice (ADR 0029). Sections marked "later" describe screens that come with their
   modules.
-- pi-spore uses its own name, palette, and theme names. It uses no other product's logos, images, fonts, colors, or
-  branding.
+- pi-spore uses its own name and default palette. It uses no other product's logos, images, fonts, or branding.
+  Built-in themes may use open palettes from other projects, with credit ([ADR 0171](decisions/0171-built-in-themes-from-open-palettes.md)).
 
 ## Feel
 
@@ -28,8 +28,13 @@ Colors are swappable. The look of the components (shapes, spacing, type, layout)
   without a reload.
 - v1 keeps the choice in the browser (`localStorage`). When the settings module lands, it moves to
   `~/.pi-spore/settings.json`, so the CLI and every browser share it.
-- Built-in themes: **Spore Night** (the default, below), **Ayu Dark** (matches the user's Pi theme), and **Spore
-  Day** (light). Adding a theme means adding one token block in `themes.css` and one entry in `themes.ts`.
+- Built-in themes, in menu order (dark first, then light): **Spore Night** (the default, below), **Ayu Dark**
+  (matches the user's Pi theme), **Catppuccin Mocha**, **Dracula**, **Everforest Dark**, **Gruvbox Dark**,
+  **Monokai**, **Nord**, **One Dark**, **Primer Dark**, **Solarized Dark**, **Tokyo Night**, and **Spore Day**
+  (light). Adding a theme means adding one token block in `themes.css` and one entry in `themes.ts`. A theme from
+  another project's palette names its source and license in a comment above its block, and lists each color
+  changed to meet AA (ADR 0171).
+- The theme menu scrolls when it is taller than the screen.
 - Every theme must meet WCAG AA (4.5:1) for text on `--bg`, `--panel`, and `--accent`. The test
   (`packages/ui/src/themes.test.ts`) checks every text and status token on `--bg`, `--panel`, and `--raised`, and
   `--on-accent` on `--accent`, for each built-in theme. It also checks that each block sets every token.
