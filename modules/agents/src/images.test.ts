@@ -179,6 +179,33 @@ describe("images in the chat", () => {
     expect(queued?.followUp).toEqual(["and this [2 images]"]);
   });
 
+  // Pi 1.5.0 removes a delivered steer from its queue by text, and never removes an empty one.
+  it("gives a picture-only steer a placeholder text, and sends a steer with text unchanged", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    // Not queued, so sent as it is: the session file keeps an empty first message, and so no chat title.
+    await json(await prompt(agentId, { message: "", images: [png] }));
+    await until(() => runs(agentId) === 1);
+    expect((await chat(agentId)).messages.at(-1)?.content).toEqual([
+      { type: "text", text: "echo:  [1 images]" },
+    ]);
+
+    await json(await prompt(agentId, { message: "slow:300" }));
+    await until(
+      () => piEvents(agentId).filter((event) => event.type === "agent_start").length === 2,
+    );
+    const steering = () =>
+      piEvents(agentId).flatMap((event) =>
+        event.type === "queue_update" ? (event.steering as string[]) : [],
+      );
+
+    await json(await prompt(agentId, { message: " \n", images: [png] }));
+    await json(await prompt(agentId, { message: "", images: [png, png] }));
+    await json(await prompt(agentId, { message: " look ", images: [png] }));
+
+    expect(steering()).toEqual(["(image) [1 images]", "(images) [2 images]", " look  [1 images]"]);
+  });
+
   it("refuses bad images before they reach Pi", async () => {
     await setup({ maxImageBytes: 40, maxImagesPerMessage: 2 });
     const { agentId } = await makeAgent();
