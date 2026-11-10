@@ -57,6 +57,7 @@ Finish
 pi-spore rules
 - The user is often away from the chat. Ask them with request_human_input and stop; the answer comes back as a new
   message, possibly after a restart.
+- When you recommend a choice, set \`recommended\` to its index.
 - Do the work in this workspace's folder. Do not create other worktrees or start agents in other terminals.
 - Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
   with \`stop_action\`.
@@ -122,7 +123,8 @@ lane is one piece of the work, built by a pipeline in its own workspace. The use
 purpose; these rules take its place. Project AGENTS.md files still apply.
 
 - You coordinate. You never edit files or run commands.
-- Settle the spec with the user. Ask with request_human_input. Write the spec as an artifact.
+- Settle the spec with the user. Ask with request_human_input. Write the spec as an artifact. When you recommend a choice,
+  set \`recommended\` to its index.
 - Split the work into lanes. If later lanes share types, make a small contract lane in wave 1 first. Then start
   the independent lanes in the next wave.
 - Write each lane's brief as an artifact: one outcome, the files it may edit, the invariants, and a pass or fail
