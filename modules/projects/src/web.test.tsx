@@ -282,6 +282,16 @@ describe("the global settings panel", () => {
     expect(rowOf(root, "agents.maxLive").textContent).not.toContain("8");
   });
 
+  it("wraps a long one-line value inside its cell", async () => {
+    const long = JSON.stringify({ ladder: Array.from({ length: 40 }, (_, i) => `model-${i}`) });
+    const { get } = start([{ key: "router.ladders", value: JSON.parse(long), source: "global" }]);
+    const root = await render("/settings", {}, get, vi.fn());
+    const value = [...rowOf(root, "router.ladders").querySelectorAll("code")].find(
+      (code) => code.textContent === long,
+    );
+    expect(value?.className).toContain("[overflow-wrap:anywhere]");
+  });
+
   it("resets a key and shows the value and source from the next load", async () => {
     const { state, get } = start([{ key: "retention.days", value: 5, source: "global" }]);
     const send = vi.fn(async () => {

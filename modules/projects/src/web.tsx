@@ -393,7 +393,8 @@ function SettingRow({
       <TableHead className="w-72">{label ?? <code>{settingKey}</code>}</TableHead>
       <TableCell>
         <div className="flex flex-col gap-2">
-          <code>{shown}</code>
+          {/* JSON values have no spaces; without this, one long value pushes Edit and Reset off screen. */}
+          <code className="[overflow-wrap:anywhere]">{shown}</code>
           {text !== undefined && (
             <div className="flex flex-wrap items-start gap-2">
               {multiline ? (
