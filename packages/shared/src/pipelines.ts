@@ -1,6 +1,9 @@
 import Type, { type Static } from "typebox";
 import { ModelRef, StageRole } from "./agents.js";
 
+/** The line that starts the log tail in a failed gate's message; the web splits the message here. */
+export const GATE_LOG_HEADING = "Log (last 4 KB):";
+
 /** Ids and stage names of a pipeline file (R6.2). */
 export const PIPELINE_ID_PATTERN = "^[a-z0-9][a-z0-9_-]{0,63}$";
 const PipelineName = Type.String({ pattern: PIPELINE_ID_PATTERN });

@@ -2,6 +2,7 @@
 // Every run appends its label as one line to the counter file, so a test counts how often it ran. Modes:
 //   pass        exits 0
 //   fail        prints "gate output: boom" and exits 1
+//   vitest-fail prints colored vitest-like output with two failed tests (one named twice) and exits 1
 //   hang-first  the first run of this label hangs until killed (so a test can cut it off with a restart); later
 //               runs of the label exit 0. A hung run ends by itself after two minutes.
 import { appendFileSync, readFileSync } from "node:fs";
@@ -11,6 +12,14 @@ appendFileSync(counter, `${label}\n`);
 
 if (mode === "fail") {
   console.log("gate output: boom");
+  process.exit(1);
+}
+if (mode === "vitest-fail") {
+  const fail = (name) => `\x1b[41m\x1b[1m FAIL \x1b[22m\x1b[49m ${name}`;
+  console.log(fail("src/a.test.ts > adds > one"));
+  console.log("\x1b[31m\x1b[1mAssertionError\x1b[22m: expected 1 to be 2\x1b[39m");
+  console.log(fail("src/a.test.ts > adds > one"));
+  console.log(fail("src/b.test.ts > subtracts"));
   process.exit(1);
 }
 if (mode === "hang-first") {

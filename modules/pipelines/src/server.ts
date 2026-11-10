@@ -24,6 +24,8 @@ import {
   tierOf,
 } from "@pi-spore/router";
 import {
+  GATE_LOG_HEADING,
+  logTail,
   type PipelineEvent,
   type PipelineRun,
   type PipelineRunState,
@@ -35,6 +37,7 @@ import {
   type StageReport,
   type StageRole,
   StartPipelineRequest,
+  stripAnsi,
   type TestProof,
 } from "@pi-spore/shared";
 import Type, { type Static } from "typebox";
@@ -187,6 +190,29 @@ interface StageCheckpoint {
 
 /** How much of a failed gate's log goes into the run's message. */
 const LOG_TAIL_CHARS = 4096;
+const MAX_FAILED_TESTS_LISTED = 10;
+
+/** The message of a run that a gate ended: no color codes, the failed vitest tests, then the log tail. */
+function gateFailureMessage(name: string, error: string | undefined, log: string): string {
+  const failed = [
+    ...new Set(
+      [...stripAnsi(log).matchAll(/^ FAIL +(.+)$/gm)].map((found) => (found[1] as string).trim()),
+    ),
+  ];
+  const tests = failed.length
+    ? [
+        `${failed.length === 1 ? "1 test" : `${failed.length} tests`} failed:`,
+        ...failed.slice(0, MAX_FAILED_TESTS_LISTED),
+      ]
+    : [];
+  const tail = logTail(log, LOG_TAIL_CHARS);
+  return [
+    `gate ${name} failed`,
+    ...(error ? [stripAnsi(error)] : []),
+    ...tests,
+    ...(tail ? ["", GATE_LOG_HEADING, tail] : []),
+  ].join("\n");
+}
 
 const turnToView = (row: TurnRow): PipelineTurn => ({
   id: row.id,
@@ -941,9 +967,7 @@ export const pipelinesModule: ServerModule = {
           : { next: "finish" };
       }
       const { text } = await actions.readLog(ended.id, undefined);
-      const message = [`gate ${name} failed`, ended.error, text.slice(-LOG_TAIL_CHARS)]
-        .filter((part) => part)
-        .join("\n");
+      const message = gateFailureMessage(name, ended.error, text);
       return { next: null, commit: () => endRun(run.id, "failed", message) };
     };
 

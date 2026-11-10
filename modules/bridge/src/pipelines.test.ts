@@ -1735,6 +1735,46 @@ fail_first = "artifact"
     expect(ran()).toEqual(["check"]);
   });
 
+  it("ends the run failed with a message that has no color codes and lists the failed tests", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+
+    const { runId } = await startGates(server, "vitestfail", GATES, {
+      check: "vitest-fail",
+      test: "pass",
+    });
+    await untilState(server, runId, "failed");
+
+    const { message } = await getRun(server, runId);
+    expect(message).not.toContain("\x1b");
+    expect(message).toMatch(/^gate check failed\n/);
+    expect(message).toContain(
+      "2 tests failed:\nsrc/a.test.ts > adds > one\nsrc/b.test.ts > subtracts\n",
+    );
+    const listed = (message ?? "").split("Log (last 4 KB):")[0] as string;
+    expect(listed.split("src/a.test.ts > adds > one")).toHaveLength(2);
+    expect(listed.split("src/b.test.ts > subtracts")).toHaveLength(2);
+    expect(message).toContain("Log (last 4 KB):");
+    expect(message).toContain("AssertionError: expected 1 to be 2");
+  });
+
+  it("strips color codes from the action error of a failed gate", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const command = "/nonexistent/\u001b[31mgate-tool\u001b[39m";
+    const { workspaceId } = await workspace(server, "errorcodes", {
+      config: `[actions.check]\nrun = ${JSON.stringify([command])}\n\n${config({ test: "pass" })}`,
+    });
+    saveArtifact(server, workspaceId, "proofs/adds.md", "FAIL: adds\n");
+    userPipeline(server.paths.root, "p", GATES);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await untilState(server, run.id, "failed");
+
+    const { message } = await getRun(server, run.id);
+    expect(message).not.toContain("\x1b");
+    expect(message).toMatch(/^gate check failed\nCannot run /);
+    expect(message).toContain("Cannot run /nonexistent/gate-tool");
+  });
+
   it("starts one new attempt for a gate action that a restart cut off, and the run passes", async () => {
     const home = join(scratch, "home");
     const env = scriptEnv({ worker: [DONE] });

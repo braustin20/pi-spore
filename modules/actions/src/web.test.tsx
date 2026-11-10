@@ -62,7 +62,7 @@ async function renderLog(status: ActionRun["status"], text: string) {
   });
   const link = (label: string) =>
     [...root.querySelectorAll("a")].find((anchor) => anchor.textContent === label);
-  return { link, links: [...root.querySelectorAll("a")] };
+  return { link, links: [...root.querySelectorAll("a")], text: root.textContent ?? "" };
 }
 
 describe("loopback URLs in a run's log", () => {
@@ -91,5 +91,11 @@ describe("loopback URLs in a run's log", () => {
   it("leaves other hosts as plain text", async () => {
     const { links } = await renderLog("running", "see http://example.com:8080/ for docs\n");
     expect(links).toEqual([]);
+  });
+
+  it("shows a log with color codes as plain text", async () => {
+    const { text } = await renderLog("succeeded", "\x1b[31mred\x1b[39m\n");
+    expect(text).toContain("red");
+    expect(text).not.toContain("\x1b");
   });
 });
