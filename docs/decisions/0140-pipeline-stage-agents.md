@@ -1,6 +1,7 @@
 # 0140. Pipeline stages run on stage agents; Jev answers inside the report tool
 
-- Status: Accepted; superseded in part by [0152](0152-equal-tier-reviews.md)
+- Status: Accepted; superseded in part by [0152](0152-equal-tier-reviews.md); superseded in part by
+  [0169](0169-remind-a-stage-agent-once-then-block.md)
 - Date: 2026-11-07
 - Requirements: R4.4, R4.9, R6.1 to R6.8
 

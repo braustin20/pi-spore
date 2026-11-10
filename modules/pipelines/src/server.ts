@@ -187,6 +187,8 @@ interface StageSubject {
  */
 interface StageCheckpoint {
   boot?: string;
+  /** The turn that got the "ended without a report" reminder, so it is sent once per turn, also across a restart. */
+  reminded?: string;
   gate?: number;
   attempt?: number;
 }
@@ -390,6 +392,9 @@ const fixPrompt = (stage: PipelineStage, review: StageReport, turnId: string, la
 
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
+
+const endedMessage = (turnId: string) =>
+  `You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
 
 export const pipelinesModule: ServerModule = {
   id: "pipelines",
@@ -1055,12 +1060,25 @@ export const pipelinesModule: ServerModule = {
           `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" failed: ${failure}. Retry starts a fresh ${turn.role} agent for this turn.`,
         );
       }
-      if (checkpoint?.boot === bootId) return { wait: true };
-      // The server restarted while the agent worked. Its process is gone, so it gets one reminder (R6.6).
+      if (checkpoint?.boot !== bootId) {
+        // The server restarted while the agent worked. Its process is gone, so it gets one reminder (R6.6).
+        return {
+          wait: true,
+          checkpoint: { ...checkpoint, boot: bootId },
+          commit: () => agents.deliver(turn.agent_id, restartMessage(turn.id)),
+        };
+      }
+      if (!(await agents.endedRun(turn.agent_id))) return { wait: true };
+      // The agent ended its turn without a report: one reminder, then the stage blocks (ADR 0169).
+      if (checkpoint.reminded === turn.id) {
+        throw new Error(
+          `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" ended its turn twice without a report. Retry starts a fresh ${turn.role} agent for this turn.`,
+        );
+      }
       return {
         wait: true,
-        checkpoint: { boot: bootId },
-        commit: () => agents.deliver(turn.agent_id, restartMessage(turn.id)),
+        checkpoint: { ...checkpoint, reminded: turn.id },
+        commit: () => agents.deliver(turn.agent_id, endedMessage(turn.id)),
       };
     };
 

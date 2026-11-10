@@ -588,11 +588,14 @@ fail_first = "artifact"
   must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
   later report never drops a test.
 - **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
-  one and tells the agent once to continue and call `report`. There are no other automatic reminders.
+  one and tells the agent once to continue and call `report`. If the agent ends its turn without a report, the step
+  reminds it once per turn (`reminded` in the checkpoint, also across a restart); a second such end blocks the stage
+  (ADR 0169). There are no other automatic reminders.
 - **Failed turns** (ADR 0140). The pipeline listens to the stage agents' status. When the open turn's agent fails
   (`turnError`: a crash, or a turn that ended with `stopReason: "error"`), the `await` step throws
   `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The
-  job waits with that error, so the run stays `running` and shows it as `blocked`. The old agent may still report
+  job waits with that error, so the run stays `running` and shows it as `blocked`. A turn that ended twice without a
+  report blocks the same way (`... ended its turn twice without a report ...`, ADR 0169), and Retry covers it. The old agent may still report
   while the run is blocked. Retry (`POST /api/pipelines/runs/:id/retry`) writes the error on the turn, and `await`
   then replaces it in one commit: the old agent is renamed `<title> (failed)` and keeps its tab, and a fresh agent
   takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
