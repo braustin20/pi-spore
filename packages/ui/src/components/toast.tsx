@@ -61,7 +61,7 @@ export function Toaster() {
               {toast.title}
             </ToastPrimitive.Title>
             {toast.body && (
-              <ToastPrimitive.Description className="mt-0.5 text-muted [overflow-wrap:anywhere]">
+              <ToastPrimitive.Description className="mt-0.5 line-clamp-4 text-muted [overflow-wrap:anywhere]">
                 {toast.body}
               </ToastPrimitive.Description>
             )}
