@@ -862,8 +862,9 @@ defaults apply to every key left out. Unknown `router` keys and wrong values are
   `settings.json`, never from `config.toml` (R17.3).
 - `threshold` is the rung-1 bar, `heavyThreshold` the rung-3 bar for visual, design, and foundational, `large` the
   rung-3 token estimate, and `maxQueued` the most sessions that may wait for a busy local target.
-- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes a bar; the
-  calibration report (section 11a) only suggests a `threshold`. Its outcomes come from pipeline runs: lanes, and
+- `explore` (0 to 1, default 0) is the chance of the explore route above. pi-spore never changes a bar by itself;
+  the calibration report (section 11a) only suggests a `threshold`. The user sets it by hand, or with the confirmed
+  button on the Usage page. Its outcomes come from pipeline runs: lanes, and
   workspace slices that the orchestrator starts with `start_pipeline` (ADR 0162).
 - `plans` maps a provider to the subscription plan it draws on, for pipeline pressure checks (section 8). `tiers`
   entries are added to the built-in tier list, `local < light < medium < heavy < top` (ADR 0023, 0141).
@@ -922,12 +923,18 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
     explicit, and straightforward answers reach it and its visual, design, and foundational answers reach
     `heavyThreshold` (ADR 0141). A share under 20 local outcomes has `enough: false`. `suggestedBar` is the lowest bar
     with 20 local outcomes and 90% passed. It is only a suggestion. `rungs` counts decisions, outcomes, and passes per
-    rung and place (`local` or the plan), for every decision with a rung.
+    rung and place (`local` or the plan), for every decision with a rung. It also returns `explore`.
+  - `PATCH /api/usage/router` with `{ threshold?: number, explore?: 0 }`: sets `router.threshold` or removes
+    `router.explore` in `settings.json` (ADR 0144). Every other key stays. The router's own parser checks the new
+    file before the write; a bad file answers 422 `bad_settings` and is not changed. The write goes to a temp file,
+    then a rename, so the router never reads half a file. A missing file counts as `{}`.
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
   warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions
   with their rung, plan, model, thinking level, and reasons; and the routing calibration (the bars table with "now"
-  and "suggested" chips, the per-rung table, and the buckets). It loads on open and on Refresh.
+  and "suggested" chips, the per-rung table, and the buckets). Under the report, "Apply suggested bar" shows when
+  the suggested bar differs from the bar now, and "Turn off explore" shows when `explore` is above 0. Each opens a
+  confirm dialog (ADR 0029) and sends the request only on yes. It loads on open and on Refresh.
 - CLI: `pi-spore usage calibration [--json]` prints the same report.
 
 ## 11b. Home and questions (attention module)
