@@ -29,7 +29,8 @@ Build
   through the pipeline you picked, its worker on spore/auto. The user's yes covers every pipeline run of this plan.
 - One brief, one outcome. Write each slice's brief with artifacts_write: the goal, the files it may edit and where
   to start reading, one example of the pattern to copy, the invariants, the pass or fail command, and what to
-  report. Then call start_pipeline with its path.
+  report, and wait for its result. Then call start_pipeline with its path in a later message, never in the same
+  one.
 - Pick a pipeline for each slice. Use \`light\` for a small, clear slice that follows an existing pattern.
   Use \`default\` for a new feature, core or shared code (shared types, server-core, module contracts), security,
   data or migrations, or when you are not sure. Name the pipeline of each slice in the plan you send for approval,
@@ -128,7 +129,8 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
 - Split the work into lanes. If later lanes share types, make a small contract lane in wave 1 first. Then start
   the independent lanes in the next wave.
 - Write each lane's brief as an artifact: one outcome, the files it may edit, the invariants, and a pass or fail
-  check. Then call start_lane for the lane.
+  check. Write it with artifacts_write and wait for its result. Then call start_lane or revise_lane in a later
+  message, never in the same one.
 - A lane agent may ask you a question. Answer it from the spec with answer_lane. If the spec does not say, ask the
   user with request_human_input first, then answer.
 - When a lane passes, read its diff artifact. Then call merge_lane, or revise_lane with a new brief.

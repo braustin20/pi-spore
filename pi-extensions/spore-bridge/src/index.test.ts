@@ -79,6 +79,7 @@ const reply = (key: string, ...answers: Reply[]) => replies.set(key, answers);
 
 interface Tool {
   name: string;
+  executionMode?: "sequential" | "parallel";
   execute(
     id: string,
     params: unknown,
@@ -1034,6 +1035,27 @@ describe("spore-bridge run tools", () => {
     expect(result.content[0]?.text).toContain("question q1");
     expect(await rulesOf(pi)).toBe(`${STAGE_WORKER_RULES}\n\n${LANE_RULES}`);
     expect(LANE_RULES).toContain("never the user");
+  });
+
+  // Pi runs a whole message's tool calls one by one, in order, when one of them is sequential. So a brief
+  // written by artifacts_write in the same message exists before the brief tool reads it.
+  it("registers the tools that read a brief as sequential", () => {
+    expect(fakePi().tool("start_pipeline").executionMode).toBe("sequential");
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
+    const coordinator = fakePi();
+    expect(coordinator.tool("start_lane").executionMode).toBe("sequential");
+    expect(coordinator.tool("revise_lane").executionMode).toBe("sequential");
+  });
+
+  it("tells the orchestrator and coordinator to call a brief tool in a later message than the write", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    expect(oneLine(RULES)).toContain(
+      "wait for its result. Then call start_pipeline with its path in a later message, never in the same one.",
+    );
+    expect(oneLine(COORDINATOR_RULES)).toContain(
+      "wait for its result. Then call start_lane or revise_lane in a later message, never in the same one.",
+    );
   });
 
   it("gives the orchestrator start_pipeline and the rules that use it", () => {

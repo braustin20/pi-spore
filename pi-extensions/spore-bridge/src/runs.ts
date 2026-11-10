@@ -134,6 +134,8 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
       "Add a lane to this run. A lane is one piece of the work, built by a pipeline in its own workspace once every " +
       "lane of a lower wave and every lane in dependsOn is merged. The brief is an artifact you wrote in this workspace.",
     promptSnippet: "Start a lane of this run from a brief artifact",
+    // Pi then runs this message's tool calls one by one, so an artifacts_write before it is done first.
+    executionMode: "sequential",
     promptGuidelines: [
       "Write each lane's brief with artifacts_write first, then call start_lane with its path.",
     ],
@@ -171,6 +173,7 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
       "fix turn, then one fresh reviewer and the gates check it. If the worker chat is gone, the lane's full pipeline " +
       "runs again.",
     promptSnippet: "Send a lane back with a new brief",
+    executionMode: "sequential",
     promptGuidelines: [
       "Use revise_lane for a small, exact change: a cut, a conflict, a red gate. Name each ask in the brief, since the reviewer checks the brief's asks.",
     ],
