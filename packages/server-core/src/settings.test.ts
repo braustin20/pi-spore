@@ -1,4 +1,12 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ServerModule } from "@pi-spore/module-api";
@@ -467,5 +475,129 @@ describe("declaring ends after every module's setup", () => {
     await expect(createTestServer([only], { home })).rejects.toThrow(
       /settings\.json: unknown key "nope"/,
     );
+  });
+});
+
+describe("write (ADR 0170)", () => {
+  const localPath = () => join(project, ".pi-spore", "config.local.toml");
+  const localTarget = () => ({ file: "local" as const, projectPath: project });
+  const read = (path: string) => readFileSync(path, "utf8");
+
+  it("sets a global key and writes pretty JSON", async () => {
+    const { settings, days } = await makeSettings();
+    await settings.write({ file: "global" }, "retention.days", { value: 7 });
+    const resolved = await settings.resolve();
+    expect(resolved.get(days)).toEqual({ value: 7, source: "global" });
+    expect(read(join(home, "settings.json"))).toBe(
+      `${JSON.stringify({ retention: { days: 7 } }, null, 2)}\n`,
+    );
+  });
+
+  it("sets a project key in config.local.toml and leaves config.toml alone", async () => {
+    const { settings, prefix } = await makeSettings();
+    projectFile('[worktree]\nbranch_prefix = "proj"\n');
+    await settings.write(localTarget(), "worktree.branch_prefix", { value: "loc" });
+    const resolved = await settings.resolve({ projectPath: project });
+    expect(resolved.get(prefix)).toEqual({ value: "loc", source: "local override" });
+    expect(read(join(project, ".pi-spore", "config.toml"))).toBe(
+      '[worktree]\nbranch_prefix = "proj"\n',
+    );
+  });
+
+  it("unsets a key so the next layer applies and drops the empty table", async () => {
+    const { settings, prefix } = await makeSettings();
+    projectFile('[worktree]\nbranch_prefix = "proj"\n');
+    localFile('[worktree]\nbranch_prefix = "loc"\n');
+    await settings.write(localTarget(), "worktree.branch_prefix", { unset: true });
+    const resolved = await settings.resolve({ projectPath: project });
+    expect(resolved.get(prefix)).toEqual({ value: "proj", source: "project file" });
+    expect(read(localPath())).not.toContain("worktree");
+  });
+
+  it("rejects a bad type, naming the key, and leaves the file and no .tmp", async () => {
+    const { settings } = await makeSettings();
+    const before = '[worktree]\nbranch_prefix = "loc"\n';
+    localFile(before);
+    await expect(
+      settings.write(localTarget(), "worktree.branch_prefix", { value: 5 }),
+    ).rejects.toMatchObject({
+      status: 422,
+      code: "bad_project_config",
+      message: expect.stringContaining("worktree.branch_prefix"),
+    });
+    expect(read(localPath())).toBe(before);
+    expect(readdirSync(join(project, ".pi-spore")).some((name) => name.endsWith(".tmp"))).toBe(
+      false,
+    );
+  });
+
+  it("rejects an unknown key", async () => {
+    const { settings } = await makeSettings();
+    await expect(settings.write(localTarget(), "nope.thing", { value: 1 })).rejects.toMatchObject({
+      status: 422,
+      code: "bad_project_config",
+      message: expect.stringContaining('unknown key "nope.thing"'),
+    });
+    expect(existsSync(localPath())).toBe(false);
+  });
+
+  it("refuses a global key in the local file and leaves the file", async () => {
+    const { settings } = await makeSettings();
+    const before = '[worktree]\nbranch_prefix = "loc"\n';
+    localFile(before);
+    await expect(
+      settings.write(localTarget(), "retention.days", { value: 3 }),
+    ).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("is a global setting"),
+    });
+    expect(read(localPath())).toBe(before);
+  });
+
+  it("runs the check for a reserved section: a throw answers 422 and keeps the file", async () => {
+    const { settings } = await makeSettings();
+    const before = '{"router":{"a":1}}';
+    global(before);
+    await expect(
+      settings.write({ file: "global" }, "router.b", { value: 2 }, () => {
+        throw new Error("nope");
+      }),
+    ).rejects.toMatchObject({
+      status: 422,
+      code: "bad_settings",
+      message: expect.stringContaining("nope"),
+    });
+    expect(read(join(home, "settings.json"))).toBe(before);
+  });
+
+  it("writes a reserved key when the check passes", async () => {
+    const { settings } = await makeSettings();
+    let seen: Record<string, unknown> | undefined;
+    await settings.write({ file: "global" }, "router.b", { value: 2 }, (data) => {
+      seen = data;
+    });
+    expect(seen).toEqual({ router: { b: 2 } });
+    expect(JSON.parse(read(join(home, "settings.json")))).toEqual({ router: { b: 2 } });
+  });
+
+  it("creates .pi-spore when it is missing", async () => {
+    const { settings } = await makeSettings();
+    rmSync(join(project, ".pi-spore"), { recursive: true });
+    await settings.write(localTarget(), "worktree.branch_prefix", { value: "loc" });
+    expect(read(localPath())).toContain('branch_prefix = "loc"');
+  });
+
+  it("saves a declared key whose path holds __proto__ as plain data", async () => {
+    const settings = createSettings(home);
+    const enabled = settings.declare({
+      key: "options.__proto__.enabled",
+      schema: Type.Boolean(),
+      default: false,
+      scope: "global",
+    });
+    await settings.finishDeclaring();
+    await settings.write({ file: "global" }, "options.__proto__.enabled", { value: true });
+    expect(read(join(home, "settings.json"))).toContain('"enabled": true');
+    expect((await settings.resolve()).get(enabled)).toEqual({ value: true, source: "global" });
   });
 });
