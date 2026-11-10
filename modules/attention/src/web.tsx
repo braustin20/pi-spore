@@ -140,18 +140,37 @@ function QuestionCard({
       <p className="m-0 text-sm whitespace-pre-wrap">{question.question}</p>
       {question.choices && (
         <div className="flex flex-col gap-1.5">
-          {question.choices.map((choice, index) => (
-            <button
-              key={choice}
-              type="button"
-              disabled={sending}
-              onClick={() => answer(choice)}
-              className="flex cursor-pointer items-baseline gap-2.5 rounded-lg border border-line bg-raised px-3 py-2 text-left text-sm text-fg hover:border-accent disabled:cursor-default disabled:opacity-60"
-            >
-              <span className="font-mono text-xs text-muted">{index + 1}</span>
-              <span className="min-w-0 flex-1">{choice}</span>
-            </button>
-          ))}
+          {question.choices.map((choice, index) => {
+            // Advice only: the agent's pick looks primary, but nothing is answered until the user clicks.
+            const recommended = index === question.recommended;
+            return (
+              <button
+                key={choice}
+                type="button"
+                disabled={sending}
+                onClick={() => answer(choice)}
+                aria-label={recommended ? `${choice} (recommended)` : undefined}
+                className={`flex cursor-pointer items-baseline gap-2.5 rounded-lg border px-3 py-2 text-left text-sm disabled:cursor-default disabled:opacity-60 ${
+                  recommended
+                    ? "border-transparent bg-accent text-on-accent hover:brightness-110"
+                    : "border-line bg-raised text-fg hover:border-accent"
+                }`}
+              >
+                <span
+                  className={`font-mono text-xs ${recommended ? "text-on-accent" : "text-muted"}`}
+                >
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1">{choice}</span>
+                {recommended && (
+                  // The accent chip's own colors vanish on the accent button, so it takes the button's text color.
+                  <Chip tone="accent" className="border-on-accent/50 bg-transparent text-on-accent">
+                    Recommended
+                  </Chip>
+                )}
+              </button>
+            );
+          })}
         </div>
       )}
       <Textarea
