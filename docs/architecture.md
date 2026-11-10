@@ -1505,6 +1505,11 @@ API under `/api/kanban`:
   Cards move by drag and drop, or with the move buttons on each card (keyboard). Selecting a card opens it on the
   right: edit, move, delete, blockers, history, and "Start a workspace" with the workspaces module's create form
   (`WorkspaceViewKey.CreateForm`). The workspace view has a Card panel for the workspace's card.
+- Each card tile has a Start button (R11.4) when the card has a project, no workspace, and is not Done. One click
+  sends `POST /api/kanban/cards/<id>/start` with `{ projectId, isolation: "new" }`: a new workspace on the
+  project's default branch, with the card's model. A blocked card asks first and then adds `confirmBlocked: true`.
+  After the start it opens the workspace. When the start left warnings or failed steps, it opens the card instead,
+  and the card's Work section shows them, the same as after the Work section's own new-workspace form.
 - The Work section offers "Start in a new workspace" (the create form), "Start in an existing workspace" (the
   project's active workspaces), and "Start a run" (a base line, a model, and a git project when the card has none). Cards made or changed by an agent show an agent chip, and the card panel names the
   agent's workspace with a link to its chat. Home shows a `card-start` approval with the card, whether it is
