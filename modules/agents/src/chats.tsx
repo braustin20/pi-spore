@@ -214,35 +214,29 @@ export function ChatBar({
           })}
         </ul>
       </nav>
-      <Tooltip
-        label={canStart ? "New chat or side chat" : "Start a chat only in an active workspace"}
-        side="bottom"
-      >
-        <span className="inline-flex">
-          <Menu
-            trigger={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label="New chat or side chat"
-                disabled={!canStart}
-              >
-                <Plus />
-              </Button>
-            }
+      <Menu
+        tooltip={canStart ? "New chat or side chat" : "Start a chat only in an active workspace"}
+        trigger={
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="New chat or side chat"
+            disabled={!canStart}
           >
-            {NEW_CHATS.map((item) => (
-              <MenuItem key={item.label} onSelect={() => onNew(item.kind, item.fork)}>
-                <item.icon aria-hidden="true" className="size-3.5 shrink-0" />
-                <span className="flex flex-col">
-                  {item.label}
-                  <span className="text-xs text-muted">{item.hint}</span>
-                </span>
-              </MenuItem>
-            ))}
-          </Menu>
-        </span>
-      </Tooltip>
+            <Plus />
+          </Button>
+        }
+      >
+        {NEW_CHATS.map((item) => (
+          <MenuItem key={item.label} onSelect={() => onNew(item.kind, item.fork)}>
+            <item.icon aria-hidden="true" className="size-3.5 shrink-0" />
+            <span className="flex flex-col">
+              {item.label}
+              <span className="text-xs text-muted">{item.hint}</span>
+            </span>
+          </MenuItem>
+        ))}
+      </Menu>
       <Title key={selected.id} chat={selected} onRename={onRename} />
     </div>
   );

@@ -1,5 +1,5 @@
 import { Tooltip as TooltipPrimitive } from "radix-ui";
-import type { ReactElement, ReactNode } from "react";
+import { type ReactElement, type ReactNode, useState } from "react";
 
 /** Wrap the app once, so tooltips share one open delay. */
 export const TooltipProvider = TooltipPrimitive.Provider;
@@ -8,14 +8,19 @@ export const TooltipProvider = TooltipPrimitive.Provider;
 export function Tooltip({
   label,
   side = "right",
+  hidden = false,
   children,
 }: {
   label: ReactNode;
   side?: "top" | "right" | "bottom" | "left";
+  /** Keeps the tooltip closed, such as while the menu it labels is open. */
+  hidden?: boolean;
   children: ReactElement;
 }) {
+  // Always controlled, so `hidden` never switches the root between controlled and uncontrolled.
+  const [open, setOpen] = useState(false);
   return (
-    <TooltipPrimitive.Root>
+    <TooltipPrimitive.Root open={open && !hidden} onOpenChange={setOpen}>
       <TooltipPrimitive.Trigger asChild>{children}</TooltipPrimitive.Trigger>
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Content
