@@ -28,7 +28,7 @@ import {
 } from "@pi-spore/shared";
 import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { actionsModule } from "./server.js";
+import { createActionsModule } from "./server.js";
 
 const FIXTURE = fileURLToPath(new URL("../test-fixtures/action.mjs", import.meta.url));
 const RunBody = Type.Object({ run: ActionRun });
@@ -42,7 +42,8 @@ beforeEach(async () => {
     vcsGitModule,
     vcsFolderModule,
     workspacesModule,
-    actionsModule,
+    // A fixed env, so the chat or shell that runs the tests cannot add PI_SPORE_* keys.
+    createActionsModule({ baseEnv: { PATH: process.env.PATH } }),
   ]);
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-actions-")));
 });
