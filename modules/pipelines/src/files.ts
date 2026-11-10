@@ -39,6 +39,28 @@ gates = ["check", "test"]
 fail_first = "artifact"
 `;
 
+/** Used when no user or project file has the id `light`: `default` without the adversarial stage, for small slices. */
+export const BUILT_IN_LIGHT = `id = "light"
+
+[[stage]]
+name = "implement"
+role = "worker"
+tier = "route"
+
+[[stage]]
+name = "review"
+role = "reviewer"
+rounds = 2
+fix_passes = 1
+early_stop = "jev"
+min_strength_over = "implement"
+
+[[stage]]
+name = "gates"
+gates = ["check", "test"]
+fail_first = "artifact"
+`;
+
 /** Used when no user or project file has the id `revise`: a short fix pass by the worker of an earlier run. */
 export const BUILT_IN_REVISE = `id = "revise"
 
@@ -62,6 +84,7 @@ fail_first = "artifact"
 
 const BUILT_INS = [
   { id: "default", text: BUILT_IN_DEFAULT },
+  { id: "light", text: BUILT_IN_LIGHT },
   { id: "revise", text: BUILT_IN_REVISE },
 ];
 

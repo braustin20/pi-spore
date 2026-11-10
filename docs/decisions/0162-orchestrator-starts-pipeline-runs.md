@@ -27,7 +27,12 @@
 3. **The conciseness check stays.** After a run passes, the orchestrator reads the diff. Cuts go in as a new
    pipeline run with the cuts as its brief. After three runs without success, it splits the slice again or takes
    it over.
-4. **Which pipeline.** `default`, unless the brief's tool call names another pipeline of the workspace.
+4. **Which pipeline.** The orchestrator picks one for each slice and passes it as `pipeline` to `start_pipeline`.
+   It uses the built-in `light` (`default` without the adversarial stage) for a small, clear slice that follows an
+   existing pattern. It uses `default` for a new feature, core or shared code, security, data or migrations, or
+   when it is not sure. The plan names the pipeline of each slice with one short reason, so the user's yes covers
+   it and the user may change it. There is no UI choice and no automatic skip in the pipeline. (Added
+   2026-11-09.)
 5. **Tool.** spore-bridge gives the orchestrator chat (a `worker`-kind chat with no run role) the tool
    `start_pipeline { brief, pipeline? }`. `brief` is a workspace artifact path, as for `start_lane`. The tool posts
    to the bridge route `POST /api/bridge/pipelines` with the tool call id as its receipt (R16.3), so a replayed

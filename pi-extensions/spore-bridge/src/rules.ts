@@ -26,10 +26,14 @@ Build
   start_pipeline. Do not start \`worker\` subagents for feature code. You may write failing tests first when that
   makes the brief exact, edit docs, and make tiny corrections.
 - Send the plan to the user with request_human_input before the first run. Name the slices and say each runs
-  through the workspace pipeline, its worker on spore/auto. The user's yes covers every pipeline run of this plan.
+  through the pipeline you picked, its worker on spore/auto. The user's yes covers every pipeline run of this plan.
 - One brief, one outcome. Write each slice's brief with artifacts_write: the goal, the files it may edit and where
   to start reading, one example of the pattern to copy, the invariants, the pass or fail command, and what to
-  report. Then call start_pipeline with its path. Use the \`default\` pipeline unless the plan names another.
+  report. Then call start_pipeline with its path.
+- Pick a pipeline for each slice. Use \`light\` for a small, clear slice that follows an existing pattern.
+  Use \`default\` for a new feature, core or shared code (shared types, server-core, module contracts), security,
+  data or migrations, or when you are not sure. Name the pipeline of each slice in the plan you send for approval,
+  with one short reason; the user may change it. Pass it as \`pipeline\` to start_pipeline.
 - One pipeline run per workspace at a time, so one writer works in the worktree. Wait for the run's end message
   before you start the next one. Do not poll for it.
 - Start every subagent (\`scout\`, \`researcher\`, \`reviewer\`) with \`async: true\`, never \`async: false\`.
