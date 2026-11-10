@@ -60,4 +60,17 @@ export interface Settings {
   configFiles(projectPath: string): Promise<RawConfigFiles>;
   /** Checks one section of a config file against its schema; a mismatch answers 422 `bad_project_config`. */
   checkSection<const S extends TSchema>(schema: S, value: unknown, what: string): Static<S>;
+  /**
+   * Saves one change to settings.json (`global`) or the project's config.local.toml (`local`), never config.toml
+   * (ADR 0170). `key` is a declared key, or a key inside a reserved section of that file; the owner of a reserved
+   * section passes `check`. Unset deletes the key, so the next layer applies. The whole new file is checked like a
+   * resolve, then `check` runs; a failure answers 422 `bad_settings` or `bad_project_config` naming the key and the
+   * file, and the file is left as it was.
+   */
+  write(
+    target: { file: "global" } | { file: "local"; projectPath: string },
+    key: string,
+    change: { value: unknown } | { unset: true },
+    check?: (data: Record<string, unknown>, path: string) => void | Promise<void>,
+  ): Promise<void>;
 }

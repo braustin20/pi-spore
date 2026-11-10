@@ -1580,6 +1580,20 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
 - `GET /api/workspaces/:id/settings` lists every declared key for that workspace with its source. The Settings page
   shows it under "Workspace settings" for the workspace picked there. The CLI sets an override with repeated
   `--set <key>=<value>` on `ws new` and `run start`; a value that parses as JSON is JSON, else a string.
+- Saving a setting (ADR 0170): `host.settings.write(target, key, change, check?)` sets one key to a value or
+  unsets it. Unset removes the key and any table it leaves empty, so the next layer applies. `target` is
+  `{ file: "global" }` (`settings.json`) or `{ file: "local", projectPath }` (`config.local.toml`). Nothing writes
+  `config.toml`, and workspace overrides stay read-only. The key must be declared, or sit in a reserved section
+  whose owner passes `check`. The whole new file is checked like a resolve, then `check` runs. A failure answers
+  422 `bad_settings` or `bad_project_config`, names the key, and leaves the file as it was. Writes go to
+  `<file>.tmp`, then a rename, one at a time. TOML is rewritten with smol-toml, so comments in
+  `config.local.toml` are lost.
+- `PUT /api/projects/settings` saves to `settings.json`; `PUT /api/projects/:id/settings` saves to that project's
+  `config.local.toml`. The body is `SaveSettingRequest`: `{ key, value }` or `{ key, unset: true }`. The answer is
+  `{ setting }`, the resolved entry with its new source. A global save also runs the router's parser
+  (`resolveSettings`) on the whole file, so a bad `router.*` or `tiers` value answers 422 `bad_settings`. The page
+  sets only the router keys it lists, never a whole `router` section, and never the `actions` section.
+  Idempotency keys work as for every PUT (R16.2).
 
 Declared keys (`GET /api/projects/settings` lists them all with their source, plus the router keys of section 10;
 the Settings page, `#/settings`, shows that list):
@@ -1620,7 +1634,7 @@ The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale
 
 Not built yet:
 
-- Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
+- Edit controls on the Settings page. The save routes above exist; the page does not call them yet.
 
 `config.toml` sketch:
 

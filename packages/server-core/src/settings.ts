@@ -1,5 +1,5 @@
-import { readFile } from "node:fs/promises";
-import { join } from "node:path";
+import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import {
   ApiError,
   type RawConfigFile,
@@ -9,7 +9,7 @@ import {
   type Settings,
 } from "@pi-spore/module-api";
 import { parse, type SettingEntry, type SettingSource, ValidationError } from "@pi-spore/shared";
-import { parse as parseToml } from "smol-toml";
+import { parse as parseToml, stringify as stringifyToml } from "smol-toml";
 import type { Static, TSchema } from "typebox";
 
 // R17.3: the project file may be committed and never chooses models.
@@ -111,6 +111,7 @@ export function createSettings(
   const defs = new Map<string, SettingDef>();
   const reserved = { global: new Set<string>(), project: new Set<string>() };
   const globalPath = join(home, "settings.json");
+  let queue: Promise<unknown> = Promise.resolve();
 
   const configFiles = async (projectPath: string): Promise<RawConfigFiles> => {
     const dir = join(projectPath, ".pi-spore");
@@ -167,6 +168,78 @@ export function createSettings(
     },
     configFiles,
     checkSection: (schema, value, what) => checkSection(schema, value, what),
+    write(target, key, change, check) {
+      // One at a time, so two saves never read the same file and lose a change. A failed save must not block the next.
+      const run = queue.then(async () => {
+        const isGlobal = target.file === "global";
+        const path = isGlobal
+          ? globalPath
+          : join(target.projectPath, ".pi-spore", "config.local.toml");
+        const code = isGlobal ? "bad_settings" : "bad_project_config";
+        const fail = (message: string): never => {
+          throw new ApiError(422, code, `${path}: ${message}`);
+        };
+        // `parent["__proto__"] = x` calls the inherited setter and drops the value; a setting path may hold that name.
+        const put = (table: Record<string, unknown>, name: string, value: unknown): void => {
+          Object.defineProperty(table, name, {
+            value,
+            enumerable: true,
+            writable: true,
+            configurable: true,
+          });
+        };
+        const names = key.split(".");
+        const last = names.pop() as string;
+        if (!defs.has(key) && !reserved[isGlobal ? "global" : "project"].has(names[0] ?? last))
+          fail(`unknown key "${key}"`);
+
+        const current = isGlobal
+          ? await readGlobal(path)
+          : await readConfig(path, { models: "allowed" });
+        const data = structuredClone(current?.data ?? {});
+        // tables[i] is the table holding names[i]; the last one holds `last`.
+        const tables = [data];
+        for (const name of names) {
+          const parent = tables[tables.length - 1] as Record<string, unknown>;
+          if (!Object.hasOwn(parent, name)) {
+            if ("unset" in change) break;
+            put(parent, name, {});
+          }
+          const child = parent[name];
+          if (!isTable(child)) return fail(`"${key}" cannot be set: "${name}" is not a table`);
+          tables.push(child);
+        }
+        const parent = tables[tables.length - 1] as Record<string, unknown>;
+        if ("value" in change) {
+          put(parent, last, change.value);
+        } else if (tables.length === names.length + 1) {
+          delete parent[last];
+          for (let i = tables.length - 1; i > 0; i--)
+            if (Object.keys(tables[i] as object).length === 0)
+              delete (tables[i - 1] as Record<string, unknown>)[names[i - 1] as string];
+        }
+
+        read({ file: { path, data }, source: isGlobal ? "global" : "local override", code });
+        try {
+          await check?.(data, path);
+        } catch (error) {
+          if (error instanceof ApiError) throw error;
+          return fail((error as Error).message);
+        }
+
+        const text = isGlobal ? `${JSON.stringify(data, null, 2)}\n` : stringifyToml(data);
+        await mkdir(dirname(path), { recursive: true });
+        try {
+          await writeFile(`${path}.tmp`, text);
+          await rename(`${path}.tmp`, path);
+        } catch (error) {
+          await rm(`${path}.tmp`, { force: true });
+          throw error;
+        }
+      });
+      queue = run.catch(() => undefined);
+      return run;
+    },
     async resolve({ projectPath, detected = {}, override } = {}): Promise<ResolvedSettings> {
       const values = new Map<string, { value: unknown; source: SettingSource }>();
       for (const def of defs.values())

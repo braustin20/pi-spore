@@ -160,6 +160,8 @@ export {
   ProjectLines,
   ProjectList,
   ProjectTrait,
+  SaveSettingRequest,
+  SaveSettingResponse,
   SettingEntry,
   SettingSource,
   SettingsView,
