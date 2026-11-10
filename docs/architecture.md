@@ -933,7 +933,9 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
   - Wrong router settings answer 422 `bad_settings`.
 - The Usage page (`#/usage`, rail icon) shows the plan windows with bars, reset times, age, and a stale chip; the
   warnings at the top; the token table, grouped by workspace or by role and filtered by role; the routing decisions
-  with their rung, plan, model, thinking level, and reasons; and the routing calibration (the bars table with "now"
+  with their rung, plan, model, thinking level, and reasons (both tables show 10 rows a page, with Previous and
+  Next when there are more; the browser pages the rows it already has, and the "by role" view sums all rows
+  before it pages); and the routing calibration (the bars table with "now"
   and "suggested" chips, the per-rung table, and the buckets). Under the report, "Apply suggested bar" shows when
   the suggested bar differs from the bar now, and "Turn off explore" shows when `explore` is above 0. Each opens a
   confirm dialog (ADR 0029) and sends the request only on yes. It loads on open and on Refresh.
