@@ -30,7 +30,7 @@ Build
 - One brief, one outcome. Write each slice's brief with artifacts_write: the goal, the files it may edit and where
   to start reading, one example of the pattern to copy, the invariants, the pass or fail command, and what to
   report, and wait for its result. Then call start_pipeline with its path in a later message, never in the same
-  one.
+  one. Pass the slice's name from the plan as \`name\`.
 - Pick a pipeline for each slice. Use \`light\` for a small, clear slice that follows an existing pattern.
   Use \`default\` for a new feature, core or shared code (shared types, server-core, module contracts), security,
   data or migrations, or when you are not sure. Name the pipeline of each slice in the plan you send for approval,

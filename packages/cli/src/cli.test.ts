@@ -1094,6 +1094,37 @@ describe("pi-spore pipeline", () => {
     }
   });
 
+  it("sends the name of a run only when --name is given", async () => {
+    const { deps, sent } = fakeDeps(() => Response.json({ run: pipelineRun }, { status: 201 }));
+    expect(
+      await run(
+        ["pipeline", "start", "W1", "ship", "--brief", "x", "--name", "push_line tool"],
+        deps,
+      ),
+    ).toBe(0);
+    expect(await run(["pipeline", "start", "W1", "ship", "--brief", "x"], deps)).toBe(0);
+    expect(sent.map((request) => request.body)).toEqual([
+      { pipeline: "ship", brief: "x", name: "push_line tool" },
+      { pipeline: "ship", brief: "x" },
+    ]);
+  });
+
+  it("prints the name of a run in runs and show, and nothing when it has none", async () => {
+    const named = { ...pipelineRun, name: "push_line tool" };
+    const runs = fakeDeps(() => Response.json({ runs: [named, pipelineRun] }));
+    expect(await run(["pipeline", "runs", "W1"], runs.deps)).toBe(0);
+    expect(runs.out[0]).toContain('ship "push_line tool"  stage review');
+    expect(runs.out[1]).not.toContain('"');
+
+    const shown = fakeDeps(() => Response.json({ run: named }));
+    expect(await run(["pipeline", "show", "R1"], shown.deps)).toBe(0);
+    expect(shown.out[1]).toBe("Name push_line tool");
+
+    const plain = fakeDeps(() => Response.json({ run: pipelineRun }));
+    expect(await run(["pipeline", "show", "R1"], plain.deps)).toBe(0);
+    expect(plain.out.join("\n")).not.toContain("Name ");
+  });
+
   it("needs exactly one of --brief and --brief-file, and names an unreadable file", async () => {
     const { deps, err, sent } = fakeDeps(() => Response.json({}));
     expect(await run(["pipeline", "start", "W1", "ship"], deps)).toBe(2);

@@ -20,6 +20,7 @@ import {
   CollapsibleSection,
   EmptyState,
   Field,
+  Input,
   Notice,
   SectionLabel,
   Select,
@@ -62,6 +63,7 @@ function StartForm({ workspace }: { workspace: Workspace }) {
   const [pipelines, setPipelines] = useState<PipelineView[] | undefined>();
   const [pipeline, setPipeline] = useState("");
   const [brief, setBrief] = useState("");
+  const [name, setName] = useState("");
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
 
@@ -81,7 +83,11 @@ function StartForm({ workspace }: { workspace: Workspace }) {
     setBusy(true);
     setError(undefined);
     try {
-      await api.send("POST", `pipelines/workspaces/${workspace.id}/runs`, { pipeline, brief });
+      await api.send("POST", `pipelines/workspaces/${workspace.id}/runs`, {
+        pipeline,
+        brief,
+        ...(name.trim() ? { name: name.trim() } : {}),
+      });
     } catch (caught) {
       setError(message(caught));
     }
@@ -108,6 +114,14 @@ function StartForm({ workspace }: { workspace: Workspace }) {
           <code>{entry.id}</code> cannot start: {entry.error}
         </Notice>
       ))}
+      <Field label="Name">
+        <Input
+          maxLength={80}
+          value={name}
+          onChange={(event) => setName(event.target.value)}
+          placeholder="Short name of this slice"
+        />
+      </Field>
       <Field label="Brief">
         <Textarea
           rows={8}
@@ -200,8 +214,9 @@ function RunCard({
             aria-hidden="true"
             className={`size-3.5 shrink-0 transition-transform ${open ? "rotate-90" : ""}`}
           />
-          {run.pipelineId}
+          {run.name ?? run.pipelineId}
         </button>
+        {run.name && <Chip>{run.pipelineId}</Chip>}
         <Chip>{run.source}</Chip>
         <Chip tone={shown.tone}>{shown.text}</Chip>
         <span className="text-xs text-muted">{elapsed(run, now)}</span>

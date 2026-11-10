@@ -344,6 +344,36 @@ describe("a pipeline run", () => {
     expect(await second.json()).toMatchObject({ error: { code: "pipeline_running" } });
   });
 
+  it("carries an optional slice name on the run, and refuses a name of 0 or 81 characters", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const { workspaceId } = await workspace(server, "named");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const startNamed = (name: string) =>
+      server.request("POST", `/api/pipelines/workspaces/${workspaceId}/runs`, {
+        pipeline: "p",
+        brief: "Build the thing",
+        name,
+      });
+
+    expect((await startNamed("")).status).toBe(400);
+    expect((await startNamed("x".repeat(81))).status).toBe(400);
+    const { run } = await json<{ run: PipelineRun }>(await startNamed("push_line tool"), 201);
+
+    expect(run.name).toBe("push_line tool");
+    expect((await getRun(server, run.id)).name).toBe("push_line tool");
+  });
+
+  it("leaves the name out of a run started without one", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const { workspaceId } = await workspace(server, "unnamed");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    expect(run).not.toHaveProperty("name");
+    expect(await getRun(server, run.id)).not.toHaveProperty("name");
+  });
+
   it("stops a run on cancel and then takes a new run", async () => {
     const server = await start({ env: scriptEnv({ worker: ["hang", "hang"] }) });
     const { workspaceId } = await workspace(server, "cancel");
@@ -2218,6 +2248,24 @@ describe("starting a run from the orchestrator chat (ADR 0162)", () => {
     );
     expect(missing.error).toMatchObject({ code: "brief_not_found" });
     expect(missing.error.message).toContain("briefs/none.md");
+  });
+
+  it("passes the slice name of a chat start to the run", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const ids = await workspace(server, "chatname");
+    await writeBrief(server, ids);
+
+    const { run } = await json<{ run: PipelineRun }>(
+      await startAsChat(
+        server,
+        ids,
+        { brief: "briefs/slice.md", name: "push_line tool" },
+        "call-1",
+      ),
+      201,
+    );
+
+    expect(run.name).toBe("push_line tool");
   });
 
   it("tells the asking chat once when the run passes, and gives usage_outcomes one row", async () => {

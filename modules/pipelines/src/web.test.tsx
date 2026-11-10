@@ -85,7 +85,7 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function mount(first: PipelineRun[]) {
+async function mount(first: PipelineRun[], startable: unknown[] = []) {
   let tab: ComponentType<{ workspace: Workspace }> | undefined;
   const view = {
     addTab: (added: { component: typeof tab }) => (tab = added.component),
@@ -97,8 +97,12 @@ async function mount(first: PipelineRun[]) {
   if (!tab) throw new Error("the pipelines module did not add its tab");
   const Tab = tab;
   let listener: ((raw: unknown) => void) | undefined;
+  const sent: { method: string; path: string; body?: unknown }[] = [];
   const api = {
-    get: async () => ({ pipelines: [] }),
+    get: async () => ({ pipelines: startable }),
+    send: async (method: string, path: string, body?: unknown) => {
+      sent.push({ method, path, body });
+    },
     subscribe: (_topic: string, onEvent: (raw: unknown) => void) => {
       listener = onEvent;
       onEvent({ type: "runs", runs: first });
@@ -116,7 +120,7 @@ async function mount(first: PipelineRun[]) {
     ),
   );
   const send = (runs: PipelineRun[]) => act(async () => listener?.({ type: "runs", runs }));
-  return { root, send };
+  return { root, send, sent };
 }
 
 const card = (root: HTMLElement, id: string) =>
@@ -156,6 +160,55 @@ describe("Pipeline tab", () => {
     const text = header(card(root, "default")).textContent;
     expect(text).toContain("5 min");
     expect(text).not.toContain("15 min");
+  });
+
+  it("shows the slice name in the header button, with the pipeline id as a chip after it", async () => {
+    const { root } = await mount([run({ name: "push_line tool" })]);
+    const named = header(card(root, "default"));
+    expect(named.querySelector("button")?.textContent).toBe("push_line tool");
+    expect(named.textContent).toMatch(/^push_line tooldefaultbuilt-inRunning/);
+  });
+
+  it("shows the pipeline id in the header button, and no extra chip, for a run with no name", async () => {
+    const { root } = await mount([run({})]);
+    const plain = header(card(root, "default"));
+    expect(plain.querySelector("button")?.textContent).toBe("default");
+    expect(plain.textContent).toMatch(/^defaultbuilt-inRunning/);
+  });
+
+  it("sends the name from the start form only when the Name field is filled", async () => {
+    const pipelines = [{ id: "default", source: "built-in" }];
+    const { root, sent } = await mount([], pipelines);
+    const input = root.querySelector("input") as HTMLInputElement;
+    const brief = root.querySelector("textarea") as HTMLTextAreaElement;
+    expect(input.maxLength).toBe(80);
+    expect(input.placeholder).toBe("Short name of this slice");
+
+    const fill = (element: HTMLElement, value: string) =>
+      act(async () => {
+        const proto = element instanceof HTMLInputElement ? HTMLInputElement : HTMLTextAreaElement;
+        Object.getOwnPropertyDescriptor(proto.prototype, "value")?.set?.call(element, value);
+        element.dispatchEvent(new Event("input", { bubbles: true }));
+      });
+    const submit = () =>
+      act(async () => {
+        root.querySelector("form")?.requestSubmit();
+      });
+
+    await fill(brief, "Do it");
+    await submit();
+    await fill(input, "  push_line tool ");
+    await submit();
+    await fill(input, "   ");
+    await submit();
+
+    const path = "pipelines/workspaces/W1/runs";
+    expect(sent.map((request) => request.body)).toEqual([
+      { pipeline: "default", brief: "Do it" },
+      { pipeline: "default", brief: "Do it", name: "push_line tool" },
+      { pipeline: "default", brief: "Do it" },
+    ]);
+    expect(sent[0]?.path).toBe(path);
   });
 
   it("keeps the log in a closed block in the Gates row, and the failed tests in the notice", async () => {

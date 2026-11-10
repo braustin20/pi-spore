@@ -79,6 +79,7 @@ const reply = (key: string, ...answers: Reply[]) => replies.set(key, answers);
 
 interface Tool {
   name: string;
+  parameters?: { properties?: Record<string, unknown> };
   executionMode?: "sequential" | "parallel";
   execute(
     id: string,
@@ -492,6 +493,7 @@ describe("spore-bridge", () => {
 
   it("has the orchestrator pick light or default per slice and name it in the plan", () => {
     expect(RULES).toContain("Pick a pipeline for each slice.");
+    expect(RULES).toContain("as `name`");
     expect(RULES).toContain("Use `light` for a small, clear slice");
     expect(RULES).toContain("Use `default` for a new feature");
     expect(RULES).toContain("Name the pipeline of each slice in the plan");
@@ -1083,14 +1085,17 @@ describe("spore-bridge run tools", () => {
     });
     const pi = fakePi();
 
+    expect(pi.tool("start_pipeline").parameters?.properties).toHaveProperty("name");
     const first = await pi.tool("start_pipeline").execute("t1", { brief: "briefs/a.md" });
     await pi.tool("start_pipeline").execute("t1", { brief: "briefs/a.md" });
     await pi.tool("start_pipeline").execute("t2", { brief: "briefs/a.md", pipeline: "p" });
+    await pi.tool("start_pipeline").execute("t3", { brief: "briefs/a.md", name: "push_line tool" });
 
     expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
       ["/api/bridge/pipelines", "t1", { brief: "briefs/a.md" }],
       ["/api/bridge/pipelines", "t1", { brief: "briefs/a.md" }],
       ["/api/bridge/pipelines", "t2", { brief: "briefs/a.md", pipeline: "p" }],
+      ["/api/bridge/pipelines", "t3", { brief: "briefs/a.md", name: "push_line tool" }],
     ]);
     expect(first.content[0]?.text).toContain("Pipeline run pr1");
     expect(first.content[0]?.text).toContain("do not poll");

@@ -62,14 +62,20 @@ export type PipelineView = Static<typeof PipelineView>;
 export const PipelineList = Type.Object({ pipelines: Type.Array(PipelineView) });
 export type PipelineList = Static<typeof PipelineList>;
 
+const RunName = Type.Optional(Type.String({ minLength: 1, maxLength: 80 }));
+
 export const StartPipelineRequest = Type.Object(
-  { pipeline: Type.String(), brief: Type.String({ minLength: 1 }) },
+  { pipeline: Type.String(), brief: Type.String({ minLength: 1 }), name: RunName },
   { additionalProperties: false },
 );
 export type StartPipelineRequest = Static<typeof StartPipelineRequest>;
 
 export const BridgeStartPipelineRequest = Type.Object(
-  { brief: Type.String({ minLength: 1 }), pipeline: Type.Optional(Type.String({ minLength: 1 })) },
+  {
+    brief: Type.String({ minLength: 1 }),
+    pipeline: Type.Optional(Type.String({ minLength: 1 })),
+    name: RunName,
+  },
   { additionalProperties: false },
 );
 export type BridgeStartPipelineRequest = Static<typeof BridgeStartPipelineRequest>;
@@ -177,6 +183,8 @@ export const PipelineRun = Type.Object({
   id: Type.String(),
   workspaceId: Type.String(),
   pipelineId: Type.String(),
+  /** The slice's name, a label only. */
+  name: Type.Optional(Type.String()),
   source: PipelineSource,
   path: Type.Optional(Type.String()),
   hash: Type.String(),
