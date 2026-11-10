@@ -176,7 +176,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
       promptGuidelines: [
         "Use request_human_input when you need a decision or information only the user has. Call it alone, as the last tool call of your turn, then stop.",
         "If an ask_user tool is also available, use ask_user only for a quick choice while the user is watching the chat; it blocks and is lost if the process stops. Prefer request_human_input otherwise.",
-        "Ask several related decisions in one call with steps; put each option's details in its description and a code example or text diagram in its preview.",
+        "Ask several related decisions in one request_human_input call with steps; put each option's details in its description and a code example or text diagram in its preview.",
       ],
       parameters: Type.Object({
         question: Type.Optional(

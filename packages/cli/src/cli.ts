@@ -876,7 +876,9 @@ function inboxDetails(entry: InboxEntry): string[] {
   switch (item.kind) {
     case "question": {
       const { question } = item;
-      if (question.steps.length < 2)
+      // The old form (`choices`) and a lone text step print as before; any other step needs its own lines.
+      const [first] = question.steps;
+      if (question.steps.length === 1 && (question.choices || first?.type === "text"))
         return [
           `question: ${question.question}`,
           ...(question.choices

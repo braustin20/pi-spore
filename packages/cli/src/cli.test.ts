@@ -1557,6 +1557,45 @@ describe("pi-spore inbox", () => {
     expect(out.join("\n")).not.toContain("--bg");
   });
 
+  it("shows the options of a one-step question that uses steps", async () => {
+    const { deps, out } = fakeDeps(() =>
+      Response.json({
+        items: [
+          {
+            kind: "question",
+            at: NOW,
+            ...place,
+            question: {
+              id: "Q8",
+              agentId: "A1",
+              workspaceId: "W1",
+              question: "Which accents?",
+              steps: [
+                {
+                  type: "multiselect",
+                  prompt: "Which accents?",
+                  options: [{ label: "Blue" }, { label: "Green" }],
+                },
+              ],
+              state: "open",
+              createdAt: NOW,
+            },
+          },
+        ],
+        interrupted: [],
+        running: [],
+      }),
+    );
+    expect(await run(["inbox", "show", "question:Q8"], deps)).toBe(0);
+    expect(out.slice(6)).toEqual([
+      "question: Which accents?",
+      "step 1 of 1 (multiselect): Which accents?",
+      "  - Blue",
+      "  - Green",
+      "answer: on Home, at #/workspaces/W1/chats/A1",
+    ]);
+  });
+
   it("shows an approval's reason and subject", async () => {
     const { deps, out } = serve();
     expect(await run(["inbox", "show", "approval:AP1"], deps)).toBe(0);

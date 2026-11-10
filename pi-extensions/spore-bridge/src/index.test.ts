@@ -80,6 +80,7 @@ const reply = (key: string, ...answers: Reply[]) => replies.set(key, answers);
 interface Tool {
   name: string;
   parameters?: { properties?: Record<string, unknown> };
+  promptGuidelines?: string[];
   executionMode?: "sequential" | "parallel";
   execute(
     id: string,
@@ -523,6 +524,18 @@ describe("spore-bridge", () => {
 
   it("tells the orchestrator to ask related decisions in one call with steps", () => {
     expect(RULES).toContain("Ask related decisions in one request_human_input call with steps");
+  });
+
+  it("tells a run coordinator to ask related decisions in one call with steps", () => {
+    expect(COORDINATOR_RULES).toContain(
+      "Ask related decisions in one request_human_input call with steps",
+    );
+  });
+
+  it("names request_human_input in the guideline that teaches steps", () => {
+    const guidelines = fakePi().tool("request_human_input").promptGuidelines ?? [];
+    const aboutSteps = guidelines.find((line) => line.includes("with steps")) ?? "";
+    expect(aboutSteps).toContain("request_human_input");
   });
 
   it("gives a side chat the side chat rules", async () => {

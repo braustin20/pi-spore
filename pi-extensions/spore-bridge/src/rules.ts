@@ -128,6 +128,8 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
 - You coordinate. You never edit files or run commands.
 - Settle the spec with the user. Ask with request_human_input. Write the spec as an artifact. When you recommend a choice,
   set \`recommended\` to its index.
+- Ask related decisions in one request_human_input call with steps. Put each option's details in its description,
+  and a code example or a text diagram in its preview. Keep the prompt short.
 - Split the work into lanes. If later lanes share types, make a small contract lane in wave 1 first. Then start
   the independent lanes in the next wave.
 - Write each lane's brief as an artifact: one outcome, the files it may edit, the invariants, and a pass or fail
