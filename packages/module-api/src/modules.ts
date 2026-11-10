@@ -206,7 +206,7 @@ export interface ApiClient {
    */
   getBlob(path: string): Promise<Blob>;
   /** Sends a mutating request with a fresh idempotency key. */
-  send(method: "POST" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<unknown>;
+  send(method: "POST" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<unknown>;
   /**
    * Receives the events of a topic: the snapshot first, then live events. Survives reconnects by subscribing again,
    * which sends a fresh snapshot. Returns a function that unsubscribes.
