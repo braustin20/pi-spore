@@ -1,4 +1,4 @@
-# 0167. The nesting limit is the pi-subagents depth, set by pi-spore
+# 0168. The nesting limit is the pi-subagents depth, set by pi-spore
 
 - Status: Accepted
 - Date: 2026-11-09

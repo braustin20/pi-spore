@@ -1057,7 +1057,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not. Phone
   browsers show notifications only from a service worker, which pi-spore does not have, so the button hides on
-  phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on.
+  phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on. The browser's
+  permission is the only switch; pi-spore has no notification setting (ADR 0167).
 - **Approvals** (ADR 0100): decision gates in `attention_approvals` (kind, asking agent, workspace, title, reason,
   subject as JSON, state `open`, `approved`, or `declined`, outcome, times). The module that owns a gate registers
   its kind through `ApprovalsKey.register({ kind, subject, approve, decided? })` and files approvals with
@@ -1543,7 +1544,7 @@ the Settings page, `#/settings`, shows that list):
 | `worktree.branch_prefix` | project | string, default `spore` | Prefix of the branches pi-spore creates. |
 | `agents.maxLive` | global | whole number, 1 or more, default 8 | Live agent processes at once (ADR 0026). |
 | `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
-| `agents.maxSubagentDepth` | global | whole number, 0 or more, default 2 | How deep pi-subagents helpers may nest. Passed to each agent as `PI_SUBAGENT_MAX_DEPTH` (ADR 0167). |
+| `agents.maxSubagentDepth` | global | whole number, 0 or more, default 2 | How deep pi-subagents helpers may nest. Passed to each agent as `PI_SUBAGENT_MAX_DEPTH` (ADR 0168). |
 | `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
 | `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
 | `server.allowedHosts` | global | array of host names, default none | Tailnet hosts that `tailscale serve` forwards from (ADR 0143). |
@@ -1573,7 +1574,6 @@ The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale
 Not built yet:
 
 - Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
-- A desktop notification setting (R15.2). The browser's permission is the only switch today.
 
 `config.toml` sketch:
 

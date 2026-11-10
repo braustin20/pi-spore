@@ -241,7 +241,7 @@ describe("agents", () => {
       PI_SPORE_URL: server.url,
       PI_SPORE_SERVER_PID: String(process.pid),
       PI_SPORE_TOKEN: expect.stringMatching(/^[0-9a-f]{64}$/),
-      // pi-subagents refuses deeper helpers itself (ADR 0167).
+      // pi-subagents refuses deeper helpers itself (ADR 0168).
       PI_SUBAGENT_MAX_DEPTH: "2",
     });
     expect(statuses(agentId)).toEqual(["starting", "idle", "busy", "idle"]);
@@ -440,7 +440,7 @@ describe("agents", () => {
       expect(await json(await pending)).toEqual({ disposition: "started" });
     });
 
-    it("passes agents.maxSubagentDepth to Pi as PI_SUBAGENT_MAX_DEPTH (ADR 0167)", async () => {
+    it("passes agents.maxSubagentDepth to Pi as PI_SUBAGENT_MAX_DEPTH (ADR 0168)", async () => {
       writeSettings('{"agents":{"maxSubagentDepth":0}}');
       await setup({}, { PI_SUBAGENT_MAX_DEPTH: "5" }, { home: home() });
       const { agentId } = await makeAgent();

@@ -5,7 +5,7 @@ const MIB = 1024 * 1024;
 
 /**
  * The agents module's settings (R3.6, ADR 0026, ADR 0060). They apply when the server starts.
- * `maxSubagentDepth` goes to every agent process as PI_SUBAGENT_MAX_DEPTH; 0 allows no helpers (ADR 0167).
+ * `maxSubagentDepth` goes to every agent process as PI_SUBAGENT_MAX_DEPTH; 0 allows no helpers (ADR 0168).
  */
 export function declareAgentSettings(settings: Settings) {
   const count = (key: string, fallback: number, minimum = 1) =>
