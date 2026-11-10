@@ -821,7 +821,15 @@ function inboxDetails({ item }: InboxEntry): string[] {
     case "question":
       return [
         `question: ${item.question.question}`,
-        ...(item.question.choices ? [`choices: ${item.question.choices.join(", ")}`] : []),
+        ...(item.question.choices
+          ? [
+              `choices: ${item.question.choices
+                .map((choice, i) =>
+                  i === item.question.recommended ? `${choice} (recommended)` : choice,
+                )
+                .join(", ")}`,
+            ]
+          : []),
       ];
     case "approval":
       return [

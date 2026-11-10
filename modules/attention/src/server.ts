@@ -61,6 +61,8 @@ const MIGRATIONS = [
     decided_at INTEGER
   )`,
   "CREATE INDEX attention_approvals_by_state ON attention_approvals (state, created_at)",
+  // The agent's recommended choice (an index into `choices`); advice only.
+  "ALTER TABLE attention_questions ADD COLUMN recommended INTEGER",
 ];
 
 interface ApprovalRow {
@@ -122,6 +124,7 @@ interface Row {
   question: string;
   /** A JSON array of strings, written only by this module. */
   choices: string | null;
+  recommended: number | null;
   state: "open" | "answered" | "closed";
   answer: string | null;
   created_at: number;
@@ -142,6 +145,7 @@ const toQuestion = (row: Row): Question => ({
   workspaceId: row.workspace_id,
   question: row.question,
   ...(row.choices === null ? {} : { choices: readChoices(row) }),
+  ...(row.recommended === null ? {} : { recommended: row.recommended }),
   state: row.state,
   ...(row.answer === null ? {} : { answer: row.answer }),
   createdAt: row.created_at,
@@ -341,6 +345,16 @@ export const attentionModule: ServerModule = {
 
     const questions: Questions = {
       file: (caller, request) => {
+        const { recommended } = request;
+        if (
+          recommended !== undefined &&
+          (!request.choices || recommended >= request.choices.length)
+        )
+          throw new ApiError(
+            400,
+            "bad_recommended",
+            `recommended index ${recommended} does not match ${request.choices?.length ?? 0} choices`,
+          );
         const workspace = workspaces.get(caller.workspaceId);
         const row: Row = {
           id: host.newId(),
@@ -348,19 +362,21 @@ export const attentionModule: ServerModule = {
           workspace_id: workspace.id,
           question: request.question,
           choices: request.choices ? JSON.stringify(request.choices) : null,
+          recommended: recommended ?? null,
           state: "open",
           answer: null,
           created_at: host.now(),
           answered_at: null,
         };
         host.store.run(
-          `INSERT INTO attention_questions (id, agent_id, workspace_id, question, choices, state, created_at)
-           VALUES (?, ?, ?, ?, ?, 'open', ?)`,
+          `INSERT INTO attention_questions (id, agent_id, workspace_id, question, choices, recommended, state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
           row.id,
           row.agent_id,
           row.workspace_id,
           row.question,
           row.choices,
+          row.recommended,
           row.created_at,
         );
         changed();

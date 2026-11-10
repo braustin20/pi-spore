@@ -1311,6 +1311,7 @@ describe("pi-spore inbox", () => {
           workspaceId: "W1",
           question: "Which palette?",
           choices: ["Dark", "Light"],
+          recommended: 0,
           state: "open",
           createdAt: NOW - 5 * 60_000,
         },
@@ -1388,11 +1389,11 @@ describe("pi-spore inbox", () => {
     ]);
   });
 
-  it("shows a question's subject and choices", async () => {
+  it("shows a question's subject and choices, and marks the recommended one", async () => {
     const { deps, out } = serve();
     expect(await run(["inbox", "show", "question:Q1"], deps)).toBe(0);
     expect(out.join("\n")).toContain("question: Which palette?");
-    expect(out.join("\n")).toContain("choices: Dark, Light");
+    expect(out.join("\n")).toContain("choices: Dark (recommended), Light");
   });
 
   it("shows an approval's reason and subject", async () => {

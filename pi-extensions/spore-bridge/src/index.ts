@@ -125,12 +125,16 @@ export default function sporeBridge(pi: ExtensionAPI) {
             description: "Short answer options, if there are a few clear ones",
           }),
         ),
+        recommended: Type.Optional(
+          Type.Integer({ minimum: 0, description: "Index of the choice you recommend, if any" }),
+        ),
       }),
       async execute(toolCallId, params, signal) {
         const { question } = await client.call(QuestionAnswer, "questions", {
           body: {
             question: params.question,
             ...(params.choices ? { choices: params.choices } : {}),
+            ...(params.recommended !== undefined ? { recommended: params.recommended } : {}),
           },
           receipt: toolCallId,
           ...(signal ? { signal } : {}),

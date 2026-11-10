@@ -165,6 +165,19 @@ describe("spore-bridge", () => {
     expect(result.content[0]?.text).toContain("question q1");
   });
 
+  it("sends the recommended choice index in the question body", async () => {
+    reply("POST /api/bridge/questions", { status: 201, body: { question: { id: "q1" } } });
+    await fakePi()
+      .tool("request_human_input")
+      .execute("toolu_1", { question: "Which color?", choices: ["red", "blue"], recommended: 1 });
+
+    expect(seen[0]?.body).toEqual({
+      question: "Which color?",
+      choices: ["red", "blue"],
+      recommended: 1,
+    });
+  });
+
   it("runs check until it ends and returns the outcome with the log tail", async () => {
     reply("POST /api/bridge/runs", { status: 201, body: run("running") });
     reply(
