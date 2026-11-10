@@ -96,6 +96,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     it, and spore-bridge gives them their own rules.
   - Title: the first user message, cut to 60 characters, set on the first prompt. Chats from before titles take it
     from their history when first read; side chats never take it from the copied history. The user can rename.
+  - Chat bar: the tab of a working chat (busy, starting, or waiting) shows a pulsing dot that screen readers read as
+    "working", and the selected tab scrolls into view when the selection changes. The chat pane takes live statuses
+    for the tabs from `agents:list`, and keeps the server's order.
 - **Stage agents** (R6, [ADR 0140](decisions/0140-pipeline-stage-agents.md)). A pipeline runs each stage on its own
   agent: kind `stage`, with a role (`worker`, `reviewer`, or `adversarial-reviewer`), a title (`implement`,
   `Review 1`, ...; `<slice name> - implement` when the run has a name), and a fixed model. They show as chat tabs
