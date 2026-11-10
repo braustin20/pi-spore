@@ -1217,6 +1217,69 @@ describe("a new coordinator chat (ADR 0030)", () => {
     expect(launchOf(chatId)?.argv.join(" ")).toContain(COORDINATOR_TOOLS.join(","));
   });
 
+  it("moves the working label of its running lanes to the new coordinator", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "handover-label");
+    const { run, coordinator } = await createRun(server, projectId, "handover-label");
+    await laneWithWorker(server, run, coordinator);
+    const workingFor = async (agentId: string) =>
+      (
+        await json<{ agent: { workingFor?: string } }>(
+          await server.request("GET", `/api/agents/${agentId}`),
+        )
+      ).agent.workingFor;
+    await until(async () => (await workingFor(run.coordinatorAgentId)) === "Pipeline: implement");
+    await stopped(server, run.coordinatorAgentId);
+
+    const chatId = await newWorkerChat(server, run.workspaceId);
+
+    expect((await getRun(server, run.id)).coordinatorAgentId).toBe(chatId);
+    expect(await workingFor(chatId)).toBe("Pipeline: implement");
+    expect(await workingFor(run.coordinatorAgentId)).toBeUndefined();
+  });
+
+  it("keeps labelling other chats when the workspace of a lane's run was deleted", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "deleted-run-workspace");
+    const { run, coordinator } = await createRun(server, projectId, "deleted-run-workspace");
+    await laneWithWorker(server, run, coordinator);
+    // Retention deletes an archived run workspace while its lane's pipeline still runs.
+    server.store.run("DELETE FROM workspaces_workspaces WHERE id = ?", run.workspaceId);
+    const folder = join(scratch, "after-delete");
+    mkdirSync(folder);
+    const other = await json<{ project: { id: string } }>(
+      await server.request("POST", "/api/projects", { path: folder }),
+      201,
+    );
+    const { workspace } = await json<{ workspace: { id: string } }>(
+      await server.request("POST", "/api/workspaces", {
+        projectId: other.project.id,
+        name: "after-delete",
+        isolation: "in-place",
+      }),
+      201,
+    );
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+
+    await json(
+      await server.request("POST", `/api/pipelines/workspaces/${workspace.id}/runs`, {
+        pipeline: "p",
+        brief: "Build the thing",
+      }),
+      201,
+    );
+
+    await until(async () => {
+      const view = await json<{ agent: { workingFor?: string } }>(
+        await server.request("GET", `/api/agents/${agent.id}`),
+      );
+      return view.agent.workingFor === "Pipeline: implement";
+    });
+  });
+
   it("lists the diff of a passed lane", async () => {
     const server = await start();
     const { projectId } = await project(server, "handover-diff");

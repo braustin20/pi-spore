@@ -142,6 +142,8 @@ interface Live {
   children: ChildRun[];
   /** "Waiting for <model>" while the router holds the next request for a busy local model (R4.5). */
   routerStatus?: string;
+  /** What the agent waits on while idle, from `setWorkingFor`. */
+  workingFor?: string;
   /** The last payload error shown, so a broken payload that repeats every second shows one notice. */
   childrenError?: string;
   /** Waiting `/subagents-inspect-rpc` requests, by request id. */
@@ -271,9 +273,20 @@ export class AgentManager {
       status: live.status,
       ...(live.error ? { error: live.error } : {}),
       ...(runningCount(live.children) > 0 ? { helpersRunning: runningCount(live.children) } : {}),
+      ...(live.workingFor ? { workingFor: live.workingFor } : {}),
       ...(live.routerStatus ? { routerStatus: live.routerStatus } : {}),
       createdAt: record.createdAt,
     };
+  }
+
+  setWorkingFor(id: string, label: string | undefined): void {
+    const live = this.get(id);
+    if (live.workingFor === label) return;
+    if (label === undefined) delete live.workingFor;
+    else live.workingFor = label;
+    // An open chat page follows `agent:<id>`, not `agents:list`.
+    this.publish(live, { type: "agent", agent: this.view(id) });
+    this.options.onChange(id, "working");
   }
 
   /** The chats of a workspace. */

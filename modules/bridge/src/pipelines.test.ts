@@ -40,6 +40,7 @@ import type {
   ActionRun,
   Approval,
   BridgeArtifactFile,
+  Inbox,
   PipelineList,
   PipelineRun,
   PipelineTurn,
@@ -83,6 +84,7 @@ async function start(
   options: {
     home?: string;
     firstId?: number;
+    startAt?: number;
     env?: Record<string, string>;
     extraModules?: readonly ServerModule[];
     roleDefaults?: AgentsModuleOptions["roleDefaults"];
@@ -119,6 +121,7 @@ async function start(
       listen: true,
       ...(options.home ? { home: options.home } : {}),
       ...(options.firstId ? { firstId: options.firstId } : {}),
+      ...(options.startAt ? { startAt: options.startAt } : {}),
     },
   );
   servers.push({ server, agents });
@@ -2248,5 +2251,227 @@ describe("starting a run from the orchestrator chat (ADR 0162)", () => {
         run.id,
       ),
     ).toHaveLength(1);
+  });
+});
+
+describe("the run's chat while the run works", () => {
+  const GATES = `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check"]\nfail_first = "artifact"\n`;
+  const REVISE_REPORT = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
+
+  const inboxOf = async (server: TestServer) =>
+    json<Inbox>(await server.request("GET", "/api/attention/inbox"));
+  const workingFor = async (server: TestServer, agentId: string) =>
+    (
+      await json<{ agent: { workingFor?: string } }>(
+        await server.request("GET", `/api/agents/${agentId}`),
+      )
+    ).agent.workingFor;
+  const finishedFor = async (server: TestServer, agentId: string) =>
+    (await inboxOf(server)).items.some(
+      (item) => item.kind === "finished" && item.agentId === agentId,
+    );
+  const runningFor = async (server: TestServer, agentId: string) =>
+    (await inboxOf(server)).running.find((item) => item.agentId === agentId);
+
+  /** Waits for the chat's label, and says which label it last saw when the wait ends. */
+  async function untilLabel(server: TestServer, agentId: string, expected: string | undefined) {
+    let seen: string | undefined;
+    try {
+      await until(async () => {
+        seen = await workingFor(server, agentId);
+        return seen === expected;
+      }, 3_000);
+    } catch {
+      throw new Error(`Expected workingFor ${expected}, last saw ${seen}`);
+    }
+  }
+
+  async function untilFinished(server: TestServer, agentId: string) {
+    try {
+      await until(() => finishedFor(server, agentId), 3_000);
+    } catch {
+      throw new Error(`Expected a finished item for ${agentId} on Home, got none`);
+    }
+  }
+
+  /** The chat answers once and goes idle, so Home lists it as finished. */
+  async function idleChat(server: TestServer, agentId: string) {
+    await json(await server.request("POST", `/api/agents/${agentId}/prompt`, { message: "hello" }));
+    await untilFinished(server, agentId);
+  }
+
+  it("is working while the run runs, not finished on Home", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const { workspaceId, agentId } = await workspace(server, "label");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    await idleChat(server, agentId);
+
+    await startRun(server, workspaceId);
+
+    await untilLabel(server, agentId, "Pipeline: implement");
+    expect(await finishedFor(server, agentId)).toBe(false);
+    expect(await runningFor(server, agentId)).toMatchObject({
+      status: "pipeline",
+      detail: "Pipeline: implement",
+    });
+  });
+
+  it("keeps the label in a gate stage that is blocked", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId, agentId } = await workspace(server, "gatelabel", {
+      config: config({ test: "pass" }),
+    });
+    const file = join(server.paths.artifacts, "workspaces", workspaceId, "proofs/adds.md");
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(file, "FAIL: adds\n");
+    userPipeline(server.paths.root, "p", GATES);
+    await idleChat(server, agentId);
+
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    expect((await getRun(server, run.id)).state).toBe("running");
+    expect(await workingFor(server, agentId)).toBe("Pipeline: gates");
+    expect(await finishedFor(server, agentId)).toBe(false);
+  });
+
+  it("clears the label when the run passes, and the chat is finished again after it answers", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId, agentId, folder } = await workspace(server, "passlabel");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    await idleChat(server, agentId);
+
+    // The hold file keeps the worker's turn open until the test has seen the label.
+    const hold = join(folder, ".fake-pi-hold-turn");
+    writeFileSync(hold, "");
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await untilLabel(server, agentId, "Pipeline: implement");
+    rmSync(hold);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    // `chat` would open the chat, which counts as seeing it; the live events do not.
+    await until(() => said(server, agentId).some((message) => message.includes("ended passed")));
+
+    await untilLabel(server, agentId, undefined);
+    await untilFinished(server, agentId);
+  });
+
+  it("gives no label to a run that waits for the user: the approval is the Home item", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE_REPORT, REVISE_REPORT] }),
+    });
+    const { workspaceId, agentId, folder } = await workspace(server, "waitlabel");
+    userPipeline(server.paths.root, "p", withReview("rounds = 2"));
+    await idleChat(server, agentId);
+
+    const hold = join(folder, ".fake-pi-hold-turn");
+    writeFileSync(hold, "");
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await untilLabel(server, agentId, "Pipeline: implement");
+    rmSync(hold);
+    await until(async () => (await getRun(server, run.id)).state === "waiting_user");
+
+    await untilLabel(server, agentId, undefined);
+    const { items } = await inboxOf(server);
+    expect(items.some((item) => item.kind === "approval" && item.agentId === agentId)).toBe(true);
+    expect(await runningFor(server, agentId)).toBeUndefined();
+  });
+
+  it("sets the label again when the user answers the round limit with fix", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX, "hang"],
+        reviewer: [REVISE_REPORT, REVISE_REPORT],
+      }),
+    });
+    const { workspaceId, agentId } = await workspace(server, "fixlabel");
+    userPipeline(server.paths.root, "p", withReview("rounds = 2"));
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).state === "waiting_user");
+    await untilLabel(server, agentId, undefined);
+
+    const { approvals } = await json<{ approvals: Approval[] }>(
+      await server.request("GET", "/api/attention/approvals?state=open"),
+    );
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approvals[0]?.id}/approve`),
+    );
+
+    await until(async () => (await getRun(server, run.id)).state === "running");
+    await untilLabel(server, agentId, "Pipeline: review, round 2");
+  });
+
+  it("keeps labelling other chats when a running run's chat was deleted by retention", async () => {
+    const DAY = 86_400_000;
+    const START = 1_700_000_000_000;
+    const home = join(scratch, "home");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ retention: { days: 30 } }));
+    const env = scriptEnv({ worker: ["hang", "hang", "hang"] });
+    const first = await start({ home, env, startAt: START });
+    const gone = await workspace(first, "gone");
+    userPipeline(home, "p", IMPLEMENT);
+    const { runId } = await startAndWork(first, gone.workspaceId);
+    // The run goes on without its chat, which is closed and, a month later, deleted.
+    await json(await first.request("POST", `/api/agents/${gone.agentId}/close`));
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, startAt: START + 31 * DAY, firstId: 1_000 });
+    await until(
+      async () => (await second.request("GET", `/api/agents/${gone.agentId}`)).status === 404,
+    );
+    expect((await getRun(second, runId)).state).toBe("running");
+    const other = await workspace(second, "other");
+    await json(await startRun(second, other.workspaceId), 201);
+
+    await untilLabel(second, other.agentId, "Pipeline: implement");
+  });
+
+  it("keeps labelling other chats when a labelled chat was deleted with its archived workspace", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang", "hang"] }) });
+    const gone = await workspace(server, "archived");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    await startRun(server, gone.workspaceId);
+    await untilLabel(server, gone.agentId, "Pipeline: implement");
+    // The stage job would sync the labels when it settles; the next sync should be the other run's start.
+    holdJobs(server);
+    // Deleting an archived workspace drops its chats without the closed-chat hook, so the label set keeps the id.
+    await servers.at(-1)?.agents.manager().forget(gone.agentId);
+    const other = await workspace(server, "after-archived");
+
+    await json(await startRun(server, other.workspaceId), 201);
+
+    await untilLabel(server, other.agentId, "Pipeline: implement");
+  });
+
+  it("sets the label again after a restart in the middle of a stage", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({ worker: ["hang", { summary: "Done after restart" }] });
+    const first = await start({ home, env });
+    const { workspaceId, agentId } = await workspace(first, "restartlabel");
+    userPipeline(home, "p", IMPLEMENT);
+    const { runId } = await startAndWork(first, workspaceId);
+    expect(await workingFor(first, agentId)).toBe("Pipeline: implement");
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+
+    await untilLabel(second, agentId, "Pipeline: implement");
+    await until(async () => (await getRun(second, runId)).state === "passed");
+  });
+
+  it("names round 2 of a review stage", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE_REPORT, "hang"] }),
+    });
+    const { workspaceId, agentId } = await workspace(server, "roundlabel");
+    userPipeline(server.paths.root, "p", withReview("rounds = 2"));
+
+    await startRun(server, workspaceId);
+
+    await untilLabel(server, agentId, "Pipeline: review, round 2");
   });
 });

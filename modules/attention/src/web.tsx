@@ -396,6 +396,7 @@ const RUNNING_TEXT: Record<RunningItem["status"], string> = {
   starting: "Starting",
   waiting: "Waiting for a free agent slot",
   helpers: "Working (helper running)",
+  pipeline: "Working",
   idle: "Idle",
   stopped: "Stopped",
   failed: "Failed",
@@ -517,7 +518,13 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
                   >
                     {chatName(run.chat)}
                   </a>
-                  <Chip tone={run.status === "waiting" || run.detail ? "warn" : "run"}>
+                  <Chip
+                    tone={
+                      run.status === "waiting" || (run.detail && run.status !== "pipeline")
+                        ? "warn"
+                        : "run"
+                    }
+                  >
                     {run.detail ?? RUNNING_TEXT[run.status]}
                   </Chip>
                   <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted max-md:w-auto">

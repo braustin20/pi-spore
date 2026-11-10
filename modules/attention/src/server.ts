@@ -260,6 +260,8 @@ export const attentionModule: ServerModule = {
           items.push({ kind: "failed", at: since, ...base, error: agent.error ?? "Agent failed" });
         else if (agent.status === "idle" && agent.helpersRunning)
           running.push({ ...base, status: "helpers", since });
+        else if ((agent.status === "idle" || agent.status === "stopped") && agent.workingFor)
+          running.push({ ...base, status: "pipeline", detail: agent.workingFor, since });
         else if (
           waitingSince !== undefined &&
           // A pipeline stage agent reports to its pipeline, which moves on by itself (R6).

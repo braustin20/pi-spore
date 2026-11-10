@@ -90,6 +90,25 @@ describe("workspaceStatuses", () => {
     );
   });
 
+  it("shows an idle or stopped chat that works for something as working, but a wait for the user first", () => {
+    const working = { workingFor: "Pipeline: gates" };
+    expect(lines([chat("a1", "idle", working)], [])).toEqual({
+      text: "Working (Pipeline: gates)",
+      tone: "run",
+    });
+    expect(lines([chat("a1", "stopped", working)], []).text).toBe("Working (Pipeline: gates)");
+    expect(lines([chat("a1", "idle", working)], [["a1", "question"]]).text).toBe(
+      "Waiting for your answer",
+    );
+    expect(lines([chat("a1", "failed", working)], []).text).toBe("Agent failed");
+  });
+
+  it("shows a busy stage agent over a worker chat that works for something", () => {
+    const worker = chat("a1", "stopped", { workingFor: "Pipeline: gates" });
+    const stage = chat("s1", "busy", { kind: "stage", title: "Implement" });
+    expect(lines([worker, stage], []).text).toBe("Working: Implement");
+  });
+
   it("keeps a busy or failed chat's own status", () => {
     expect(lines([chat("a1", "busy")], [["a1", "dialog"]]).text).toBe("Working");
     expect(lines([chat("a1", "failed")], [["a1", "question"]]).text).toBe("Agent failed");

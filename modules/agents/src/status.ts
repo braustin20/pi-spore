@@ -48,6 +48,9 @@ export function workspaceStatus(
   if (agent.status === "idle" && agent.helpersRunning) {
     return { text: "Working (helper running)", tone: "run" };
   }
+  if ((agent.status === "idle" || agent.status === "stopped") && agent.workingFor) {
+    return { text: `Working (${agent.workingFor})`, tone: "run" };
+  }
   if (agent.status === "busy" && agent.routerStatus) {
     return { text: agent.routerStatus, tone: "warn" };
   }

@@ -270,6 +270,23 @@ describe("Home inbox", () => {
     expect((await inbox()).running).toEqual([]);
   });
 
+  it("shows an idle chat that works for a pipeline as running, and finished once that ends", async () => {
+    const { agentId } = await makeAgent("piped");
+    await json(await prompt(agentId, "one"));
+    await until(async () => (await kinds()).includes("finished piped"));
+
+    agentsApi.setWorkingFor(agentId, "Pipeline: review");
+    await until(async () => (await inbox()).running[0]?.status === "pipeline");
+    expect(await inbox()).toMatchObject({
+      items: [],
+      running: [{ agentId, status: "pipeline", detail: "Pipeline: review" }],
+    });
+
+    agentsApi.setWorkingFor(agentId, undefined);
+    await until(async () => (await kinds()).includes("finished piped"));
+    expect((await inbox()).running).toEqual([]);
+  });
+
   it("carries the router's waiting text on the running item", async () => {
     const { agentId } = await makeAgent("routed");
     await json(await prompt(agentId, "slow:60000"));
