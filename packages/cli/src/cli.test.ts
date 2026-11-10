@@ -1235,6 +1235,7 @@ describe("pi-spore usage calibration", () => {
   const report = {
     threshold: 0.7,
     heavyThreshold: 0.7,
+    explore: 0,
     minSample: 20,
     decisions: 34,
     outcomes: 30,

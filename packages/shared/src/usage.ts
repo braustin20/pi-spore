@@ -152,6 +152,8 @@ export const CalibrationResponse = Type.Object({
   threshold: Type.Number(),
   /** `router.heavyThreshold` now. */
   heavyThreshold: Type.Number(),
+  /** `router.explore` now. */
+  explore: Type.Number(),
   minSample: Type.Integer(),
   /** Router decisions with Jev answers. */
   decisions: Type.Integer(),
@@ -173,3 +175,10 @@ export const CalibrationResponse = Type.Object({
   skipped: Type.Integer(),
 });
 export type CalibrationResponse = Static<typeof CalibrationResponse>;
+
+/** Apply a suggested bar, or turn exploring off (ADR 0144). Exploring can only be turned off here. */
+export const UsageRouterRequest = Type.Object(
+  { threshold: Type.Optional(Type.Number()), explore: Type.Optional(Type.Literal(0)) },
+  { additionalProperties: false },
+);
+export type UsageRouterRequest = Static<typeof UsageRouterRequest>;

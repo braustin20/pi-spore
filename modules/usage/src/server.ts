@@ -1,4 +1,5 @@
 import { mkdirSync, watch } from "node:fs";
+import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { basename, join, sep } from "node:path";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
@@ -13,18 +14,21 @@ import {
   readPlans,
   readRecords,
   readUsageEndpoint,
+  resolveSettings,
   windowViews,
   writeReading,
 } from "@pi-spore/router";
-import type {
-  AgentRole,
-  CalibrationResponse,
-  HomeNotice,
-  RoutingDecisionsResponse,
-  TokenUseResponse,
-  TokenUseRow,
-  UsagePlansResponse,
-  UsageWarning,
+import {
+  type AgentRole,
+  type CalibrationResponse,
+  type HomeNotice,
+  parseJsonBody,
+  type RoutingDecisionsResponse,
+  type TokenUseResponse,
+  type TokenUseRow,
+  type UsagePlansResponse,
+  UsageRouterRequest,
+  type UsageWarning,
 } from "@pi-spore/shared";
 import { calibration, type Outcome } from "./calibration.js";
 import { fetchCodexUsage, readCodexLogin } from "./codex.js";
@@ -341,21 +345,65 @@ export function createUsageModule(options: UsageModuleOptions = {}): ServerModul
       });
 
       host.routes.get("/calibration", async (c) => {
-        const { threshold, heavyThreshold } = await settings();
+        const { threshold, heavyThreshold, explore } = await settings();
         const { records, skipped } = await readRecords(host.home.root, Number.POSITIVE_INFINITY);
         const outcomes = host.store
           .all<OutcomeRow>(
             "SELECT agent_id, verdict, ended_at FROM usage_outcomes WHERE verdict IS NOT NULL",
           )
           .map((row) => ({ agentId: row.agent_id, verdict: row.verdict, endedAt: row.ended_at }));
-        const body: CalibrationResponse = calibration(
-          records,
-          outcomes,
-          threshold,
-          heavyThreshold,
-          skipped,
-        );
+        const body: CalibrationResponse = {
+          ...calibration(records, outcomes, threshold, heavyThreshold, skipped),
+          explore,
+        };
         return c.json(body);
+      });
+
+      // Edits only the two keys it was asked about. `resolveSettings` is the one check of the new file (ADR 0144).
+      // The whole read, check, and write runs one request at a time, so the temp file name is safe and no change is lost.
+      let patching: Promise<unknown> = Promise.resolve();
+      const patchRouter = async (request: UsageRouterRequest) => {
+        const path = join(host.home.root, "settings.json");
+        const bad = (message: string) => new ApiError(422, "bad_settings", message);
+        const isObject = (value: unknown): value is Record<string, unknown> =>
+          typeof value === "object" && value !== null && !Array.isArray(value);
+        const text = await readFile(path, "utf8").catch((error: NodeJS.ErrnoException) => {
+          if (error.code === "ENOENT") return "{}";
+          throw error;
+        });
+        let file: unknown;
+        try {
+          file = JSON.parse(text);
+        } catch {
+          throw bad(`${path} is not valid JSON`);
+        }
+        // Spreading a null, array, or number would turn a bad file into a valid one.
+        if (!isObject(file)) throw bad(`${path} must hold a JSON object`);
+        if (file.router !== undefined && !isObject(file.router)) {
+          throw bad(`"router" in ${path} must be a JSON object`);
+        }
+        const router = { ...file.router };
+        if (request.threshold !== undefined) router.threshold = request.threshold;
+        if (request.explore === 0) delete router.explore;
+        const next = { ...file, router };
+        let resolved: ReturnType<typeof resolveSettings>;
+        try {
+          resolved = resolveSettings(next, path);
+        } catch (error) {
+          throw bad((error as Error).message);
+        }
+        await mkdir(host.home.root, { recursive: true });
+        const temp = `${path}.${process.pid}.tmp`;
+        await writeFile(temp, `${JSON.stringify(next, null, 2)}\n`);
+        await rename(temp, path);
+        return { threshold: resolved.threshold, explore: resolved.explore };
+      };
+
+      host.routes.patch("/router", async (c) => {
+        const request = parseJsonBody(UsageRouterRequest, await c.req.text(), "router request");
+        const result = patching.then(() => patchRouter(request));
+        patching = result.catch(() => undefined);
+        return c.json(await result);
       });
     },
   };
