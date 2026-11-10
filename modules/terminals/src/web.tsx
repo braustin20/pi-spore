@@ -464,7 +464,7 @@ function TerminalsTab({ workspace }: { workspace: Workspace }) {
         <div
           role="tablist"
           aria-label="Terminals"
-          className="flex min-w-0 flex-1 gap-1 overflow-x-auto"
+          className="relative flex min-w-0 flex-1 gap-1 overflow-x-auto"
         >
           {terminals.map((terminal) => (
             <div
