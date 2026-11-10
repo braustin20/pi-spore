@@ -171,7 +171,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     The run's end arrives later as a message (section 8). `start_pipeline`, `start_lane`, and `revise_lane` read a
     brief artifact, so they are registered with `executionMode: "sequential"`. Pi then runs every tool call of that
     assistant message one by one, in order, so an `artifacts_write` of the brief earlier in the same message is done
-    first. The rules also say to call them in a later message than the write.
+    first. The rules also say to call them in the next step after the write's result, in the same turn, and never
+    to end a turn to wait for the user without `request_human_input`.
   - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
     `terminate: true` through `POST /api/bridge/reports` (open to read-only reviewers). Reviewers give a verdict
     (`approve`, `revise`) and findings (`blocking`, `important`, `minor`); the worker lists each new test with the

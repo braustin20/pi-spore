@@ -1087,14 +1087,26 @@ describe("spore-bridge run tools", () => {
     expect(coordinator.tool("revise_lane").executionMode).toBe("sequential");
   });
 
-  it("tells the orchestrator and coordinator to call a brief tool in a later message than the write", () => {
+  // "A later message" read as the user's next message, so the chat ended its turn after each brief and waited.
+  it("tells the orchestrator and coordinator to call a brief tool in the next step of the same turn", () => {
     const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
     expect(oneLine(RULES)).toContain(
-      "wait for its result. Then call start_pipeline with its path in a later message, never in the same one.",
+      "wait for its result. Then call start_pipeline with its path in your next step, after that result, in the same turn. Do not end your turn between them. The plan's yes covers it.",
     );
     expect(oneLine(COORDINATOR_RULES)).toContain(
-      "wait for its result. Then call start_lane or revise_lane in a later message, never in the same one.",
+      "wait for its result. Then call start_lane or revise_lane in your next step, after that result, in the same turn. Do not end your turn between them.",
     );
+    expect(oneLine(RULES)).not.toContain("later message");
+    expect(oneLine(COORDINATOR_RULES)).not.toContain("later message");
+  });
+
+  // A plain-text stop puts nothing on Home, so the user does not know the chat waits.
+  it("tells the orchestrator and coordinator to wait for the user only through request_human_input", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    const rule =
+      "Never end a turn to wait for the user without request_human_input. A turn that ends with plain text puts nothing on Home.";
+    expect(oneLine(RULES)).toContain(rule);
+    expect(oneLine(COORDINATOR_RULES)).toContain(rule);
   });
 
   it("gives the orchestrator start_pipeline and the rules that use it", () => {
