@@ -678,10 +678,11 @@ See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-qu
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
 
-- **Start.** `POST /api/runs` `{ projectId, name, base?, gates? }` needs a provider with `integrate` (else 422
+- **Start.** `POST /api/runs` `{ projectId, name, base?, gates?, settings? }` needs a provider with `integrate` (else 422
   `not_supported`). `base` defaults to the main copy's current line; `gates` to `check` and `test`. It creates
   `run/<slug>-<last 6 of the run id>` at the base, the **run workspace** on it (isolation `existing`, with the base
-  stored, so its PR tab targets the base), and its orchestrator chat. That chat is the coordinator.
+  stored, so its PR tab targets the base), and its orchestrator chat. That chat is the coordinator. `settings` is
+  the run's settings override (section 13); the run workspace and every lane workspace get it, with source `run`.
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
   kanban_list_cards,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,open_run_pr,run_status`: no write or shell
@@ -1475,7 +1476,7 @@ API under `/api/kanban`:
   4. `<project>/.pi-spore/config.local.toml` (local override, gitignored);
   5. run or workspace override in the store.
 - Every resolved value carries its source. The UI shows it. Sources are `default`, `global`, `project file`,
-  `local override`, and `detected`. "Detected" values (Unity traits, editor version) come
+  `local override`, `detected`, `workspace`, and `run`. "Detected" values (Unity traits, editor version) come
   from modules.
 - The project file is checked on load and must not contain model keys. Model choices live in Pi settings, global
   settings, or local overrides.
@@ -1502,7 +1503,19 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   projects module reserves `router` and `tiers` (the router extension reads them, section 10), the actions module
   reserves `actions`. Reserved sections skip the unknown-key check. `host.settings.configFiles(projectPath)` and
   `checkSection(schema, value, what)` give the owner the parsed file and the same 422 error.
-- The resolve order is a list of layers, so a run or workspace override can be added after the local override.
+- The run or workspace override is the last layer (ADR 0166): `resolve({ projectPath, detected, override })`, with
+  `override = { source: "workspace" | "run", values }`. `values` is a nested table like the files. It sets only
+  declared `project` keys, never a reserved section, and never a model key (R17.3). A bad one answers 422
+  `bad_override`, naming the key and "workspace override" or "run override".
+- A workspace gets its override when it is made: `POST /api/workspaces` takes `settings`, and the workspaces module
+  stores it in `workspaces_workspaces` (`settings`, `settings_source`). It is checked before the copy is made, so
+  the branch prefix and copy list use it. `POST /api/runs` takes `settings` too. The runs module stores it in
+  `runs_runs.settings` and passes it to the run workspace and every lane workspace, with source `run`. A bad one
+  answers before the run line exists. Nothing changes an override later, because nothing reads project settings
+  after a workspace is made.
+- `GET /api/workspaces/:id/settings` lists every declared key for that workspace with its source. The Settings page
+  shows it under "Workspace settings" for the workspace picked there. The CLI sets an override with repeated
+  `--set <key>=<value>` on `ws new` and `run start`; a value that parses as JSON is JSON, else a string.
 
 Declared keys (`GET /api/projects/settings` lists them all with their source, plus the router keys of section 10;
 the Settings page, `#/settings`, shows that list):
@@ -1545,7 +1558,6 @@ Not built yet:
 - Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
 - A nesting limit for agents (R3.6).
 - A desktop notification setting (R15.2). The browser's permission is the only switch today.
-- The run or workspace override (R17.2 step 5): no store table holds one.
 
 `config.toml` sketch:
 
