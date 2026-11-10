@@ -338,6 +338,47 @@ function NumberCells({ row }: { row: Omit<RoleSum, "label"> }) {
   );
 }
 
+const PAGE_SIZE = 10;
+
+function Pager({
+  page,
+  last,
+  total,
+  setPage,
+}: {
+  page: number;
+  last: number;
+  total: number;
+  setPage: (page: number) => void;
+}) {
+  if (total <= PAGE_SIZE) return null;
+  return (
+    <div className="mt-2 flex items-center gap-2 text-xs text-muted">
+      <span>
+        Rows {page * PAGE_SIZE + 1} to {Math.min(total, (page + 1) * PAGE_SIZE)} of {total}
+      </span>
+      <Button disabled={page === 0} onClick={() => setPage(page - 1)}>
+        Previous
+      </Button>
+      <Button disabled={page >= last} onClick={() => setPage(page + 1)}>
+        Next
+      </Button>
+    </div>
+  );
+}
+
+/** Pages rows in the browser. New data can leave the page empty, so a page past the end shows the last page. */
+function usePage<T>(rows: readonly T[]) {
+  const [page, setPage] = useState(0);
+  const last = Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1);
+  const shown = Math.min(page, last);
+  return {
+    rows: rows.slice(shown * PAGE_SIZE, (shown + 1) * PAGE_SIZE),
+    pager: <Pager page={shown} last={last} total={rows.length} setPage={setPage} />,
+    reset: () => setPage(0),
+  };
+}
+
 const NUMBER_HEADS = ["Requests", "Input", "Output", "Cache read", "Cost"];
 
 /** Token use per workspace, role, and model, or per role and model; filtered by role (R18.2, R18.3). */
@@ -346,14 +387,56 @@ function TokenPanel({ tokens }: { tokens: TokenUseResponse }) {
   const [role, setRole] = useState("all");
   const roles = [...new Set(tokens.rows.map(roleLabel))].sort();
   const rows = tokens.rows.filter((row) => role === "all" || roleLabel(row) === role);
+  // The rows of the current view are built first, so one hook pages either view.
+  const trs =
+    groupBy === "role"
+      ? sumByRole(rows).map((sum) => (
+          <tr key={`${sum.label}/${sum.provider}/${sum.model}`}>
+            <TableCell>{sum.label}</TableCell>
+            {modelCells(sum)}
+            <NumberCells row={sum} />
+          </tr>
+        ))
+      : rows.map((row, index) => (
+          <tr
+            // Plain sessions of two folders can share a project name, so the position is part of the key.
+            // biome-ignore lint/suspicious/noArrayIndexKey: the rows are rebuilt as a whole
+            key={`${index}/${row.workspaceId ?? row.projectId ?? row.projectName}/${row.role}/${row.provider}/${row.model}`}
+          >
+            <TableCell>{row.projectName}</TableCell>
+            <TableCell>
+              {row.workspaceId ? (
+                <a href={`#/workspaces/${row.workspaceId}`}>{row.workspaceName}</a>
+              ) : (
+                <span className="text-muted">{row.workspaceName}</span>
+              )}
+            </TableCell>
+            <TableCell>{roleLabel(row)}</TableCell>
+            {modelCells(row)}
+            <NumberCells row={row} />
+          </tr>
+        ));
+  const paged = usePage(trs);
   return (
     <Panel>
       <PanelHeader title="Token use by workspace, role, and model">
-        <Select value={groupBy} onChange={(e) => setGroupBy(e.target.value as typeof groupBy)}>
+        <Select
+          value={groupBy}
+          onChange={(e) => {
+            setGroupBy(e.target.value as typeof groupBy);
+            paged.reset();
+          }}
+        >
           <option value="workspace">By workspace</option>
           <option value="role">By role</option>
         </Select>
-        <Select value={role} onChange={(e) => setRole(e.target.value)}>
+        <Select
+          value={role}
+          onChange={(e) => {
+            setRole(e.target.value);
+            paged.reset();
+          }}
+        >
           <option value="all">All roles</option>
           {roles.map((name) => (
             <option key={name} value={name}>
@@ -367,60 +450,116 @@ function TokenPanel({ tokens }: { tokens: TokenUseResponse }) {
           Token use appears after an agent in a workspace answers, or after a plain pi session.
         </EmptyState>
       ) : (
-        <Table>
-          <thead>
-            <tr>
-              {groupBy === "workspace" ? (
-                <>
-                  <TableHead>Project</TableHead>
-                  <TableHead>Workspace</TableHead>
-                </>
-              ) : null}
-              <TableHead>Role</TableHead>
-              <TableHead>Model</TableHead>
-              {NUMBER_HEADS.map((name) => (
-                <TableHead key={name} className="text-right">
-                  {name}
-                </TableHead>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {groupBy === "role"
-              ? sumByRole(rows).map((sum) => (
-                  <tr key={`${sum.label}/${sum.provider}/${sum.model}`}>
-                    <TableCell>{sum.label}</TableCell>
-                    {modelCells(sum)}
-                    <NumberCells row={sum} />
-                  </tr>
-                ))
-              : rows.map((row, index) => (
-                  <tr
-                    // Plain sessions of two folders can share a project name, so the position is part of the key.
-                    // biome-ignore lint/suspicious/noArrayIndexKey: the rows are rebuilt as a whole
-                    key={`${index}/${row.workspaceId ?? row.projectId ?? row.projectName}/${row.role}/${row.provider}/${row.model}`}
-                  >
-                    <TableCell>{row.projectName}</TableCell>
-                    <TableCell>
-                      {row.workspaceId ? (
-                        <a href={`#/workspaces/${row.workspaceId}`}>{row.workspaceName}</a>
-                      ) : (
-                        <span className="text-muted">{row.workspaceName}</span>
-                      )}
-                    </TableCell>
-                    <TableCell>{roleLabel(row)}</TableCell>
-                    {modelCells(row)}
-                    <NumberCells row={row} />
-                  </tr>
+        <>
+          <Table>
+            <thead>
+              <tr>
+                {groupBy === "workspace" ? (
+                  <>
+                    <TableHead>Project</TableHead>
+                    <TableHead>Workspace</TableHead>
+                  </>
+                ) : null}
+                <TableHead>Role</TableHead>
+                <TableHead>Model</TableHead>
+                {NUMBER_HEADS.map((name) => (
+                  <TableHead key={name} className="text-right">
+                    {name}
+                  </TableHead>
                 ))}
-          </tbody>
-        </Table>
+              </tr>
+            </thead>
+            <tbody>{paged.rows}</tbody>
+          </Table>
+          {paged.pager}
+        </>
       )}
       <p className="mt-2 mb-0 text-xs text-muted">
         From {tokens.sessions} session files: pi-spore's own, and plain pi sessions outside pi-spore
         (they have no workspace or role). Subscription models show their catalog price, which is $0
         through claude-bridge.
       </p>
+    </Panel>
+  );
+}
+
+function RoutingPanel({
+  routing,
+  loadedAt,
+}: {
+  routing: RoutingDecisionsResponse;
+  loadedAt: number;
+}) {
+  const paged = usePage(routing.decisions);
+  return (
+    <Panel>
+      <PanelHeader title="Routing decisions (spore/auto)" />
+      {routing.decisions.length === 0 ? (
+        <p className="m-0 text-sm text-muted">
+          No decisions yet. Pick the model spore/auto for an agent to use the router.
+        </p>
+      ) : (
+        <>
+          <Table>
+            <thead>
+              <tr>
+                <TableHead>When</TableHead>
+                <TableHead>Rung</TableHead>
+                <TableHead>Route</TableHead>
+                <TableHead>Model</TableHead>
+                <TableHead>Why</TableHead>
+              </tr>
+            </thead>
+            <tbody>
+              {paged.rows.map((decision) => (
+                <tr key={`${decision.at}-${decision.sessionId ?? ""}-${decision.kind}`}>
+                  <TableCell className="whitespace-nowrap text-xs text-muted">
+                    {formatAge(loadedAt - decision.at)}
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {decision.rung === undefined ? "–" : `rung ${decision.rung}`}
+                  </TableCell>
+                  <TableCell>
+                    <Chip
+                      tone={
+                        decision.route === "local"
+                          ? "ok"
+                          : decision.route === "wait" || decision.kind === "error"
+                            ? "fail"
+                            : "neutral"
+                      }
+                    >
+                      {decision.kind === "initial"
+                        ? placeOf(decision)
+                        : `${placeOf(decision)} (${decision.kind})`}
+                    </Chip>
+                  </TableCell>
+                  <TableCell className="font-mono text-xs">
+                    {decision.model ?? "none"}
+                    {decision.thinking && ` (${decision.thinking})`}
+                  </TableCell>
+                  <TableCell className="text-xs">
+                    {decision.reasons.join("; ")}
+                    {decision.estimate !== undefined && (
+                      <span className="text-muted">
+                        {" "}
+                        (estimate {formatTokens(decision.estimate)}
+                        {decision.budget !== undefined && ` of ${formatTokens(decision.budget)}`})
+                      </span>
+                    )}
+                  </TableCell>
+                </tr>
+              ))}
+            </tbody>
+          </Table>
+          {paged.pager}
+        </>
+      )}
+      {routing.skipped > 0 && (
+        <p className="mt-2 mb-0 text-xs text-muted">
+          {routing.skipped} lines of the decision file did not parse.
+        </p>
+      )}
     </Panel>
   );
 }
@@ -509,74 +648,7 @@ function UsagePage() {
 
           <TokenPanel tokens={data.tokens} />
 
-          <Panel>
-            <PanelHeader title="Routing decisions (spore/auto)" />
-            {data.routing.decisions.length === 0 ? (
-              <p className="m-0 text-sm text-muted">
-                No decisions yet. Pick the model spore/auto for an agent to use the router.
-              </p>
-            ) : (
-              <Table>
-                <thead>
-                  <tr>
-                    <TableHead>When</TableHead>
-                    <TableHead>Rung</TableHead>
-                    <TableHead>Route</TableHead>
-                    <TableHead>Model</TableHead>
-                    <TableHead>Why</TableHead>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.routing.decisions.map((decision) => (
-                    <tr key={`${decision.at}-${decision.sessionId ?? ""}-${decision.kind}`}>
-                      <TableCell className="whitespace-nowrap text-xs text-muted">
-                        {formatAge(data.loadedAt - decision.at)}
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {decision.rung === undefined ? "–" : `rung ${decision.rung}`}
-                      </TableCell>
-                      <TableCell>
-                        <Chip
-                          tone={
-                            decision.route === "local"
-                              ? "ok"
-                              : decision.route === "wait" || decision.kind === "error"
-                                ? "fail"
-                                : "neutral"
-                          }
-                        >
-                          {decision.kind === "initial"
-                            ? placeOf(decision)
-                            : `${placeOf(decision)} (${decision.kind})`}
-                        </Chip>
-                      </TableCell>
-                      <TableCell className="font-mono text-xs">
-                        {decision.model ?? "none"}
-                        {decision.thinking && ` (${decision.thinking})`}
-                      </TableCell>
-                      <TableCell className="text-xs">
-                        {decision.reasons.join("; ")}
-                        {decision.estimate !== undefined && (
-                          <span className="text-muted">
-                            {" "}
-                            (estimate {formatTokens(decision.estimate)}
-                            {decision.budget !== undefined &&
-                              ` of ${formatTokens(decision.budget)}`}
-                            )
-                          </span>
-                        )}
-                      </TableCell>
-                    </tr>
-                  ))}
-                </tbody>
-              </Table>
-            )}
-            {data.routing.skipped > 0 && (
-              <p className="mt-2 mb-0 text-xs text-muted">
-                {data.routing.skipped} lines of the decision file did not parse.
-              </p>
-            )}
-          </Panel>
+          <RoutingPanel routing={data.routing} loadedAt={data.loadedAt} />
 
           <CalibrationPanel calibration={data.calibration} reload={load} onError={setError} />
         </>
