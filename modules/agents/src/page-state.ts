@@ -103,14 +103,17 @@ export function reducePage(state: PageState, raw: unknown): PageState {
       return { ...state, dialogs: state.dialogs.filter((open) => open.id !== event.dialogId) };
     case "notice": {
       const level = String(event.level);
+      const message = String(event.message);
       // The id comes from the last notice before any are dropped, so it never repeats.
       const id = (state.notices.at(-1)?.id ?? 0) + 1;
       // Info notices (the per-reply TPS line) are stale at once: a new one replaces the old ones.
-      const kept =
-        level === "info" ? state.notices.filter((n) => n.level !== "info") : state.notices;
+      // Any other notice replaces an exact repeat, so a warning sent per request shows once.
+      const kept = state.notices.filter((n) =>
+        level === "info" ? n.level !== "info" : n.level !== level || n.message !== message,
+      );
       return {
         ...state,
-        notices: [...kept, { id, level, message: String(event.message) }].slice(-MAX_NOTICES),
+        notices: [...kept, { id, level, message }].slice(-MAX_NOTICES),
       };
     }
     default:
