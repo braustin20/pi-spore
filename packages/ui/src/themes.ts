@@ -1,4 +1,5 @@
 import { useSyncExternalStore } from "react";
+import { sporeLogoSvg } from "./components/spore-logo.js";
 
 export interface Theme {
   /** The `data-theme` value of the theme's block in themes.css. */
@@ -55,11 +56,21 @@ function show(id: string): void {
 
 /** Applies the stored theme. Call once before the first render, so the page does not flash the default. */
 export function initTheme(): void {
+  subscribe(showFavicon);
   show(readTheme(localStorage));
   // Another tab changed the theme.
   window.addEventListener("storage", (event) => {
     if (event.key === THEME_STORAGE_KEY) show(readTheme(localStorage));
   });
+}
+
+/** Redraws the favicon in the theme's accent, so the tab matches the page. */
+function showFavicon(): void {
+  const link = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+  if (!link) throw new Error('pi-spore: the page has no <link rel="icon"> for the favicon');
+  const accent = getComputedStyle(document.documentElement).getPropertyValue("--accent").trim();
+  if (!accent) throw new Error("pi-spore: the theme sets no --accent for the favicon");
+  link.href = `data:image/svg+xml,${encodeURIComponent(sporeLogoSvg(accent))}`;
 }
 
 function subscribe(listener: () => void): () => void {
