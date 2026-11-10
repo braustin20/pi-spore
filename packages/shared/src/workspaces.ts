@@ -1,4 +1,5 @@
 import Type, { type Static } from "typebox";
+import { SettingsOverrideValues } from "./projects.js";
 
 /**
  * How a workspace is separated from the project's main copy. Neutral words, so non-Git providers fit (ADR 0005):
@@ -51,8 +52,8 @@ export const CreateWorkspaceRequest = Type.Object(
     line: Type.Optional(Type.String({ minLength: 1 })),
     /** For `new`: the line to start from. Default: the main copy's current line. For `existing`: recorded as the base. */
     base: Type.Optional(Type.String({ minLength: 1 })),
-    /** A nested table like the settings files; only project keys; checked by the resolver (R17.2). */
-    settings: Type.Optional(Type.Record(Type.String(), Type.Unknown())),
+    /** The settings override of this workspace (R17.2). */
+    settings: Type.Optional(SettingsOverrideValues),
   },
   { additionalProperties: false },
 );

@@ -106,6 +106,7 @@ const MIGRATIONS = [
   )`,
   "ALTER TABLE runs_runs ADD COLUMN state TEXT NOT NULL DEFAULT 'running'",
   "ALTER TABLE runs_runs ADD COLUMN pr_approval_id TEXT",
+  "ALTER TABLE runs_runs ADD COLUMN settings TEXT",
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -119,6 +120,7 @@ interface RunRow {
   state: RunState;
   coordinator_agent_id: string;
   pr_approval_id: string | null;
+  settings: string | null;
   created_at: number;
 }
 
@@ -429,23 +431,31 @@ export const runsModule: ServerModule = {
           `${project.name} has no current line to start the run from; give "base"`,
         );
       }
+      // Check the override before the run line exists, so a bad one leaves no branch behind.
+      if (request.settings) {
+        await projects.config(project, { source: "run", values: request.settings });
+      }
       const id = host.newId();
       const line = `run/${slugify(request.name)}-${id.slice(-6).toLowerCase()}`;
       await integrate.createLine(project, line, base);
-      const { workspace } = await workspaces.create({
-        projectId: project.id,
-        name: request.name,
-        isolation: "existing",
-        line,
-        base,
-      });
+      const { workspace } = await workspaces.create(
+        {
+          projectId: project.id,
+          name: request.name,
+          isolation: "existing",
+          line,
+          base,
+          ...(request.settings ? { settings: request.settings } : {}),
+        },
+        { overrideSource: "run" },
+      );
       const coordinator = await agents.activeWorker(
         workspace.id,
         model === undefined ? {} : { model },
       );
       host.store.run(
-        `INSERT INTO runs_runs (id, project_id, workspace_id, line, base, gates, coordinator_agent_id, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO runs_runs (id, project_id, workspace_id, line, base, gates, coordinator_agent_id, settings, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         id,
         project.id,
         workspace.id,
@@ -453,6 +463,7 @@ export const runsModule: ServerModule = {
         base,
         JSON.stringify(request.gates ?? DEFAULT_GATES),
         coordinator.id,
+        request.settings ? JSON.stringify(request.settings) : null,
         host.now(),
       );
       publish();
@@ -776,12 +787,16 @@ export const runsModule: ServerModule = {
       if (lane?.state !== "waiting") return { next: null };
       if (waitsFor(lane)) return { wait: true };
       const run = requireRun(lane.run_id);
-      const { workspace } = await workspaces.create({
-        projectId: run.project_id,
-        name: lane.name,
-        isolation: "new",
-        base: run.line,
-      });
+      const { workspace } = await workspaces.create(
+        {
+          projectId: run.project_id,
+          name: lane.name,
+          isolation: "new",
+          base: run.line,
+          ...(run.settings ? { settings: JSON.parse(run.settings) } : {}),
+        },
+        { overrideSource: "run" },
+      );
       return {
         commit: () =>
           host.store.run(

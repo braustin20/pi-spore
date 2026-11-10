@@ -1,5 +1,6 @@
 import Type, { type Static } from "typebox";
 import { ModelRef } from "./agents.js";
+import { SettingsOverrideValues } from "./projects.js";
 
 /** Where a lane is (R7.1, ADR 0007). `approval`: its model waits for the user. `waiting`: its wave has not come. */
 export const LaneState = Type.Union([
@@ -125,6 +126,8 @@ export const CreateRunRequest = Type.Object(
     base: Type.Optional(Type.String({ minLength: 1 })),
     /** Default: `check` and `test`. */
     gates: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
+    /** The settings override of the run workspace and every lane workspace (R17.2). */
+    settings: Type.Optional(SettingsOverrideValues),
   },
   { additionalProperties: false },
 );

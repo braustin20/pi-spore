@@ -63,6 +63,9 @@ export type SettingEntry = Static<typeof SettingEntry>;
 export const SettingsView = Type.Object({ settings: Type.Array(SettingEntry) });
 export type SettingsView = Static<typeof SettingsView>;
 
+/** A nested table like the settings files; only project keys; checked by the resolver (R17.2). */
+export const SettingsOverrideValues = Type.Record(Type.String(), Type.Unknown());
+
 export const ProjectLines = Type.Object({
   lines: Type.Array(Type.String()),
   current: Type.Optional(Type.String()),

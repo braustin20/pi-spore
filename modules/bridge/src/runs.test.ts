@@ -308,6 +308,60 @@ describe("creating a run", () => {
     expect(listed.runs.map((entry) => entry.id)).toEqual([run.id]);
   });
 
+  it("gives its settings override to the run workspace and every lane workspace (R17.2)", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "override");
+    const created = await json<{ run: Run }>(
+      await server.request("POST", "/api/runs", {
+        projectId,
+        name: "Over",
+        settings: { worktree: { branch_prefix: "lane" } },
+      }),
+      201,
+    );
+    const run = created.run;
+    const coordinator: BridgeCaller = {
+      agentId: run.coordinatorAgentId,
+      workspaceId: run.workspaceId,
+    };
+    const prefixOf = async (workspaceId: string) =>
+      (
+        await json<{ settings: { key: string; value: unknown; source: string }[] }>(
+          await server.request("GET", `/api/workspaces/${workspaceId}/settings`),
+          200,
+        )
+      ).settings.find((entry) => entry.key === "worktree.branch_prefix");
+
+    expect(await prefixOf(run.workspaceId)).toMatchObject({ value: "lane", source: "run" });
+    const lane = await startLane(run, coordinator, "feature");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const started = await laneOf(server, run.id, lane.id);
+    expect((await workspaceOf(server, started.workspaceId as string)).line).toMatch(/^lane\//);
+    expect(await prefixOf(started.workspaceId as string)).toMatchObject({
+      value: "lane",
+      source: "run",
+    });
+  });
+
+  it("answers 422 bad_override for a bad settings override and makes no run", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "bad-override");
+
+    const response = await server.request("POST", "/api/runs", {
+      projectId,
+      name: "Bad",
+      settings: { retention: { days: 1 } },
+    });
+
+    expect(response.status).toBe(422);
+    expect(await response.json()).toMatchObject({ error: { code: "bad_override" } });
+    const listed = await json<{ runs: Run[] }>(
+      await server.request("GET", `/api/runs?projectId=${projectId}`),
+    );
+    expect(listed.runs).toEqual([]);
+    expect(git(folder, "branch", "--list", "run/*")).toBe("");
+  });
+
   it("answers 422 not_supported for a project without a provider that integrates", async () => {
     const server = await start();
     const folder = join(scratch, "plain");
