@@ -149,7 +149,10 @@ export function App({ pages }: { pages: readonly WebPage[] }) {
   return (
     <TooltipProvider delayDuration={300}>
       <div className="flex h-full flex-col">
-        <header className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-panel pr-2 pl-4 max-md:h-12 max-md:gap-1 max-md:pl-1">
+        <header
+          data-hide-while-typing
+          className="flex h-11 shrink-0 items-center gap-3 border-b border-line bg-panel pr-2 pl-4 max-md:h-12 max-md:gap-1 max-md:pl-1"
+        >
           {/* Phones: the Home link in the row below takes the logo's place, so all links fit. */}
           <a
             href="#/"
