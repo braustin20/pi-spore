@@ -180,6 +180,26 @@ describe("spore-bridge", () => {
     });
   });
 
+  it("sends the steps of a multi-step question, and no question of its own", async () => {
+    reply("POST /api/bridge/questions", { status: 201, body: { question: { id: "q1" } } });
+    const steps = [
+      {
+        type: "select",
+        prompt: "Which palette?",
+        options: [
+          { label: "Dark", description: "Easier on the eyes", preview: "```css\n--bg: #111;\n```" },
+          { label: "Light" },
+        ],
+        recommended: 0,
+        allowOther: true,
+      },
+      { type: "confirm", prompt: "Ship it today?", recommended: true },
+    ];
+    await fakePi().tool("request_human_input").execute("toolu_1", { steps });
+
+    expect(seen[0]?.body).toEqual({ steps });
+  });
+
   it("runs check until it ends and returns the outcome with the log tail", async () => {
     reply("POST /api/bridge/runs", { status: 201, body: run("running") });
     reply(
@@ -499,6 +519,10 @@ describe("spore-bridge", () => {
     expect(RULES).toContain("Name the pipeline of each slice in the plan");
     expect(RULES).toContain("Pass it as `pipeline` to start_pipeline");
     expect(RULES).not.toContain("unless the plan names another");
+  });
+
+  it("tells the orchestrator to ask related decisions in one call with steps", () => {
+    expect(RULES).toContain("Ask related decisions in one request_human_input call with steps");
   });
 
   it("gives a side chat the side chat rules", async () => {

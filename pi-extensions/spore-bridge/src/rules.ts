@@ -59,6 +59,8 @@ pi-spore rules
 - The user is often away from the chat. Ask them with request_human_input and stop; the answer comes back as a new
   message, possibly after a restart.
 - When you recommend a choice, set \`recommended\` to its index.
+- Ask related decisions in one request_human_input call with steps. Put each option's details in its description,
+  and a code example or a text diagram in its preview. Keep the prompt short.
 - Do the work in this workspace's folder. Do not create other worktrees or start agents in other terminals.
 - Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
   with \`stop_action\`.
