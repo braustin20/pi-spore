@@ -22,6 +22,7 @@ import {
   type Project,
   ProjectList,
   parse,
+  type StartCardRequest,
   StartCardResponse,
   type Workspace,
   WorkspaceList,
@@ -53,6 +54,7 @@ import {
   ArrowUp,
   Bot,
   Lock,
+  Play,
   Plus,
   SquareKanban,
   Trash2,
@@ -64,6 +66,7 @@ import {
   type SubmitEvent,
   useCallback,
   useEffect,
+  useRef,
   useState,
   useSyncExternalStore,
 } from "react";
@@ -176,6 +179,65 @@ const STEPS: { step: Step; label: string; Icon: ComponentType<{ className?: stri
   { step: "right", label: "Move to the next column", Icon: ArrowRight },
 ];
 
+/**
+ * Starts work from the card in one click (R11.4, ADR 0100): a new workspace on the project's default branch, with the
+ * card's model.
+ */
+function StartButton({
+  card,
+  projectId,
+  onError,
+  onStarted,
+}: {
+  card: Card;
+  projectId: string;
+  onError: (error: string | undefined) => void;
+  /** Reloads the board's workspaces, so the open card shows the new workspace and the notes. */
+  onStarted: () => void;
+}) {
+  const api = useApi();
+  const [busy, setBusy] = useState(false);
+  // A ref, not the state: a second click can come before the state's render.
+  const running = useRef(false);
+  const { confirm, dialog } = useConfirm();
+  const start = async () => {
+    if (running.current) return;
+    if (!(await confirmBlocked(card, confirm))) return;
+    running.current = true;
+    setBusy(true);
+    onError(undefined);
+    try {
+      const created = await startInNewWorkspace(api, card, {
+        projectId,
+        isolation: "new",
+        confirmBlocked: card.blocked,
+      });
+      onStarted();
+      afterStart(card.id, created);
+    } catch (caught) {
+      onError(message(caught));
+      running.current = false;
+      setBusy(false);
+    }
+  };
+  return (
+    <>
+      {dialog}
+      <Tooltip label="Start in a new workspace" side="bottom">
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Start: ${card.title}`}
+          disabled={busy}
+          onClick={() => void start()}
+        >
+          <Play />
+        </Button>
+      </Tooltip>
+    </>
+  );
+}
+
 function CardTile({
   card,
   project,
@@ -183,6 +245,7 @@ function CardTile({
   today,
   columns,
   onMove,
+  onStarted,
   onDragStart,
   onDropBefore,
 }: {
@@ -192,11 +255,13 @@ function CardTile({
   today: string;
   columns: Record<CardColumn, Card[]>;
   onMove: (card: Card, to: { column: CardColumn; index?: number }) => void;
+  onStarted: () => void;
   onDragStart: (card: Card) => void;
   onDropBefore: (event: DragEvent, target: Card) => void;
 }) {
   const late = dueState(card, today) === "overdue";
   const open = card.blockedBy.filter((blocker) => blocker.open);
+  const [startError, setStartError] = useState<string | undefined>();
   return (
     <li
       draggable
@@ -264,7 +329,18 @@ function CardTile({
             </Tooltip>
           );
         })}
+        {card.projectId !== undefined &&
+          card.workspaceId === undefined &&
+          card.column !== "done" && (
+            <StartButton
+              card={card}
+              projectId={card.projectId}
+              onError={setStartError}
+              onStarted={onStarted}
+            />
+          )}
       </div>
+      {startError && <Notice tone="fail">{startError}</Notice>}
     </li>
   );
 }
@@ -277,6 +353,7 @@ function ColumnView({
   selectedId,
   today,
   onMove,
+  onStarted,
 }: {
   column: CardColumn;
   cards: Card[];
@@ -285,6 +362,7 @@ function ColumnView({
   selectedId: string | undefined;
   today: string;
   onMove: (card: Card, to: { column: CardColumn; index?: number }) => void;
+  onStarted: () => void;
 }) {
   const [over, setOver] = useState(false);
   const dropped = (event: DragEvent, target: Card | undefined) => {
@@ -323,6 +401,7 @@ function ColumnView({
             today={today}
             columns={columns}
             onMove={onMove}
+            onStarted={onStarted}
             onDragStart={() => {}}
             onDropBefore={dropped}
           />
@@ -523,6 +602,48 @@ async function confirmBlocked(card: Card, confirm: Confirm): Promise<boolean> {
   });
 }
 
+/** The new-workspace form of `StartCardRequest`. Fields left empty or false are not sent. */
+type NewWorkspaceStart = Extract<StartCardRequest, { isolation: unknown }>;
+
+async function startInNewWorkspace(
+  api: ApiClient,
+  card: Card,
+  request: { [K in keyof NewWorkspaceStart]: NewWorkspaceStart[K] | undefined },
+): Promise<CreateWorkspaceResponse> {
+  const body = await api.send("POST", `kanban/cards/${card.id}/start`, {
+    projectId: request.projectId,
+    isolation: request.isolation,
+    ...(request.line ? { line: request.line } : {}),
+    ...(request.base ? { base: request.base } : {}),
+    ...(request.model ? { model: request.model } : {}),
+    ...(request.confirmBlocked ? { confirmBlocked: true } : {}),
+  });
+  const { created } = parse(StartCardResponse, body, "start card");
+  if (!created) throw new Error("The server started the card without a new workspace");
+  return created;
+}
+
+/**
+ * Warnings and failed steps of the last start in a new workspace, by card id. Kept outside the components, so they
+ * outlive the start form, which goes away once the card has a workspace.
+ */
+const startNotes = new Map<string, string[]>();
+
+/** Opens the new workspace, or the card when the start left warnings to read. */
+function afterStart(cardId: string, result: CreateWorkspaceResponse) {
+  const found = [
+    ...result.warnings,
+    ...result.steps.filter((step) => !step.ok).map((step) => step.message),
+  ];
+  if (found.length === 0) {
+    startNotes.delete(cardId);
+    window.location.hash = `#/workspaces/${result.workspace.id}`;
+    return;
+  }
+  startNotes.set(cardId, found);
+  window.location.hash = `#/board/${cardId}`;
+}
+
 /** Active workspaces work from this card may start in: those of its project, or any without one. */
 const startTargets = (card: Card, workspaces: readonly Workspace[]) =>
   workspaces.filter(
@@ -552,8 +673,6 @@ function StartWork({
   const api = useApi();
   const [mode, setMode] = useState<"new" | "existing" | "run" | undefined>();
   const [confirmed, setConfirmed] = useState(false);
-  const [notes, setNotes] = useState<string[]>([]);
-  const [started, setStarted] = useState<string | undefined>();
   const targets = startTargets(card, workspaces);
   const [workspaceId, setWorkspaceId] = useState("");
   const [model, setModel] = useState("");
@@ -563,20 +682,6 @@ function StartWork({
   const [error, setError] = useState<string | undefined>();
   const { confirm, dialog } = useConfirm();
 
-  if (started) {
-    return (
-      <div className="flex flex-col gap-2">
-        {notes.map((note) => (
-          <Notice key={note} tone="warn">
-            {note}
-          </Notice>
-        ))}
-        <Button size="sm" asChild>
-          <a href={`#/workspaces/${started}`}>Open the workspace</a>
-        </Button>
-      </div>
-    );
-  }
   if (!mode) {
     const choose = async (next: "new" | "existing" | "run") => {
       if (!(await confirmBlocked(card, confirm))) return;
@@ -718,31 +823,18 @@ function StartWork({
       </form>
     );
   }
-  const submit: CreateWorkspaceFormProps["submit"] = async (request) => {
-    const body = await api.send("POST", `kanban/cards/${card.id}/start`, {
+  const submit: CreateWorkspaceFormProps["submit"] = (request) =>
+    startInNewWorkspace(api, card, {
       projectId: request.projectId,
       isolation: request.isolation,
-      ...(request.line ? { line: request.line } : {}),
-      ...(request.base ? { base: request.base } : {}),
-      ...(model ? { model } : {}),
-      ...(confirmed ? { confirmBlocked: true } : {}),
+      line: request.line,
+      base: request.base,
+      model,
+      confirmBlocked: confirmed,
     });
-    const { created } = parse(StartCardResponse, body, "start card");
-    if (!created) throw new Error("The server started the card without a new workspace");
-    return created;
-  };
   const created = (result: CreateWorkspaceResponse) => {
-    const found = [
-      ...result.warnings,
-      ...result.steps.filter((step) => !step.ok).map((step) => step.message),
-    ];
     onDone();
-    if (found.length === 0) {
-      window.location.hash = `#/workspaces/${result.workspace.id}`;
-      return;
-    }
-    setNotes(found);
-    setStarted(result.workspace.id);
+    afterStart(card.id, result);
   };
   return (
     <div className="flex flex-col gap-2">
@@ -1030,6 +1122,11 @@ function CardEditor({
       </form>
       {card && (
         <CollapsibleSection title="Work">
+          {startNotes.get(card.id)?.map((note) => (
+            <Notice key={note} tone="warn" className="mb-2">
+              {note}
+            </Notice>
+          ))}
           {hasOpenWorkspace ? (
             <p className="m-0 text-sm">
               Workspace <a href={`#/workspaces/${workspace.id}`}>{workspace.name}</a> (
@@ -1192,6 +1289,7 @@ function BoardPage({ params }: { params: Readonly<Record<string, string>> }) {
                   selectedId={selectedId}
                   today={today}
                   onMove={move}
+                  onStarted={reload}
                 />
               ))}
             </div>
