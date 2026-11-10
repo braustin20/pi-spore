@@ -161,9 +161,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     reviewers, not at the final gates. The orchestrator rules say to start
     every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120),
     and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162).
-  - `start_pipeline` `{ brief, pipeline? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
+  - `start_pipeline` `{ brief, pipeline?, name? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
     posts `POST /api/bridge/pipelines` with the tool call id as receipt and ends the turn with `terminate: true`.
-    The run's end arrives later as a message (section 8).
+    The run's end arrives later as a message (section 8). `start_pipeline`, `start_lane`, and `revise_lane` read a
+    brief artifact, so they are registered with `executionMode: "sequential"`. Pi then runs every tool call of that
+    assistant message one by one, in order, so an `artifacts_write` of the brief earlier in the same message is done
+    first. The rules also say to call them in a later message than the write.
   - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
     `terminate: true` through `POST /api/bridge/reports` (open to read-only reviewers). Reviewers give a verdict
     (`approve`, `revise`) and findings (`blocking`, `important`, `minor`); the worker lists each new test with the
@@ -549,11 +552,13 @@ fail_first = "artifact"
   built (R6.1); it comes from the role default.
 - `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
   never falls back to the built-in one.
-- **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }`
+- **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }`
   stores the file's SHA-256, its parsed stages (an edit never changes a running run), the brief, and the asking chat
   (the active orchestrator chat). One run per workspace is `running` or `waiting_user` (409 `pipeline_running`).
-  States: `running`, `waiting_user`, `passed`, `failed`, `stopped`.
-- **From the orchestrator** (ADR 0162). The bridge route `POST /api/bridge/pipelines` `{ brief, pipeline? }` reads
+  States: `running`, `waiting_user`, `passed`, `failed`, `stopped`. `name` (1 to 80 characters, column `name`) is
+  the slice's label only; the run returns it when set. The orchestrator passes the slice's name from its plan; a lane
+  run gets the lane's name.
+- **From the orchestrator** (ADR 0162). The bridge route `POST /api/bridge/pipelines` `{ brief, pipeline?, name? }` reads
   `brief` as an artifact path of the caller's workspace (404 `brief_not_found`) and calls `PipelinesKey.start` with
   `pipeline` (default `default`) and the caller as the asking chat. Side chats are refused (403 `read_only_chat`).
   The tool call id is its Idempotency-Key, so a replayed call starts no second run.
@@ -652,16 +657,17 @@ fail_first = "artifact"
 | Route | Does |
 |---|---|
 | `GET /api/pipelines/workspaces/:id` | `{ pipelines }` |
-| `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief }` | Starts a run (201). |
+| `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }` | Starts a run (201). |
 | `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
 | `GET /api/pipelines/runs/:id` | `{ run }` |
 | `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed gets a fresh agent. |
 | `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
 
 - Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.
-- Web: a Pipeline tab (after PR) with a start form when no run is active, and the runs, newest first. Only the
-  newest run is open; an older run shows its header and step bar until clicked. A run shows a header line (state,
-  elapsed time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage), the notices
+- Web: a Pipeline tab (after PR) with a start form (pipeline, optional name, brief) when no run is active, and the
+  runs, newest first. Only the newest run is open; an older run shows its header and step bar until clicked. A run
+  shows a header line (the name, then the pipeline id as a chip, or the pipeline id alone; source, state, elapsed
+  time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage), the notices
   (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
   and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
   block, ANSI codes removed. A fix row belongs to the worker stage. Each row is one line (kind and
@@ -670,8 +676,9 @@ fail_first = "artifact"
   at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its
   open findings.
 - CLI: `pi-spore pipeline list <workspace>`, `pipeline start <workspace> <pipeline> (--brief <text> | --brief-file
-  <path>)`, `pipeline runs <workspace>`, `pipeline show <run>`, `pipeline cancel <run>`, `pipeline retry <run>`.
-- Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, askingAgentId?, workerModel? })` does what
+  <path>) [--name <text>]`, `pipeline runs <workspace>`, `pipeline show <run>` (both print the name when set),
+  `pipeline cancel <run>`, `pipeline retry <run>`.
+- Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, name?, askingAgentId?, workerModel? })` does what
   the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`), so
   that run never asks about the local implementer.
   `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
@@ -1057,7 +1064,8 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification. Items already there when the page loads do not. Phone
   browsers show notifications only from a service worker, which pi-spore does not have, so the button hides on
-  phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on.
+  phones (ADR 0159). A notification that fails to show logs one warning and the inbox goes on. The browser's
+  permission is the only switch; pi-spore has no notification setting (ADR 0167).
 - Toasts (R15.2): while the page has focus, each new item shows an in-page toast instead (`showToast` and
   `Toaster` in `packages/ui`, mounted once in `App.tsx`). One item gives a toast or a notification, never both;
   `notifyItem` in the attention web module makes that choice. Toasts show only on desktop screens
@@ -1549,6 +1557,7 @@ the Settings page, `#/settings`, shows that list):
 | `worktree.branch_prefix` | project | string, default `spore` | Prefix of the branches pi-spore creates. |
 | `agents.maxLive` | global | whole number, 1 or more, default 8 | Live agent processes at once (ADR 0026). |
 | `agents.idleStopMinutes` | global | whole number, 1 or more, default 10 | Idle minutes before an agent stops (ADR 0026). |
+| `agents.maxSubagentDepth` | global | whole number, 0 or more, default 2 | How deep pi-subagents helpers may nest. Passed to each agent as `PI_SUBAGENT_MAX_DEPTH` (ADR 0168). |
 | `agents.maxImageBytes` | global | whole number, 1 or more, default 10 MiB | Largest image in a message (ADR 0060). |
 | `agents.maxImagesPerMessage` | global | whole number, 1 or more, default 8 | Images in one message (ADR 0060). |
 | `server.allowedHosts` | global | array of host names, default none | Tailnet hosts that `tailscale serve` forwards from (ADR 0143). |
@@ -1578,8 +1587,6 @@ The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale
 Not built yet:
 
 - Router keys in the Settings page. The router extension reads and checks its own `router` and `tiers` sections.
-- A nesting limit for agents (R3.6).
-- A desktop notification setting (R15.2). The browser's permission is the only switch today.
 
 `config.toml` sketch:
 

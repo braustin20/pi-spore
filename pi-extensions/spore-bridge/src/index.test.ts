@@ -79,6 +79,8 @@ const reply = (key: string, ...answers: Reply[]) => replies.set(key, answers);
 
 interface Tool {
   name: string;
+  parameters?: { properties?: Record<string, unknown> };
+  executionMode?: "sequential" | "parallel";
   execute(
     id: string,
     params: unknown,
@@ -491,6 +493,7 @@ describe("spore-bridge", () => {
 
   it("has the orchestrator pick light or default per slice and name it in the plan", () => {
     expect(RULES).toContain("Pick a pipeline for each slice.");
+    expect(RULES).toContain("as `name`");
     expect(RULES).toContain("Use `light` for a small, clear slice");
     expect(RULES).toContain("Use `default` for a new feature");
     expect(RULES).toContain("Name the pipeline of each slice in the plan");
@@ -1036,6 +1039,27 @@ describe("spore-bridge run tools", () => {
     expect(LANE_RULES).toContain("never the user");
   });
 
+  // Pi runs a whole message's tool calls one by one, in order, when one of them is sequential. So a brief
+  // written by artifacts_write in the same message exists before the brief tool reads it.
+  it("registers the tools that read a brief as sequential", () => {
+    expect(fakePi().tool("start_pipeline").executionMode).toBe("sequential");
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
+    const coordinator = fakePi();
+    expect(coordinator.tool("start_lane").executionMode).toBe("sequential");
+    expect(coordinator.tool("revise_lane").executionMode).toBe("sequential");
+  });
+
+  it("tells the orchestrator and coordinator to call a brief tool in a later message than the write", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    expect(oneLine(RULES)).toContain(
+      "wait for its result. Then call start_pipeline with its path in a later message, never in the same one.",
+    );
+    expect(oneLine(COORDINATOR_RULES)).toContain(
+      "wait for its result. Then call start_lane or revise_lane in a later message, never in the same one.",
+    );
+  });
+
   it("gives the orchestrator start_pipeline and the rules that use it", () => {
     expect(fakePi().tools.has("start_pipeline")).toBe(true);
     expect(RULES).toContain("start_pipeline");
@@ -1061,14 +1085,17 @@ describe("spore-bridge run tools", () => {
     });
     const pi = fakePi();
 
+    expect(pi.tool("start_pipeline").parameters?.properties).toHaveProperty("name");
     const first = await pi.tool("start_pipeline").execute("t1", { brief: "briefs/a.md" });
     await pi.tool("start_pipeline").execute("t1", { brief: "briefs/a.md" });
     await pi.tool("start_pipeline").execute("t2", { brief: "briefs/a.md", pipeline: "p" });
+    await pi.tool("start_pipeline").execute("t3", { brief: "briefs/a.md", name: "push_line tool" });
 
     expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
       ["/api/bridge/pipelines", "t1", { brief: "briefs/a.md" }],
       ["/api/bridge/pipelines", "t1", { brief: "briefs/a.md" }],
       ["/api/bridge/pipelines", "t2", { brief: "briefs/a.md", pipeline: "p" }],
+      ["/api/bridge/pipelines", "t3", { brief: "briefs/a.md", name: "push_line tool" }],
     ]);
     expect(first.content[0]?.text).toContain("Pipeline run pr1");
     expect(first.content[0]?.text).toContain("do not poll");

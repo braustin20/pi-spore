@@ -103,6 +103,8 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN fix_base TEXT",
   // The last blocked error told to the run's chat. A new error sends one message; the same error never sends twice.
   "ALTER TABLE pipelines_runs ADD COLUMN blocked_sent TEXT",
+  // The slice's name, a label only: lets the user tell which run built which slice.
+  "ALTER TABLE pipelines_runs ADD COLUMN name TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -147,6 +149,7 @@ interface RunRow {
   previous_run_id: string | null;
   fix_base: string | null;
   blocked_sent: string | null;
+  name: string | null;
   created_at: number;
   ended_at: number | null;
 }
@@ -237,6 +240,7 @@ const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): Pi
   id: row.id,
   workspaceId: row.workspace_id,
   pipelineId: row.pipeline_id,
+  ...(row.name === null ? {} : { name: row.name }),
   source: row.source,
   ...(row.path === null ? {} : { path: row.path }),
   hash: row.hash,
@@ -1406,8 +1410,8 @@ export const pipelinesModule: ServerModule = {
         const id = host.newId();
         host.store.run(
           `INSERT INTO pipelines_runs (id, workspace_id, pipeline_id, source, path, hash, stages, brief,
-             asking_agent_id, worker_model, previous_run_id, fix_base, state, stage_index, tests, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, '[]', ?)`,
+             asking_agent_id, worker_model, previous_run_id, fix_base, name, state, stage_index, tests, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'running', 0, '[]', ?)`,
           id,
           workspace.id,
           entry.id,
@@ -1420,6 +1424,7 @@ export const pipelinesModule: ServerModule = {
           request.workerModel ?? null,
           request.previousRunId ?? null,
           fixBase,
+          request.name ?? null,
           host.now(),
         );
         host.jobs.start(STAGE_JOB, { runId: id, stageIndex: 0 }, { key: workspace.id });

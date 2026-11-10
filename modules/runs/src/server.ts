@@ -831,6 +831,7 @@ export const runsModule: ServerModule = {
       try {
         const started = await pipelines.start(lane.workspace_id as string, {
           brief,
+          name: lane.name,
           askingAgentId: run.coordinator_agent_id,
           ...(reuse
             ? { pipeline: REVISE_PIPELINE, previousRunId: lane.pipeline_run_id as string }
