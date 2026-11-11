@@ -211,3 +211,73 @@
     border-top: 1px solid var(--line);
   }
 }
+
+/* The working spore logo (SporeLogo `working`): the whole mark turns as one piece, then the core squashes and
+   each spore pops at its own tip. Spores never leave their arms. Origins are in viewBox units, so every group uses
+   the view box; each circle's origin is set inline. */
+@layer components {
+  .spore-logo-all,
+  .spore-logo-core,
+  .spore-logo-spore {
+    transform-box: view-box;
+  }
+  .spore-logo-all {
+    transform-origin: 516px 575px;
+  }
+  /* Popping spores reach past the view box. */
+  .spore-logo-working {
+    overflow: visible;
+  }
+  .spore-logo-working .spore-logo-all {
+    animation: spore-logo-turn 2s infinite;
+  }
+  .spore-logo-working .spore-logo-core {
+    animation: spore-logo-squash 2s infinite;
+  }
+  .spore-logo-working .spore-logo-spore {
+    animation: spore-logo-pop 2s infinite;
+    animation-delay: calc(var(--i) * 60ms);
+  }
+  @keyframes spore-logo-turn {
+    0% {
+      transform: rotate(0);
+      animation-timing-function: cubic-bezier(0.55, -0.3, 0.3, 1.35);
+    }
+    55%,
+    100% {
+      transform: rotate(360deg);
+    }
+  }
+  @keyframes spore-logo-squash {
+    0%,
+    50%,
+    100% {
+      transform: scale(1);
+    }
+    58% {
+      transform: scale(1.12);
+    }
+    66% {
+      transform: scale(0.95);
+    }
+    74% {
+      transform: scale(1);
+    }
+  }
+  @keyframes spore-logo-pop {
+    0%,
+    50%,
+    100% {
+      transform: scale(1);
+    }
+    58% {
+      transform: scale(1.35);
+    }
+    66% {
+      transform: scale(0.9);
+    }
+    74% {
+      transform: scale(1);
+    }
+  }
+}
