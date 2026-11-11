@@ -845,7 +845,8 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   3. Pick the rung. Rung 3 if the good answer of visual, design, or foundational is below `router.heavyThreshold`,
      the estimate is above `router.large`, or the classifier failed. Else rung 1 if bounded, explicit, and
      straightforward reach `router.threshold` (`router.pressureThreshold` under usage pressure). Else rung 2.
-     Explore (ADR 0144): when "straightforward" is the only rung-1 blocker, the session is a pipeline worker stage
+     Explore (ADR 0144, 0173): when the only failed answer is "straightforward" or "visual" (not both), the
+     estimate is not above `router.large`, the session is a pipeline worker stage
      (`PI_SPORE_STAGE_ROLE=worker`, so a stronger reviewer checks it), the local target can take the task, and a
      random draw is below `router.explore`, the task goes local anyway. The record has `explore: true`. Workspace
      slices reach it too, because the orchestrator sends them through the pipeline (ADR 0162).

@@ -20,7 +20,10 @@ export interface DecideInput {
   jev?: JevAnswers | { error: string };
   /** Usage state by plan name. */
   plans: Readonly<Record<string, PlanState>>;
-  /** The `router.explore` draw came up: send the task local if "straightforward" is its only blocker (ADR 0144). */
+  /**
+   * The `router.explore` draw came up: send the task local when its only blocker is "straightforward" or "visual"
+   * (ADR 0144, 0173).
+   */
   explore?: boolean;
 }
 
@@ -86,33 +89,39 @@ export function ladderChoice(
 const probability = (question: Question, answers: JevAnswers, bar: number): string =>
   `${question}: ${GOOD[question]} ${answers[question].toFixed(2)} < ${bar}`;
 
-/** The rung the task needs, why, and the cheap questions it failed. */
+/**
+ * The rung the task needs, why, every question it failed, heavy ones first, and whether the estimate is over
+ * `router.large`. The failed questions and the size are what explore weighs (ADR 0144, 0173).
+ */
 function rungFor(
   input: DecideInput,
   threshold: number,
-): { rung: Rung; why: string[]; cheapFailed: Question[] } {
+): { rung: Rung; why: string[]; failed: Question[]; large: boolean } {
   const { settings, jev, estimate } = input;
-  if (!jev) return { rung: 3, why: ["classifier not asked"], cheapFailed: [] };
-  if ("error" in jev) return { rung: 3, why: [jev.error], cheapFailed: [] };
-  const heavy = HEAVY_QUESTIONS.filter((question) => jev[question] < settings.heavyThreshold).map(
-    (question) => probability(question, jev, settings.heavyThreshold),
-  );
-  if (estimate > settings.large) {
-    heavy.push(`estimate ${estimate} tokens is over router.large ${settings.large}`);
-  }
-  if (heavy.length > 0) return { rung: 3, why: heavy, cheapFailed: [] };
+  const large = estimate > settings.large;
+  if (!jev) return { rung: 3, why: ["classifier not asked"], failed: [], large };
+  if ("error" in jev) return { rung: 3, why: [jev.error], failed: [], large };
+  const heavyFailed = HEAVY_QUESTIONS.filter((question) => jev[question] < settings.heavyThreshold);
   const cheapFailed = CHEAP_QUESTIONS.filter((question) => jev[question] < threshold);
+  const failed = [...heavyFailed, ...cheapFailed];
+  if (heavyFailed.length > 0 || large) {
+    const why = heavyFailed.map((question) => probability(question, jev, settings.heavyThreshold));
+    if (large) why.push(`estimate ${estimate} tokens is over router.large ${settings.large}`);
+    return { rung: 3, why, failed, large };
+  }
   if (cheapFailed.length === 0) {
     return {
       rung: 1,
       why: [`${CHEAP_QUESTIONS.join(", ")} reach ${threshold}`],
-      cheapFailed,
+      failed,
+      large,
     };
   }
   return {
     rung: 2,
     why: cheapFailed.map((question) => probability(question, jev, threshold)),
-    cheapFailed,
+    failed,
+    large,
   };
 }
 
@@ -142,8 +151,9 @@ export function decide(input: DecideInput): Decision {
   const picked = rungFor(input, threshold);
   const explore =
     input.explore === true &&
-    picked.cheapFailed.length === 1 &&
-    picked.cheapFailed[0] === "straightforward" &&
+    picked.failed.length === 1 &&
+    (picked.failed[0] === "straightforward" || picked.failed[0] === "visual") &&
+    !picked.large &&
     localBlock(input) === undefined;
   const rung: Rung = explore ? 1 : picked.rung;
   const rungReasons = picked.why.map((why) => `rung ${rung}: ${why}`);
