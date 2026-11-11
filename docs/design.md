@@ -163,7 +163,7 @@ In `@pi-spore/ui` (`packages/ui/src/components`):
 | `Table`, `TableHead`, `TableCell` | dense tables |
 | `Page`, `PageHeader` | a full page inside the shell |
 | `ImageViewer` | a full-size image over a dimmed page (Radix Dialog); Escape or the close button closes it |
-| `SporeLogo` | the pi-spore logo in the text color; `sporeLogoSvg(color)` gives it as a standalone SVG |
+| `SporeLogo` | the pi-spore logo in the text color; `working` turns it and pops its spores; `sporeLogoSvg(color)` gives it as a standalone SVG |
 | `Spinner`, `Tooltip`, `ThemeMenu` | |
 
 The PR header card lives in the `github-pr` module.
@@ -173,3 +173,10 @@ The PR header card lives in the `github-pr` module.
 - Every focusable element shows a 2 px `--accent-strong` outline on keyboard focus.
 - Icon-only buttons and rail links have an `aria-label` and a tooltip.
 - `prefers-reduced-motion` stops animations and transitions.
+
+### Loading indicator
+
+The chat's "agent is working" line shows `SporeLogo working` at `size-4`. The mark turns once, then the core squashes
+and each spore pops at its tip, every 2 s. The CSS is the `spore-logo-*` rules in `packages/ui/src/styles.css`. With
+`prefers-reduced-motion: reduce`, `useReducedMotion` drops the `spore-logo-working` class, so the logo stands still.
+Tool call rows keep `Spinner`.
