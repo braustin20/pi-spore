@@ -32,6 +32,7 @@ const workspace: Workspace = {
   name: "Fix crafting",
   slug: "w1",
   isolation: "new",
+  planner: false,
   path: "/tmp/w1",
   line: "spore/w1",
   state: "active",

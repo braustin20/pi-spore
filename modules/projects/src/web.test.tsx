@@ -15,6 +15,7 @@ const workspace = (id: string, name: string): Workspace => ({
   name,
   slug: id,
   isolation: "new",
+  planner: false,
   path: `/w/${id}`,
   state: "active",
   createdAt: 0,

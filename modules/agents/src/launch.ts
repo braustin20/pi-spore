@@ -31,6 +31,17 @@ export const SIDE_CHAT_TOOLS: readonly string[] = [
 ];
 
 /**
+ * The tools of a planner chat (ADR 0174): the side chat's tools, plus the kanban tools to write the plan as cards and
+ * the web tools to research it. Built like `SIDE_CHAT_TOOLS`, so nothing that edits files or runs commands loads.
+ */
+export const PLANNER_CHAT_TOOLS: readonly string[] = [
+  "--tools",
+  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content",
+  "--exclude-tools",
+  "mcp__*",
+];
+
+/**
  * The tools of a read-only pipeline stage agent (R6): the side chat's tools, plus spore-bridge's `report`, the one tool
  * that ends its turn, and `ask_coordinator`, which spore-bridge registers only inside a run lane.
  */

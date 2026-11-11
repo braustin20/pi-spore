@@ -52,8 +52,15 @@ export const StageRole = Type.Union([
 ]);
 export type StageRole = Static<typeof StageRole>;
 
-/** `orchestrator`: a workspace chat. The others are the stage roles of a pipeline's agents. */
-export const AgentRole = Type.Union([Type.Literal("orchestrator"), StageRole]);
+/**
+ * `orchestrator`: a workspace chat. `planner`: a chat of a project's planner workspace, read-only (ADR 0174). The
+ * others are the stage roles of a pipeline's agents.
+ */
+export const AgentRole = Type.Union([
+  Type.Literal("orchestrator"),
+  Type.Literal("planner"),
+  StageRole,
+]);
 export type AgentRole = Static<typeof AgentRole>;
 
 /**

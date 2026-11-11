@@ -59,6 +59,11 @@ export interface Workspaces {
     request: CreateWorkspaceRequest,
     options?: { overrideSource?: "run" },
   ): Promise<CreateWorkspaceResponse>;
+  /**
+   * The project's planner workspace, as `POST /api/workspaces/planner` gives it: found, or made in place on the first
+   * call (ADR 0174). Throws ApiError as `create` does.
+   */
+  planner(projectId: string): Promise<Workspace>;
   beforeLeaveActive(listener: LeaveListener): void;
   afterCopyCreated(listener: CopyCreatedListener): void;
   beforeRemoveCopy(listener: RemoveCopyListener): void;

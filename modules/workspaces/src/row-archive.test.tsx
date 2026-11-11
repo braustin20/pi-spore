@@ -15,6 +15,7 @@ const workspace = (id: string, state: Workspace["state"]): Workspace => ({
   name: `Work ${id}`,
   slug: id,
   isolation: "new",
+  planner: false,
   path: `/tmp/${id}`,
   line: `spore/${id}`,
   state,

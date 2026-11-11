@@ -9,6 +9,7 @@ const workspace = (id: string, state: Workspace["state"], updatedAt: number, pro
     name: id,
     slug: id,
     isolation: "new",
+    planner: false,
     path: `/tmp/${id}`,
     state,
     createdAt: 0,

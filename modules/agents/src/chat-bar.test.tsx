@@ -133,6 +133,7 @@ describe("the chat pane's tabs", () => {
     name: "Work",
     slug: "work",
     isolation: "new",
+    planner: false,
     path: "/tmp/work",
     state: "active",
     createdAt: 0,

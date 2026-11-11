@@ -8,6 +8,7 @@ import {
   CreateWorkspaceRequest,
   type CreateWorkspaceResponse,
   type Isolation,
+  PlannerWorkspaceRequest,
   parseJsonBody,
   RenameWorkspaceRequest,
   type SettingsView,
@@ -50,6 +51,9 @@ const MIGRATIONS = [
   "UPDATE workspaces_workspaces SET archived_at = updated_at WHERE state = 'archived'",
   "ALTER TABLE workspaces_workspaces ADD COLUMN settings TEXT",
   "ALTER TABLE workspaces_workspaces ADD COLUMN settings_source TEXT",
+  "ALTER TABLE workspaces_workspaces ADD COLUMN planner INTEGER NOT NULL DEFAULT 0",
+  // ADR 0174: one planner workspace per project at most.
+  "CREATE UNIQUE INDEX workspaces_one_planner ON workspaces_workspaces (project_id) WHERE planner = 1",
 ];
 
 const DAY_MS = 86_400_000;
@@ -70,6 +74,7 @@ interface Row {
   /** JSON of the settings override, checked by the resolver at creation. */
   settings: string | null;
   settings_source: "workspace" | "run" | null;
+  planner: number;
 }
 
 const overrideOf = (row: Row): SettingsOverride | undefined =>
@@ -87,6 +92,7 @@ const toWorkspace = (row: Row): Workspace => ({
   ...(row.line === null ? {} : { line: row.line }),
   ...(row.base === null ? {} : { base: row.base }),
   state: row.state,
+  planner: row.planner === 1,
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -101,7 +107,7 @@ export const workspacesModule: ServerModule = {
 
     projects.addRemovalGuard((project) => {
       const open = host.store.get<{ n: number }>(
-        "SELECT COUNT(*) AS n FROM workspaces_workspaces WHERE project_id = ? AND state != 'archived'",
+        "SELECT COUNT(*) AS n FROM workspaces_workspaces WHERE project_id = ? AND state != 'archived' AND planner = 0",
         project.id,
       );
       if (open && open.n > 0) {
@@ -116,6 +122,15 @@ export const workspacesModule: ServerModule = {
     const load = (id: string): Row => {
       const row = host.store.get<Row>("SELECT * FROM workspaces_workspaces WHERE id = ?", id);
       if (!row) throw new ApiError(404, "workspace_not_found", `No workspace ${id}`);
+      return row;
+    };
+
+    /** A planner workspace lives as long as its project; the user does not rename, park, or archive it (ADR 0174). */
+    const loadChangeable = (id: string): Row => {
+      const row = load(id);
+      if (row.planner === 1) {
+        throw new ApiError(409, "planner_workspace", "The planner workspace cannot be changed");
+      }
       return row;
     };
 
@@ -142,7 +157,7 @@ export const workspacesModule: ServerModule = {
 
     const create = async (
       request: CreateWorkspaceRequest,
-      options: { overrideSource?: "run" } = {},
+      options: { overrideSource?: "run"; planner?: boolean } = {},
     ): Promise<CreateWorkspaceResponse> => {
       const project = await projects.get(request.projectId);
       const provider = projects.vcsFor(project);
@@ -223,12 +238,13 @@ export const workspacesModule: ServerModule = {
         archived_at: null,
         settings: request.settings ? JSON.stringify(request.settings) : null,
         settings_source: request.settings ? source : null,
+        planner: options.planner ? 1 : 0,
       };
       host.store.run(
         `INSERT INTO workspaces_workspaces
           (id, project_id, name, slug, isolation, path, line, base, state, created_at, updated_at,
-           settings, settings_source)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           settings, settings_source, planner)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         row.id,
         row.project_id,
         row.name,
@@ -242,6 +258,7 @@ export const workspacesModule: ServerModule = {
         row.updated_at,
         row.settings,
         row.settings_source,
+        row.planner,
       );
       const workspace = toWorkspace(row);
       publish(workspace);
@@ -262,6 +279,25 @@ export const workspacesModule: ServerModule = {
       return { workspace, copied, warnings, steps };
     };
 
+    /** Calls for one project share one creation, so two at once do not both insert. */
+    const plannerCreations = new Map<string, Promise<Workspace>>();
+    const planner = async (projectId: string): Promise<Workspace> => {
+      // A removed project's planner row stays behind; it must not be handed out again.
+      await projects.get(projectId);
+      const row = host.store.get<Row>(
+        "SELECT * FROM workspaces_workspaces WHERE project_id = ? AND planner = 1",
+        projectId,
+      );
+      if (row) return toWorkspace(row);
+      const running = plannerCreations.get(projectId);
+      if (running) return running;
+      const pending = create({ projectId, name: "Plan", isolation: "in-place" }, { planner: true })
+        .then((response) => response.workspace)
+        .finally(() => plannerCreations.delete(projectId));
+      plannerCreations.set(projectId, pending);
+      return pending;
+    };
+
     const leaveListeners: LeaveListener[] = [];
     const createdListeners: CopyCreatedListener[] = [];
     const removeListeners: RemoveCopyListener[] = [];
@@ -273,6 +309,7 @@ export const workspacesModule: ServerModule = {
       get: (id) => toWorkspace(load(id)),
       list: (filter = {}) => listRows(filter).map(toWorkspace),
       create,
+      planner,
       beforeLeaveActive: (listener) => {
         leaveListeners.push(listener);
       },
@@ -399,6 +436,15 @@ export const workspacesModule: ServerModule = {
       return c.json(await create(request), 201);
     });
 
+    host.routes.post("/planner", async (c) => {
+      const request = parseJsonBody(
+        PlannerWorkspaceRequest,
+        await c.req.text(),
+        "planner workspace request",
+      );
+      return c.json({ workspace: await planner(request.projectId) });
+    });
+
     host.routes.get("/:id", (c) => c.json({ workspace: toWorkspace(load(c.req.param("id"))) }));
 
     host.routes.get("/:id/settings", async (c) => {
@@ -410,7 +456,7 @@ export const workspacesModule: ServerModule = {
 
     host.routes.patch("/:id", async (c) => {
       const request = parseJsonBody(RenameWorkspaceRequest, await c.req.text(), "rename request");
-      const row = load(c.req.param("id"));
+      const row = loadChangeable(c.req.param("id"));
       const now = host.now();
       host.store.run(
         "UPDATE workspaces_workspaces SET name = ?, updated_at = ? WHERE id = ?",
@@ -424,7 +470,7 @@ export const workspacesModule: ServerModule = {
     });
 
     host.routes.post("/:id/park", async (c) => {
-      const row = load(c.req.param("id"));
+      const row = loadChangeable(c.req.param("id"));
       if (row.state !== "active")
         throw new ApiError(409, "bad_state", `Workspace is ${row.state}, not active`);
       await leaveActive(row, "parked");
@@ -432,7 +478,7 @@ export const workspacesModule: ServerModule = {
     });
 
     host.routes.post("/:id/resume", (c) => {
-      const row = load(c.req.param("id"));
+      const row = loadChangeable(c.req.param("id"));
       if (row.state !== "parked")
         throw new ApiError(409, "bad_state", `Workspace is ${row.state}, not parked`);
       const workspace = setState(row, "active");
@@ -442,7 +488,7 @@ export const workspacesModule: ServerModule = {
 
     host.routes.post("/:id/archive", async (c) => {
       const request = parseJsonBody(ArchiveWorkspaceRequest, await c.req.text(), "archive request");
-      const row = load(c.req.param("id"));
+      const row = loadChangeable(c.req.param("id"));
       if (row.state === "archived")
         throw new ApiError(409, "bad_state", "Workspace is already archived");
       if (row.state === "active") await leaveActive(row, "archived");

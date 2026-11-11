@@ -15,6 +15,7 @@ const workspace: Workspace = {
   name: "Work a",
   slug: "a",
   isolation: "new",
+  planner: false,
   path: "/tmp/a",
   line: "spore/a",
   state: "active",

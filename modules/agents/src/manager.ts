@@ -31,6 +31,7 @@ import type { AgentAttention, AgentChange, LaunchContext } from "./contract.js";
 import { ChatImages } from "./images.js";
 import {
   modelArgs,
+  PLANNER_CHAT_TOOLS,
   type RoleDefaults,
   SIDE_CHAT_TOOLS,
   STAGE_REVIEWER_TOOLS,
@@ -157,17 +158,22 @@ interface Live {
 }
 
 /**
- * Whether the agent's bridge token is read-only and its tools are an allowlist. Side chats are; so are the reviewer
- * stage roles. The pipeline checks their work, so they must not change files or run commands (R6).
+ * Whether the agent's bridge token is read-only and its tools are an allowlist. Side chats and planner chats are
+ * (ADR 0174); so are the reviewer stage roles. The pipeline checks their work, so they must not change files or run
+ * commands (R6).
  */
 const isReadOnly = ({ kind, role }: AgentRecord): boolean =>
-  kind === "side" || (kind === "stage" && role !== "worker");
+  kind === "side" || role === "planner" || (kind === "stage" && role !== "worker");
 
 /**
  * The tool arguments of an agent: a stage worker and a workspace chat get Pi's normal tools. A launch hook's tools
- * replace them.
+ * replace them, except for a planner chat, which is read-only whatever a hook says.
  */
 const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly string[] => {
+  if (record.role === "planner") {
+    if (tools) throw new Error(`A launch hook gave tools to planner chat ${record.id}`);
+    return PLANNER_CHAT_TOOLS;
+  }
   if (tools) return ["--tools", tools.join(","), "--exclude-tools", "mcp__*"];
   if (record.kind === "side") return SIDE_CHAT_TOOLS;
   if (record.kind === "stage" && record.role !== "worker") return STAGE_REVIEWER_TOOLS;

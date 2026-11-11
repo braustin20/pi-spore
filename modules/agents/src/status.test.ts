@@ -9,6 +9,7 @@ const workspace = (state: Workspace["state"]): Workspace => ({
   name: "w",
   slug: "w",
   isolation: "new",
+  planner: false,
   path: "/tmp/w",
   state,
   createdAt: 0,
