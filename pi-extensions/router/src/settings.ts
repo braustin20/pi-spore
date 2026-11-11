@@ -107,7 +107,7 @@ export interface RouterSettings {
   large: number;
   /** Most sessions that may wait for a busy local target; more go to the cloud (ADR 0141). */
   maxQueued: number;
-  /** Chance a pipeline worker task goes local when "straightforward" is its only blocker (ADR 0144). */
+  /** Chance a pipeline worker task goes local when "straightforward" or "visual" is its only blocker (ADR 0144, 0173). */
   explore: number;
   /** The same under usage pressure. The visual question keeps `threshold`. */
   pressureThreshold: number;

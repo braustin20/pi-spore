@@ -1,6 +1,6 @@
 # 0144. Calibrate the router's local choice from recorded outcomes
 
-- Status: Accepted
+- Status: Accepted; changed by [0173](0173-explore-visual-tasks.md) for the explore rule
 - Date: 2026-11-08
 - Requirements: R4.2, R4.3, R4.7, R18
 

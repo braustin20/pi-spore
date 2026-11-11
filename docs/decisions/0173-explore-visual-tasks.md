@@ -1,9 +1,8 @@
 # 0173. Explore also sends visual pipeline worker tasks local
 
-- Status: Accepted
+- Status: Accepted; changes [0144](0144-routing-calibration.md) for the explore rule
 - Date: 2026-11-11
 - Requirements: R4.2, R4.3, R4.7, R4.10
-- Changes: ADR 0144 (the explore rule)
 
 ## Context
 
@@ -13,10 +12,8 @@ slice is checked by a stronger reviewer and the check and test gates.
 
 In the user's `routing.jsonl`, 35 pipeline worker tasks had the brief's full text. With explore at 1, 12 of them
 went local. Jev's "visual" answer sent 18 of them to rung 3 (Opus): 6 alone, all small UI fixes, and 12 with
-"straightforward". The local
-target is now a Q4 Strata model on a server that is always on, with a 262144-token context and image input. Neither
-the local model nor the cloud worker looks at a rendered page during a pipeline run, and the reviewers judge the
-same diff either way.
+"straightforward". The local target is now a Q4 Strata model on a server that is always on, with a 262144-token
+context and image input. The same reviewers and gates check a slice whether it ran local or in the cloud.
 
 ## Decision
 
