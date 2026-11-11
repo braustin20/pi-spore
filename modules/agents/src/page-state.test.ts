@@ -99,6 +99,28 @@ describe("reducePage", () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
+  it("shows a repeated notice once, at the newest place", () => {
+    let state = reducePage(emptyPage(), snapshot);
+    const limit = "rate limit reached — billed to Extra Usage until 7:00:00 PM";
+    state = reducePage(state, { type: "notice", level: "warning", message: limit });
+    state = reducePage(state, { type: "notice", level: "warning", message: "other" });
+    state = reducePage(state, { type: "notice", level: "warning", message: limit });
+    state = reducePage(state, { type: "notice", level: "error", message: limit });
+    state = reducePage(state, {
+      type: "notice",
+      level: "warning",
+      message: "rate limit reached — billed to Extra Usage until 8:00:00 PM",
+    });
+    expect(state.notices.map((notice) => [notice.level, notice.message])).toEqual([
+      ["warning", "other"],
+      ["warning", limit],
+      ["error", limit],
+      ["warning", "rate limit reached — billed to Extra Usage until 8:00:00 PM"],
+    ]);
+    const ids = state.notices.map((notice) => notice.id);
+    expect(new Set(ids).size).toBe(ids.length);
+  });
+
   it("ignores status changes before the snapshot, and garbage", () => {
     expect(reducePage(emptyPage(), { type: "status", status: "busy" }).agent).toBeUndefined();
     expect(reducePage(emptyPage(), 42)).toEqual(emptyPage());

@@ -867,7 +867,8 @@ See [ADR 0009](decisions/0009-model-routing.md), [ADR 0010](decisions/0010-local
   good-answer probabilities, the estimate and budget, `threshold` and `heavyThreshold`, `explore`, the plan windows it
   saw, and the session id, file, and folder. Inside pi-spore it also has the agent and workspace ids. The chat shows
   each decision as a notice (`spore/auto: rung 2 claude → <model> (high) (...)`), which is live only. A new `info`
-  notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. The model
+  notice replaces earlier `info` notices, so one shows; `warning` and `error` notices stay, up to 5. A notice with
+  the same level and text as one shown replaces it at the newest place, so a repeated warning shows once. The model
   picker names the model that answered last (`→ <model>` after `Auto (pi-spore router)`), read from the physical
   model Pi records on each assistant message, so it survives reloads and reconnects.
 - Local targets are a list in settings: `{ model, thinking, contextWindow, budget, concurrency, healthUrl? }`.
