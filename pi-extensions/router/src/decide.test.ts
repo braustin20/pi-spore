@@ -267,8 +267,35 @@ describe("explore (ADR 0144)", () => {
     expect(decision.explore).toBeUndefined();
   });
 
+  it("sends a task local when visual is its only blocker, and names the visual answer (ADR 0173)", () => {
+    const decision = decide(input({ jev: { ...good, visual: 0.2 }, explore: true }));
+    expect(decision).toMatchObject({ route: "local", rung: 1, model: STRATA, explore: true });
+    expect(decision.reasons).toContain("rung 1: visual: nonvisual 0.20 < 0.7");
+  });
+
+  it("keeps a task that fails both visual and straightforward on rung 3 (ADR 0173)", () => {
+    const decision = decide(input({ jev: { ...hard, visual: 0.2 }, explore: true }));
+    expect(decision).toMatchObject({
+      route: "cloud",
+      rung: 3,
+      model: "claude-bridge/claude-opus-5-5",
+    });
+    expect(decision.explore).toBeUndefined();
+    expect(decision.reasons).toContain("rung 3: visual: nonvisual 0.20 < 0.7");
+  });
+
+  it("keeps a visual task on rung 3 when the explore draw missed or the local target cannot take it", () => {
+    const visual = { ...good, visual: 0.2 };
+    expect(decide(input({ jev: visual, explore: false })).rung).toBe(3);
+    expect(decide(input({ jev: visual, estimate: 70_000, explore: true }))).toMatchObject({
+      route: "cloud",
+      rung: 3,
+    });
+  });
+
   it.each([
-    ["a visual task", { ...hard, visual: 0.2 }],
+    ["a visual and foundational task", { ...good, visual: 0.2, foundational: 0.2 }],
+    ["a visual task where another cheap answer fails", { ...good, visual: 0.2, explicit: 0.3 }],
     ["a design task", { ...hard, design: 0.2 }],
     ["a foundational task", { ...hard, foundational: 0.2 }],
     ["a task where another cheap answer fails", { ...hard, bounded: 0.3 }],
