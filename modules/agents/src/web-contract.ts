@@ -23,6 +23,8 @@ export interface AgentsWeb {
   addChatPanel(id: string, panel: ComponentType<{ chatId: string }>): void;
   /** Sets the hook that tells which chats wait for the user, for the workspace list. The attention module sets it. */
   setUserWaits(hook: UseUserWaits): void;
+  /** The id of the chat the chat pane shows now, or undefined when no chat pane is on the page. */
+  shownChat(): string | undefined;
   /**
    * Sets the component that renders a link to a Markdown file in a message (`.md`, `.markdown`). It gets the chat's workspace id and the
    * path as written. The artifacts module sets it, to open the file in its viewer. Without one the link stays plain.

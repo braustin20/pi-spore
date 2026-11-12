@@ -227,6 +227,9 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
 /** Panels other modules added to the chat page, shown above the composer. */
 const chatPanels = new Map<string, ComponentType<{ chatId: string }>>();
 
+/** The chat the chat pane shows now, so attention can leave it alone. */
+let shownChat: string | undefined;
+
 /** One chat: its messages, dialogs, and composer. An older worker chat has a read-only strip in place of the composer. */
 function ChatView({
   workspace,
@@ -255,6 +258,14 @@ function ChatView({
   const stick = useRef(true);
   const changed = useRef(onChatChanged);
   changed.current = onChatChanged;
+
+  // Only one chat is on screen at a time. Clear the id only when no other view has taken it.
+  useEffect(() => {
+    shownChat = agentId;
+    return () => {
+      if (shownChat === agentId) shownChat = undefined;
+    };
+  }, [agentId]);
 
   useEffect(() => {
     return api.subscribe(`agent:${agentId}`, (event) => {
@@ -584,6 +595,7 @@ export const agentsWeb: WebModule = {
       setUserWaits: (hook) => {
         useUserWaits = hook;
       },
+      shownChat: () => shownChat,
       setFileLink,
       DialogCard,
     };
