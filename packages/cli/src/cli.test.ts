@@ -66,6 +66,7 @@ const workspace = {
   path: "/home/me/.pi-spore/worktrees/game/fix-ui-abc123",
   line: "spore/fix-ui-abc123",
   state: "active",
+  planner: false,
   createdAt: 2,
   updatedAt: 2,
 };

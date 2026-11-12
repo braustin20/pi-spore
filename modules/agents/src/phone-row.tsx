@@ -8,7 +8,7 @@ import {
   ICONS,
   isWorking,
   label,
-  NEW_CHATS,
+  newChats,
   SR_LABELS,
   TitleForm,
 } from "./chats.js";
@@ -22,6 +22,7 @@ export function PhoneChatRow({
   chats,
   selected,
   canStart,
+  planner,
   onNew,
   onRename,
   onClose,
@@ -103,13 +104,21 @@ export function PhoneChatRow({
           Stop agent
         </MenuItem>
         <MenuItem onSelect={() => setRenaming(true)}>Rename</MenuItem>
-        {NEW_CHATS.map((item) => (
+        {newChats(planner).map((item) => (
           <MenuItem
             key={item.label}
             onSelect={() => onNew(item.kind, item.fork)}
             disabled={!canStart}
           >
-            {item.label}
+            {planner ? (
+              // The planner has one way to start a chat, so its menu says what that does.
+              <span className="flex flex-col">
+                {item.label}
+                <span className="text-xs text-muted">{item.hint}</span>
+              </span>
+            ) : (
+              item.label
+            )}
           </MenuItem>
         ))}
         <MenuItem onSelect={() => onClose(selected)} disabled={isWorking(selected)}>

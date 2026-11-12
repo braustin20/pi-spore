@@ -32,6 +32,7 @@ const workspace: Workspace = {
   name: "Fix crafting",
   slug: "w1",
   isolation: "new",
+  planner: false,
   path: "/tmp/w1",
   line: "spore/w1",
   state: "active",
@@ -259,5 +260,16 @@ describe("the Start button on a board card", () => {
     const tile = startButton(root, "Fix crafting")?.closest("li") as Element;
     expect(tile.textContent).toContain("The project has no default branch");
     expect(window.location.hash).toBe("");
+  });
+});
+
+describe("the start targets of an open card", () => {
+  it("leave out the planner workspace", async () => {
+    const planner: Workspace = { ...workspace, id: "plan", name: "Plan", planner: true };
+    await render([card()], async () => ({}), {
+      params: { cardId: "c1" },
+      workspaces: () => [planner],
+    });
+    expect(buttonNamed("Start in an existing workspace").disabled).toBe(true);
   });
 });

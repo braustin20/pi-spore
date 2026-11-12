@@ -207,8 +207,8 @@ export function createAgentsModule(
           const extra: Record<string, string> = {
             PI_SPORE_AGENT_ID: agent.id,
             PI_SPORE_WORKSPACE_ID: workspace.id,
-            // spore-bridge gives side chats and stage agents their own rules (ADR 0033, R6).
-            PI_SPORE_CHAT_KIND: agent.kind,
+            // spore-bridge gives side chats, planner chats, and stage agents their own rules (ADR 0033, R6, ADR 0174).
+            PI_SPORE_CHAT_KIND: agent.role === "planner" ? "planner" : agent.kind,
             // pi-subagents refuses helpers deeper than this (ADR 0168).
             PI_SUBAGENT_MAX_DEPTH: String(resolved.get(keys.maxSubagentDepth).value),
           };
@@ -366,6 +366,12 @@ export function createAgentsModule(
         }
       };
 
+      /** A worker chat of the project's planner workspace is a read-only planner (ADR 0174). */
+      const workerRole = (workspace: Workspace) => ({
+        role: workspace.planner ? ("planner" as const) : ("orchestrator" as const),
+        title: null,
+      });
+
       const newRow = (
         workspaceId: string,
         kind: Row["kind"],
@@ -403,7 +409,9 @@ export function createAgentsModule(
           const existing = activeWorker(workspace.id);
           if (existing) return { agent: agents.view(existing.id), created: false };
           requireNotArchived(workspace);
-          const agent = insert(newRow(workspace.id, "worker", null, model ?? null));
+          const agent = insert(
+            newRow(workspace.id, "worker", null, model ?? null, workerRole(workspace)),
+          );
           workerChanged(agent);
           return { agent, created: true };
         });
@@ -587,11 +595,19 @@ export function createAgentsModule(
         const workspace = workspaces.get(request.workspaceId);
         if (request.fork && request.kind !== "side")
           throw new ApiError(400, "bad_request", "Only a side chat can start from a fork");
+        if (request.kind === "side" && workspace.planner)
+          throw new ApiError(
+            409,
+            "planner_no_side_chats",
+            "The planner workspace has no side chats; start a new planner chat instead",
+          );
         requireActive(workspace);
         return inOrder(workspace.id, async () => {
           if (request.kind === "worker") {
             await retireWorker(workspace.id);
-            const agent = insert(newRow(workspace.id, "worker", null, request.model ?? null));
+            const agent = insert(
+              newRow(workspace.id, "worker", null, request.model ?? null, workerRole(workspace)),
+            );
             workerChanged(agent);
             return c.json({ agent }, 201);
           }

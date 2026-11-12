@@ -16,6 +16,7 @@ const workspace: Workspace = {
   name: "Work",
   slug: "work",
   isolation: "new",
+  planner: false,
   path: "/tmp/work",
   state: "active",
   createdAt: 0,
@@ -60,12 +61,22 @@ afterEach(() => {
   window.location.hash = "";
 });
 
-async function render({ phone, agent = worker }: { phone: boolean; agent?: Agent }) {
+async function render({
+  phone,
+  agent = worker,
+  chats = [worker, side],
+  shown = workspace,
+}: {
+  phone: boolean;
+  agent?: Agent;
+  chats?: Agent[];
+  shown?: Workspace;
+}) {
   screen(phone);
   const Pane = mainPane();
   const sent: { path: string; body: unknown }[] = [];
   const api = {
-    get: async () => ({ agents: [worker, side] }),
+    get: async () => ({ agents: chats }),
     send: async (_method: string, path: string, body?: unknown) => {
       sent.push({ path, body });
       return path === "agents/chats" ? { agent: { id: "a3" } } : {};
@@ -86,7 +97,7 @@ async function render({ phone, agent = worker }: { phone: boolean; agent?: Agent
     root.render(
       <ApiContext value={api}>
         <TooltipProvider>
-          <Pane workspace={workspace} chatId={worker.id} />
+          <Pane workspace={shown} chatId={agent.id} />
         </TooltipProvider>
       </ApiContext>,
     );
@@ -146,6 +157,27 @@ describe("the chat row on a phone", () => {
       { path: "agents/chats", body: { workspaceId: "w1", kind: "worker" } },
       { path: "agents/chats", body: { workspaceId: "w1", kind: "side" } },
       { path: "agents/chats", body: { workspaceId: "w1", kind: "side", fork: true } },
+    ]);
+  });
+
+  it("offers only New chat, with its hint, in a planner workspace", async () => {
+    const planner: Agent = { ...worker, role: "planner" };
+    const stage: Agent = { ...worker, id: "a4", role: "worker", kind: "stage", active: false };
+    const sent = await render({
+      phone: true,
+      agent: stage,
+      chats: [planner, stage],
+      shown: { ...workspace, planner: true },
+    });
+    const menu = await open(byName("Chat actions"));
+    const item = byName(/^New chat/, menu);
+    expect(item?.textContent).toBe(
+      "New chatStart a fresh planner chat. The current one stops and stays readable.",
+    );
+    expect(byName(/^Side chat/, menu)).toBeUndefined();
+    await act(async () => item?.click());
+    expect(sent.filter(({ path }) => path === "agents/chats")).toEqual([
+      { path: "agents/chats", body: { workspaceId: "w1", kind: "worker" } },
     ]);
   });
 

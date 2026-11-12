@@ -141,6 +141,24 @@ async function sibling(server: TestServer, of: string, name: string) {
   return { workspaceId: workspace.id, agentId: agent.id };
 }
 
+/**
+ * The project's planner workspace (ADR 0174), with a chat in it. `of` is any other workspace of the project.
+ * The manager gives a planner chat a read-only token, so callers pass `readOnly` to `asAgent`.
+ */
+async function plannerChat(server: TestServer, of: string) {
+  const { workspace: parent } = await json<{ workspace: { projectId: string } }>(
+    await server.request("GET", `/api/workspaces/${of}`),
+  );
+  const { workspace } = await json<{ workspace: { id: string } }>(
+    await server.request("POST", "/api/workspaces/planner", { projectId: parent.projectId }),
+  );
+  const { agent } = await json<{ agent: { id: string } }>(
+    await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+    201,
+  );
+  return { workspaceId: workspace.id, agentId: agent.id };
+}
+
 /** Calls a bridge route as an agent process would, with its own token. */
 function asAgent(server: TestServer, agentId: string, workspaceId: string, readOnly = false) {
   const token = server.agentTokens.issue({
@@ -880,8 +898,96 @@ describe("cards from agents (ADR 0100)", () => {
     const call = asAgent(server, agentId, workspaceId, true);
     const added = await call("POST", "cards", { title: "Nope" });
     expect(added.status).toBe(403);
-    expect(await added.json()).toMatchObject({ error: { code: "read_only_chat" } });
+    expect(await added.json()).toMatchObject({
+      error: { code: "read_only_chat", message: "A read-only chat cannot add cards" },
+    });
+    // A planning column is not enough: only a planner chat writes cards (ADR 0174).
+    expect((await call("POST", "cards", { title: "Nope", column: "ready" })).status).toBe(403);
     expect((await call("GET", "cards")).status).toBe(200);
+  });
+
+  it("lets a planner chat write cards, and nothing else (ADR 0174)", async () => {
+    const server = await start();
+    const home = await workspace(server, "plan-write");
+    const plan = await plannerChat(server, home.workspaceId);
+    const call = asAgent(server, plan.agentId, plan.workspaceId, true);
+    const author = { agentId: plan.agentId, workspaceId: plan.workspaceId };
+
+    const { card } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 1", body: "Why", labels: ["plan:p"] }),
+      201,
+    );
+    expect(card).toMatchObject({ column: "backlog", title: "Phase 1", createdBy: author });
+    const { card: first } = await json<{ card: Card }>(
+      await call("POST", "cards", { title: "Phase 0", column: "ready" }),
+      201,
+    );
+    expect(first.column).toBe("ready");
+
+    const { card: changed } = await json<{ card: Card }>(
+      await call("POST", `cards/${card.id}`, {
+        title: "Phase one",
+        body: "Do it",
+        labels: ["plan:p", "slice:1"],
+        due: "2026-03-01",
+        model: "fake/card-model",
+        blockedBy: [first.id],
+        column: "ready",
+      }),
+    );
+    expect(changed).toMatchObject({
+      title: "Phase one",
+      body: "Do it",
+      labels: ["plan:p", "slice:1"],
+      due: "2026-03-01",
+      model: "fake/card-model",
+      column: "ready",
+      blocked: true,
+      changedBy: author,
+    });
+
+    for (const [path, body] of [
+      ["cards", { title: "Started", column: "in-progress" }],
+      [`cards/${card.id}`, { column: "review" }],
+      [`cards/${card.id}/start`, { target: { kind: "new", isolation: "new" }, reason: "go" }],
+      ["pipelines", { brief: "plans/brief.md" }],
+      ["artifacts", { scope: "workspace", path: "note.md", content: "no" }],
+      ["workspace/pr", { title: "A PR", body: "Shipped it" }],
+    ] as const) {
+      const refused = await call("POST", path, body);
+      expect(refused.status).toBe(403);
+      expect(await refused.json()).toMatchObject({ error: { code: "read_only_chat" } });
+    }
+    // A card the user moved into work stays there: the planner may edit it, not move it back.
+    const owner = asAgent(server, home.agentId, home.workspaceId);
+    const { card: working } = await json<{ card: Card }>(
+      await owner("POST", "cards", { title: "Working", column: "in-progress" }),
+      201,
+    );
+    const pulled = await call("POST", `cards/${working.id}`, { column: "backlog" });
+    expect(pulled.status).toBe(403);
+    expect(await pulled.json()).toMatchObject({ error: { code: "read_only_chat" } });
+    await json(await call("POST", `cards/${working.id}`, { body: "More notes" }));
+
+    const listed = await json<{ cards: Card[] }>(await call("GET", "cards"));
+    expect(listed.cards.map((card) => card.title).sort()).toEqual([
+      "Phase 0",
+      "Phase one",
+      "Working",
+    ]);
+  });
+
+  it("leaves the planner workspace out of the start targets every chat sees (ADR 0174)", async () => {
+    const server = await start();
+    const home = await workspace(server, "plan-targets");
+    const plan = await plannerChat(server, home.workspaceId);
+    for (const call of [
+      asAgent(server, home.agentId, home.workspaceId),
+      asAgent(server, plan.agentId, plan.workspaceId, true),
+    ]) {
+      const listed = await json<{ workspaces: { id: string }[] }>(await call("GET", "cards"));
+      expect(listed.workspaces.map((workspace) => workspace.id)).toEqual([home.workspaceId]);
+    }
   });
 });
 

@@ -11,6 +11,7 @@ import sporeBridge from "./index.js";
 import {
   COORDINATOR_RULES,
   LANE_RULES,
+  PLANNER_RULES,
   RULES,
   RULES_SECTION,
   SIDE_RULES,
@@ -547,6 +548,42 @@ describe("spore-bridge", () => {
     expect(SIDE_RULES).toContain("read-only");
   });
 
+  it("gives a planner chat the planner rules", async () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    const options = { contextFiles: [], sections: {} as Record<string, string> };
+    await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
+    expect(options.sections[RULES_SECTION]).toBe(PLANNER_RULES);
+    expect(PLANNER_RULES).toContain("You are the planner chat of one project");
+    expect(PLANNER_RULES).toContain("Cards are your only output");
+    expect(PLANNER_RULES).toContain("kanban_list_cards");
+    expect(PLANNER_RULES).toContain("blockedBy");
+  });
+
+  it("parses the planner chat kind", () => {
+    expect(
+      bridgeEnv({
+        PI_SPORE_URL: "http://x",
+        PI_SPORE_TOKEN: "t",
+        PI_SPORE_SERVER_PID: "1",
+        PI_SPORE_CHAT_KIND: "planner",
+      }),
+    ).toEqual({ url: "http://x", token: "t", serverPid: 1, chatKind: "planner" });
+  });
+
+  it("gives a planner chat the card tools and none of the worker's", () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    const pi = fakePi();
+    expect(pi.tools.size).toBeGreaterThan(0);
+    for (const name of ["kanban_list_cards", "kanban_add_card", "kanban_update_card"]) {
+      expect(pi.tools.has(name)).toBe(true);
+    }
+    for (const name of ["open_pr", "push_line", "start_pipeline", "report"]) {
+      expect(pi.tools.has(name)).toBe(false);
+    }
+    // A planner chat has no `kanban_start_card`: its launch tool list leaves it out, not this extension.
+    expect(pi.tools.has("request_human_input")).toBe(true);
+  });
+
   it.each([
     ["worker", STAGE_WORKER_RULES, "implement worker"],
     ["reviewer", STAGE_REVIEWER_RULES, "read-only reviewer"],
@@ -992,6 +1029,8 @@ describe("spore-bridge run tools", () => {
 
     vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
     expect(fakePi().tools.has("open_pr")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    expect(fakePi().tools.has("open_pr")).toBe(false);
     vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
     vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
     expect(fakePi().tools.has("open_pr")).toBe(false);
@@ -1032,6 +1071,8 @@ describe("spore-bridge run tools", () => {
     expect(fakePi().tools.has("push_line")).toBe(true);
 
     vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
+    expect(fakePi().tools.has("push_line")).toBe(false);
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
     expect(fakePi().tools.has("push_line")).toBe(false);
     vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
     vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
@@ -1115,7 +1156,7 @@ describe("spore-bridge run tools", () => {
     expect(RULES).toContain("Do not start `worker` subagents for feature code");
   });
 
-  it("keeps start_pipeline from coordinators, lane agents, side chats, and stage chats", () => {
+  it("keeps start_pipeline from coordinators, lane agents, side chats, planner chats, and stage chats", () => {
     const without = (env: Record<string, string>) => {
       for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
       expect(fakePi().tools.has("start_pipeline")).toBe(false);
@@ -1124,6 +1165,7 @@ describe("spore-bridge run tools", () => {
     without({ PI_SPORE_RUN_ROLE: "coordinator", PI_SPORE_RUN_ID: "U1" });
     without({ PI_SPORE_RUN_ROLE: "lane", PI_SPORE_RUN_ID: "U1" });
     without({ PI_SPORE_CHAT_KIND: "side" });
+    without({ PI_SPORE_CHAT_KIND: "planner" });
     without({ PI_SPORE_CHAT_KIND: "stage", PI_SPORE_STAGE_ROLE: "worker" });
   });
 

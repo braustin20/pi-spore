@@ -35,6 +35,8 @@ export const Workspace = Type.Object({
    */
   base: Type.Optional(Type.String()),
   state: WorkspaceState,
+  /** The project's hidden planner workspace: every chat in it is a read-only planner (ADR 0174). */
+  planner: Type.Boolean(),
   createdAt: Type.Integer(),
   updatedAt: Type.Integer(),
 });
@@ -78,6 +80,13 @@ export const CreateWorkspaceResponse = Type.Object({
   steps: Type.Array(StepReport),
 });
 export type CreateWorkspaceResponse = Static<typeof CreateWorkspaceResponse>;
+
+/** Finds or makes the project's planner workspace (ADR 0174). */
+export const PlannerWorkspaceRequest = Type.Object(
+  { projectId: Type.String({ minLength: 1 }) },
+  { additionalProperties: false },
+);
+export type PlannerWorkspaceRequest = Static<typeof PlannerWorkspaceRequest>;
 
 export const RenameWorkspaceRequest = Type.Object(
   { name: Type.String({ minLength: 1, maxLength: 120 }) },

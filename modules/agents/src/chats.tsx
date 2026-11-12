@@ -98,7 +98,7 @@ function Title({ chat, onRename }: { chat: Agent; onRename: (title: string) => P
 }
 
 /** The ways to start a chat, shared by the chat bar's "+" menu and the phone row's actions menu. */
-export const NEW_CHATS = [
+const NEW_CHATS = [
   {
     label: "New chat",
     icon: MessageSquarePlus,
@@ -122,6 +122,20 @@ export const NEW_CHATS = [
   },
 ] as const;
 
+/** A planner workspace has no side chats: it only starts a fresh planner chat (ADR 0174). */
+const PLANNER_NEW_CHATS = [
+  {
+    label: "New chat",
+    icon: MessageSquarePlus,
+    hint: "Start a fresh planner chat. The current one stops and stays readable.",
+    kind: "worker",
+    fork: false,
+  },
+] as const;
+
+/** The items of the "+" menu and of the phone's Chat actions menu. */
+export const newChats = (planner: boolean) => (planner ? PLANNER_NEW_CHATS : NEW_CHATS);
+
 /**
  * The workspace's chats as a row of links (ADR 0030): the active worker chat, then side chats, then older worker
  * chats, in the server's order. A "+" menu starts a fresh worker chat or a side chat, empty or with the worker's
@@ -133,6 +147,8 @@ export type ChatBarProps = {
   selected: Agent;
   /** False while the workspace is parked or archived. */
   canStart: boolean;
+  /** The workspace is its project's planner workspace (ADR 0174). */
+  planner: boolean;
   onNew: (kind: "worker" | "side", fork: boolean) => void;
   onRename: (title: string) => Promise<void>;
   /** Closes a chat for good (ADR 0110). */
@@ -144,6 +160,7 @@ export function ChatBar({
   chats,
   selected,
   canStart,
+  planner,
   onNew,
   onRename,
   onClose,
@@ -154,6 +171,7 @@ export function ChatBar({
   useEffect(() => {
     currentTab.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
   }, [selected.id]);
+  const plusLabel = planner ? "New chat" : "New chat or side chat";
   // On a phone the tabs take the first line and the buttons wrap onto a second one.
   return (
     <div className="flex h-10 shrink-0 items-center gap-2 border-b border-line px-4 max-md:h-auto max-md:flex-wrap max-md:py-1">
@@ -215,19 +233,14 @@ export function ChatBar({
         </ul>
       </nav>
       <Menu
-        tooltip={canStart ? "New chat or side chat" : "Start a chat only in an active workspace"}
+        tooltip={canStart ? plusLabel : "Start a chat only in an active workspace"}
         trigger={
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="New chat or side chat"
-            disabled={!canStart}
-          >
+          <Button variant="ghost" size="icon-sm" aria-label={plusLabel} disabled={!canStart}>
             <Plus />
           </Button>
         }
       >
-        {NEW_CHATS.map((item) => (
+        {newChats(planner).map((item) => (
           <MenuItem key={item.label} onSelect={() => onNew(item.kind, item.fork)}>
             <item.icon aria-hidden="true" className="size-3.5 shrink-0" />
             <span className="flex flex-col">

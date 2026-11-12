@@ -1069,6 +1069,59 @@ describe("chats (ADR 0030)", () => {
     );
   });
 
+  it("launches a planner workspace's chats read-only with the planner tools and model", async () => {
+    await setup({
+      roleDefaults: async (role) =>
+        role === "planner" ? { provider: "fake", modelId: "plan-1" } : { modelId: "other" },
+    });
+    const { folder } = await makeAgent();
+    const project = (
+      await json<{ projects: { id: string; path: string }[] }>(
+        await server.request("GET", "/api/projects"),
+      )
+    ).projects.find((p) => p.path === folder);
+    const { workspace } = await json<{ workspace: Workspace }>(
+      await server.request("POST", "/api/workspaces/planner", { projectId: project?.id }),
+    );
+    const { agent } = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    expect(agent).toMatchObject({ role: "planner", kind: "worker", active: true });
+    await json(await prompt(agent.id, "tools"));
+    await replied(agent.id, 2);
+
+    const launch = launches()[0];
+    expect(launch?.argv).toEqual([
+      "--mode",
+      "rpc",
+      "--no-extensions",
+      "--session-dir",
+      join(server.paths.sessions, workspace.id),
+      "--provider",
+      "fake",
+      "--model",
+      "plan-1",
+      "--tools",
+      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content",
+      "--exclude-tools",
+      "mcp__*",
+    ]);
+    expect(launch?.env.PI_SPORE_CHAT_KIND).toBe("planner");
+    expect(server.agentTokens.find(launch?.env.PI_SPORE_TOKEN)).toEqual({
+      agentId: agent.id,
+      workspaceId: workspace.id,
+      readOnly: true,
+    });
+
+    expect(await code(await newChat(workspace.id, "side"), 409)).toBe("planner_no_side_chats");
+    const { agent: next } = await json<{ agent: Agent }>(
+      await newChat(workspace.id, "worker"),
+      201,
+    );
+    expect(next).toMatchObject({ role: "planner", kind: "worker", active: true });
+  });
+
   it("counts side chats against the live-agent limit", async () => {
     await setup({ maxLive: 1 });
     const { agentId: worker, workspaceId } = await makeAgent();
@@ -2165,6 +2218,31 @@ describe("launch hooks", () => {
     expect(server.agentTokens.find(laneLaunch?.env.PI_SPORE_TOKEN)).not.toHaveProperty("readOnly");
     expect(plainLaunch?.env.PI_SPORE_LANE).toBeUndefined();
     expect(plainLaunch?.argv).not.toContain("--tools");
+  });
+
+  it("fails a planner chat's launch when a hook gives it tools", async () => {
+    await launchWith(() => ({ tools: ["bash"] }));
+    const { folder } = await makeAgent();
+    const project = (
+      await json<{ projects: { id: string; path: string }[] }>(
+        await server.request("GET", "/api/projects"),
+      )
+    ).projects.find((p) => p.path === folder);
+    const { workspace } = await json<{ workspace: Workspace }>(
+      await server.request("POST", "/api/workspaces/planner", { projectId: project?.id }),
+    );
+    const { agent } = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+
+    await prompt(agent.id, "hi");
+    await until(() => statuses(agent.id).includes("failed"));
+    const failed = events(agent.id).find(
+      (event) => event.type === "status" && event.status === "failed",
+    );
+    expect(JSON.stringify(failed)).toContain("planner chat");
+    expect(existsSync(record)).toBe(false);
   });
 
   it("fails the launch, naming the agent, when two hooks give tools", async () => {

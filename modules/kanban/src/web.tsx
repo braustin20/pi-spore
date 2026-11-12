@@ -523,7 +523,10 @@ function BlockerPicker({
     (card) => card.id !== selfId && card.column !== "done" && !taken.has(`card:${card.id}`),
   );
   const workspaceChoices = workspaces.filter(
-    (workspace) => workspace.state !== "archived" && !taken.has(`workspace:${workspace.id}`),
+    (workspace) =>
+      !workspace.planner &&
+      workspace.state !== "archived" &&
+      !taken.has(`workspace:${workspace.id}`),
   );
   return (
     <div className="flex flex-col gap-1.5">
@@ -644,10 +647,14 @@ function afterStart(cardId: string, result: CreateWorkspaceResponse) {
   window.location.hash = `#/board/${cardId}`;
 }
 
-/** Active workspaces work from this card may start in: those of its project, or any without one. */
+/**
+ * Active workspaces work from this card may start in: those of its project, or any without one. Never a planner
+ * workspace: its chats only write cards (ADR 0174).
+ */
 const startTargets = (card: Card, workspaces: readonly Workspace[]) =>
   workspaces.filter(
     (workspace) =>
+      !workspace.planner &&
       workspace.state === "active" &&
       (card.projectId === undefined || workspace.projectId === card.projectId),
   );

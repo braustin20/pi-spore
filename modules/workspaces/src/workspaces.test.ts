@@ -339,6 +339,7 @@ describe("workspaces with Git", () => {
     });
     expect(workspace.path).toBe(repo);
     expect(workspace.line).toBeUndefined();
+    expect(workspace.planner).toBe(false);
     expect(copied).toEqual([]);
   });
 
@@ -652,6 +653,66 @@ describe("workspace lifecycle", () => {
     ).toBe("project_in_use");
     await server.request("POST", `/api/workspaces/${workspace.id}/archive`);
     expect((await server.request("DELETE", `/api/projects/${project.id}`)).status).toBe(200);
+  });
+
+  it("makes one planner workspace per project that cannot be renamed, parked, or archived", async () => {
+    const project = await addProject(makeUnityRepo());
+    const planner = async () =>
+      parse(
+        WorkspaceBody,
+        await json(
+          await server.request("POST", "/api/workspaces/planner", { projectId: project.id }),
+          200,
+        ),
+        "planner",
+      ).workspace;
+
+    const first = await planner();
+    expect(first).toMatchObject({
+      projectId: project.id,
+      name: "Plan",
+      isolation: "in-place",
+      path: project.path,
+      state: "active",
+      planner: true,
+    });
+    expect((await planner()).id).toBe(first.id);
+    const listed = parse(
+      WorkspaceList,
+      await json(await server.request("GET", "/api/workspaces"), 200),
+      "list",
+    ).workspaces;
+    expect(listed.map((workspace) => workspace.id)).toEqual([first.id]);
+
+    for (const [method, path, body] of [
+      ["PATCH", "", { name: "Other" }],
+      ["POST", "/park", undefined],
+      ["POST", "/archive", undefined],
+      ["POST", "/resume", undefined],
+    ] as const) {
+      expect(
+        await errorCode(
+          await server.request(method, `/api/workspaces/${first.id}${path}`, body),
+          409,
+        ),
+      ).toBe("planner_workspace");
+    }
+    expect((await planner()).name).toBe("Plan");
+
+    // Only an open normal workspace blocks removing the project.
+    expect((await server.request("DELETE", `/api/projects/${project.id}`)).status).toBe(200);
+  });
+
+  it("rejects a planner request without a project", async () => {
+    expect(
+      await errorCode(await server.request("POST", "/api/workspaces/planner", {}), 400),
+    ).toBeTruthy();
+    expect(
+      await errorCode(
+        await server.request("POST", "/api/workspaces/planner", { projectId: "nope" }),
+        404,
+      ),
+    ).toBe("project_not_found");
   });
 
   it("answers 404 for unknown workspaces and projects", async () => {

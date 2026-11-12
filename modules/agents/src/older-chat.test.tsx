@@ -18,6 +18,7 @@ const workspace = (state: Workspace["state"]): Workspace => ({
   name: "Work",
   slug: "work",
   isolation: "new",
+  planner: false,
   path: "/tmp/work",
   state,
   createdAt: 0,

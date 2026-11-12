@@ -248,6 +248,7 @@ export {
   CreateWorkspaceRequest,
   CreateWorkspaceResponse,
   Isolation,
+  PlannerWorkspaceRequest,
   RenameWorkspaceRequest,
   StepReport,
   Workspace,
