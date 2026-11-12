@@ -32,7 +32,7 @@ import {
   useState,
 } from "react";
 import Type from "typebox";
-import { ChatBar, type ChatBarProps } from "./chats.js";
+import { ChatBar, type ChatBarProps, rowChats } from "./chats.js";
 import { Composer, DialogCard } from "./composer.js";
 import { Helpers } from "./helpers.js";
 import { MessageList, setFileLink } from "./messages.js";
@@ -580,7 +580,15 @@ function useAgentStatus(workspaces: readonly Workspace[]) {
   );
 
   const waits = useUserWaits();
-  return useMemo(() => workspaceStatuses(workspaces, agents, waits), [agents, workspaces, waits]);
+  return useMemo(() => {
+    const statuses = workspaceStatuses(workspaces, agents, waits);
+    return new Map(
+      [...statuses].map(([id, status]) => [
+        id,
+        { ...status, chats: rowChats(agents.filter((agent) => agent.workspaceId === id)) },
+      ]),
+    );
+  }, [agents, workspaces, waits]);
 }
 
 export const agentsWeb: WebModule = {

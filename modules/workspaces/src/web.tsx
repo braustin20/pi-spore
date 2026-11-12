@@ -292,19 +292,28 @@ function WorkspaceRow({
   workspace,
   status,
   selected,
+  chatId,
   now,
   onArchive,
 }: {
   workspace: Workspace;
   status: WorkspaceStatus | undefined;
   selected: boolean;
+  chatId: string | undefined;
   now: number;
   onArchive: () => void;
 }) {
-  // The button sits beside the row link, not in it: a button must not nest in an anchor.
+  const [open, setOpen] = useStoredFlag(`pi-spore.workspaces.chats.${workspace.id}`, false);
+  const chats = status?.chats ?? [];
+  // The buttons sit beside the row link, not in it: a button must not nest in an anchor.
   return (
     <div className="group relative">
-      <ListRow href={`#/workspaces/${workspace.id}`} selected={selected}>
+      {/* The left padding is on every row, so names line up whether or not a row has a chats toggle. */}
+      <ListRow
+        href={`#/workspaces/${workspace.id}`}
+        selected={selected}
+        className="pl-8 max-md:pl-12"
+      >
         <div className="flex items-baseline gap-2">
           <span className="min-w-0 flex-1 truncate text-sm font-medium">{workspace.name}</span>
           <span className="shrink-0 font-mono text-[11px] text-muted group-focus-within:invisible group-hover:invisible touch:invisible">
@@ -332,6 +341,55 @@ function WorkspaceRow({
             <X />
           </Button>
         </Tooltip>
+      )}
+      {chats.length > 0 && (
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-expanded={open}
+          aria-label={`${open ? "Hide" : "Show"} chats of ${workspace.name}`}
+          className="absolute top-1 left-0.5 max-md:top-0 max-md:left-0"
+          onClick={() => setOpen(!open)}
+        >
+          {open ? (
+            <ChevronDown aria-hidden="true" className="size-3.5" />
+          ) : (
+            <ChevronRight aria-hidden="true" className="size-3.5" />
+          )}
+        </Button>
+      )}
+      {open && chats.length > 0 && (
+        <ul className="m-0 flex list-none flex-col gap-0.5 py-0.5 pr-1 pl-8 max-md:pl-12">
+          {chats.map((chat) => {
+            const Icon = chat.icon;
+            const current = chat.id === chatId;
+            return (
+              <li key={chat.id} className="min-w-0">
+                <a
+                  href={`#/workspaces/${workspace.id}/chats/${chat.id}`}
+                  aria-current={current ? "page" : undefined}
+                  title={`${chat.label}. ${chat.hint}`}
+                  className={cn(
+                    "flex min-w-0 items-center gap-1.5 rounded-md px-2 py-1 text-xs no-underline hover:bg-raised/60 max-md:min-h-11",
+                    current ? "bg-raised text-fg" : "text-muted",
+                  )}
+                >
+                  <Icon aria-hidden="true" className="size-3.5 shrink-0" />
+                  <span className="truncate">{chat.label}</span>
+                  {chat.working && (
+                    <>
+                      <span
+                        aria-hidden="true"
+                        className="size-1.5 shrink-0 rounded-full bg-run animate-pulse"
+                      />
+                      <span className="sr-only">working</span>
+                    </>
+                  )}
+                </a>
+              </li>
+            );
+          })}
+        </ul>
       )}
     </div>
   );
@@ -389,6 +447,7 @@ function WorkspaceListColumn({
   workspaces,
   projects,
   selectedId,
+  chatId,
   projectId,
   error,
   size,
@@ -401,6 +460,7 @@ function WorkspaceListColumn({
   workspaces: readonly Workspace[] | undefined;
   projects: readonly Project[];
   selectedId: string | undefined;
+  chatId: string | undefined;
   projectId: string | undefined;
   error: string | undefined;
   size: PanelSize;
@@ -483,6 +543,7 @@ function WorkspaceListColumn({
             group={group}
             first={index === 0}
             selectedId={selectedId}
+            chatId={chatId}
             statuses={statuses}
             now={now}
             onPlanError={setPlanError}
@@ -509,6 +570,7 @@ function ProjectGroupView({
   group,
   first,
   selectedId,
+  chatId,
   statuses,
   now,
   onPlanError,
@@ -517,6 +579,7 @@ function ProjectGroupView({
   group: ProjectGroup;
   first: boolean;
   selectedId: string | undefined;
+  chatId: string | undefined;
   statuses: ReadonlyMap<string, WorkspaceStatus>;
   now: number;
   onPlanError: (error: string | undefined) => void;
@@ -576,6 +639,7 @@ function ProjectGroupView({
                 workspace={workspace}
                 status={statuses.get(workspace.id)}
                 selected={workspace.id === selectedId}
+                chatId={chatId}
                 now={now}
                 onArchive={() => onArchive(workspace)}
               />
@@ -962,6 +1026,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
       workspaces={workspaces}
       projects={projects}
       selectedId={selectedId}
+      chatId={params.chatId}
       projectId={projectId}
       error={error}
       size={layout.list}
