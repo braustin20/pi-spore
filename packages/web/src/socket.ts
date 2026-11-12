@@ -10,9 +10,10 @@ interface Frame {
 const MAX_BACKOFF_MS = 10_000;
 
 /**
- * One WebSocket per page, shared by every subscription. After a drop it reconnects with backoff and subscribes to
- * every topic again; the server answers each subscription with a fresh snapshot, so listeners catch up by
- * themselves.
+ * One WebSocket per page, shared by every subscription. Every new listener asks the server to subscribe again, even
+ * on a topic the page already listens to, so a late listener gets a fresh snapshot too. After a drop it reconnects
+ * with backoff and subscribes to every topic again; the server answers each subscription with a fresh snapshot, so
+ * listeners catch up by themselves.
  */
 export class EventSocket {
   private socket: WebSocket | undefined;
@@ -26,9 +27,11 @@ export class EventSocket {
     if (!set) {
       set = new Set();
       this.listeners.set(topic, set);
-      this.sendIfOpen({ type: "subscribe", topic });
     }
     set.add(listener);
+    // Ask on every listener, not the topic's first one: the server answers each subscribe with a full-state
+    // snapshot, so a component that mounts later sees the current state instead of only later events.
+    this.sendIfOpen({ type: "subscribe", topic });
     this.ensureOpen();
     return () => {
       const current = this.listeners.get(topic);
