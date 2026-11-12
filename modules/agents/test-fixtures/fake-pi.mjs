@@ -41,6 +41,7 @@
 // refuses to be combined with `--session`, as Pi does.
 // Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env, cwd, pid} for assertions;
 // FAKE_PI_MODELS=broken answers get_available_models with a payload that is not a model list.
+// FAKE_PI_LAZY_SESSION=1 writes a new session file only at its first assistant message, as Pi does.
 // A `.fake-pi-hold-turn` file in the workspace holds accepted prompts before their first event until removed.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -75,6 +76,8 @@ const parseJson = (text, where) => {
 let sessionFile = arg("--session");
 let lastEntryId = null;
 let entryCount = 0;
+/** With FAKE_PI_LAZY_SESSION=1, the lines of a new session that Pi has not written yet. */
+let unwritten = null;
 const forkSource = arg("--fork");
 if (forkSource && sessionFile) {
   process.stderr.write("Error: --fork cannot be combined with --session\n");
@@ -111,16 +114,22 @@ if (forkSource) {
   const dir = arg("--session-dir");
   mkdirSync(dir, { recursive: true });
   sessionFile = join(dir, `${Date.now()}_fake.jsonl`);
-  writeFileSync(
-    sessionFile,
-    `${JSON.stringify({ type: "session", version: 3, id: "s", cwd: process.cwd() })}\n`,
-  );
+  const header = `${JSON.stringify({ type: "session", version: 3, id: "s", cwd: process.cwd() })}\n`;
+  if (process.env.FAKE_PI_LAZY_SESSION === "1") unwritten = header;
+  else writeFileSync(sessionFile, header);
 }
 
 const appendEntry = (entry) => {
   const id = `e${++entryCount}`;
-  appendFileSync(sessionFile, `${JSON.stringify({ ...entry, id, parentId: lastEntryId })}\n`);
+  const line = `${JSON.stringify({ ...entry, id, parentId: lastEntryId })}\n`;
   lastEntryId = id;
+  if (unwritten === null) return appendFileSync(sessionFile, line);
+  unwritten += line;
+  // Pi writes a new session only at its first assistant message, so a process that ends before it leaves no file.
+  if (entry.type === "message" && entry.message.role === "assistant") {
+    writeFileSync(sessionFile, unwritten);
+    unwritten = null;
+  }
 };
 const appendMessage = (message) => appendEntry({ type: "message", message });
 

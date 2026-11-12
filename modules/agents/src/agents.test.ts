@@ -734,6 +734,40 @@ describe("agents", () => {
         "high",
       ]);
     });
+    it("keeps a model and thinking picked before the first message when the process stops", async () => {
+      await setup({ idleStopMs: 100 }, { FAKE_PI_LAZY_SESSION: "1" });
+      const { agentId } = await makeAgent();
+      await json(
+        await server.request("POST", `/api/agents/${agentId}/model`, {
+          provider: "fake",
+          modelId: "picked-1",
+        }),
+      );
+      await json(await server.request("POST", `/api/agents/${agentId}/thinking`, { level: "low" }));
+      // The idle stop ends the process before any prompt, so Pi wrote no session file.
+      await until(() => status(agentId) === "stopped");
+
+      await json(await prompt(agentId, "one"));
+      await until(() => launches().length === 2 && statuses(agentId).at(-1) === "idle");
+      const argv = launches()[1]?.argv ?? [];
+      expect(argv.slice(argv.indexOf("--provider"))).toEqual([
+        "--provider",
+        "fake",
+        "--model",
+        "picked-1",
+        "--thinking",
+        "low",
+      ]);
+
+      // Once the session file exists, a new launch resumes it, and the session keeps its own model.
+      await until(() => status(agentId) === "stopped");
+      await json(await prompt(agentId, "two"));
+      await until(() => launches().length === 3);
+      const resumed = launches()[2]?.argv ?? [];
+      expect(resumed).toContain("--session");
+      for (const flag of ["--provider", "--model", "--thinking"])
+        expect(resumed).not.toContain(flag);
+    });
   });
 
   describe("orchestrator role (ADR 0120)", () => {
@@ -1120,6 +1154,37 @@ describe("chats (ADR 0030)", () => {
       201,
     );
     expect(next).toMatchObject({ role: "planner", kind: "worker", active: true });
+  });
+
+  it("starts a planner chat on the orchestrator's model and thinking when no planner override is set", async () => {
+    await setup({
+      roleDefaults: async (role) =>
+        role === "orchestrator" ? { provider: "fake", modelId: "orch-1", thinking: "xhigh" } : {},
+    });
+    const { folder } = await makeAgent();
+    const project = (
+      await json<{ projects: { id: string; path: string }[] }>(
+        await server.request("GET", "/api/projects"),
+      )
+    ).projects.find((p) => p.path === folder);
+    const { workspace } = await json<{ workspace: Workspace }>(
+      await server.request("POST", "/api/workspaces/planner", { projectId: project?.id }),
+    );
+    const { agent } = await json<{ agent: Agent }>(
+      await server.request("POST", "/api/agents", { workspaceId: workspace.id }),
+      201,
+    );
+    await json(await prompt(agent.id, "hello"));
+    await until(() => existsSync(record));
+    const argv = launches()[0]?.argv ?? [];
+    expect(argv.slice(argv.indexOf("--provider"), argv.indexOf("--tools"))).toEqual([
+      "--provider",
+      "fake",
+      "--model",
+      "orch-1",
+      "--thinking",
+      "xhigh",
+    ]);
   });
 
   it("counts side chats against the live-agent limit", async () => {

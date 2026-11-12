@@ -130,13 +130,21 @@ export async function readRoleDefaults(agentDir: string, role: string): Promise<
 }
 
 /**
- * The role's defaults with a chat's own model (`provider/id`) in place of the role's. Thinking stays the role's
- * (ADR 0120). The model was checked when the chat was created.
+ * The role's defaults with a chat's own model (`provider/id`, from the card or picker that made the chat, ADR 0120)
+ * and thinking level (a level the user picked before its first message, ADR 0175) in place of the role's. Null means
+ * the role's. Both were validated when they were set.
  */
-export function withModel(defaults: RoleDefaults, model: string | null): RoleDefaults {
-  if (model === null) return defaults;
-  const slash = model.indexOf("/");
-  return { ...defaults, provider: model.slice(0, slash), modelId: model.slice(slash + 1) };
+export function withModel(
+  defaults: RoleDefaults,
+  model: string | null,
+  thinking: string | null,
+): RoleDefaults {
+  let own = defaults;
+  if (model !== null) {
+    const slash = model.indexOf("/");
+    own = { ...own, provider: model.slice(0, slash), modelId: model.slice(slash + 1) };
+  }
+  return thinking === null ? own : { ...own, thinking };
 }
 
 /** Launch arguments that pick the role's model for a new session. A resumed session keeps the model it had. */

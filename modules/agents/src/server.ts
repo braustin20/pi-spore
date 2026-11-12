@@ -81,6 +81,8 @@ const MIGRATIONS = [
   DELIVERIES_JOB_MIGRATION,
   // R8.3: a delivery that keeps its prompt's images and steer choice.
   DELIVERIES_OPTIONS_MIGRATION,
+  // ADR 0175: a thinking level picked before the first message, kept for the next new session.
+  "ALTER TABLE agents_agents ADD COLUMN thinking TEXT",
 ];
 
 interface Row {
@@ -96,6 +98,7 @@ interface Row {
   waiting_since: number | null;
   closed: number;
   model: string | null;
+  thinking: string | null;
 }
 
 const toRecord = (row: Row): AgentRecord => ({
@@ -111,6 +114,7 @@ const toRecord = (row: Row): AgentRecord => ({
   waitingSince: row.waiting_since,
   closed: row.closed === 1,
   model: row.model,
+  thinking: row.thinking,
 });
 
 export interface AgentsModuleOptions {
@@ -196,13 +200,22 @@ export function createAgentsModule(
         options.resourceArgs ??
         ((cwd: string) => resolveResourceArgs(cwd, agentDir, exclude, SPORE_EXTENSIONS));
 
+      const baseRoleDefaults =
+        options.roleDefaults ?? ((role: string) => readRoleDefaults(agentDir, role));
+
       const agents = new AgentManager({
         pi: options.pi ?? { command: "pi", args: [] },
         events: host.events,
         log: host.log,
         sessionsDir: host.home.sessions,
         resourceArgs,
-        roleDefaults: options.roleDefaults ?? ((role) => readRoleDefaults(agentDir, role)),
+        // A planner without its own override runs on the orchestrator's model (ADR 0175).
+        roleDefaults: async (role) => {
+          const own = await baseRoleDefaults(role);
+          return role === "planner" && Object.keys(own).length === 0
+            ? baseRoleDefaults("orchestrator")
+            : own;
+        },
         env: async (agent, workspace) => {
           const extra: Record<string, string> = {
             PI_SPORE_AGENT_ID: agent.id,
@@ -238,6 +251,13 @@ export function createAgentsModule(
         workspace: (id) => workspaces.get(id),
         saveSessionFile: (agentId, file) => {
           host.store.run("UPDATE agents_agents SET session_file = ? WHERE id = ?", file, agentId);
+        },
+        // ADR 0175: a pick before the first message survives the process, so the next new session starts on it.
+        saveModel: (agentId, model) => {
+          host.store.run("UPDATE agents_agents SET model = ? WHERE id = ?", model, agentId);
+        },
+        saveThinking: (agentId, level) => {
+          host.store.run("UPDATE agents_agents SET thinking = ? WHERE id = ?", level, agentId);
         },
         saveWaiting: (agentId, since) => {
           host.store.run("UPDATE agents_agents SET waiting_since = ? WHERE id = ?", since, agentId);
@@ -394,6 +414,7 @@ export function createAgentsModule(
         waiting_since: null,
         closed: 0,
         model,
+        thinking: null,
       });
 
       /**
