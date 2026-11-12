@@ -1,4 +1,5 @@
-import type { Agent } from "@pi-spore/shared";
+import type { WorkspaceChat } from "@pi-spore/mod-workspaces/web";
+import { type Agent, orderChats } from "@pi-spore/shared";
 import { Button, cn, Input, Menu, MenuItem, Tooltip } from "@pi-spore/ui";
 import {
   Copy,
@@ -32,6 +33,21 @@ export const HINTS = {
 
 /** A chat that runs or waits for a slot; it must be aborted or stopped before it can close. */
 export const isWorking = (chat: Agent) => ["busy", "starting", "waiting"].includes(chat.status);
+
+/** A workspace's chats for its list row. Older orchestrator chats stay in the chat bar only. */
+export const rowChats = (chats: readonly Agent[]): WorkspaceChat[] =>
+  orderChats(chats)
+    .filter((chat) => group(chat) !== "older")
+    .map((chat) => {
+      const kind = group(chat);
+      return {
+        id: chat.id,
+        label: label(chat),
+        hint: HINTS[kind],
+        icon: ICONS[kind],
+        working: isWorking(chat),
+      };
+    });
 
 export const SR_LABELS = {
   side: "(side chat)",

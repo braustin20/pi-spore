@@ -6,6 +6,7 @@ import type {
   Workspace,
 } from "@pi-spore/shared";
 import type { Tone } from "@pi-spore/ui";
+import type { LucideIcon } from "lucide-react";
 import type { ComponentType, ReactNode } from "react";
 
 /**
@@ -33,15 +34,27 @@ export interface WorkspaceTab {
   component: ComponentType<{ workspace: Workspace }>;
 }
 
+/** One open chat of a workspace, as a link under its list row. */
+export interface WorkspaceChat {
+  id: string;
+  label: string;
+  /** What kind of chat it is; the link's tooltip. */
+  hint: string;
+  icon: LucideIcon;
+  working: boolean;
+}
+
 /** One line of live state for a workspace row, such as the agent's status. */
 export interface WorkspaceStatus {
   text: string;
   tone: Tone;
+  /** The open chats in chat bar order, without older orchestrator chats. */
+  chats?: readonly WorkspaceChat[];
 }
 
 /**
- * A React hook that returns a status line per workspace id. It is called on every render of the list, always, so
- * it may use other hooks.
+ * A React hook that returns a status line, and the open chats, per workspace id. It is called on every render of
+ * the list, always, so it may use other hooks.
  */
 export type UseWorkspaceStatus = (
   workspaces: readonly Workspace[],
@@ -74,7 +87,7 @@ export interface WorkspaceView {
    * Only one module may set it.
    */
   setMain(component: ComponentType<{ workspace: Workspace; chatId?: string }>): void;
-  /** Sets where the list gets its status lines. Only one module may set it. */
+  /** Sets where the list gets its status lines and row chats. Only one module may set it. */
   setStatus(useStatus: UseWorkspaceStatus): void;
   /** The form the workspace view shows to start a workspace. */
   CreateForm: ComponentType<CreateWorkspaceFormProps>;

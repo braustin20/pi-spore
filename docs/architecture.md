@@ -1776,7 +1776,11 @@ follows the topic `workspaces:list`: a snapshot of every workspace on subscribe 
 `workspace` event for each create, rename, park, resume, and archive, wherever it came from. An active or parked
 row shows an archive button on hover or keyboard focus. It asks first, as the Details archive does. With more than
 one project in the list, each project heading folds its group to the name and a count of its shown workspaces. The
-browser stores the choice per project (`pi-spore.workspaces.collapsed.<projectId>`). Other web modules
+browser stores the choice per project (`pi-spore.workspaces.collapsed.<projectId>`). A row whose workspace has
+open chats shows a chevron toggle at the left of its name. It expands the row to a link per chat, to
+`#/workspaces/<id>/chats/<chat>`, in chat bar order, with older orchestrator chats left out. The link of the
+route's chat is marked current, and a working chat shows a pulsing dot. Rows start collapsed; the browser stores
+the choice per workspace (`pi-spore.workspaces.chats.<workspaceId>`). Other web modules
 fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so
@@ -1785,7 +1789,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   mounts only while the tab is open.
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
   passes `chatId`; without it the pane shows the active orchestrator chat.
-- `setStatus` sets a React hook that returns one status line per workspace. The agents module subscribes to
+- `setStatus` sets a React hook that returns one status line per workspace, with the row's open chats in `chats`
+  (label, hint, icon, and whether it works). The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
   supplies a fresh snapshot. A busy, starting, or waiting stage agent of the workspace wins first: "Working:
   <title>" (tone `run`), or "Waiting for a free agent slot" (tone `warn`), since the worker chat of a pipeline or a
