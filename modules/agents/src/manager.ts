@@ -58,6 +58,8 @@ export interface AgentRecord {
   closed: boolean;
   /** The model a new session starts on, `provider/id`, or null for the role's default (ADR 0120). */
   model: string | null;
+  /** The thinking level a new session starts on, or null for the role's default (ADR 0175). */
+  thinking: string | null;
 }
 
 export interface ManagerOptions {
@@ -81,6 +83,12 @@ export interface ManagerOptions {
   now: () => number;
   workspace(id: string): Workspace;
   saveSessionFile(agentId: string, file: string): void;
+  /**
+   * A model or thinking level the user picked while the chat had no session file on disk. The next new session
+   * starts on it (ADR 0175).
+   */
+  saveModel(agentId: string, model: string): void;
+  saveThinking(agentId: string, level: string): void;
   saveWaiting(agentId: string, since: number | null): void;
   saveTitle(agentId: string, title: string): void;
   /** Called after a status, dialog, or waiting change, for Home and deliveries. */
@@ -179,6 +187,13 @@ const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly stri
   if (record.kind === "stage" && record.role !== "worker") return STAGE_REVIEWER_TOOLS;
   return [];
 };
+
+/**
+ * Whether the chat's session file is on disk. Pi reports the path when it starts and writes the file only at its
+ * first assistant message, so a chat can have a path and no file yet (ADR 0175).
+ */
+const hasSessionFile = async (file: string | null): Promise<boolean> =>
+  file !== null && (await stat(file).catch(() => undefined)) !== undefined;
 
 /** How long a transcript request waits for pi-subagents' reply. */
 const INSPECT_TIMEOUT_MS = 10_000;
@@ -523,6 +538,12 @@ export class AgentManager {
       await (await this.ensureRunning(live)).request("set_model", { provider, modelId }),
     );
     if (model) live.model = model;
+    // With no session file yet, the next launch starts a new session on the role default, so keep the pick on the
+    // row. A resumed session carries its own model (ADR 0175).
+    if (!(await hasSessionFile(live.record.sessionFile))) {
+      live.record.model = `${provider}/${modelId}`;
+      this.options.saveModel(live.record.id, live.record.model);
+    }
     this.publishModel(live);
     return live.model;
   }
@@ -531,6 +552,10 @@ export class AgentManager {
     const live = this.get(id);
     await (await this.ensureRunning(live)).request("set_thinking_level", { level });
     live.thinkingLevel = level;
+    if (!(await hasSessionFile(live.record.sessionFile))) {
+      live.record.thinking = level;
+      this.options.saveThinking(live.record.id, level);
+    }
     this.publishModel(live);
   }
 
@@ -796,6 +821,7 @@ export class AgentManager {
       const defaults = withModel(
         await this.options.roleDefaults(live.record.role),
         live.record.model,
+        live.record.thinking,
       );
       if (!live.model && defaults.provider && defaults.modelId) {
         live.model = { provider: defaults.provider, id: defaults.modelId };
@@ -977,7 +1003,7 @@ export class AgentManager {
   private async sessionFileArgs(live: Live, workspace: Workspace): Promise<string[]> {
     const file = live.record.sessionFile;
     const dir = join(this.options.sessionsDir, workspace.id);
-    if (file && (await stat(file).catch(() => undefined))) {
+    if (file && (await hasSessionFile(file))) {
       const { cwd } = await readTranscript(file);
       if (cwd && !(await stat(cwd).catch(() => undefined))) {
         throw new ApiError(
@@ -1001,7 +1027,11 @@ export class AgentManager {
       return ["--fork", source, "--session-dir", dir];
     }
     const role = modelArgs(
-      withModel(await this.options.roleDefaults(live.record.role), live.record.model),
+      withModel(
+        await this.options.roleDefaults(live.record.role),
+        live.record.model,
+        live.record.thinking,
+      ),
     );
     return ["--session-dir", dir, ...role];
   }

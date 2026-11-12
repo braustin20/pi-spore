@@ -69,7 +69,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - The model of a new chat (ADR 0120): `AgentsKey.activeWorker(workspaceId, { model? })`, `POST /api/agents`, and an
     orchestrator chat from `POST /api/agents/chats` take an optional `model`, stored in `agents_agents.model`. On the
     first start, `--provider` and `--model` come from it, else from `agentOverrides.orchestrator`; `--thinking`
-    always comes from the role default. A resumed session keeps its own model. An existing chat keeps its model, so
+    comes from `agents_agents.thinking`, else the role default. A model or thinking level picked in a chat that has
+    no session file yet is saved in these columns too, so a process that stops before the first message keeps the
+    pick (ADR 0175). A resumed session keeps its own model. An existing chat keeps its model, so
     `activeWorker` ignores `model` when the workspace already has one.
   - A workspace has one active orchestrator chat (a partial unique index). Only it and side chats can run; an older orchestrator
     chat is read-only history and refuses to start with 409 `chat_inactive`. The manager also refuses to start an
@@ -96,7 +98,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     it, and spore-bridge gives them their own rules.
   - Planner chats (ADR 0174): each project has one planner workspace (`workspaces_workspaces.planner = 1`, in place
     on the main checkout, name "Plan"), found or made by `POST /api/workspaces/planner { projectId }`. Its chats are
-    worker-kind chats with role `planner`: they start on `subagents.agentOverrides.planner`, launch with
+    worker-kind chats with role `planner`: they start on `subagents.agentOverrides.planner`, else
+    `agentOverrides.orchestrator` (ADR 0175), launch with
     `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_add_card`, `kanban_update_card`,
     `web_search`, `fetch_content`, `get_search_content`; `--exclude-tools 'mcp__*'`), a read-only token, and
     `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409

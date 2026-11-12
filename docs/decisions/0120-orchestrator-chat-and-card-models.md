@@ -1,6 +1,6 @@
 # 0120. The workspace chat is an orchestrator; cards choose its model; workers are subagents on `spore/auto`
 
-- Status: Accepted; superseded in part by [0141](0141-router-ladders.md) and [0162](0162-orchestrator-starts-pipeline-runs.md)
+- Status: Accepted; superseded in part by [0141](0141-router-ladders.md), [0162](0162-orchestrator-starts-pipeline-runs.md), and [0175](0175-planner-model-and-early-picks.md)
 - Date: 2026-11-07
 - Requirements: R3.1, R3.2, R3.4, R4.1, R11.4
 
