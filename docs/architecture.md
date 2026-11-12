@@ -1771,7 +1771,9 @@ panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<pro
 `#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. The list
 follows the topic `workspaces:list`: a snapshot of every workspace on subscribe and after a reconnect, then one
 `workspace` event for each create, rename, park, resume, and archive, wherever it came from. An active or parked
-row shows an archive button on hover or keyboard focus. It asks first, as the Details archive does. Other web modules
+row shows an archive button on hover or keyboard focus. It asks first, as the Details archive does. With more than
+one project in the list, each project heading folds its group to the name and a count of its shown workspaces. The
+browser stores the choice per project (`pi-spore.workspaces.collapsed.<projectId>`). Other web modules
 fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so

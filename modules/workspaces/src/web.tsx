@@ -46,6 +46,8 @@ import {
 } from "@pi-spore/ui";
 import {
   ArrowLeft,
+  ChevronDown,
+  ChevronRight,
   Layers,
   Menu,
   NotebookPen,
@@ -58,7 +60,7 @@ import {
 } from "lucide-react";
 import { type ComponentType, type ReactNode, type SubmitEvent, useEffect, useState } from "react";
 import Type from "typebox";
-import { ago, groupByProject, reduceWorkspaceList } from "./list.js";
+import { ago, groupByProject, type ProjectGroup, reduceWorkspaceList } from "./list.js";
 import { defaultWidths, layoutPanels, type PanelSize, phonePane } from "./panel-layout.js";
 import {
   type CreateWorkspaceFormProps,
@@ -476,49 +478,16 @@ function WorkspaceListColumn({
           <p className="px-2 text-sm text-muted">No workspaces.</p>
         )}
         {groups.map((group, index) => (
-          // biome-ignore lint/a11y/useSemanticElements: a fieldset brings a border and min-width that fight the list layout
-          <div
+          <ProjectGroupView
             key={group.projectId}
-            role="group"
-            aria-label={group.name}
-            className="flex flex-col gap-4"
-          >
-            {group.divider && (
-              <SectionLabel
-                role="heading"
-                aria-level={2}
-                className={cn("px-3", index > 0 && "border-t border-line pt-3")}
-              >
-                {group.name}
-              </SectionLabel>
-            )}
-            {group.plan && (
-              <PlanRow
-                projectId={group.projectId}
-                planner={group.planner}
-                selected={group.planner !== undefined && group.planner.id === selectedId}
-                onError={setPlanError}
-              />
-            )}
-            {group.parts.map((part) => (
-              <section key={part.state} aria-label={part.label} className="flex flex-col gap-0.5">
-                <SectionLabel className="px-3 pb-1">
-                  {part.label}
-                  <span className="font-mono">{part.workspaces.length}</span>
-                </SectionLabel>
-                {part.workspaces.map((workspace) => (
-                  <WorkspaceRow
-                    key={workspace.id}
-                    workspace={workspace}
-                    status={statuses.get(workspace.id)}
-                    selected={workspace.id === selectedId}
-                    now={now}
-                    onArchive={() => onArchive(workspace)}
-                  />
-                ))}
-              </section>
-            ))}
-          </div>
+            group={group}
+            first={index === 0}
+            selectedId={selectedId}
+            statuses={statuses}
+            now={now}
+            onPlanError={setPlanError}
+            onArchive={onArchive}
+          />
         ))}
       </div>
       <div className="shrink-0 border-t border-line px-4 py-2">
@@ -529,6 +498,91 @@ function WorkspaceListColumn({
         />
       </div>
     </aside>
+  );
+}
+
+/**
+ * One project's block in the list: its heading, its Plan entry, and its workspaces by state. With several projects
+ * showing, the heading folds the block to just its name and a count; the choice is stored per project.
+ */
+function ProjectGroupView({
+  group,
+  first,
+  selectedId,
+  statuses,
+  now,
+  onPlanError,
+  onArchive,
+}: {
+  group: ProjectGroup;
+  first: boolean;
+  selectedId: string | undefined;
+  statuses: ReadonlyMap<string, WorkspaceStatus>;
+  now: number;
+  onPlanError: (error: string | undefined) => void;
+  onArchive: (workspace: Workspace) => void;
+}) {
+  const [collapsed, setCollapsed] = useStoredFlag(
+    `pi-spore.workspaces.collapsed.${group.projectId}`,
+    false,
+  );
+  // One group, or the list filtered to one project: no heading, so nothing to fold.
+  const open = !(group.divider && collapsed);
+  const count = group.parts.reduce((total, part) => total + part.workspaces.length, 0);
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: a fieldset brings a border and min-width that fight the list layout
+    <div role="group" aria-label={group.name} className="flex flex-col gap-4">
+      {group.divider && (
+        <SectionLabel
+          role="heading"
+          aria-level={2}
+          className={cn("px-3", !first && "border-t border-line pt-3")}
+        >
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-label={collapsed ? `Expand ${group.name}` : `Collapse ${group.name}`}
+            onClick={() => setCollapsed(!collapsed)}
+            className="flex cursor-pointer items-center gap-1.5 uppercase hover:text-fg"
+          >
+            {collapsed ? (
+              <ChevronRight aria-hidden="true" className="size-3.5" />
+            ) : (
+              <ChevronDown aria-hidden="true" className="size-3.5" />
+            )}
+            {group.name}
+            {collapsed && <span className="font-mono">{count}</span>}
+          </button>
+        </SectionLabel>
+      )}
+      {open && group.plan && (
+        <PlanRow
+          projectId={group.projectId}
+          planner={group.planner}
+          selected={group.planner !== undefined && group.planner.id === selectedId}
+          onError={onPlanError}
+        />
+      )}
+      {open &&
+        group.parts.map((part) => (
+          <section key={part.state} aria-label={part.label} className="flex flex-col gap-0.5">
+            <SectionLabel className="px-3 pb-1">
+              {part.label}
+              <span className="font-mono">{part.workspaces.length}</span>
+            </SectionLabel>
+            {part.workspaces.map((workspace) => (
+              <WorkspaceRow
+                key={workspace.id}
+                workspace={workspace}
+                status={statuses.get(workspace.id)}
+                selected={workspace.id === selectedId}
+                now={now}
+                onArchive={() => onArchive(workspace)}
+              />
+            ))}
+          </section>
+        ))}
+    </div>
   );
 }
 
