@@ -203,6 +203,7 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
           chats: chats ?? [],
           selected,
           canStart: workspace.state === "active",
+          planner: workspace.planner,
           onNew: startChat,
           onClose: (chat) => void closeChat(chat),
           onRename: async (title) => {

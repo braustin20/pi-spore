@@ -41,6 +41,14 @@ describe("groupWorkspaces", () => {
     ]);
   });
 
+  it("leaves out planner workspaces", () => {
+    const planner = { ...workspace("plan", "active", 99), planner: true };
+    expect(ids(groupWorkspaces([...list, planner], { showArchived: true }))[0]).toEqual([
+      "active",
+      ["new-active", "other-project", "old-active"],
+    ]);
+  });
+
   it("filters by project and leaves out empty groups", () => {
     expect(ids(groupWorkspaces(list, { showArchived: false, projectId: "p2" }))).toEqual([
       ["active", ["other-project"]],
@@ -72,6 +80,7 @@ describe("groupByProject", () => {
   it("gives one group per project, sorted by name, with dividers", () => {
     expect(shape(groupByProject(list, projects, { showArchived: false }))).toEqual([
       ["Alpha", true, [["active", ["a-active"]]]],
+      ["Empty", true, []],
       [
         "Zeta",
         true,
@@ -96,10 +105,51 @@ describe("groupByProject", () => {
     );
   });
 
-  it("leaves out a project with nothing to show", () => {
+  it("keeps a project with nothing to show, for its Plan entry", () => {
+    const groups = groupByProject(list, projects, { showArchived: false });
+    expect(groups.map((group) => [group.projectId, group.parts.length])).toEqual([
+      ["p2", 1],
+      ["p3", 0],
+      ["p1", 2],
+    ]);
+  });
+
+  it("gives a project with no workspaces a group", () => {
     expect(
-      groupByProject(list, projects, { showArchived: false }).map((group) => group.projectId),
-    ).toEqual(["p2", "p1"]);
+      groupByProject([], projects, { showArchived: true }).map((group) => group.projectId),
+    ).toEqual(["p2", "p3", "p1"]);
+  });
+
+  it("keeps the visible workspaces of a removed project, with no Plan entry", () => {
+    const gone = [
+      workspace("g-active", "active", 2, "gone"),
+      { ...workspace("g-plan", "active", 3, "gone"), planner: true },
+      workspace("g-archived", "archived", 1, "old"),
+    ];
+    const groups = groupByProject([...list, ...gone], projects, { showArchived: false });
+    const removed = groups.find((group) => group.projectId === "gone");
+    expect(removed?.plan).toBe(false);
+    expect(removed?.planner).toBeUndefined();
+    expect(removed?.parts.map((part) => part.workspaces.map((each) => each.id))).toEqual([
+      ["g-active"],
+    ]);
+    expect(groups.some((group) => group.projectId === "old")).toBe(false);
+    expect(groups.filter((group) => group.plan).map((group) => group.projectId)).toEqual([
+      "p2",
+      "p3",
+      "p1",
+    ]);
+  });
+
+  it("puts a project's planner workspace on its group, not in its parts", () => {
+    const planner = { ...workspace("z-plan", "active", 99), planner: true };
+    const groups = groupByProject([...list, planner], projects, { showArchived: true });
+    expect(groups.find((group) => group.projectId === "p1")?.planner?.id).toBe("z-plan");
+    expect(groups.find((group) => group.projectId === "p2")?.planner).toBeUndefined();
+    const ids = groups.flatMap((group) =>
+      group.parts.flatMap((part) => part.workspaces.map((each) => each.id)),
+    );
+    expect(ids).not.toContain("z-plan");
   });
 
   it("shows no divider for a single project", () => {

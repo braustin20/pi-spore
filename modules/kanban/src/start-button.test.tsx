@@ -262,3 +262,14 @@ describe("the Start button on a board card", () => {
     expect(window.location.hash).toBe("");
   });
 });
+
+describe("the start targets of an open card", () => {
+  it("leave out the planner workspace", async () => {
+    const planner: Workspace = { ...workspace, id: "plan", name: "Plan", planner: true };
+    await render([card()], async () => ({}), {
+      params: { cardId: "c1" },
+      workspaces: () => [planner],
+    });
+    expect(buttonNamed("Start in an existing workspace").disabled).toBe(true);
+  });
+});

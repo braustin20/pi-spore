@@ -47,6 +47,7 @@ async function renderBar(
           chats={[main]}
           selected={main}
           canStart={canStart}
+          planner={false}
           onNew={onNew}
           onRename={async () => {}}
           onClose={() => {}}
@@ -84,6 +85,7 @@ describe("ChatBar", () => {
             chats={[busy, idle]}
             selected={idle}
             canStart
+            planner={false}
             onNew={() => {}}
             onRename={async () => {}}
             onClose={() => {}}
@@ -118,6 +120,37 @@ describe("ChatBar", () => {
       ["side", false],
       ["side", true],
     ]);
+  });
+
+  it("offers only New chat in a planner workspace, whichever chat is selected", async () => {
+    const calls: [string, boolean][] = [];
+    const planner: Agent = { ...chat("stage", "idle"), role: "worker", kind: "stage" };
+    container = document.body.appendChild(document.createElement("div"));
+    reactRoot = createRoot(container);
+    await act(async () =>
+      reactRoot?.render(
+        <TooltipProvider>
+          <ChatBar
+            workspaceId="w1"
+            chats={[planner]}
+            selected={planner}
+            canStart
+            planner
+            onNew={(kind, fork) => calls.push([kind, fork])}
+            onRename={async () => {}}
+            onClose={() => {}}
+          />
+        </TooltipProvider>,
+      ),
+    );
+    const trigger = buttons().find((b) => b.getAttribute("aria-label") === "New chat");
+    const menu = await openMenu(trigger);
+    const items = [...menu.querySelectorAll<HTMLElement>("[role=menuitem]")];
+    expect(items.map((item) => item.textContent)).toEqual([
+      "New chatStart a fresh planner chat. The current one stops and stays readable.",
+    ]);
+    await act(async () => items[0]?.click());
+    expect(calls).toEqual([["worker", false]]);
   });
 
   it("disables the + menu when no chat can start", async () => {

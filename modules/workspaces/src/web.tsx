@@ -9,7 +9,7 @@ import {
   ProjectList,
   parse,
   type StepReport,
-  type Workspace,
+  Workspace,
 } from "@pi-spore/shared";
 import {
   Button,
@@ -48,6 +48,7 @@ import {
   ArrowLeft,
   Layers,
   Menu,
+  NotebookPen,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -56,6 +57,7 @@ import {
   X,
 } from "lucide-react";
 import { type ComponentType, type ReactNode, type SubmitEvent, useEffect, useState } from "react";
+import Type from "typebox";
 import { ago, groupByProject, reduceWorkspaceList } from "./list.js";
 import { defaultWidths, layoutPanels, type PanelSize, phonePane } from "./panel-layout.js";
 import {
@@ -333,6 +335,54 @@ function WorkspaceRow({
   );
 }
 
+/** The answer of `POST /api/workspaces/planner`. */
+const PlannerWorkspaceResponse = Type.Object({ workspace: Workspace });
+
+/**
+ * The project's Plan entry (ADR 0174). It links to the planner workspace, or makes it on the first click and then
+ * opens it.
+ */
+function PlanRow({
+  projectId,
+  planner,
+  selected,
+  onError,
+}: {
+  projectId: string;
+  planner: Workspace | undefined;
+  selected: boolean;
+  onError: (error: string | undefined) => void;
+}) {
+  const api = useApi();
+  const make = () => {
+    onError(undefined);
+    api
+      .send("POST", "workspaces/planner", { projectId })
+      .then((body) => {
+        const { workspace } = parse(PlannerWorkspaceResponse, body, "planner workspace");
+        window.location.hash = `#/workspaces/${workspace.id}`;
+      })
+      .catch((caught: unknown) => onError(message(caught)));
+  };
+  return (
+    <ListRow
+      href={planner ? `#/workspaces/${planner.id}` : "#"}
+      selected={selected}
+      onClick={(event) => {
+        if (planner) return;
+        event.preventDefault();
+        make();
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <NotebookPen aria-hidden="true" className="size-3.5 shrink-0 text-muted" />
+        <span className="min-w-0 flex-1 truncate text-sm font-medium">Plan</span>
+        <span className="shrink-0 text-xs text-muted">Cards only</span>
+      </div>
+    </ListRow>
+  );
+}
+
 function WorkspaceListColumn({
   workspaces,
   projects,
@@ -359,6 +409,7 @@ function WorkspaceListColumn({
   onArchive: (workspace: Workspace) => void;
 }) {
   const [showArchived, setShowArchived] = useStoredFlag("pi-spore.workspaces.archived", false);
+  const [planError, setPlanError] = useState<string | undefined>();
   const statuses = useStatus(workspaces ?? []);
   const projectName = (id: string) => projects.find((candidate) => candidate.id === id)?.name ?? id;
   const groups = groupByProject(workspaces ?? [], projects, { showArchived, projectId });
@@ -417,7 +468,7 @@ function WorkspaceListColumn({
         </div>
       )}
       <div className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-2 py-3">
-        {error && <Notice tone="fail">{error}</Notice>}
+        {(error ?? planError) && <Notice tone="fail">{error ?? planError}</Notice>}
         {workspaces === undefined && !error && (
           <p className="px-2 text-sm text-muted">Loading...</p>
         )}
@@ -440,6 +491,14 @@ function WorkspaceListColumn({
               >
                 {group.name}
               </SectionLabel>
+            )}
+            {group.plan && (
+              <PlanRow
+                projectId={group.projectId}
+                planner={group.planner}
+                selected={group.planner !== undefined && group.planner.id === selectedId}
+                onError={setPlanError}
+              />
             )}
             {group.parts.map((part) => (
               <section key={part.state} aria-label={part.label} className="flex flex-col gap-0.5">
@@ -779,7 +838,9 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
 
   const workspace = workspaces?.find((candidate) => candidate.id === selectedId);
   const project = projects.find((candidate) => candidate.id === workspace?.projectId);
-  const paneTabs = orderedTabs();
+  // A planner workspace is chat only: no details column and no tabs (ADR 0174).
+  const details = workspace !== undefined && !workspace.planner;
+  const paneTabs = details ? orderedTabs() : [];
   const shown = phone
     ? phonePane({
         pane,
@@ -791,7 +852,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
   const layout = layoutPanels({
     window: windowWidth,
     list: listOpen ? listWidth : "closed",
-    right: !workspace ? "absent" : rightOpen ? rightWidth : "closed",
+    right: !details ? "absent" : rightOpen ? rightWidth : "closed",
     wide,
   });
 
@@ -930,7 +991,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
           {listColumn}
         </>
       )}
-      {phone && workspace && typeof shown === "object" && (
+      {phone && workspace && details && typeof shown === "object" && (
         <RightColumn
           workspace={workspace}
           project={project}
@@ -946,6 +1007,7 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
       )}
       {!phone &&
         workspace &&
+        details &&
         (rightOpen ? (
           <RightColumn
             workspace={workspace}
