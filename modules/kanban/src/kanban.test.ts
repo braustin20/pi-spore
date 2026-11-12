@@ -788,6 +788,27 @@ describe("starting work in an existing workspace", () => {
     expect((await getCard(card.id)).card).toMatchObject({ column: "backlog" });
     expect((await getCard(card.id)).card.workspaceId).toBeUndefined();
   });
+
+  it("refuses the planner workspace, so work from a card never starts there (ADR 0174)", async () => {
+    const game = await addProject("game");
+    const planner = parse(
+      Type.Object({ workspace: Workspace }),
+      await json(await server.request("POST", "/api/workspaces/planner", { projectId: game.id })),
+      "planner",
+    ).workspace;
+    const card = await addCard({ title: "Somewhere", projectId: game.id });
+
+    expect(
+      await errorCode(
+        await server.request("POST", `/api/kanban/cards/${card.id}/start`, {
+          workspaceId: planner.id,
+        }),
+        409,
+      ),
+    ).toBe("planner_workspace");
+    expect((await getCard(card.id)).card).toMatchObject({ column: "backlog" });
+    expect((await getCard(card.id)).card.workspaceId).toBeUndefined();
+  });
 });
 
 describe("automatic moves", () => {

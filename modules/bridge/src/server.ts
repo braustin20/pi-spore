@@ -98,10 +98,29 @@ export const bridgeModule: ServerModule = {
       return run;
     };
 
-    /** A side chat changes nothing (ADR 0033); the tools leave it out, and the routes refuse it as well. */
+    /** A read-only chat changes nothing (ADR 0033); the tools leave it out, and the routes refuse it as well. */
     const refuseReadOnly = (caller: BridgeCaller, what: string) => {
       if (caller.readOnly)
-        throw new ApiError(403, "read_only_chat", `A side chat is read-only and cannot ${what}`);
+        throw new ApiError(403, "read_only_chat", `A read-only chat cannot ${what}`);
+    };
+
+    /**
+     * A planner chat is read-only too, but writing cards is its whole job, so it may (ADR 0174). It moves a card
+     * only within the columns the user works from; the user moves a card into `in-progress`, `review`, or `done`
+     * themselves, and they start it. `columns` are the column the request asks for and, for a move, the card's column
+     * now, so a planner cannot pull a card out of work either.
+     */
+    const refuseReadOnlyUnlessPlanner = (
+      caller: BridgeCaller,
+      what: string,
+      ...columns: (CardColumn | undefined)[]
+    ) => {
+      if (!caller.readOnly) return;
+      const planning = columns.every(
+        (column) => column === undefined || column === "backlog" || column === "ready",
+      );
+      if (planning && workspaces.get(caller.workspaceId).planner) return;
+      refuseReadOnly(caller, what);
     };
 
     /** ADR 0154: a run's coordinator lists and adds cards; the user changes and starts them. */
@@ -161,19 +180,23 @@ export const bridgeModule: ServerModule = {
           ...(label ? { label } : {}),
           ...(column ? { column: column as CardColumn } : {}),
         }),
-        workspaces: workspaces.list({ projectId, state: "active" }).map((workspace) => ({
-          id: workspace.id,
-          name: workspace.name,
-          current: workspace.id === caller.workspaceId,
-        })),
+        // The planner workspace is not a place to work, so no chat is offered it as a start target (ADR 0174).
+        workspaces: workspaces
+          .list({ projectId, state: "active" })
+          .filter((workspace) => !workspace.planner)
+          .map((workspace) => ({
+            id: workspace.id,
+            name: workspace.name,
+            current: workspace.id === caller.workspaceId,
+          })),
       };
       return c.json(body);
     });
 
     host.routes.post("/cards", async (c) => {
       const caller = bridgeCaller(c);
-      refuseReadOnly(caller, "change cards");
       const request = parseJsonBody(BridgeAddCardRequest, await c.req.text(), "card");
+      refuseReadOnlyUnlessPlanner(caller, "add cards", request.column);
       const { blockedBy: ids, ...fields } = request;
       const blockedBy = blockers(caller, ids);
       // ADR 0154: a coordinator's card waits in the backlog, marked with its run, until the user moves it.
@@ -192,10 +215,15 @@ export const bridgeModule: ServerModule = {
 
     host.routes.post("/cards/:id", async (c) => {
       const caller = bridgeCaller(c);
-      refuseReadOnly(caller, "change cards");
-      refuseCoordinator(caller);
       const request = parseJsonBody(BridgeUpdateCardRequest, await c.req.text(), "card change");
       const card = ownCard(caller, c.req.param("id"));
+      refuseReadOnlyUnlessPlanner(
+        caller,
+        "change cards",
+        request.column,
+        request.column === undefined ? undefined : card.column,
+      );
+      refuseCoordinator(caller);
       const { blockedBy: ids, ...fields } = request;
       const blockedBy = blockers(caller, ids);
       const changed = await cards.update(

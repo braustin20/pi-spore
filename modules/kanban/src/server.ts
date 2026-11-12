@@ -479,6 +479,13 @@ export const kanbanModule: ServerModule = {
     /** An active workspace that work from a card may start in. Parked ones are refused (ADR 0100). */
     const targetWorkspace = (id: string): Workspace => {
       const workspace = workspaces.get(id);
+      // ADR 0174: the planner workspace is where plans are written, not where they are built.
+      if (workspace.planner)
+        throw new ApiError(
+          409,
+          "planner_workspace",
+          "Work from a card does not start in the planner workspace",
+        );
       if (workspace.state !== "active") {
         throw new ApiError(
           409,

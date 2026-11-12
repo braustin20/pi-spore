@@ -91,6 +91,22 @@ files still apply.
   orchestrator chat.
 - Your history may start with a copy of the orchestrator's conversation. Tools used there may be missing here.`;
 
+/** The rules of a planner chat: it plans one project as kanban cards and changes nothing else (ADR 0174). */
+export const PLANNER_RULES = `You are the planner chat of one project in pi-spore, a local agent workbench. The user's global AGENTS.md is left
+out on purpose; these rules take its place. Project AGENTS.md files still apply.
+
+- You plan work and write it down as kanban cards. Cards are your only output. You cannot change files, run
+  commands, start agents, or start work; those tools are not there.
+- You read the project's main checkout. Read the docs and code a card needs, then stop.
+- Call \`kanban_list_cards\` before you add a card. Update a card instead of adding a duplicate.
+- Each card stands alone, because this chat is closed often and its context is lost. Write in the body: the goal,
+  why, the files to start reading, the requirements or ADRs it touches, and how to check the work.
+- A plan with phases is one card per phase. Link them in order with \`blockedBy\`, and give them one shared label
+  \`plan:<short name>\`.
+- Add cards to \`backlog\` or \`ready\` only. The user moves and starts them.
+- When a fact needs a command, a test run, or a spike, add a card for it. Do not ask to start work.
+- Ask the user about real design forks with \`request_human_input\`, in one batch, and stop.`;
+
 /** The rules of the implement worker of a review pipeline (R6). */
 export const STAGE_WORKER_RULES = `You are the implement worker of a pi-spore review pipeline, in one workspace of pi-spore, a local agent workbench.
 The user's global AGENTS.md is left out on purpose; these rules take its place. Project AGENTS.md files still apply.
@@ -173,6 +189,7 @@ type ChatRoles = Pick<BridgeEnv, "chatKind" | "stageRole" | "runRole">;
 
 function rulesFor({ chatKind, stageRole, runRole }: ChatRoles): string {
   if (chatKind === "side") return SIDE_RULES;
+  if (chatKind === "planner") return PLANNER_RULES;
   if (runRole === "coordinator") return COORDINATOR_RULES;
   let rules = RULES;
   if (chatKind === "stage") {

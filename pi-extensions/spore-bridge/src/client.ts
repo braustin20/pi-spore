@@ -14,8 +14,11 @@ export interface BridgeEnv {
   token: string;
   /** The pi-spore server's own pid, so the bash guard can refuse to stop it. */
   serverPid: number;
-  /** `side`: a read-only side chat (ADR 0033). `stage`: a pipeline stage agent (R6). Both get their own rules. */
-  chatKind: "worker" | "side" | "stage";
+  /**
+   * `side`: a read-only side chat (ADR 0033). `planner`: a chat that plans one project as kanban cards
+   * (ADR 0174). `stage`: a pipeline stage agent (R6). Each gets its own rules.
+   */
+  chatKind: "worker" | "side" | "planner" | "stage";
   /** Set exactly when `chatKind` is `stage`. */
   stageRole?: StageRole;
   /** Set in a run's chats (R7): the coordinator, or an agent in one of its lanes. */
@@ -57,10 +60,11 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
     serverPid,
     ...(runRole && runId ? { runRole, runId } : {}),
   };
-  if (kind === "worker" || kind === "side") return { ...base, chatKind: kind };
+  if (kind === "worker" || kind === "side" || kind === "planner")
+    return { ...base, chatKind: kind };
   if (kind !== "stage")
     throw new Error(
-      `spore-bridge: PI_SPORE_CHAT_KIND must be worker, side, or stage, not "${kind}"`,
+      `spore-bridge: PI_SPORE_CHAT_KIND must be worker, side, planner, or stage, not "${kind}"`,
     );
   const role = STAGE_ROLES.find((candidate) => candidate === env.PI_SPORE_STAGE_ROLE);
   if (!role)
