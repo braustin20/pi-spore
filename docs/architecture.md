@@ -46,8 +46,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   already loads it), and `-e <repo>/pi-extensions/spore-bridge` (the same way). The cwd is the workspace directory.
   pi-spore's rules come from spore-bridge, not from a prompt file (ADR 0031).
 - Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (this
-  process's agent token, ADR 0032), `PI_SPORE_SERVER_PID` (the server's pid, for the bash guard, ADR 0160), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker` or
-  `side`), `PI_SPORE_UNITY_PROJECT` (Unity projects), and from launch hooks `PI_SPORE_RUN_ID` and `PI_SPORE_RUN_ROLE`
+  process's agent token, ADR 0032), `PI_SPORE_SERVER_PID` (the server's pid, for the bash guard, ADR 0160), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker`,
+  `side`, `planner`, or `stage`), `PI_SPORE_UNITY_PROJECT` (Unity projects), and from launch hooks `PI_SPORE_RUN_ID` and `PI_SPORE_RUN_ROLE`
   (`coordinator` or `lane`, section 9). Later: the workspace action env.
 - **Launch hooks** (ADR 0150). `AgentsKey.addLaunchContext(hook)` registers a synchronous hook that the manager calls
   at each launch with the agent and its workspace. It may add `env` and replace the tool allowlist with `tools`
@@ -94,6 +94,16 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     read,grep,find,ls,request_human_input,artifacts_list,artifacts_read` and `--exclude-tools 'mcp__*'` (ADR 0033,
     ADR 0070). Their bridge token is read-only, so bridge routes that run commands refuse
     it, and spore-bridge gives them their own rules.
+  - Planner chats (ADR 0174): each project has one planner workspace (`workspaces_workspaces.planner = 1`, in place
+    on the main checkout, name "Plan"), found or made by `POST /api/workspaces/planner { projectId }`. Its chats are
+    worker-kind chats with role `planner`: they start on `subagents.agentOverrides.planner`, launch with
+    `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_add_card`, `kanban_update_card`,
+    `web_search`, `fetch_content`, `get_search_content`; `--exclude-tools 'mcp__*'`), a read-only token, and
+    `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
+    `planner_no_side_chats`. The bridge lets a planner token add and edit cards, and move them only between
+    `backlog` and `ready`. Rename, park, resume, and archive of the planner workspace answer 409
+    `planner_workspace`; it does not block removing the project. The web shows it as a "Plan" row first under each
+    project, opens it as a chat-only page (no Details column), and leaves it out of the kanban pickers.
   - Title: the first user message, cut to 60 characters, set on the first prompt. Chats from before titles take it
     from their history when first read; side chats never take it from the copied history. The user can rename.
   - Chat bar: the tab of a working chat (busy, starting, or waiting) shows a pulsing dot that screen readers read as
@@ -164,9 +174,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
     `artifacts_read` `{ scope, path }` (text only; other bytes answer 415 `not_text`), and `artifacts_write`
     `{ scope, path, content }`, which replaces a file at that path. The bridge takes the folder from the token,
-    never from the request. A read-only side chat may list and read; a write answers 403 `read_only_chat`.
+    never from the request. A read-only side chat or planner chat may list and read; a write answers 403
+    `read_only_chat`.
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
-    chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033). Stage agents get stage worker or stage
+    chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033), and planner chats
+    (`PI_SPORE_CHAT_KIND=planner`) get planner rules (ADR 0174). Stage agents get stage worker or stage
     reviewer rules: end every turn with `report`, and record fail-first proofs. The stage worker runs `check`, then
     the full `run_action test`, before every `report`, and puts both results in it, so a break shows up before the
     reviewers, not at the final gates. The orchestrator rules say to start
@@ -341,8 +353,8 @@ export interface ServerHost {
 | Entity | Meaning | Key fields |
 |---|---|---|
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
-| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card |
-| Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`), kind (worker, side), active, closed, closed at, title, forked from, model selection, session path, process state, parent agent |
+| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card, planner (the project's planner workspace, ADR 0174) |
+| Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`, `planner`, or a stage role), kind (worker, side, stage), active, closed, closed at, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, run workspace, run line (`run/<slug>-<id>`), base, gates, coordinator agent |
 | Lane | A workspace inside a run | id, run, name, wave, depends on, brief artifact, pipeline, model, state, workspace, approval, message |
 | Pipeline | A declared stage list (file) | id, source (user, project, or built-in), stages |
@@ -1477,7 +1489,8 @@ R11.
   toggle, shown only when there are any. Any move clears the mark.
 - Starting work from a card (R11.4, ADR 0100): `POST /api/kanban/cards/:id/start` with either the create-workspace
   fields (a new workspace through `WorkspacesKey.create`, named after the card) or `{ workspaceId }` (an active
-  workspace of the card's project; a parked one is 409 `workspace_not_active`, another project's 422
+  workspace of the card's project; a parked one is 409 `workspace_not_active`, the planner workspace 409
+  `planner_workspace` (ADR 0174), another project's 422
   `project_mismatch`). The card links to the workspace and moves to In progress, and in the same transaction its
   brief (title, labels, due day, blockers, notes) goes to the workspace's active orchestrator chat through
   `AgentsKey.deliver`. `AgentsKey.activeWorker` creates that chat if the workspace has none. A busy worker gets the
