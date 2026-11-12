@@ -18,7 +18,6 @@ import {
   Panel,
   PanelHeader,
   showToast,
-  splitHash,
   Textarea,
   usePhone,
 } from "@pi-spore/ui";
@@ -94,16 +93,25 @@ const TONES = {
   notice: "warn",
 } as const;
 
-/** Each new item makes one signal: a toast while the user looks at the page on a desktop, else a notification. */
-function notifyItem(item: InboxItem): void {
+/**
+ * Each new item makes one signal: a toast while the user looks at the page on a desktop, else a
+ * notification. The chat on screen shows its own asks, so an item of it makes no signal at all while
+ * the page is visible.
+ */
+function notifyItem(item: InboxItem, shownChat: () => string | undefined): void {
+  if (
+    item.kind !== "notice" &&
+    item.chat.id === shownChat() &&
+    document.visibilityState === "visible"
+  ) {
+    return;
+  }
   if (!document.hasFocus()) {
     showNotification(item);
     return;
   }
   if (!window.matchMedia(DESKTOP_QUERY).matches) return;
-  const href = itemHref(item);
-  if (`#${splitHash(window.location.hash).path}` === href) return; // the chat page shows its own asks
-  showToast({ ...notification(item), tone: TONES[item.kind], href });
+  showToast({ ...notification(item), tone: TONES[item.kind], href: itemHref(item) });
 }
 
 /** The chat's name as Home shows it: its title, and what kind of chat it is when that is not the worker chat. */
@@ -487,8 +495,8 @@ export const attentionWeb: WebModule = {
   requires: ["agents"],
   core: true,
   setup(host) {
-    const store = createInboxStore(host.api, notifyItem);
-    const { DialogCard, addChatPanel, setUserWaits } = host.use(AgentsWebKey);
+    const { DialogCard, addChatPanel, setUserWaits, shownChat } = host.use(AgentsWebKey);
+    const store = createInboxStore(host.api, (item) => notifyItem(item, shownChat));
     setUserWaits(() => {
       const inbox = useSyncExternalStore(store.subscribe, store.get);
       return useMemo(() => chatWaits(inbox), [inbox]);

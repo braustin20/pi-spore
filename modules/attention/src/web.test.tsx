@@ -55,6 +55,8 @@ const inboxWith = (shown: Question): Inbox => ({
 
 let container: HTMLElement | undefined;
 let root: Root | undefined;
+/** The chat the fake chat pane shows, as `AgentsWeb.shownChat` tells it. */
+let shownChat: string | undefined;
 afterEach(async () => {
   // The toast list is module state, so close what a test left open.
   await act(async () => {
@@ -69,6 +71,7 @@ afterEach(async () => {
   vi.unstubAllGlobals();
   vi.useRealTimers();
   window.location.hash = "";
+  shownChat = undefined;
   sessionStorage.clear();
 });
 
@@ -89,6 +92,7 @@ async function render(shown: Question) {
     DialogCard,
     addChatPanel: () => {},
     setUserWaits: () => {},
+    shownChat: () => shownChat,
   };
   const host = {
     api,
@@ -353,8 +357,17 @@ const withSecond = (): Inbox => {
   return { ...first, items: [...first.items, ...second.items] };
 };
 
-function fakeScreen({ focused, desktop }: { focused: boolean; desktop: boolean }) {
+function fakeScreen({
+  focused,
+  desktop,
+  visible = true,
+}: {
+  focused: boolean;
+  desktop: boolean;
+  visible?: boolean;
+}) {
   vi.spyOn(document, "hasFocus").mockReturnValue(focused);
+  vi.spyOn(document, "visibilityState", "get").mockReturnValue(visible ? "visible" : "hidden");
   vi.stubGlobal("matchMedia", (query: string) => ({
     matches: query === DESKTOP && desktop,
     addEventListener() {},
@@ -407,12 +420,40 @@ describe("a new item on Home", () => {
     expect(toasts()).toHaveLength(0);
   });
 
-  it("shows no toast on the chat page of the item", async () => {
-    fakeScreen({ focused: true, desktop: true });
-    window.location.hash = "#/workspaces/W1/chats/C1";
+  it("makes no toast and no notification for the chat on screen, opened without its id in the hash", async () => {
+    const made = fakeScreen({ focused: true, desktop: true });
+    window.location.hash = "#/workspaces/W1";
+    shownChat = "C1";
     const { later } = await render(question({}));
     await later(withSecond());
     expect(toasts()).toHaveLength(0);
+    expect(made).toEqual([]);
+  });
+
+  it("makes no notification for the chat on screen while the page is visible without focus", async () => {
+    const made = fakeScreen({ focused: false, desktop: true });
+    shownChat = "C1";
+    const { later } = await render(question({}));
+    await later(withSecond());
+    expect(made).toEqual([]);
+    expect(toasts()).toHaveLength(0);
+  });
+
+  it("shows a toast for an item of another chat than the one on screen", async () => {
+    const made = fakeScreen({ focused: true, desktop: true });
+    shownChat = "C2";
+    const { later } = await render(question({}));
+    await later(withSecond());
+    expect(toasts()).toHaveLength(1);
+    expect(made).toEqual([]);
+  });
+
+  it("makes a notification for the chat on screen while the page is hidden", async () => {
+    const made = fakeScreen({ focused: false, desktop: true, visible: false });
+    shownChat = "C1";
+    const { later } = await render(question({}));
+    await later(withSecond());
+    expect(made).toEqual([NEW_TITLE]);
   });
 
   it("links the toast to the chat and closes it after 8 seconds", async () => {
