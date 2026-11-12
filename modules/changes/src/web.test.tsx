@@ -40,8 +40,8 @@ let container: HTMLElement | undefined;
 afterEach(() => container?.remove());
 
 /**
- * Renders a component of the module against an API whose event socket never replays a snapshot, as for a second
- * subscriber to a topic (EventSocket sends the snapshot to the first listener only).
+ * Renders a component of the module against an API whose event socket never replays a snapshot, so the comments on
+ * screen can only come from the load on mount or an event.
  */
 async function renderPanel(
   pick: "chat" | "tab",

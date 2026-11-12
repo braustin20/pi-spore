@@ -1261,7 +1261,7 @@ counts, then its hunks in unified form.
   bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
   `stale` event.
 - The module adds a chat panel (`AgentsWeb.addChatPanel`) above the composer of an orchestrator chat. It shows the
-  staged comments with a count, Drop on each, and Drop all. It follows the `changes:<workspace id>` topic. The socket sends the first snapshot to the first listener of a topic only, so the panel
+  staged comments with a count, Drop on each, and Drop all. It follows the `changes:<workspace id>` topic. The panel
   and the Changes tab each also load the open comments when they mount. A newer event wins over a late load.
 
 ## 11e. Pull requests

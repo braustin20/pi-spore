@@ -36,8 +36,8 @@ export function StagedComments({ chatId }: { chatId: string }) {
     if (!workspaceId) return;
     let live = true;
     let newer = false;
-    // The socket sends a snapshot to the first listener of a topic only, so load the comments here too. An event
-    // that comes first is newer than the load.
+    // Load the open comments on mount too, while the socket may still be connecting. An event that comes first is
+    // newer than the load.
     api
       .get(`changes/workspaces/${workspaceId}/comments`)
       .then((body) => {
