@@ -859,6 +859,32 @@ describe("cards from agents (ADR 0100)", () => {
     expect(byUser.card.createdBy).toEqual(author);
   });
 
+  it("reads one card with its full notes, which a read-only chat may read too", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "reads");
+    const call = asAgent(server, agentId, workspaceId);
+    const { card: added } = await json<{ card: Card }>(
+      await call(
+        "POST",
+        "cards",
+        { title: "Phase 1", body: "# Goal\n\nRead the notes.  " },
+        "toolu_r1",
+      ),
+      201,
+    );
+    const { card } = await json<{ card: Card }>(await call("GET", `cards/${added.id}`));
+    expect(card).toMatchObject({
+      id: added.id,
+      title: "Phase 1",
+      body: "# Goal\n\nRead the notes.  ",
+    });
+    // Reading changes nothing, so a read-only side chat gets it as well.
+    const readOnly = await json<{ card: Card }>(
+      await asAgent(server, agentId, workspaceId, true)("GET", `cards/${added.id}`),
+    );
+    expect(readOnly.card.body).toBe("# Goal\n\nRead the notes.  ");
+  });
+
   it("keeps an agent away from other projects' cards and from cards with no project", async () => {
     const server = await start();
     const mine = await workspace(server, "mine");
@@ -875,6 +901,9 @@ describe("cards from agents (ADR 0100)", () => {
     );
     const call = asAgent(server, mine.agentId, mine.workspaceId);
     for (const id of [foreign.id, loose.id]) {
+      const read = await call("GET", `cards/${id}`);
+      expect(read.status).toBe(404);
+      expect(await read.json()).toMatchObject({ error: { code: "card_not_found" } });
       const changed = await call("POST", `cards/${id}`, { title: "Mine now" });
       expect(changed.status).toBe(404);
       expect(await changed.json()).toMatchObject({ error: { code: "card_not_found" } });

@@ -36,7 +36,7 @@ export const SIDE_CHAT_TOOLS: readonly string[] = [
  */
 export const PLANNER_CHAT_TOOLS: readonly string[] = [
   "--tools",
-  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content",
+  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_read_card,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content",
   "--exclude-tools",
   "mcp__*",
 ];

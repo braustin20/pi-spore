@@ -100,9 +100,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     on the main checkout, name "Plan"), found or made by `POST /api/workspaces/planner { projectId }`. Its chats are
     worker-kind chats with role `planner`: they start on `subagents.agentOverrides.planner`, else
     `agentOverrides.orchestrator` (ADR 0175), launch with
-    `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_add_card`, `kanban_update_card`,
-    `web_search`, `fetch_content`, `get_search_content`; `--exclude-tools 'mcp__*'`), a read-only token, and
-    `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
+    `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_read_card`, `kanban_add_card`,
+    `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`; `--exclude-tools 'mcp__*'`), a read-only
+    token, and `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
     `planner_no_side_chats`. The bridge lets a planner token add and edit cards, and move them only between
     `backlog` and `ready`. Rename, park, resume, and archive of the planner workspace answer 409
     `planner_workspace`; it does not block removing the project. The web shows it as a "Plan" row first under each
@@ -162,11 +162,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     server's name or command line (read once with `ps`) or name `node`, `dist/main.js`, `pi-spore`, or
     `packages/server`; `fuser -k` on the port. Other commands run. A script or `bash -c` can still get past it.
   - Card tools (ADR 0100), limited to cards of the agent's project: `kanban_list_cards` `{ label?, column? }` (also
-    lists the project's active workspaces), `kanban_add_card` and `kanban_update_card` (title, body, column, labels,
-    due day, `blockedBy` card ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?,
-    base? | run?, base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
+    lists the project's active workspaces, without bodies), `kanban_read_card` `{ cardId }` (the card's line and its
+    full notes), `kanban_add_card` and `kanban_update_card` (title, body, column, labels, due day, `blockedBy` card
+    ids, `model`), and `kanban_start_card` `{ cardId, reason, workspaceId? | isolation?, line?, base? | run?,
+    base? }`. The start tool files a `card-start` approval on Home and ends the turn with `terminate: true`; the
     decision comes back as a new user message. Without `workspaceId` the target is a new workspace with isolation
-    `new` unless another is given; `run: true` asks for a new run. A run's coordinator gets only the list and add
+    `new` unless another is given; `run: true` asks for a new run. A run's coordinator gets the list, read, and add
     tools (ADR 0154); see section 9.
   - `open_pr` `{ title, body }`, only in the orchestrator chat (not side, stage, coordinator, or lane agents; ADR
     0163): files a `workspace-pr` approval through `POST /api/bridge/workspace/pr` and ends the turn with
@@ -204,7 +205,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Run tools (R7, ADR 0150), by `PI_SPORE_RUN_ROLE`. The coordinator gets `start_lane` `{ name, brief, wave,
     dependsOn?, pipeline?, model? }`, `revise_lane` `{ laneId, brief }`, `merge_lane` `{ laneId }`, and
     `answer_lane` `{ questionId, answer }`, and coordinator rules in place of the orchestrator rules. Of the card
-    tools it gets only `kanban_list_cards` and `kanban_add_card` (ADR 0154). A lane agent
+    tools it gets only `kanban_list_cards`, `kanban_read_card`, and `kanban_add_card` (ADR 0154). A lane agent
     gets `ask_coordinator` `{ question }` in place of `request_human_input`; it files the question and ends the turn
     with `terminate: true`. Lane agents get one more paragraph of rules: ask the coordinator, never the user.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
@@ -745,13 +746,13 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   the run's settings override (section 13); the run workspace and every lane workspace get it, with source `run`.
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
-  kanban_list_cards,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,open_run_pr,run_status`: no write or shell
-  tools. Its token is not read-only, so it writes artifacts and calls the run routes. Every agent in a lane workspace
-  gets `PI_SPORE_RUN_ROLE=lane`.
+  kanban_list_cards,kanban_read_card,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,
+  open_run_pr,run_status`: no write or shell tools. Its token is not read-only, so it writes artifacts and calls the
+  run routes. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
 - **Follow-up cards** (ADR 0154). The coordinator adds a card for follow-up work out of the lanes' scope; it never
   changes or starts one. A card added from a run workspace goes to `backlog` with the label
   `from-run:<slug of the run name, up to 31 characters>`; the bridge sets both. A card change or start from a run
-  workspace answers 403 `run_coordinator`. Lane agents keep all four card tools.
+  workspace answers 403 `run_coordinator`. Lane agents keep all five card tools.
 - **Lanes.** `start_lane` takes a brief that is an artifact of the run workspace (404 `brief_not_found`), a wave
   (1 or more), lane ids it depends on (400 `bad_depends_on`), a pipeline (default `default`), and a model.
   - Model (R4.8, ADR 0014): no model, or one whose tier (ADR 0023) is not above the worker role default's, makes
@@ -1868,8 +1869,9 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   token in `?token=` (browsers cannot set headers on a
   WebSocket). Agent tokens are never accepted. `ApiClient.socketUrl(path)` builds the URL in the page.
 - Routes under `/api/bridge/` are for spore-bridge and take only agent tokens; all others take only the user's token
-  (ADR 0032). Card routes (ADR 0100): `GET /api/bridge/cards?label=&column=`, `POST /api/bridge/cards`,
-  `POST /api/bridge/cards/:id` (change), and `POST /api/bridge/cards/:id/start` (files an approval). The mutating
+  (ADR 0032). Card routes (ADR 0100): `GET /api/bridge/cards?label=&column=`, `GET /api/bridge/cards/:id` (one card
+  with its body; a read-only token may read), `POST /api/bridge/cards`, `POST /api/bridge/cards/:id` (change), and
+  `POST /api/bridge/cards/:id/start` (files an approval). The mutating
   ones refuse a read-only side chat with 403 `read_only_chat`.
 - CLI for approvals: `pi-spore approvals list [--all]`, `pi-spore approvals approve <id>`, `pi-spore approvals
   decline <id> [--note text]`.

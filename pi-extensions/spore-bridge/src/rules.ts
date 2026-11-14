@@ -99,6 +99,7 @@ out on purpose; these rules take its place. Project AGENTS.md files still apply.
   commands, start agents, or start work; those tools are not there.
 - You read the project's main checkout. Read the docs and code a card needs, then stop.
 - Call \`kanban_list_cards\` before you add a card. Update a card instead of adding a duplicate.
+- When a card names other cards, read them with \`kanban_read_card\`. Do not ask the user to paste them.
 - Each card stands alone, because this chat is closed often and its context is lost. Write in the body: the goal,
   why, the files to start reading, the requirements or ADRs it touches, and how to check the work.
 - A plan with phases is one card per phase. Link them in order with \`blockedBy\`, and give them one shared label
@@ -164,6 +165,7 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
   add a duplicate. Then call kanban_add_card once per item, with the why, the steps, and how to check. Do not
   write cards as artifacts. The card goes to the backlog with a from-run label. You never start a card; the user
   does.
+- When a card names other cards, read them with kanban_read_card. Do not ask the user to paste them.
 - The user is often away. Ask and stop; every answer and result comes back as a new message, possibly after a
   restart. Do not poll.
 - Never end a turn to wait for the user without request_human_input. A turn that ends with plain text puts nothing

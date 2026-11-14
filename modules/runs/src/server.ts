@@ -42,7 +42,7 @@ export * from "./contract.js";
 
 /**
  * The coordinator's tools (ADR 0150, ADR 0154): read tools, artifacts, questions, the run tools, and the kanban tools
- * that list and add cards. No write or shell tool, and no tool that changes or starts a card.
+ * that list, read, and add cards. No write or shell tool, and no tool that changes or starts a card.
  */
 export const COORDINATOR_TOOLS: readonly string[] = [
   "read",
@@ -54,6 +54,7 @@ export const COORDINATOR_TOOLS: readonly string[] = [
   "artifacts_read",
   "artifacts_write",
   "kanban_list_cards",
+  "kanban_read_card",
   "kanban_add_card",
   "start_lane",
   "revise_lane",

@@ -1,6 +1,6 @@
 /**
- * Kanban tools (ADR 0100): agents list, add, change, and ask to start cards of their own project. The server limits
- * every call to that project; a start only files an approval for the user on Home.
+ * Kanban tools (ADR 0100): agents list, read, add, change, and ask to start cards of their own project. The server
+ * limits every call to that project; a start only files an approval for the user on Home.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Type, { type Static } from "typebox";
@@ -95,7 +95,7 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient, env: B
     label: "List cards",
     description:
       "List the kanban cards of this project, with their ids, columns, labels, and blockers, and the project's " +
-      "active workspaces (the targets kanban_start_card can use).",
+      "active workspaces (the targets kanban_start_card can use). Call kanban_read_card for a card's notes.",
     promptSnippet: "List this project's kanban cards and active workspaces",
     parameters: Type.Object({
       label: Type.Optional(
@@ -121,6 +121,25 @@ export function registerCardTools(pi: ExtensionAPI, client: BridgeClient, env: B
         ),
       ];
       return { content: text(lines.join("\n")), details: { count: cards.length } };
+    },
+  });
+
+  // The list leaves out bodies, so a card that names other cards needs one read call per card.
+  pi.registerTool({
+    name: "kanban_read_card",
+    label: "Read card",
+    description: "Read one kanban card of this project: its title line and its full notes.",
+    promptSnippet: "Read one card of this project with its full notes",
+    parameters: Type.Object({ cardId: Type.String({ minLength: 1 }) }),
+    async execute(_toolCallId, params, signal) {
+      const { card } = await client.call(CardAnswer, `cards/${encodeURIComponent(params.cardId)}`, {
+        ...(signal ? { signal } : {}),
+      });
+      const notes = card.body.trim();
+      return {
+        content: text(`${cardLine(card)}\n\n${notes === "" ? "The card has no notes." : notes}`),
+        details: { cardId: card.id },
+      };
     },
   });
 
