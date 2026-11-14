@@ -102,8 +102,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     `agentOverrides.orchestrator` (ADR 0175), launch with
     `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_read_card`, `kanban_add_card`,
     `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`; `--exclude-tools 'mcp__*'`), a read-only
-    token, and
-    `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
+    token, and `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
     `planner_no_side_chats`. The bridge lets a planner token add and edit cards, and move them only between
     `backlog` and `ready`. Rename, park, resume, and archive of the planner workspace answer 409
     `planner_workspace`; it does not block removing the project. The web shows it as a "Plan" row first under each
