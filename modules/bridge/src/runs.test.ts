@@ -400,7 +400,7 @@ describe("launch context", () => {
     expect(env).toMatchObject({ PI_SPORE_RUN_ID: run.id, PI_SPORE_RUN_ROLE: "coordinator" });
     expect(argv[argv.indexOf("--tools") + 1]).toBe(COORDINATOR_TOOLS.join(","));
     expect(COORDINATOR_TOOLS).toEqual(
-      expect.arrayContaining(["kanban_list_cards", "kanban_add_card"]),
+      expect.arrayContaining(["kanban_list_cards", "kanban_read_card", "kanban_add_card"]),
     );
     expect(COORDINATOR_TOOLS).not.toContain("kanban_update_card");
     expect(COORDINATOR_TOOLS).not.toContain("kanban_start_card");

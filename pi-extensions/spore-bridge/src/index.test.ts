@@ -377,6 +377,24 @@ describe("spore-bridge", () => {
     );
   });
 
+  it("reads one card's notes, and says when the card has none", async () => {
+    reply("GET /api/bridge/cards/c2", {
+      body: { card: card({ id: "c2", title: "Phase 2", body: "\n  Do it slowly. \n " }) },
+    });
+    const result = await fakePi().tool("kanban_read_card").execute("toolu_k3", { cardId: "c2" });
+    expect(seen[0]?.path).toBe("/api/bridge/cards/c2");
+    expect(result.content[0]?.text).toBe(
+      ["c2  [backlog]  Phase 2  labels: plan:x", "", "Do it slowly."].join("\n"),
+    );
+    expect(result.details).toEqual({ cardId: "c2" });
+
+    reply("GET /api/bridge/cards/c3", { body: { card: card({ id: "c3", title: "Phase 3" }) } });
+    const empty = await fakePi().tool("kanban_read_card").execute("toolu_k4", { cardId: "c3" });
+    expect(empty.content[0]?.text).toBe(
+      ["c3  [backlog]  Phase 3  labels: plan:x", "", "The card has no notes."].join("\n"),
+    );
+  });
+
   const artifact = (extra: Record<string, unknown> = {}) => ({
     scope: "workspace",
     ownerId: "w1",
@@ -556,6 +574,7 @@ describe("spore-bridge", () => {
     expect(PLANNER_RULES).toContain("You are the planner chat of one project");
     expect(PLANNER_RULES).toContain("Cards are your only output");
     expect(PLANNER_RULES).toContain("kanban_list_cards");
+    expect(PLANNER_RULES).toContain("kanban_read_card");
     expect(PLANNER_RULES).toContain("blockedBy");
   });
 
@@ -574,7 +593,12 @@ describe("spore-bridge", () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
     const pi = fakePi();
     expect(pi.tools.size).toBeGreaterThan(0);
-    for (const name of ["kanban_list_cards", "kanban_add_card", "kanban_update_card"]) {
+    for (const name of [
+      "kanban_list_cards",
+      "kanban_read_card",
+      "kanban_add_card",
+      "kanban_update_card",
+    ]) {
       expect(pi.tools.has(name)).toBe(true);
     }
     for (const name of ["open_pr", "push_line", "start_pipeline", "report"]) {
@@ -927,23 +951,26 @@ describe("spore-bridge run tools", () => {
     expect(COORDINATOR_RULES).toContain("open_run_pr");
   });
 
-  it("gives the coordinator kanban_list_cards and kanban_add_card, never update or start (ADR 0154)", async () => {
+  it("gives the coordinator kanban_list_cards, kanban_read_card, and kanban_add_card, never update or start (ADR 0154)", async () => {
     vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
     vi.stubEnv("PI_SPORE_RUN_ID", "U1");
     const pi = fakePi();
 
     expect(pi.tools.has("kanban_list_cards")).toBe(true);
+    expect(pi.tools.has("kanban_read_card")).toBe(true);
     expect(pi.tools.has("kanban_add_card")).toBe(true);
     expect(pi.tools.has("kanban_update_card")).toBe(false);
     expect(pi.tools.has("kanban_start_card")).toBe(false);
     expect(COORDINATOR_RULES).toContain("kanban_list_cards");
+    expect(COORDINATOR_RULES).toContain("kanban_read_card");
     expect(COORDINATOR_RULES).toContain("kanban_add_card");
     expect(COORDINATOR_RULES).toContain("never start a card");
   });
 
-  it("keeps all four card tools for an agent outside a run and for a lane agent", () => {
+  it("keeps all five card tools for an agent outside a run and for a lane agent", () => {
     const CARD_TOOLS = [
       "kanban_list_cards",
+      "kanban_read_card",
       "kanban_add_card",
       "kanban_update_card",
       "kanban_start_card",

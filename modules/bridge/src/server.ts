@@ -213,6 +213,12 @@ export const bridgeModule: ServerModule = {
       return c.json({ card }, 201);
     });
 
+    /** Reading a card changes nothing, so every role and a read-only token may (ADR 0100). */
+    host.routes.get("/cards/:id", (c) => {
+      const caller = bridgeCaller(c);
+      return c.json({ card: ownCard(caller, c.req.param("id")) });
+    });
+
     host.routes.post("/cards/:id", async (c) => {
       const caller = bridgeCaller(c);
       const request = parseJsonBody(BridgeUpdateCardRequest, await c.req.text(), "card change");
