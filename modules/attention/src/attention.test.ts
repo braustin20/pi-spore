@@ -9,13 +9,22 @@ import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import type { Approval, HomeNotice, Inbox, InboxEvent } from "@pi-spore/shared";
+import type {
+  Approval,
+  ChatKind,
+  HomeNotice,
+  Inbox,
+  InboxEvent,
+  InboxWorkspace,
+  RunningItem,
+} from "@pi-spore/shared";
 import Type from "typebox";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
   type Approvals,
   ApprovalsKey,
   attentionModule,
+  buildWorkspaceRows,
   type HomeItems,
   HomeItemsKey,
   INBOX_TOPIC,
@@ -166,6 +175,14 @@ async function until(check: () => Promise<boolean>, ms = 5_000): Promise<void> {
   }
 }
 
+const workspace: InboxWorkspace = {
+  id: "ws-1",
+  name: "home",
+  projectName: "pi-spore",
+  state: "active",
+};
+const otherWorkspace: InboxWorkspace = { ...workspace, id: "ws-2", name: "other" };
+
 describe("Home inbox", () => {
   it("is empty with nothing to do", async () => {
     await makeAgent("quiet");
@@ -247,6 +264,119 @@ describe("Home inbox", () => {
     await json(await prompt(agentId, "slow:300"));
     expect(await kinds()).toEqual([]);
   });
+
+  // The Running panel shows one row per workspace, so it picks which of that workspace's chats to show (R15.1).
+  it("shows one running row per workspace, and picks a working stage over the pipeline worker", () => {
+    // The worker chat waits on the pipeline ("pipeline"), so Home shows the stage chat that works. The worker only
+    // waits for that stage, so it is not another chat at work, and the row gets no count.
+    const worker = item("w1", "chat-w", "worker", "pipeline", 500, {
+      detail: "pipeline 7: worker",
+    });
+    const stage = item("s1", "chat-s", "stage", "busy", 400);
+    expect(buildWorkspaceRows([worker, stage])[0]).toEqual({
+      ...stage,
+      others: undefined,
+    });
+    expect(buildWorkspaceRows([worker, stage])[0]).not.toHaveProperty("others");
+
+    // A stage that works wins over one that only waits for a worker slot, and a waiting stage beats the worker.
+    const waitingStage = item("s2", "chat-s2", "stage", "waiting", 300);
+    expect(buildWorkspaceRows([stage, waitingStage, worker])[0]).toMatchObject({ agentId: "s1" });
+    expect(buildWorkspaceRows([waitingStage, worker])[0]).toMatchObject({ agentId: "s2" });
+
+    // With no stage item, Home shows the workspace's active worker chat, even beside a side chat that works.
+    const sideChat = item("c1", "chat-c1", "side", "busy", 900);
+    expect(buildWorkspaceRows([sideChat, worker])).toMatchObject([
+      { agentId: "w1", chat: { id: "chat-w" }, others: 1 },
+    ]);
+
+    // With neither a stage nor an active worker chat, Home shows the first item of the inbox order, which is the
+    // newest, and the rest counts as the chats behind it.
+    const planning = item("c2", "chat-c2", "side", "starting", 700);
+    expect(buildWorkspaceRows([sideChat, planning])).toMatchObject([{ agentId: "c1", others: 1 }]);
+    expect(buildWorkspaceRows([planning, sideChat])).toMatchObject([{ agentId: "c2", others: 1 }]);
+
+    // A run carries its own workspace, so two workspaces get two rows, in the inbox order of their items.
+    const elsewhere = { ...item("x1", "chat-x", "worker", "busy", 900), workspace: otherWorkspace };
+    expect(
+      buildWorkspaceRows([elsewhere, sideChat, worker]).map((row) => row.workspace.id),
+    ).toEqual(["ws-2", "ws-1"]);
+
+    // A second active worker chat is a chat behind the row, so it counts.
+    expect(
+      buildWorkspaceRows([worker, item("w2", "chat-w2", "worker", "busy", 400)]),
+    ).toMatchObject([{ agentId: "w1", others: 1 }]);
+  });
+
+  it("counts the other working chats, but not a pipeline worker that only waits for its stage", () => {
+    // The row shows the busy stage. Two chats work beside it; the pipeline worker waits, so it is out of the count.
+    const stage = item("s1", "chat-s", "stage", "busy", 400);
+    const pipelineWorker = item("w1", "chat-w", "worker", "pipeline", 500);
+    const helper = item("h1", "chat-h", "side", "helpers", 300);
+    const starting = item("c1", "chat-c", "side", "starting", 200);
+    expect(buildWorkspaceRows([pipelineWorker, stage, helper, starting])[0]).toMatchObject({
+      agentId: "s1",
+      others: 2,
+    });
+
+    // A worker chat that works, rather than waiting on its stage, does count.
+    expect(
+      buildWorkspaceRows([{ ...pipelineWorker, status: "busy" as const }, stage])[0],
+    ).toMatchObject({
+      agentId: "s1",
+      others: 1,
+    });
+
+    // A workspace with nothing beside its row gets no count, and one row's count does not reach the next workspace.
+    expect(buildWorkspaceRows([stage])[0]).not.toHaveProperty("others");
+    expect(buildWorkspaceRows([pipelineWorker])[0]).not.toHaveProperty("others");
+    expect(
+      buildWorkspaceRows([
+        stage,
+        helper,
+        starting,
+        { ...pipelineWorker, workspace: otherWorkspace },
+      ]),
+    ).toEqual([
+      { ...stage, others: 2 },
+      { ...pipelineWorker, workspace: otherWorkspace, others: undefined },
+    ]);
+
+    // Only pipeline workers: the row is one of them, and the rest wait for the stage rather than work.
+    expect(
+      buildWorkspaceRows([
+        pipelineWorker,
+        { ...pipelineWorker, agentId: "w2", chat: { ...pipelineWorker.chat, id: "chat-w2" } },
+      ])[0],
+    ).not.toHaveProperty("others");
+
+    // The item that gave its place to a better one joins the count, and a working item that loses still counts once.
+    expect(
+      buildWorkspaceRows([
+        item("s2", "chat-s2", "stage", "waiting", 900),
+        item("s3", "chat-s3", "stage", "busy", 800),
+        pipelineWorker,
+      ]),
+    ).toMatchObject([{ agentId: "s3", others: 1 }]);
+  });
+
+  function item(
+    agentId: string,
+    chatId: string,
+    kind: ChatKind,
+    status: RunningItem["status"],
+    since: number,
+    extra: Partial<RunningItem> = {},
+  ): RunningItem {
+    return {
+      agentId,
+      workspace,
+      chat: { id: chatId, kind, active: kind === "worker", title: `${kind} ${chatId}` },
+      status,
+      since,
+      ...extra,
+    };
+  }
 
   it("shows an idle chat with a running helper as running, and finished once the helper ends", async () => {
     const { agentId } = await makeAgent("helped");

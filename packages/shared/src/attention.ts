@@ -226,6 +226,10 @@ export const InboxItem = Type.Union([
 ]);
 export type InboxItem = Static<typeof InboxItem>;
 
+/**
+ * One running workspace for Home (`running`, R15.1). Home shows one row per workspace, so `chat` is the chat that
+ * row stands for: a working stage first, then a stage that waits for a worker slot, then the active worker chat.
+ */
 export const RunningItem = Type.Object({
   agentId: Type.String(),
   workspace: InboxWorkspace,
@@ -233,6 +237,8 @@ export const RunningItem = Type.Object({
   status: Type.Union([AgentStatus, Type.Literal("helpers"), Type.Literal("pipeline")]),
   /** Replaces the status text, e.g. "Waiting for <model>" from the router (R4.5). */
   detail: Type.Optional(Type.String()),
+  /** Other chats of the workspace that work too; a worker that only waits for its stage is out. */
+  others: Type.Optional(Type.Integer({ minimum: 1 })),
   since: Type.Integer(),
 });
 export type RunningItem = Static<typeof RunningItem>;

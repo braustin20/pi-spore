@@ -226,6 +226,40 @@ function answerText(step: QuestionStep, answer: StepAnswer, n: number): string {
 }
 
 /**
+ * Home's Running panel shows one row per workspace (R15.1). A workspace's row shows the chat that says most about
+ * its work: a stage chat that works, then a stage chat that waits for a worker slot, then the workspace's active
+ * worker chat, then the newest of the rest. `others` counts the chats behind the row; a worker chat that waits
+ * on its pipeline reports "pipeline", which only waits for the stage, so it does not count.
+ * `workspaceStatuses` in `modules/agents/src/status.ts` picks the workspace's status with the same order, reading
+ * agents instead of these items: keep the two in step. That module owns the rule, so this one does not import it.
+ */
+export function buildWorkspaceRows(items: RunningItem[]): RunningItem[] {
+  // Which item a workspace's row shows; the lower, the more it says about the workspace's work.
+  const rank = (item: RunningItem): number => {
+    if (item.chat.kind !== "stage") return item.chat.kind === "worker" && item.chat.active ? 3 : 4;
+    if (item.status === "busy" || item.status === "starting") return 1;
+    return item.status === "waiting" ? 2 : 4;
+  };
+  // Per workspace: the item its row shows, that item's rank, and the chats behind it.
+  const rows = new Map<string, { kept: RunningItem; rank: number; others: number }>();
+  for (const item of items) {
+    const row = rows.get(item.workspace.id);
+    const itemRank = rank(item);
+    if (row === undefined) rows.set(item.workspace.id, { kept: item, rank: itemRank, others: 0 });
+    // The inbox sorted the items newest first, so the first of a rank is the newest chat of it.
+    else if (itemRank < row.rank) {
+      // The row shows this item instead, so the one it showed joins the chats behind it.
+      if (row.kept.status !== "pipeline") row.others += 1;
+      row.kept = item;
+      row.rank = itemRank;
+    } else if (item.status !== "pipeline") row.others += 1;
+  }
+  return [...rows.values()].map(({ kept, others }) =>
+    others > 0 ? { ...kept, others } : { ...kept },
+  );
+}
+
+/**
  * Home (R15): questions from agents, and what needs the user across workspaces, built from the agents module's
  * state. Browsers follow topic `attention:inbox`, which sends the whole inbox after every change.
  */
@@ -346,7 +380,7 @@ export const attentionModule: ServerModule = {
       const interrupted = host.jobs
         .list({ states: ["interrupted"] })
         .sort((a, b) => b.updatedAt - a.updatedAt);
-      return { items, interrupted, running };
+      return { items, interrupted, running: buildWorkspaceRows(running) };
     };
 
     // Many changes come in bursts (status, then dialog); one inbox per tick is enough.

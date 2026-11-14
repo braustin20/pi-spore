@@ -239,8 +239,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     example a chat that waits on a pipeline run. The label is `workingFor` on the agent view, in memory only, and a
     change of it is an `AgentChange` of kind `working`. `undefined` clears it. It never touches `waitingSince`.
     An idle or stopped chat with `workingFor` shows as working: Home has a running item with status `pipeline` and
-    the label as its detail, and no `finished` item; the workspace line is `Working (<label>)`, and the chat header
-    `working (<label>)`. A wait for the user and a failed agent still win. The pipelines module sets the label
+    the label as its detail, and no `finished` item, unless the pipeline's stage chat takes that workspace's row
+    (section 11b); the workspace line is `Working (<label>)`, and the chat header `working (<label>)`. A wait for
+    the user and a failed agent still win. The pipelines module sets the label
     for the chat of each `running` run.
   - `GET /api/agents/:id/children/:runId/transcript?child=<step id>` sends `/subagents-inspect-rpc` to the agent's
     process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
@@ -1076,7 +1077,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     come from other modules' sources (below). A notice has no chat: it has `source`, `id`, `title`, optional `detail`, and
     an `href` to the module's page.
   - `running`: agents that are busy, starting, or waiting for a slot, and idle agents with a running helper
-    (`status: "helpers"`). When the helper ends, an idle agent that waits for the user is `finished` again.
+    (`status: "helpers"`). When the helper ends, an idle agent that waits for the user is `finished` again. Home shows
+    one row per workspace, so this list has at most one item each: `chat` is the chat that row stands for, and
+    `others` counts the chats behind it (below).
 - The agents module tracks what Home needs (`AgentsKey.attention()`): when each agent entered its status, when each
   dialog opened, and `waiting_since` on `agents_agents`. `waiting_since` is set when a run settles without an abort,
   and cleared when the user sends a message, opens the chat, the chat page sees the run end while it is visible, or
@@ -1092,7 +1095,10 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   a new tab; images show as links, ADR 0061); the same dialog card as the chat (from the agents web interface `AgentsWebKey`); a failure with its error;
   a finished agent with Open chat and Dismiss. The inbox also has `interrupted`: jobs a restart cut off (section
   6), read through `host.jobs` and shown as "Interrupted work" with Retry and Cancel. Running work is a short list
-  below. The Home rail icon shows the count of items and interrupted jobs through `RailItem.useBadge`.
+  below, one row per workspace. A row shows a stage chat that works, then a stage chat that waits for a worker slot,
+  then the workspace's active worker chat, and the newest of the rest; "+N more" counts the workspace's other chats
+  that work, and a worker chat that only waits for its stage (status `pipeline`) is not one of them. The Home rail
+  icon shows the count of items and interrupted jobs through `RailItem.useBadge`.
 - The chat page shows its own open questions and approvals above the composer, so the user need not go to Home. The
   agents web interface has `AgentsWebKey.addChatPanel(id, component)`: the chat page renders each added component,
   given the chat's id, above the composer of an active chat. With none added, the chat looks as before. The attention
@@ -1159,9 +1165,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
     its own request.
   - Home shows an approval with the view its kind's web module adds through `AttentionWebKey.addApprovalView`, or a
     plain one (title, reason, approve, decline with a note).
-- The CLI reads the same route: `pi-spore inbox list` prints each item and each running agent with an id, its kind
-  (`question`, `approval`, `dialog`, `failed`, `finished`, `running`, `notice`), age, `project / workspace`, and the
-  chat link. `pi-spore inbox show <id>` prints one in full: a question's text and choices (a question with steps: each
+- The CLI reads the same route: `pi-spore inbox list` prints each item and each running workspace row with an id,
+  its kind (`question`, `approval`, `dialog`, `failed`, `finished`, `running`, `notice`), age,
+  `project / workspace`, and the chat link. `pi-spore inbox show <id>` prints one in full: a question's text and choices (a question with steps: each
   step with its options, and that it is answered on Home), an approval's gate, title,
   reason, and subject, a dialog's prompt, a failure's error. Ids are `<kind>:<id>` (a dialog is
   `dialog:<agent>:<dialog>`; `failed`, `finished`, and `running` use the agent id). A notice is

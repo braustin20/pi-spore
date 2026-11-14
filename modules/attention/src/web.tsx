@@ -452,7 +452,10 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
             <PanelHeader title="Running" />
             <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
               {inbox.running.map((run) => (
-                <li key={run.agentId} className="flex items-center gap-2 text-sm max-md:flex-wrap">
+                <li
+                  key={run.workspace.id}
+                  className="flex items-center gap-2 text-sm max-md:flex-wrap"
+                >
                   <a
                     href={`#/workspaces/${run.workspace.id}`}
                     className="min-w-0 flex-1 truncate max-md:basis-full"
@@ -477,6 +480,9 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
                   >
                     {run.detail ?? RUNNING_TEXT[run.status]}
                   </Chip>
+                  {run.others !== undefined && (
+                    <span className="shrink-0 text-xs text-muted">+{run.others} more</span>
+                  )}
                   <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted max-md:w-auto">
                     since {ago(run.since, Date.now())}
                   </span>
