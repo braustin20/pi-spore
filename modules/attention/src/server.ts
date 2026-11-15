@@ -1,4 +1,4 @@
-import { AgentsKey } from "@pi-spore/mod-agents/server";
+import { type AgentAttention, AgentsKey } from "@pi-spore/mod-agents/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import { ApiError, type ServerModule } from "@pi-spore/module-api";
@@ -229,7 +229,9 @@ function answerText(step: QuestionStep, answer: StepAnswer, n: number): string {
  * Home's Running panel shows one row per workspace (R15.1). A workspace's row shows the chat that says most about
  * its work: a stage chat that works, then a stage chat that waits for a worker slot, then the workspace's active
  * worker chat, then the newest of the rest. `others` counts the chats behind the row; a worker chat that waits
- * on its pipeline reports "pipeline", which only waits for the stage, so it does not count.
+ * on its pipeline reports "pipeline", which only waits for the stage, so it does not count. A workspace that works
+ * only for a pipeline run, with no chat of its own at work, gets an item that shows the run's label on its active
+ * worker chat, else on its newest chat; see `inbox` below.
  * `workspaceStatuses` in `modules/agents/src/status.ts` picks the workspace's status with the same order, reading
  * agents instead of these items: keep the two in step. That module owns the rule, so this one does not import it.
  */
@@ -371,6 +373,41 @@ export const attentionModule: ServerModule = {
             since,
           });
       }
+      // A pipeline run works on its stage chats, so a lane's own chats can all be stopped while its run goes on.
+      // The workspace works for the run, so Home shows that label on one chat of it, as the list column does
+      // (R15.1). A workspace whose chat already has a running item keeps it, so the row needs no new rank.
+      const workingWorkspaces = new Set(running.map((item) => item.workspace.id));
+      for (const [workspaceId, label] of agents.workspacesWorkingFor()) {
+        const workspace = places.get(workspaceId);
+        if (
+          workspace === undefined ||
+          workspace.state !== "active" ||
+          workingWorkspaces.has(workspaceId)
+        )
+          continue;
+        let worker: AgentAttention | undefined;
+        let newest: AgentAttention | undefined;
+        for (const entry of all) {
+          if (entry.agent.workspaceId !== workspaceId) continue;
+          // The active worker chat says most; only one exists, so the first found wins.
+          if (worker === undefined && entry.agent.kind === "worker" && entry.agent.active)
+            worker = entry;
+          if (newest === undefined || entry.agent.createdAt > newest.agent.createdAt)
+            newest = entry;
+        }
+        // A RunningItem needs a chat; with none, the coordinator's own row still shows the run.
+        const pick = worker ?? newest;
+        if (pick === undefined) continue;
+        running.push({
+          agentId: pick.agent.id,
+          workspace,
+          chat: chatOf(pick.agent),
+          status: "pipeline",
+          detail: label,
+          since: pick.since,
+          ...(pick.activity === undefined ? {} : { activity: pick.activity }),
+        });
+      }
       // One failing source must not blank Home.
       for (const [source, read] of sources) {
         try {
@@ -425,6 +462,8 @@ export const attentionModule: ServerModule = {
       if (change === "chat" && !agents.get(agentId).active) closeQuestions(agentId);
       changed();
     });
+    // A run starts or ends, so which workspaces work changes, and with them Home's Running panel (R15.1).
+    agents.onWorkspaceWorkingFor(() => changed());
     // ADR 0121: what a deleted chat or workspace asked goes with it.
     const deleteWhere = (column: "agent_id" | "workspace_id", id: string) => {
       host.store.run(`DELETE FROM attention_questions WHERE ${column} = ?`, id);

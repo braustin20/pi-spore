@@ -267,6 +267,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     (section 11b); the workspace line is `Working (<label>)`, and the chat header `working (<label>)`. A wait for
     the user and a failed agent still win. The pipelines module sets the label
     for the chat of each `running` run.
+  - A workspace can carry a working label too: `Agents.setWorkspaceWorkingFor(workspaceId, label)`, in memory only.
+    `undefined` clears it; a deleted workspace loses it. Topic `agents:working` sends `{ type: "working",
+    workspaces }`, the whole map, on subscription and after each change. `workspacesWorkingFor()` reads the map and
+    `onWorkspaceWorkingFor(listener)` hears each change, for Home. The pipelines module labels the workspace of each
+    `running` run, so a run lane at `gates` or between stages shows as working, with or without a worker chat.
   - `GET /api/agents/:id/children/:runId/transcript?child=<step id>` sends `/subagents-inspect-rpc` to the agent's
     process (it runs even during a turn) and returns the `subagent-inspect` reply as `{ transcript }`. 404
     `child_not_found` for a run not in the list or an agent that is not running, 400 `bad_child_id` for an id with
@@ -692,8 +697,8 @@ fail_first = "artifact"
   severity. The subject is `{ runId, stage, action }`, filed with `action: "fix"`. Its `decided` hook, in the
   decision's transaction, acts on the choice: `fix` starts one last fix turn with no review after it, then the stage
   ends; `accept` ends the stage without a fix; decline stops the run. Home shows the three as buttons, fix first.
-- **Working label.** While a run is `running`, the pipelines module marks its chat with `Agents.setWorkingFor`, so
-  Home does not show the chat as done: `Pipeline: <stage>`, with `, round <n>` from round 2 of a review stage, or
+- **Working label.** While a run is `running`, the pipelines module marks its chat with `Agents.setWorkingFor`, and
+  its workspace with `Agents.setWorkspaceWorkingFor`, so Home and the workspace list do not show them as done: `Pipeline: <stage>`, with `, round <n>` from round 2 of a review stage, or
   `Pipeline: <n> runs` for a coordinator with lanes. The chat is the lane's coordinator, else the asking chat. A
   `waiting_user` or ended run gives no label. The module syncs it at every `publish`, at boot, and when the runs
   module calls `Pipelines.refreshWorking` after a new coordinator took over. A target that retention deleted (the
@@ -1150,7 +1155,10 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   6), read through `host.jobs` and shown as "Interrupted work" with Retry and Cancel. Running work is a short list
   below, one row per workspace. A row shows a stage chat that works, then a stage chat that waits for a worker slot,
   then the workspace's active worker chat, and the newest of the rest; "+N more" counts the workspace's other chats
-  that work, and a worker chat that only waits for its stage (status `pipeline`) is not one of them. Under the chat
+  that work, and a worker chat that only waits for its stage (status `pipeline`) is not one of them. A workspace with
+  a working label (section 2) and no running item gets one: status `pipeline`, the label as its detail, on its
+  active worker chat, else its newest chat. A workspace with no chat at all gets no row; its run's coordinator row
+  still shows the run. Under the chat
   name, a row shows its chat's `activity` as a muted line, cut to the row's width, with the full text as its title;
   on a phone that line takes the whole row. The Home rail
   icon shows the count of items and interrupted jobs through `RailItem.useBadge`.
@@ -1941,8 +1949,11 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   stage agent never shows. Otherwise the status line follows the active orchestrator chat. When that chat is idle or
   stopped and waits for the user (`AgentsWebKey.setUserWaits`, section 11b), the line says "Waiting for your
   answer". Otherwise an idle chat with a running helper (`helpersRunning`, section 2) says "Working (helper
-  running)", tone `run`. A busy chat whose router waits for a local model shows its `routerStatus` ("Waiting for
-  <model>", section 10), tone `warn`.
+  running)", tone `run`. An idle or stopped chat with its own `workingFor` says "Working (<label>)". A busy chat
+  whose router waits for a local model shows its `routerStatus` ("Waiting for <model>", section 10), tone `warn`.
+  Last, where the line would say "Idle", "Agent stopped", or "No agent yet", the workspace's own working label from
+  `agents:working` (section 2) shows instead: "Working (<label>)", tone `run`. So a run lane at its `gates` stage
+  says "Working (Pipeline: gates)", like its coordinator.
 - `CreateForm` is the "Start a workspace" form. Another module can fill in the name, lock the project, and send
   the request to its own route. The board uses it to start a workspace from a card.
 
