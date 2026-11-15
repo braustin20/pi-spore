@@ -1,0 +1,496 @@
+/*
+ * The agent graph (ADR 0176), in the approved Mycelium look. Values come from the mockup; colors only from theme
+ * tokens. Stage pods are colored by state, roots and threads by type: `--c` is the color of the thing.
+ */
+
+.ag-tree {
+  width: 100%;
+  height: 100%;
+  border-radius: 28px;
+  background: color-mix(in oklab, var(--text) 1.5%, transparent);
+  border: 1.2px solid color-mix(in oklab, var(--text) 16%, transparent);
+}
+.ag-tree.live {
+  border-color: color-mix(in oklab, var(--accent) 38%, transparent);
+}
+.ag-tree-name {
+  position: absolute;
+  left: 22px;
+  right: 22px;
+  top: 13px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.ag-group {
+  width: 100%;
+  height: 100%;
+  border-radius: 24px;
+  background: color-mix(in oklab, var(--raised) 88%, transparent);
+  border: 1px solid color-mix(in oklab, var(--text) 13%, transparent);
+}
+.ag-group.live {
+  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+}
+.ag-group-name {
+  padding: 11px 12px 0 50px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A pod: the circle, and the text to its right. The circle's center is 22px from the top. */
+.ag-pod {
+  --c: var(--text-muted);
+  position: absolute;
+  display: block;
+  height: 50px;
+  padding-left: calc(var(--r) * 2 + 10px);
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ag-step {
+  left: 0;
+  top: 0;
+  right: 0;
+}
+.ag-root {
+  /* The tree box lets the pointer through to the canvas; the root pod takes it, to drag the tree. */
+  pointer-events: auto;
+  cursor: grab;
+}
+.ag-shape {
+  position: absolute;
+  left: 0;
+  top: calc(22px - var(--r));
+  width: calc(var(--r) * 2);
+  height: calc(var(--r) * 2);
+  border-radius: 50%;
+  background: var(--c);
+  border: 1.5px solid var(--c);
+}
+.ag-text > * {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ag-role {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--c) 85%, var(--text));
+}
+.ag-title {
+  font-size: 14.5px;
+  line-height: 18px;
+  color: var(--text);
+}
+.ag-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+/* Roots: the spore logo in a ring of the type color. */
+.ag-root.t-coord {
+  --c: var(--accent);
+}
+.ag-root.t-chat {
+  --c: var(--accent-strong);
+}
+.ag-root .ag-shape {
+  display: grid;
+  place-items: center;
+  border-width: 2px;
+  background: color-mix(in oklab, var(--c) 16%, var(--bg));
+  color: var(--c);
+}
+.ag-root .ag-shape svg {
+  width: 68%;
+  height: 68%;
+}
+/* Not the whole pod: its helpers may still run. */
+.ag-root.s-idle :is(.ag-shape, .ag-text) {
+  opacity: 0.45;
+}
+
+/* Stages, by state. Idle is an opaque color, not opacity, so the drops pass behind it, not through it. */
+.ag-step.s-work {
+  --c: var(--run);
+}
+.ag-pod.s-fail {
+  --c: var(--fail);
+}
+.ag-step.s-idle .ag-shape {
+  background: color-mix(in oklab, var(--text-muted) 75%, var(--raised));
+  border-color: transparent;
+}
+.ag-step.s-idle .ag-text {
+  opacity: 0.6;
+}
+.ag-step.s-none .ag-shape {
+  background: var(--bg);
+  border-color: color-mix(in oklab, var(--c) 60%, transparent);
+}
+.ag-step.s-none .ag-role {
+  color: color-mix(in oklab, var(--c) 55%, var(--text-muted));
+}
+.ag-step.s-none .ag-title {
+  color: var(--text-muted);
+}
+.ag-step.s-fail .ag-shape svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.ag-pod.s-work .ag-shape {
+  animation: ag-breathe 3.2s ease-in-out infinite;
+}
+@keyframes ag-breathe {
+  0%,
+  100% {
+    transform: scale(0.93);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.ag-handle.react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  bottom: auto;
+  transform: none;
+  opacity: 0;
+}
+
+/* Threads, like fungus roots. */
+.ag-thread {
+  --c: var(--text-muted);
+}
+.ag-thread.t-coord {
+  --c: var(--accent);
+}
+.ag-thread.t-chat {
+  --c: var(--accent-strong);
+}
+.ag-thread :is(.ag-main, .ag-twin) {
+  fill: none;
+  stroke: color-mix(in oklab, var(--c) 38%, var(--line));
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+.ag-thread .ag-twin {
+  stroke-width: 1.4;
+  opacity: 0.5;
+}
+.ag-thread.live .ag-main {
+  stroke: color-mix(in oklab, var(--c) 55%, var(--line));
+}
+.ag-thread.dim :is(.ag-main, .ag-twin) {
+  opacity: 0.5;
+}
+.ag-drop {
+  fill: light-dark(var(--c), color-mix(in oklab, var(--c) 70%, white));
+}
+
+/*
+ * Helpers: small spores on a short thread under their pod. `.ag-helper` is a 0 by 0 box at the spore's center.
+ * One-shot animations, cut from the mockup's 6 s loop: bud 600 ms, pop 400 ms, a fail flashes 300 ms first.
+ */
+.ag-helper {
+  --c: color-mix(in oklab, var(--run), var(--ok));
+  position: absolute;
+  width: 0;
+  height: 0;
+}
+.ag-hthread {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  pointer-events: none;
+}
+.ag-hthread path {
+  fill: none;
+  stroke: color-mix(in oklab, var(--c) 55%, var(--line));
+  stroke-width: 1.4;
+  stroke-linecap: round;
+}
+.ag-spore,
+.ag-ring,
+.ag-bit {
+  position: absolute;
+  border-radius: 50%;
+}
+.ag-spore,
+.ag-ring {
+  left: -7px;
+  top: -7px;
+  width: 14px;
+  height: 14px;
+}
+.ag-spore {
+  background: var(--c);
+}
+.ag-ring {
+  border: 1.2px solid light-dark(var(--c), color-mix(in oklab, var(--c) 60%, white));
+  opacity: 0;
+  pointer-events: none;
+}
+.ag-bit {
+  background: light-dark(var(--c), color-mix(in oklab, var(--c) 50%, white));
+  opacity: 0;
+  pointer-events: none;
+}
+.ag-hlabel {
+  position: absolute;
+  left: 14px;
+  top: -8px;
+  display: flex;
+  gap: 5px;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+  color: var(--text-muted);
+}
+.ag-hname {
+  font-weight: 600;
+  color: color-mix(in oklab, var(--c) 80%, var(--text));
+}
+/* On hover the title names the tool; a screen that cannot hover shows it inline. */
+.ag-htool {
+  display: none;
+}
+@media (hover: none) {
+  .ag-htool {
+    display: inline;
+  }
+}
+
+.ag-helper.bud .ag-spore {
+  animation: ag-bud 600ms cubic-bezier(0.3, 0.7, 0.4, 1.15) both;
+}
+.ag-helper.bud .ag-hthread path {
+  stroke-dasharray: 1;
+  animation: ag-draw 600ms ease-out both;
+}
+.ag-helper.bud .ag-hlabel {
+  animation: ag-label-in 600ms both;
+}
+@keyframes ag-bud {
+  from {
+    transform: translate(var(--dx), var(--dy)) scale(0.15);
+    opacity: 0;
+  }
+}
+@keyframes ag-draw {
+  from {
+    stroke-dashoffset: 1;
+  }
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+@keyframes ag-label-in {
+  0%,
+  40% {
+    opacity: 0;
+  }
+}
+
+/* The spore's `animationend` ends its bud, or, after its pop, takes the helper away. */
+.ag-helper.pop .ag-spore {
+  animation: ag-pop 400ms cubic-bezier(0.3, 0, 0.6, 1) forwards;
+}
+.ag-helper.pop .ag-ring {
+  animation: ag-ring 400ms ease-out forwards;
+}
+.ag-helper.pop .ag-bit {
+  animation: ag-bit 400ms cubic-bezier(0.25, 0.6, 0.45, 1) forwards;
+}
+.ag-helper.pop :is(.ag-hthread, .ag-hlabel) {
+  animation: ag-fade-out 400ms forwards;
+}
+.ag-helper.fail .ag-spore {
+  animation: ag-fail-pop 700ms linear forwards;
+}
+.ag-helper.fail :is(.ag-ring, .ag-bit, .ag-hthread, .ag-hlabel) {
+  animation-delay: 300ms;
+}
+.ag-helper.fail .ag-ring {
+  border-color: var(--fail);
+}
+.ag-helper.fail .ag-bit {
+  background: color-mix(in oklab, var(--fail) 70%, white);
+}
+@keyframes ag-pop {
+  52% {
+    transform: scale(1.4);
+    opacity: 0.7;
+  }
+  to {
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+@keyframes ag-ring {
+  from {
+    transform: scale(0.6);
+    opacity: 0.9;
+  }
+  to {
+    transform: scale(2.6);
+    opacity: 0;
+  }
+}
+@keyframes ag-bit {
+  from {
+    opacity: 1;
+  }
+  60% {
+    opacity: 0.9;
+  }
+  to {
+    transform: translate(var(--bx), var(--by)) scale(0.5);
+    opacity: 0;
+  }
+}
+@keyframes ag-fade-out {
+  to {
+    opacity: 0;
+  }
+}
+/* Two flashes of the fail color in the first 300 ms, then the pop. */
+@keyframes ag-fail-pop {
+  10%,
+  30% {
+    background: var(--fail);
+  }
+  20% {
+    background: color-mix(in oklab, var(--fail) 30%, var(--c));
+  }
+  43% {
+    background: var(--fail);
+    transform: scale(1);
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.3, 0, 0.6, 1);
+  }
+  70% {
+    background: var(--fail);
+    transform: scale(1.4);
+    opacity: 0.7;
+  }
+  to {
+    background: var(--fail);
+    transform: scale(1.7);
+    opacity: 0;
+  }
+}
+
+/* The legend under the header. */
+.ag-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.ag-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ag-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--c);
+}
+.ag-legend .t-coord {
+  --c: var(--accent);
+}
+.ag-legend .t-chat {
+  --c: var(--accent-strong);
+}
+.ag-legend .t-work {
+  --c: var(--run);
+}
+.ag-legend .t-idle {
+  --c: var(--text-muted);
+}
+.ag-legend i.st {
+  background: transparent;
+  border: 1.5px solid var(--text-muted);
+}
+.ag-legend i.st.work {
+  background: var(--text);
+  border-color: var(--text);
+}
+.ag-legend i.st.idle {
+  background: color-mix(in oklab, var(--text-muted) 50%, transparent);
+  border-color: transparent;
+}
+.ag-legend i.st.fail {
+  background: var(--fail);
+  border-color: var(--fail);
+}
+.ag-legend .ag-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+}
+
+/* Reduced motion: no drops, no breathing, steady color. */
+@media (prefers-reduced-motion: reduce) {
+  .ag-drops {
+    display: none;
+  }
+  /* As specific as the working rule, so it wins. */
+  .ag-pod.s-work .ag-shape {
+    animation: none;
+  }
+  /* A helper fades in and out. The pop still animates, so its `animationend` takes the helper away. */
+  .ag-helper :is(.ag-ring, .ag-bit) {
+    display: none;
+  }
+  .ag-helper.bud :is(.ag-spore, .ag-hthread path, .ag-hlabel) {
+    stroke-dasharray: none;
+    animation: ag-fade-in 200ms both;
+  }
+  .ag-helper.pop :is(.ag-spore, .ag-hthread, .ag-hlabel) {
+    animation: ag-fade-out 200ms forwards;
+  }
+  @keyframes ag-fade-in {
+    from {
+      opacity: 0;
+    }
+  }
+}
+
+.ag-canvas {
+  --xy-attribution-background-color: transparent;
+}
+.ag-canvas .react-flow__attribution a {
+  color: var(--text-muted);
+}
