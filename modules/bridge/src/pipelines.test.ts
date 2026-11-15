@@ -877,7 +877,7 @@ describe("the round limit", () => {
     await until(async () =>
       (await chat(server, run.askingAgentId as string)).some((message) =>
         message.includes(
-          "The user chose accept: the run goes on after stage review without a fix.",
+          "The user chose accept: the run goes on after stage review without a fix for its findings.",
         ),
       ),
     );
@@ -2254,6 +2254,130 @@ describe("gates in a parallel group (ADR 0178)", () => {
     expect([...ran()].sort()).toEqual(["check", "test"]);
     expect((await getRun(server, runId)).message).toMatch(/^gate check failed\n/);
   });
+
+  /** The run's one fix turn and the prompt its worker got. */
+  const fixOf = async (server: TestServer, run: PipelineRun) => {
+    const fixes = run.turns.filter((turn) => turn.kind === "fix");
+    expect(fixes).toHaveLength(1);
+    const fix = fixes[0] as PipelineTurn;
+    const prompt = (await chat(server, fix.agentId)).find((message) =>
+      message.includes(`Turn: ${fix.id}`),
+    );
+    return { fix, prompt: prompt ?? "" };
+  };
+
+  it("gives a red gate with an APPROVE review one fix whose prompt names the failed gate", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, FIX], reviewer: [APPROVE] }) });
+
+    const { workspaceId, runId } = await startGates(server, "redgate", gated(), {
+      check: "fail-first",
+      test: "pass",
+    });
+    await untilState(server, runId, "passed");
+
+    const run = await getRun(server, runId);
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+    const { fix, prompt } = await fixOf(server, run);
+    expect(fix.fixFor).toEqual(["gates"]);
+    expect(prompt).toContain('The gates of stage "gates" failed.');
+    expect(prompt).toContain("gate check failed");
+    // The log tail stays out of the prompt; the log path leads the worker to the gate's output.
+    expect(prompt).not.toContain("Log (last 4 KB):");
+    const red = (await actionRuns(server, workspaceId)).find(
+      (found) => found.action === "check" && found.status === "failed",
+    ) as ActionRun;
+    expect(prompt).toContain(`Log: ${red.logPath}`);
+    expect(readFileSync(red.logPath, "utf8")).toContain("gate output: boom");
+    expect(prompt).toContain(
+      "This is the last fix: no review follows it. The gates run once more after it.",
+    );
+    expect(ran()).toEqual(["check", "check", "test"]);
+  });
+
+  it("gives a REVISE and a red gate of one round one fix with both", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE] }) });
+
+    const { runId } = await startGates(
+      server,
+      "reviseandred",
+      gated("rounds = 1", "fix_passes = 1"),
+      { check: "fail-first", test: "pass" },
+    );
+    await untilState(server, runId, "passed");
+
+    const run = await getRun(server, runId);
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+    const { fix, prompt } = await fixOf(server, run);
+    expect(fix.fixFor).toEqual(["review", "gates"]);
+    expect(prompt).toContain('Stage "review":');
+    expect(prompt).toContain("[important] Missing null check (a.txt:2)");
+    expect(prompt).toContain('Stage "gates":');
+    expect(prompt).toContain("gate check failed");
+  });
+
+  it("ends the run failed on a red final gate run, with no second fix", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, FIX], reviewer: [APPROVE] }) });
+
+    const { runId } = await startGates(server, "finalred", gated(), {
+      check: "fail",
+      test: "pass",
+    });
+    await untilState(server, runId, "failed");
+
+    const run = await getRun(server, runId);
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+    expect(ran()).toEqual(["check", "check"]);
+    expect(run.message).toMatch(/^gate check failed/);
+  });
+
+  it("gives a missing proof in a group the fix, and fails the run when the final gate run still misses it", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, FIX], reviewer: [APPROVE] }) });
+    const { workspaceId } = await workspace(server, "groupnoproof", { config: config(PASS) });
+    userPipeline(server.paths.root, "p", gated());
+    const { run: started } = await json<{ run: PipelineRun }>(
+      await startRun(server, workspaceId),
+      201,
+    );
+
+    await untilState(server, started.id, "failed");
+
+    const run = await getRun(server, started.id);
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+    const { prompt } = await fixOf(server, run);
+    expect(prompt).toContain("missing fail-first proof for adds (proofs/adds.md)");
+    expect(run.message).toBe("missing fail-first proof for adds (proofs/adds.md)");
+    expect(ran()).toEqual([]);
+  });
+
+  it("keeps the red gate in the fix when the user accepts the round limit", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE] }) });
+
+    const { runId } = await startGates(server, "limitred", gated("rounds = 1"), {
+      check: "fail-first",
+      test: "pass",
+    });
+    await untilState(server, runId, "waiting_user");
+    const { approvals } = await json<{ approvals: Approval[] }>(
+      await server.request("GET", "/api/attention/approvals?state=open"),
+    );
+    const [approval] = approvals;
+    expect(approval?.kind).toBe("pipeline-round-limit");
+    expect(approval?.reason).toContain(
+      'The red gates of stage "gates" go into the fix either way.',
+    );
+    await json(
+      await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {
+        subject: { ...(approval?.subject as object), action: "accept" },
+      }),
+    );
+    await untilState(server, runId, "passed");
+
+    const run = await getRun(server, runId);
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
+    const { fix, prompt } = await fixOf(server, run);
+    expect(fix.fixFor).toEqual(["gates"]);
+    expect(prompt).not.toContain("Missing null check");
+  });
 });
 
 /** A module that starts runs through `PipelinesKey` and records every run that ends. */
@@ -2593,7 +2717,8 @@ describe("a revise run", () => {
       await server.request("GET", "/api/attention/approvals"),
     );
     expect(approvals).toEqual([]);
-    expect(ran()).toEqual(["check", "test"]);
+    // The gates run in review's group (ADR 0178 rule 21), then once more after the last fix.
+    expect(ran()).toEqual(["check", "test", "check", "test"]);
   });
 
   it("refuses a reuse with no previous run, a previous run for another pipeline, and a worker model", async () => {

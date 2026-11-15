@@ -463,35 +463,56 @@ const findingLines = (report: StageReport) =>
     ];
   });
 
-/** The fix prompt of one group round: the findings of each member that said REVISE, under its stage name. */
+/**
+ * The fix prompt of one group round: the findings of each member that said REVISE and each red gate, under its stage
+ * name. `gated` says the group has gate members, which run again after the fix (ADR 0178 rules 8-10).
+ */
 const fixPrompt = (
   reviews: readonly { name: string; report: StageReport }[],
+  reds: readonly GateRed[],
   turnId: string,
   last: boolean,
-) =>
-  [
-    ...(reviews.length === 1
-      ? [`The reviewer of stage "${reviews[0]?.name}" asked for changes.`]
-      : [
-          `The reviewers of stages ${reviews.map((review) => `"${review.name}"`).join(", ")} asked for changes.`,
-        ]),
+  gated: boolean,
+) => {
+  const named = reviews.length + reds.length > 1;
+  return [
+    ...(reviews.length === 0
+      ? []
+      : reviews.length === 1
+        ? [`The reviewer of stage "${reviews[0]?.name}" asked for changes.`]
+        : [
+            `The reviewers of stages ${reviews.map((review) => `"${review.name}"`).join(", ")} asked for changes.`,
+          ]),
+    ...reds.map((red) => `The gates of stage "${red.stage}" failed.`),
     "",
     `Turn: ${turnId}`,
     "",
     ...reviews.flatMap(({ name, report }) => [
-      ...(reviews.length === 1 ? [] : [`Stage "${name}":`]),
+      ...(named ? [`Stage "${name}":`] : []),
       `Reviewer summary: ${report.summary}`,
       "Findings:",
       ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
       "",
     ]),
+    // The log tail stays in the log: the worker gets its path instead.
+    ...reds.flatMap((red) => [
+      ...(named ? [`Stage "${red.stage}":`] : []),
+      (red.message.split(`\n${GATE_LOG_HEADING}`)[0] as string).trimEnd(),
+      ...(red.logPath ? [`Log: ${red.logPath}`] : []),
+      "",
+    ]),
     "Fix what the findings ask for. Write each new test first and keep its failing run as a workspace artifact, as before.",
-    last
-      ? "This is the last fix: no review follows it."
-      : "A fresh reviewer checks the result next.",
+    gated
+      ? last
+        ? "This is the last fix: no review follows it. The gates run once more after it."
+        : "A fresh reviewer checks the result next, and the gates run again."
+      : last
+        ? "This is the last fix: no review follows it."
+        : "A fresh reviewer checks the result next.",
     `When you are done, call report with turn ${turnId}, a short summary, and tests: one entry for each test you added in this turn.`,
     "Your turn ends only with that report.",
   ].join("\n");
+};
 
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
@@ -1082,8 +1103,8 @@ export const pipelinesModule: ServerModule = {
     };
 
     /**
-     * Starts the worker's one fix turn of a group round, with the round's review of each member in `members` (ADR 0178).
-     * `last` tells the worker no review follows.
+     * Starts the worker's one fix turn of a group round (ADR 0178 rule 8). Each member in `members` brings its part of
+     * `round`: a reviewer its review, a gate member its red. `last` tells the worker no review follows.
      */
     const startFix = (
       run: RunRow,
@@ -1094,10 +1115,15 @@ export const pipelinesModule: ServerModule = {
     ) => {
       const worker = run.worker_agent_id as string;
       const turns = turnRows(run.id);
-      const reviews = members.map((index) => ({
-        name: stageOf(run, index).name,
-        report: reportOf(liveTurn(turns, "review", round, index) as TurnRow),
-      }));
+      const stored = redsOf(run);
+      const reviews = [];
+      const reds = [];
+      for (const index of members) {
+        const name = stageOf(run, index).name;
+        const review = liveTurn(turns, "review", round, index);
+        if (review) reviews.push({ name, report: reportOf(review) });
+        else reds.push(stored.find((red) => red.round === round && red.stage === name) as GateRed);
+      }
       const turnId = insertTurn(
         run,
         groupStart,
@@ -1107,9 +1133,10 @@ export const pipelinesModule: ServerModule = {
         "worker",
         worker,
         undefined,
-        reviews.map((review) => review.name),
+        members.map((index) => stageOf(run, index).name),
       );
-      agents.deliver(worker, fixPrompt(reviews, turnId, last));
+      const gated = gateMembers(run, groupOf(run, groupStart)).length > 0;
+      agents.deliver(worker, fixPrompt(reviews, reds, turnId, last, gated));
     };
 
     /** The workspace's change operations (none when its project has no version control that shows them). */
@@ -1567,6 +1594,10 @@ export const pipelinesModule: ServerModule = {
       const first = limited[0] as TurnRow;
       const group = groupOf(run, first.stage_index);
       const last = openMembers(run, group, groupTurns(run, group), first.round + 1).length === 0;
+      const reds = redsOf(run);
+      const redNames = gateMembers(run, group)
+        .map((index) => stageOf(run, index).name)
+        .filter((name) => isRed(reds, first.round, name));
       const approval = approvals.file(
         { agentId: run.asking_agent_id, workspaceId: run.workspace_id },
         {
@@ -1580,11 +1611,19 @@ export const pipelinesModule: ServerModule = {
               "Findings:",
               ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
             ]),
+            ...(redNames.length === 0
+              ? []
+              : [
+                  "",
+                  `The red gates of ${redNames.length === 1 ? "stage" : "stages"} ${redNames.map((name) => `"${name}"`).join(", ")} go into the fix either way.`,
+                ]),
             "",
             last
               ? "Fix: the worker makes one last fix for these findings, with no review after it, and the run goes on."
               : "Fix: the worker makes one fix for these findings and the others of this round; the stages with rounds left review it.",
-            "Accept: the run goes on without a fix.",
+            redNames.length === 0
+              ? "Accept: the run goes on without a fix."
+              : "Accept: the fix leaves out these findings; it still fixes the red gates.",
             "Decline: the run stops.",
           ].join("\n"),
           subject: {
@@ -1662,25 +1701,26 @@ export const pipelinesModule: ServerModule = {
           };
         }
       }
-      // Slice 1 of ADR 0178's gate members: a red gate still ends the run, in every group.
-      const red = firstRed(groupRound(turns));
-      if (red) return failOn(red);
+      // A group with no reviewer gets no fix: its first red gate ends the run (ADR 0178 rule 11).
+      if (!group.some((index) => isReviewer(stageOf(run, index)))) {
+        const red = firstRed(groupRound(turns));
+        return red ? failOn(red) : { next: "finish" };
+      }
+      const redGates = gateMembers(run, group).filter((index) =>
+        isRed(reds, groupRound(turns), stageOf(run, index).name),
+      );
       const revisers = reviews.filter((review) => reportOf(review).verdict === "revise");
-      if (revisers.length === 0) return { next: "finish" };
+      if (revisers.length === 0 && redGates.length === 0) return { next: "finish" };
       const limited = revisers.filter((review) => atLimit(stageOf(run, review.stage_index), round));
       if (limited.length > 0) return { wait: true, commit: () => askRoundLimit(run, limited) };
       const last = openMembers(run, group, turns, round + 1).length === 0;
+      const members = [...revisers.map((review) => review.stage_index), ...redGates].sort(
+        (a, b) => a - b,
+      );
       return {
         next: "await",
         checkpoint: { ...checkpoint, boot: bootId },
-        commit: () =>
-          startFix(
-            run,
-            group[0] as number,
-            round,
-            revisers.map((review) => review.stage_index),
-            last,
-          ),
+        commit: () => startFix(run, group[0] as number, round, members, last),
       };
     };
 
@@ -1714,6 +1754,8 @@ export const pipelinesModule: ServerModule = {
       { name: "advance", run: advance },
       { name: "await", run: awaitReport },
       { name: "decide", run: decide },
+      // A job stored on the gate step before gate members goes back to `advance`, which opens the gate round.
+      { name: "gate", run: async () => ({ next: "advance" }) },
       { name: "finish", run: finish },
     ];
     host.jobs.define(STAGE_JOB, steps);
@@ -1905,20 +1947,22 @@ export const pipelinesModule: ServerModule = {
       approve: async (subject) =>
         subject.action === "fix"
           ? `The user chose fix: the worker makes one last fix for stage ${subject.stage}, with no review after it; then the run goes on.`
-          : `The user chose accept: the run goes on after stage ${subject.stage} without a fix.`,
+          : `The user chose accept: the run goes on after stage ${subject.stage} without a fix for its findings.`,
       decided: (subject: RoundLimitSubject, approval, approved) => {
         const run = loadRun(subject.runId);
         // A run that was stopped or moved on ignores the decision.
         if (run?.state !== "waiting_user" || run.approval_id !== approval.id) return;
         if (approved) {
-          // Fix keeps every REVISE of the round; accept drops the members at their limit.
+          // Fix keeps every REVISE of the round; accept drops the members at their limit. Red gates go into the fix
+          // either way (ADR 0178 rule 7).
           const group = groupOf(run, run.stage_index);
           const turns = groupTurns(run, group);
           const round = reviewRound(turns);
+          const reds = redsOf(run);
           const members = group.filter((index) => {
             const review = liveTurn(turns, "review", round, index);
+            if (review === undefined) return isRed(reds, round, stageOf(run, index).name);
             return (
-              review !== undefined &&
               reportOf(review).verdict === "revise" &&
               (subject.action === "fix" || !atLimit(stageOf(run, index), round))
             );

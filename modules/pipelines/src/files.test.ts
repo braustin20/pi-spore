@@ -93,6 +93,13 @@ describe("pipeline files", () => {
       "adversarial",
       "gates",
     ]);
+    // ADR 0178 rule 19: adversarial and gates run in review's group.
+    expect("stages" in entry && entry.stages.map((stage) => stage.with_previous)).toEqual([
+      undefined,
+      undefined,
+      true,
+      true,
+    ]);
     expect(entry).not.toHaveProperty("path");
   });
 
@@ -111,7 +118,7 @@ describe("pipeline files", () => {
           fix_passes: 1,
           min_strength_over: "fix",
         },
-        { name: "gates", gates: ["check", "test"], fail_first: "artifact" },
+        { name: "gates", with_previous: true, gates: ["check", "test"], fail_first: "artifact" },
       ],
     });
     expect(entry).not.toHaveProperty("path");
@@ -133,7 +140,7 @@ describe("pipeline files", () => {
           early_stop: "jev",
           min_strength_over: "implement",
         },
-        { name: "gates", gates: ["check", "test"], fail_first: "artifact" },
+        { name: "gates", with_previous: true, gates: ["check", "test"], fail_first: "artifact" },
       ],
     });
     expect("stages" in entry && entry.stages).toHaveLength(3);

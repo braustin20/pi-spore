@@ -36,6 +36,7 @@ fix_passes = 1
 
 [[stage]]
 name = "gates"
+with_previous = true      # runs while the reviewers read; runs again after every fix
 gates = ["check", "test"]
 fail_first = "artifact"
 `;
@@ -58,6 +59,7 @@ min_strength_over = "implement"
 
 [[stage]]
 name = "gates"
+with_previous = true
 gates = ["check", "test"]
 fail_first = "artifact"
 `;
@@ -79,6 +81,7 @@ min_strength_over = "fix"
 
 [[stage]]
 name = "gates"
+with_previous = true
 gates = ["check", "test"]
 fail_first = "artifact"
 `;

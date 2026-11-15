@@ -1943,7 +1943,8 @@ describe("revising a lane (ADR 0158)", () => {
   it("fails the lane on a red gate and tells the coordinator", async () => {
     const { revise, untilLane, coordinatorSaid } = await passedLane(
       "redgate",
-      { worker: [DONE, FIX], reviewer: [LOOKS_FINE, APPROVE] },
+      // The red gate gets one fix (ADR 0178 rule 8); the final gate run is still red.
+      { worker: [DONE, FIX, FIX], reviewer: [LOOKS_FINE, APPROVE] },
       { check: "pass", test: "fail" },
     );
 
