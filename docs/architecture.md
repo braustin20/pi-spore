@@ -126,9 +126,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     assistant messages; `sessionRoles(workspaceId)` lists the session file and role of each agent that has a session,
     so the `usage` module can split token use per role.
   - The thinking level comes from the role default. Env adds `PI_SPORE_CHAT_KIND=stage` and `PI_SPORE_STAGE_ROLE`.
-  - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,request_human_input,artifacts_list,
-    artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
-    `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
+  - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,artifacts_list,artifacts_read,report,
+    ask_coordinator,ask_orchestrator` (spore-bridge registers `ask_coordinator` only in a lane and
+    `ask_orchestrator` only outside one), `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has
+    Pi's normal tools less `contact_supervisor` (`--exclude-tools contact_supervisor`): that pi-subagents tool works
+    only in a child pi-subagents started, so it always fails in a stage agent (ADR 0179).
   - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
     picker and shows the model read-only, with the routed model after `→`), because the pipeline judges a reviewer
     by the model it ran on (R4.4). A stage whose agent failed gets a fresh agent on Retry instead (section 8,
@@ -197,6 +199,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     assistant message one by one, in order, so an `artifacts_write` of the brief earlier in the same message is done
     first. The rules also say to call them in the next step after the write's result, in the same turn, and never
     to end a turn to wait for the user without `request_human_input`.
+  - Stage questions (ADR 0179). A stage agent outside a lane gets `ask_orchestrator` `{ question }` in place of
+    `request_human_input`. It posts `POST /api/bridge/stage-questions` with the tool call id as receipt and ends the
+    turn with `terminate: true`. The orchestrator chat (the chats that get `start_pipeline`) gets `answer_stage`
+    `{ questionId, answer }`, which posts `POST /api/bridge/stage-answers`. Both stage rule sets say: when the brief
+    leaves a decision open, ask with `ask_orchestrator` (in a lane: `ask_coordinator`); never use
+    `contact_supervisor`; do not guess. Section 8 has the server side.
   - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
     `terminate: true` through `POST /api/bridge/reports` (open to read-only reviewers). Reviewers give a verdict
     (`approve`, `revise`) and findings (`blocking`, `important`, `minor`); the worker lists each new test with the
@@ -654,6 +662,21 @@ fail_first = "artifact"
   one and tells the agent once to continue and call `report`. If the agent ends its turn without a report, the step
   reminds it once per turn (`reminded` in the checkpoint, also across a restart); a second such end blocks the stage
   (ADR 0169). There are no other automatic reminders.
+- **Stage questions** (ADR 0179, `pipelines_questions`). `ask_orchestrator` reaches `PipelinesKey.askStage`. It refuses
+  a caller that is not a stage agent (403 `not_a_stage`), a stage agent of a lane (403 `in_lane`), and a caller that
+  is not the agent of its run's open turn (409 `turn_closed`). The open turn is the latest turn of a `running` run
+  with no report and no error. The question goes to the run's asking chat. When the user closed that chat (or
+  retention deleted it), it goes to the workspace's active worker chat (`agents.activeWorker`), and that chat becomes
+  the run's asking chat, so it also gets the end message. The row and the delivery of the question commit together.
+  The message names the run, the stage, the agent, and the question id, and says to answer from the plan with
+  `answer_stage`, or to ask the user with `request_human_input` first. `answer_stage` reaches
+  `PipelinesKey.answerStage`: 404 `question_not_found`, 403 `not_asked` for any chat but the asked one, 409
+  `question_answered`, and 409 `turn_closed` when the question's turn is no longer open. The answer and its delivery
+  to the stage agent (with the `Turn:` line) commit together; the delivery starts the agent's next run. While the
+  open turn has an open question, the `await` step waits: no reminder, no block, and no restart reminder. It checks
+  again after it reads the agent's session, because the agent may ask during that read. A failed agent still blocks
+  the stage. The run view sets `question` on the open turn, and the Pipeline tab shows "Waiting for an answer from
+  <chat>." with a link to that chat and the question.
 - **Stage chat titles.** A run with a slice name (`name`) titles its stage agents `<slice name> - <stage title>`, such
   as `push_line tool - Review 1`. Without a name the titles stay `implement`, `Review 1`, ... A reused worker (`worker =
   "reuse"`) is renamed to the new run's slice name when the run has one, in the same commit that gives it the task, so
