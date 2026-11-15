@@ -2,16 +2,17 @@ import type { Agents } from "@pi-spore/mod-agents/server";
 import type { Pipelines } from "@pi-spore/mod-pipelines/server";
 import type { Runs } from "@pi-spore/mod-runs/server";
 import type { Workspaces } from "@pi-spore/mod-workspaces/server";
-import type {
-  Agent,
-  ChildRun,
-  GraphAgent,
-  GraphGroup,
-  GraphHelper,
-  GraphStep,
-  GraphTree,
-  PipelineRun,
-  Workspace,
+import {
+  type Agent,
+  type ChildRun,
+  type GraphAgent,
+  type GraphGroup,
+  type GraphHelper,
+  type GraphStep,
+  type GraphTree,
+  type PipelineRun,
+  stageGroups,
+  type Workspace,
 } from "@pi-spore/shared";
 
 export interface GraphSources {
@@ -47,10 +48,14 @@ function helpersOf(children: ChildRun[]): GraphHelper[] {
 function stepsOf(run: PipelineRun, node: (agentId: string) => GraphAgent | undefined): GraphStep[] {
   const passed = run.state === "passed";
   const ended = run.state === "failed" || run.state === "stopped";
-  // A step with no turn: before the current stage it is over, at it the run decides, after it nothing started.
+  // A step with no turn: before the current group it is over, in it the run decides, after it nothing started.
+  // A group runs as one stage and `run.stageIndex` is its first member (ADR 0178), so compare groups.
+  const groups = stageGroups(run.stages);
+  const groupAt = (index: number) => groups.findIndex((group) => group.includes(index));
+  const current = groupAt(run.stageIndex);
   const placed = (index: number): GraphStep["state"] => {
-    if (passed || index < run.stageIndex) return "done";
-    if (index > run.stageIndex) return "waiting";
+    if (passed || groupAt(index) < current) return "done";
+    if (groupAt(index) > current) return "waiting";
     return ended ? "failed" : "running";
   };
   return run.stages.flatMap((stage, index): GraphStep[] => {
