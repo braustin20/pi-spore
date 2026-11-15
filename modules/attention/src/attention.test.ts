@@ -181,7 +181,6 @@ const workspace: InboxWorkspace = {
   projectName: "pi-spore",
   state: "active",
 };
-const otherWorkspace: InboxWorkspace = { ...workspace, id: "ws-2", name: "other" };
 
 describe("Home inbox", () => {
   it("is empty with nothing to do", async () => {
@@ -265,116 +264,119 @@ describe("Home inbox", () => {
     expect(await kinds()).toEqual([]);
   });
 
-  // The Running panel shows one row per workspace, so it picks which of that workspace's chats to show (R15.1).
-  it("shows one running row per workspace, and picks a working stage over the pipeline worker", () => {
-    // The worker chat waits on the pipeline ("pipeline"), so Home shows the stage chat that works. The worker only
-    // waits for that stage, so it is not another chat at work, and the row gets no count.
-    const worker = item("w1", "chat-w", "worker", "pipeline", 500, {
-      detail: "pipeline 7: worker",
+  // Home's Running panel shows one row per workspace, so the inbox picks the chat that says most about its work.
+  it("shows one running row per workspace, and picks a working stage over the pipeline worker", async () => {
+    const { agentId, workspaceId } = await makeAgent("lane");
+    // The workspace's pipeline runs on a stage chat, and it works first (R6).
+    const stage = startStage(workspaceId);
+    await until(async () => agentsApi.get(stage.id).status === "busy");
+    // Its worker chat ends its own run last and then waits for that stage, so its item is the newest one the
+    // workspace has. The row still shows the stage chat that works.
+    await json(await prompt(agentId, "one"));
+    await until(async () => (await kinds()).includes("finished lane"));
+    agentsApi.setWorkingFor(agentId, "pipeline 7: worker");
+
+    const rows = (await inbox()).running;
+    expect(rows.map((row) => row.workspace.name)).toEqual(["lane"]);
+    expect(rows[0]).toMatchObject({
+      agentId: stage.id,
+      chat: { id: stage.id, kind: "stage" },
+      status: "busy",
     });
-    const stage = item("s1", "chat-s", "stage", "busy", 400);
-    expect(buildWorkspaceRows([worker, stage])[0]).toEqual({
-      ...stage,
-      others: undefined,
-    });
-    expect(buildWorkspaceRows([worker, stage])[0]).not.toHaveProperty("others");
-
-    // A stage that works wins over one that only waits for a worker slot, and a waiting stage beats the worker.
-    const waitingStage = item("s2", "chat-s2", "stage", "waiting", 300);
-    expect(buildWorkspaceRows([stage, waitingStage, worker])[0]).toMatchObject({ agentId: "s1" });
-    expect(buildWorkspaceRows([waitingStage, worker])[0]).toMatchObject({ agentId: "s2" });
-
-    // With no stage item, Home shows the workspace's active worker chat, even beside a side chat that works.
-    const sideChat = item("c1", "chat-c1", "side", "busy", 900);
-    expect(buildWorkspaceRows([sideChat, worker])).toMatchObject([
-      { agentId: "w1", chat: { id: "chat-w" }, others: 1 },
-    ]);
-
-    // With neither a stage nor an active worker chat, Home shows the first item of the inbox order, which is the
-    // newest, and the rest counts as the chats behind it.
-    const planning = item("c2", "chat-c2", "side", "starting", 700);
-    expect(buildWorkspaceRows([sideChat, planning])).toMatchObject([{ agentId: "c1", others: 1 }]);
-    expect(buildWorkspaceRows([planning, sideChat])).toMatchObject([{ agentId: "c2", others: 1 }]);
-
-    // A run carries its own workspace, so two workspaces get two rows, in the inbox order of their items.
-    const elsewhere = { ...item("x1", "chat-x", "worker", "busy", 900), workspace: otherWorkspace };
-    expect(
-      buildWorkspaceRows([elsewhere, sideChat, worker]).map((row) => row.workspace.id),
-    ).toEqual(["ws-2", "ws-1"]);
-
-    // A second active worker chat is a chat behind the row, so it counts.
-    expect(
-      buildWorkspaceRows([worker, item("w2", "chat-w2", "worker", "busy", 400)]),
-    ).toMatchObject([{ agentId: "w1", others: 1 }]);
+    // The worker chat waits for the stage rather than work, so it is not another chat beside the row.
+    expect(rows[0]).not.toHaveProperty("others");
   });
 
-  it("counts the other working chats, but not a pipeline worker that only waits for its stage", () => {
-    // The row shows the busy stage. Two chats work beside it; the pipeline worker waits, so it is out of the count.
-    const stage = item("s1", "chat-s", "stage", "busy", 400);
-    const pipelineWorker = item("w1", "chat-w", "worker", "pipeline", 500);
-    const helper = item("h1", "chat-h", "side", "helpers", 300);
-    const starting = item("c1", "chat-c", "side", "starting", 200);
-    expect(buildWorkspaceRows([pipelineWorker, stage, helper, starting])[0]).toMatchObject({
-      agentId: "s1",
-      others: 2,
-    });
+  it("counts the other working chats of the workspace, but not a worker that waits for its stage", async () => {
+    const { agentId, workspaceId } = await makeAgent("crowd");
+    await json(await prompt(agentId, "one"));
+    await until(async () => (await kinds()).includes("finished crowd"));
+    agentsApi.setWorkingFor(agentId, "pipeline 7: worker");
+    const stage = startStage(workspaceId);
+    await until(async () => agentsApi.get(stage.id).status === "busy");
 
-    // A worker chat that works, rather than waiting on its stage, does count.
-    expect(
-      buildWorkspaceRows([{ ...pipelineWorker, status: "busy" as const }, stage])[0],
-    ).toMatchObject({
+    // A side chat works too, so the row says that one more chat is at work.
+    const { agent: side } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents/chats", { workspaceId, kind: "side" }),
+      201,
+    );
+    await json(await prompt(side.id, "slow:60000"));
+    await until(async () => agentsApi.get(side.id).status === "busy");
+
+    const rows = (await inbox()).running;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ agentId: stage.id, others: 1 });
+  });
+
+  it("lists the running rows newest first, even when a row stands for an older chat", async () => {
+    const first = await makeAgent("first");
+    const second = await makeAgent("second");
+    // The first workspace's stage chat works first, so it is the oldest running chat of the three.
+    const stage = startStage(first.workspaceId);
+    await until(async () => agentsApi.get(stage.id).status === "busy");
+    await json(await prompt(second.agentId, "slow:60000"));
+    await until(async () => agentsApi.get(second.agentId).status === "busy");
+    // The first workspace's worker chat waits for its stage last, so it is the newest running chat. The wait for
+    // the user proves its run ended after both chats above became busy.
+    await json(await prompt(first.agentId, "one"));
+    await until(async () => (await kinds()).includes("finished first"));
+    agentsApi.setWorkingFor(first.agentId, "pipeline 7: worker");
+
+    // Its row shows the stage chat instead, so the row is as old as that chat: the other workspace comes first.
+    const rows = (await inbox()).running;
+    expect(rows.map((row) => row.workspace.name)).toEqual(["second", "first"]);
+    expect(rows[1]).toMatchObject({ agentId: stage.id, chat: { kind: "stage" } });
+  });
+
+  // A stage that waits for a worker slot, and a tie of one rank, need slot pressure the fake agents never reach.
+  it("picks a workspace's row in the rule's order, and counts what it leaves behind", () => {
+    const worker = item("w1", "worker", "pipeline", 500);
+    const stage = item("s1", "stage", "busy", 400);
+    const waitingStage = item("s2", "stage", "waiting", 300);
+    // A stage that works beats one that waits, and a waiting stage beats the worker chat, whatever their order.
+    expect(buildWorkspaceRows([stage, waitingStage, worker])[0]).toMatchObject({ agentId: "s1" });
+    expect(buildWorkspaceRows([worker, waitingStage])[0]).toMatchObject({ agentId: "s2" });
+    // The item that gave its place to a better one joins the count, and a waiting worker still does not.
+    expect(buildWorkspaceRows([waitingStage, stage, worker])[0]).toMatchObject({
       agentId: "s1",
       others: 1,
     });
-
-    // A workspace with nothing beside its row gets no count, and one row's count does not reach the next workspace.
+    // A workspace shows one row even with two active worker chats, and the newest of them stands for it.
+    expect(buildWorkspaceRows([worker, item("w2", "worker", "pipeline", 200)])[0]).toMatchObject({
+      agentId: "w1",
+    });
+    // With neither a stage nor an active worker chat, the first item of the inbox order stands for the workspace.
+    const side = item("c1", "side", "busy", 700);
+    expect(buildWorkspaceRows([side, item("c2", "side", "starting", 600)])[0]).toMatchObject({
+      agentId: "c1",
+      others: 1,
+    });
+    // Nothing else beside the row, so no count: not for a working stage, and not for a worker that waits.
     expect(buildWorkspaceRows([stage])[0]).not.toHaveProperty("others");
-    expect(buildWorkspaceRows([pipelineWorker])[0]).not.toHaveProperty("others");
-    expect(
-      buildWorkspaceRows([
-        stage,
-        helper,
-        starting,
-        { ...pipelineWorker, workspace: otherWorkspace },
-      ]),
-    ).toEqual([
-      { ...stage, others: 2 },
-      { ...pipelineWorker, workspace: otherWorkspace, others: undefined },
-    ]);
-
-    // Only pipeline workers: the row is one of them, and the rest wait for the stage rather than work.
-    expect(
-      buildWorkspaceRows([
-        pipelineWorker,
-        { ...pipelineWorker, agentId: "w2", chat: { ...pipelineWorker.chat, id: "chat-w2" } },
-      ])[0],
-    ).not.toHaveProperty("others");
-
-    // The item that gave its place to a better one joins the count, and a working item that loses still counts once.
-    expect(
-      buildWorkspaceRows([
-        item("s2", "chat-s2", "stage", "waiting", 900),
-        item("s3", "chat-s3", "stage", "busy", 800),
-        pipelineWorker,
-      ]),
-    ).toMatchObject([{ agentId: "s3", others: 1 }]);
+    expect(buildWorkspaceRows([worker])[0]).not.toHaveProperty("others");
   });
+
+  /** A pipeline stage chat that works, as a run starts one (R6). */
+  function startStage(workspaceId: string) {
+    return server.store.transaction(() => {
+      const agent = agentsApi.createStage(workspaceId, { role: "reviewer", title: "Review 1" });
+      agentsApi.deliver(agent.id, "slow:60000");
+      return agent;
+    });
+  }
 
   function item(
     agentId: string,
-    chatId: string,
     kind: ChatKind,
     status: RunningItem["status"],
     since: number,
-    extra: Partial<RunningItem> = {},
   ): RunningItem {
     return {
       agentId,
       workspace,
-      chat: { id: chatId, kind, active: kind === "worker", title: `${kind} ${chatId}` },
+      chat: { id: `chat-${agentId}`, kind, active: kind === "worker", title: `${kind} ${agentId}` },
       status,
       since,
-      ...extra,
     };
   }
 
