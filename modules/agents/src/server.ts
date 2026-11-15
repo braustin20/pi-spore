@@ -266,12 +266,14 @@ export function createAgentsModule(
           host.store.run("UPDATE agents_agents SET title = ? WHERE id = ?", title, agentId);
         },
         onChange: (agentId, change) => {
-          host.events.publish(
-            "agents:list",
-            agents.isClosed(agentId)
-              ? { type: "removed", id: agentId }
-              : { type: "agent", agent: agents.view(agentId) },
-          );
+          // The activity text is not on the agent view, so the list has nothing new to send.
+          if (change !== "activity")
+            host.events.publish(
+              "agents:list",
+              agents.isClosed(agentId)
+                ? { type: "removed", id: agentId }
+                : { type: "agent", agent: agents.view(agentId) },
+            );
           for (const listener of listeners) listener(agentId, change);
           if (change === "status" && agents.view(agentId).status === "idle")
             host.jobs.wake(DELIVERY_JOB, agentId);

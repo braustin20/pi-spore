@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyPiEvent, type ChatState, emptyChat } from "./chat.js";
+import { applyPiEvent, type ChatState, chatActivity, emptyChat, toolActivity } from "./chat.js";
 
 const replay = (events: unknown[], start: ChatState = emptyChat()) =>
   events.reduce(applyPiEvent, start);
@@ -105,5 +105,150 @@ describe("applyPiEvent", () => {
     });
     expect(state.queue).toEqual({ steering: ["stop"], followUp: [] });
     expect(state.messages).toEqual([]);
+  });
+});
+
+describe("toolActivity (R15)", () => {
+  it("names the tool with the one argument a row shows", () => {
+    expect(toolActivity("Running", "bash", { command: "npm test" })).toBe("Running bash: npm test");
+    expect(toolActivity("Running", "read", { path: "docs/vision.md" })).toBe(
+      "Running read: docs/vision.md",
+    );
+    expect(toolActivity("Ran", "edit", { path: "a.ts" })).toBe("Ran edit: a.ts");
+    expect(toolActivity("Ran", "write", { path: "b.ts" })).toBe("Ran write: b.ts");
+  });
+
+  it("leaves the argument out for a tool it does not name, or one that is not text", () => {
+    expect(toolActivity("Running", "grep", { pattern: "TODO" })).toBe("Running grep");
+    expect(toolActivity("Running", "bash", { path: "not-a-command" })).toBe("Running bash");
+    expect(toolActivity("Running", "read", { command: "not-a-path" })).toBe("Running read");
+    expect(toolActivity("Running", "bash", { command: 7 })).toBe("Running bash");
+    expect(toolActivity("Running", "bash", { command: "   \ngit status" })).toBe("Running bash");
+    expect(toolActivity("Running", "bash", undefined)).toBe("Running bash");
+    expect(toolActivity("Running", "bash", "npm test")).toBe("Running bash");
+  });
+
+  it("keeps one line, trimmed", () => {
+    expect(toolActivity("Running", "bash", { command: "echo one\ngit status" })).toBe(
+      "Running bash: echo one",
+    );
+    expect(toolActivity("Running", "bash", { command: "  ls -la  \ngit status" })).toBe(
+      "Running bash: ls -la",
+    );
+  });
+
+  it("cuts the argument at any line break, not only a line feed", () => {
+    expect(toolActivity("Running", "bash", { command: "echo one\r\ngit status" })).toBe(
+      "Running bash: echo one",
+    );
+    expect(toolActivity("Running", "bash", { command: "echo one\rgit status" })).toBe(
+      "Running bash: echo one",
+    );
+    expect(toolActivity("Running", "read", { path: "a\u2028b" })).toBe("Running read: a");
+    expect(toolActivity("Ran", "write", { path: "a\u2029b" })).toBe("Ran write: a");
+  });
+
+  it("cuts a long line to 80 characters", () => {
+    const text = toolActivity("Running", "read", { path: "x".repeat(200) });
+    expect(text.length).toBe(80);
+    expect(text.endsWith("…")).toBe(true);
+    expect(text).toBe(`Running read: ${"x".repeat(80 - "Running read: ".length - 1)}…`);
+    expect(toolActivity("Running", "bash", { command: "y".repeat(66) })).toBe(
+      `Running bash: ${"y".repeat(66)}`,
+    );
+  });
+});
+
+describe("chatActivity (R15)", () => {
+  const replied = (content: unknown, timestamp = 5) => ({
+    role: "assistant",
+    content,
+    timestamp,
+  });
+  const call = (name: string, args: Record<string, unknown>, id = "c1") => ({
+    type: "toolCall",
+    id,
+    name,
+    arguments: args,
+  });
+
+  it("names the newest running tool, ahead of the messages", () => {
+    const state: ChatState = {
+      ...emptyChat(),
+      messages: [replied([{ type: "text", text: "Done" }])],
+      running: [
+        { toolCallId: "c1", toolName: "read", args: { path: "a.ts" } },
+        { toolCallId: "c2", toolName: "bash", args: { command: "npm test" } },
+      ],
+    };
+    expect(chatActivity(state)).toBe("Running bash: npm test");
+  });
+
+  it("names the last tool call of the newest assistant message", () => {
+    const state: ChatState = {
+      ...emptyChat(),
+      messages: [
+        replied([{ type: "text", text: "Looking" }]),
+        replied([
+          { type: "thinking", thinking: "hm" },
+          call("read", { path: "a.ts" }, "c1"),
+          call("bash", { command: "npm test" }, "c2"),
+        ]),
+      ],
+    };
+    expect(chatActivity(state)).toBe("Ran bash: npm test");
+  });
+
+  it("says what it replied with, from the first line of text", () => {
+    const state: ChatState = {
+      ...emptyChat(),
+      messages: [
+        replied([{ type: "text", text: "First answer" }]),
+        replied([
+          { type: "thinking", thinking: "hm" },
+          { type: "text", text: "\n  All set.\nNothing else." },
+        ]),
+      ],
+    };
+    expect(chatActivity(state)).toBe("Replied: All set.");
+    const long: ChatState = {
+      ...emptyChat(),
+      messages: [replied([{ type: "text", text: `${"z".repeat(200)} tail` }])],
+    };
+    expect(chatActivity(long)).toBe(`Replied: ${"z".repeat(80 - "Replied: ".length - 1)}…`);
+  });
+
+  it("takes the first line of the reply at any line break", () => {
+    const state: ChatState = {
+      ...emptyChat(),
+      messages: [replied([{ type: "text", text: "First\u2028Second\rThird" }])],
+    };
+    expect(chatActivity(state)).toBe("Replied: First");
+  });
+
+  it("skips a message with only thinking, and an empty one", () => {
+    const state: ChatState = {
+      ...emptyChat(),
+      messages: [
+        replied([{ type: "text", text: "Earlier answer" }], 3),
+        replied([{ type: "thinking", thinking: "hm" }], 4),
+        replied([], 5),
+      ],
+    };
+    expect(chatActivity(state)).toBe("Replied: Earlier answer");
+  });
+
+  it("says nothing without a finished assistant step, and never reads a tool result", () => {
+    expect(chatActivity(emptyChat())).toBeUndefined();
+    expect(
+      chatActivity({
+        ...emptyChat(),
+        messages: [
+          { role: "user", content: "hi", timestamp: 1 },
+          { role: "toolResult", toolName: "bash", content: [{ type: "text", text: "ls out" }] },
+        ],
+        streaming: replied([{ type: "text", text: "Still writing" }], 9),
+      }),
+    ).toBeUndefined();
   });
 });

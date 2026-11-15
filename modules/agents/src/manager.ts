@@ -14,6 +14,7 @@ import {
   type ChildRun,
   type ChildTranscript,
   type ContextUsage,
+  chatActivity,
   chatTitle,
   type DialogAnswer,
   emptyChat,
@@ -379,12 +380,17 @@ export class AgentManager {
   attention(): AgentAttention[] {
     return [...this.agents.values()]
       .filter((live) => !live.record.closed)
-      .map((live) => ({
-        agent: this.view(live.record.id),
-        since: live.since,
-        dialogs: [...live.dialogs.values()].map(({ dialog, openedAt }) => ({ dialog, openedAt })),
-        ...(live.record.waitingSince === null ? {} : { waitingSince: live.record.waitingSince }),
-      }));
+      .map((live) => {
+        // A question beats the last step: it is what stops the run (R15).
+        const activity = live.dialogs.size > 0 ? "Asked a question" : chatActivity(live.chat);
+        return {
+          agent: this.view(live.record.id),
+          since: live.since,
+          dialogs: [...live.dialogs.values()].map(({ dialog, openedAt }) => ({ dialog, openedAt })),
+          ...(live.record.waitingSince === null ? {} : { waitingSince: live.record.waitingSince }),
+          ...(activity === undefined ? {} : { activity }),
+        };
+      });
   }
 
   /** The user has seen the agent's last reply: it no longer waits for them on Home. */
@@ -1056,6 +1062,10 @@ export class AgentManager {
       live.thinkingLevel = event.level;
       this.publishModel(live);
     }
+    // Home shows what each agent did last, so a step that ends or a tool that starts refreshes it (R15). Not the
+    // streamed tokens: the row would rewrite itself per delta, and a half-written reply says nothing yet.
+    if (event.type === "tool_execution_start" || event.type === "message_end")
+      this.options.onChange(live.record.id, "activity");
   }
 
   private setRouterStatus(live: Live, text: string | undefined): void {
