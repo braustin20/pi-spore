@@ -102,7 +102,10 @@ export interface VcsProvider {
   /** The project root that contains `path`, as an absolute real path. */
   root(path: string): Promise<string>;
   isolationModes: readonly Isolation[];
-  createCopy(project: Project, request: CreateCopyRequest): Promise<WorkspaceLocation>;
+  createCopy(
+    project: Project,
+    request: CreateCopyRequest,
+  ): Promise<WorkspaceLocation & { warnings?: string[] }>;
   /** Removes a copy made by `createCopy`. Throws an ApiError 409 if it holds work that would be lost, unless
    * `force`. */
   removeCopy(
