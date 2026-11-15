@@ -169,6 +169,8 @@ export function buildGraph({ agents, pipelines, runs, workspaces }: GraphSources
               ? [groupOf(pipelines.get(lane.pipelineRunId), node, lane)]
               : [],
           ),
+          // The module's own rows fill these in (ADR 0176, card 4); buildGraph knows nothing about them.
+          positions: {},
         },
       ];
     }
@@ -190,6 +192,7 @@ export function buildGraph({ agents, pipelines, runs, workspaces }: GraphSources
         ...base(workspace),
         root: toNode(chat),
         groups: shown.map((entry) => groupOf(entry, node)),
+        positions: {},
       },
     ];
   });

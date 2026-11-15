@@ -2,7 +2,7 @@ import "@xyflow/react/dist/base.css";
 import "./graph.css";
 import { useApi } from "@pi-spore/module-api";
 import type { AgentGraphEvent, GraphAgent, GraphStep, GraphTree } from "@pi-spore/shared";
-import { Button, cn, EmptyState, SporeLogo, usePhone } from "@pi-spore/ui";
+import { Button, cn, EmptyState, Notice, SporeLogo, usePhone } from "@pi-spore/ui";
 import {
   Background,
   type EdgeProps,
@@ -277,32 +277,40 @@ function FitButton() {
   );
 }
 
-/**
- * Drag positions by node id, for the page's life: they outlive the landing, which the workspaces view unmounts
- * while a chat is open. Card 4 saves them.
- */
-let kept: ReadonlyMap<string, XYPosition> = new Map();
+const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
 function Canvas({ trees, helpers }: { trees: readonly GraphTree[]; helpers: HelpersByNode }) {
+  const api = useApi();
   const phone = usePhone();
-  const [moved, setMoved] = useState(kept);
+  // This mount's drags, shown until the server echoes the saved place in the next topic event, and after.
+  const [moved, setMoved] = useState<ReadonlyMap<string, XYPosition>>(new Map());
+  const [error, setError] = useState<string | undefined>();
   const layout = useMemo(() => layoutGraph(trees, helpers, phone), [trees, helpers, phone]);
+  // Node ids are unique across trees. A step's place is relative to its group, as the layout gives it.
+  const saved = useMemo(
+    () => new Map(trees.flatMap((tree) => Object.entries(tree.positions))),
+    [trees],
+  );
   const nodes = useMemo(
     () =>
       layout.nodes.map((node) => {
-        const at = moved.get(node.id);
+        const at = moved.get(node.id) ?? saved.get(node.id);
         return at ? { ...node, position: at } : node;
       }),
-    [layout, moved],
+    [layout, moved, saved],
   );
   const onNodesChange = useCallback((changes: NodeChange<GraphNode>[]) => {
     const positions = new Map<string, XYPosition>();
     for (const change of changes)
       if (change.type === "position" && change.position) positions.set(change.id, change.position);
     if (positions.size === 0) return;
-    kept = new Map([...kept, ...positions]);
-    setMoved(kept);
+    setMoved((before) => new Map([...before, ...positions]));
   }, []);
+  const save = (method: "PUT" | "DELETE", body?: unknown) =>
+    api.send(method, "agent-graph/positions", body).then(
+      () => setError(undefined),
+      (caught) => setError(message(caught)),
+    );
   // A drag ends with a click on the pod under the pointer; that click must not open the chat.
   const dragged = useRef(false);
   return (
@@ -325,6 +333,10 @@ function Canvas({ trees, helpers }: { trees: readonly GraphTree[]; helpers: Help
         onNodeDragStart={() => {
           dragged.current = true;
         }}
+        // Once per drag, not on every move as `onNodesChange` is.
+        onNodeDragStop={(_, node) =>
+          void save("PUT", { node: node.id, x: node.position.x, y: node.position.y })
+        }
         // On a phone the whole graph fits only at a zoom too small to read, so it starts at 100%, at the top (the
         // approved phone mockup). Fit shows it all.
         fitView={!phone}
@@ -337,8 +349,20 @@ function Canvas({ trees, helpers }: { trees: readonly GraphTree[]; helpers: Help
         elementsSelectable={false}
       >
         <Background gap={16} size={2} color="color-mix(in oklab, var(--text) 10%, transparent)" />
-        <Panel position="top-right">
-          <FitButton />
+        <Panel position="top-right" className="flex flex-col items-end gap-2">
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              onClick={() => {
+                setMoved(new Map());
+                void save("DELETE");
+              }}
+            >
+              Reset layout
+            </Button>
+            <FitButton />
+          </div>
+          {error && <Notice tone="fail">{error}</Notice>}
         </Panel>
       </ReactFlow>
     </div>

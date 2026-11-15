@@ -1458,7 +1458,8 @@ See [ADR 0070](decisions/0070-artifacts-per-workspace-and-project.md). Requireme
 See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R15.
 
 - The `agent-graph` module (requires `projects`, `workspaces`, `agents`, `pipelines`, `runs`) builds one live picture
-  of every agent that works now, as trees. It stores nothing yet. It reads the other modules only through
+  of every agent that works now, as trees. Its one table, `agent_graph_positions`, holds where the user dragged each
+  node (ADR 0176, card 4). It reads the other modules only through
   `WorkspacesKey`, `AgentsKey` (`get`, `inWorkspace`, `isClosed`, `attention`, `liveState`), `PipelinesKey` (`get`,
   `runsOf`), and `RunsKey` (`runOf`, `laneOf`). The build is `buildGraph` in `modules/agent-graph/src/graph.ts`.
 - Trees, for workspaces in state `active` only, not the planner workspace, oldest workspace first:
@@ -1480,6 +1481,14 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
   subscribe and again after a change, at most once per tick (`setImmediate`). Changes come from `AgentsKey.onChange`
   and `afterWorkerChange` (a workspace's first chat), `PipelinesKey.onChange`, `RunsKey.onChange`, and the
   workspace state change and delete hooks. Nothing polls.
+- Saved places (card 4): each tree carries `positions`, the saved x and y by canvas node id
+  (`tree:<workspace id>`, `group:<pipeline run id>`, `step:<step id>`; `treeNodeId`, `groupNodeId`, and `stepNodeId`
+  in `packages/shared/src/agent-graph.ts` make them). `PUT /api/agent-graph/positions` with `{ node, x, y }` saves one
+  place under the workspace of the tree that shows that node and answers `{ ok: true }`. An id of no node in the
+  graph, a helper id among them, answers 400 `unknown_node`, naming it. `DELETE /api/agent-graph/positions` clears
+  them all, for the canvas's "Reset layout". A workspace's rows go when it is archived or deleted; a parked one keeps
+  them, since it can resume. One `graph()` in `server.ts` builds the graph with its places, and `GET`, the snapshot
+  for a new subscriber, and every event use it.
 - A helper that stopped running is in the next topic event once more, with state `failed` (its step or run is
   `failed` or `rejected`) or `done`, so the canvas can pop it in the right color; one more event drops it. `GET` and
   the snapshot show running helpers only. Foreground helpers are the parent's `subagent` tool call and are not
@@ -1491,8 +1500,12 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     first; in a tree, the root on top and its groups side by side; steps top-down. Phone: trees and groups stack,
     the root thread down the left. Each pod reserves one row per helper under it.
   - Nodes: a tree box (the root pod is its drag handle, so dragging the root moves the tree), a group panel, and a
-    step pod. Every pod with an agent links to `#/workspaces/<workspace>/chats/<agent>`. A drag lasts until a
-    reload (positions are saved later, card 4). Fit fits the graph; zoom, pan, and pinch are React Flow's.
+    step pod. Every pod with an agent links to `#/workspaces/<workspace>/chats/<agent>`. A drag's end sends
+    one `PUT /api/agent-graph/positions`; the canvas draws each node at this mount's drag, else at its tree's
+    `positions`, else at the automatic place. A step's place is relative to its group, so a moved tree keeps its
+    children, and helpers move with their pod. Reset layout sends `DELETE /api/agent-graph/positions`. A failed save
+    shows its error over the canvas until the next one works. Fit fits the graph; zoom, pan, and pinch are React
+    Flow's.
   - Look (the approved mockup): roots `--accent` (coordinator) or `--accent-strong` (chat); a step pod takes its
     look from the step's own `state`, never its agent's status, since a task step and its fix steps share one
     worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A fix

@@ -16,7 +16,7 @@ import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { BridgeCaller, ServerModule } from "@pi-spore/module-api";
-import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
+import { createTestServer, TEST_TOKEN, type TestServer } from "@pi-spore/server-core/testing";
 import type {
   AgentGraph,
   AgentGraphEvent,
@@ -234,6 +234,15 @@ const startRun = async (server: TestServer, workspaceId: string) =>
   ).run;
 const prompt = (server: TestServer, agentId: string, message: string) =>
   server.request("POST", `/api/agents/${agentId}/prompt`, { message });
+const savePosition = (server: TestServer, node: string, x: number, y: number) =>
+  server.request("PUT", "/api/agent-graph/positions", { node, x, y });
+/** The saved rows, since an archived workspace's tree is out of the graph, so GET cannot show its rows are gone. */
+const positionRows = (server: TestServer) =>
+  server.store
+    .all<{ workspace_id: string; node_id: string }>(
+      "SELECT workspace_id, node_id FROM agent_graph_positions ORDER BY node_id",
+    )
+    .map((row) => `${row.workspace_id} ${row.node_id}`);
 
 describe("the agent graph (ADR 0176)", () => {
   it("gives a run one tree with its coordinator and one group per lane, and the lanes no tree", async () => {
@@ -399,6 +408,142 @@ describe("the agent graph (ADR 0176)", () => {
         .slice(mark)
         .some((event) => event.trees.some((tree) => tree.workspaceId === workspaceId)),
     );
+  });
+
+  it("keeps a dragged tree's place in GET and in the next event", async () => {
+    const server = await start({});
+    const { workspaceId } = await workspace(server, "drag-tree");
+    const node = `tree:${workspaceId}`;
+
+    expect(await json(await savePosition(server, node, 320, -60))).toEqual({ ok: true });
+
+    const [tree] = (await graph(server)) as [GraphTree];
+    expect(tree.positions).toEqual({ [node]: { x: 320, y: -60 } });
+    await until(() => events(server).some((event) => event.trees[0]?.positions[node]?.x === 320));
+
+    // Dragged again, it is one row at the newest place.
+    await json(await savePosition(server, node, 80, 90));
+    const [moved] = (await graph(server)) as [GraphTree];
+    expect(moved.positions).toEqual({ [node]: { x: 80, y: 90 } });
+    expect(positionRows(server)).toEqual([`${workspaceId} ${node}`]);
+  });
+
+  it("saves a lane step's place under the tree that shows it", async () => {
+    const server = await start({ worker: ["hang", "hang"] });
+    const projectId = await gitProject(server, "drag-step");
+    const { run, coordinator } = await createRun(server, projectId, "drag-step");
+    await startLane(run, coordinator, "one");
+    await until(async () =>
+      (await getRun(server, run.id)).lanes.some((lane) => lane.pipelineRunId !== undefined),
+    );
+    const [tree] = (await graph(server)) as [GraphTree];
+    const group = tree.groups[0];
+    const step = group?.steps[0];
+    if (!group || !step) throw new Error("the lane's group has no step");
+    const node = `step:${step.id}`;
+    const groupNode = `group:${group.pipelineRunId}`;
+
+    await json(await savePosition(server, node, 12, 8));
+    await json(await savePosition(server, groupNode, 3, 4));
+
+    const [saved] = (await graph(server)) as [GraphTree];
+    expect(saved.positions).toEqual({ [node]: { x: 12, y: 8 }, [groupNode]: { x: 3, y: 4 } });
+    // Both rows are under the tree's workspace, not the lane's, so archiving the run workspace clears them.
+    expect(positionRows(server)).toEqual([
+      `${tree.workspaceId} ${groupNode}`,
+      `${tree.workspaceId} ${node}`,
+    ]);
+  });
+
+  it("clears every saved place on request", async () => {
+    const server = await start({});
+    const one = await workspace(server, "reset-one");
+    const two = await workspace(server, "reset-two");
+    await json(await savePosition(server, `tree:${one.workspaceId}`, 10, 20));
+    await json(await savePosition(server, `tree:${two.workspaceId}`, 30, 40));
+    const mark = events(server).length;
+
+    expect(await json(await server.request("DELETE", "/api/agent-graph/positions"))).toEqual({
+      ok: true,
+    });
+
+    expect((await graph(server)).map((tree) => tree.positions)).toEqual([{}, {}]);
+    await until(() => events(server).length > mark);
+    expect(
+      events(server)
+        .at(-1)
+        ?.trees.map((tree) => tree.positions),
+    ).toEqual([{}, {}]);
+  });
+
+  it("deletes an archived workspace's saved places and keeps a parked one's", async () => {
+    const server = await start({});
+    const parked = await workspace(server, "parked-places");
+    const gone = await workspace(server, "archived-places");
+    await json(await savePosition(server, `tree:${parked.workspaceId}`, 5, 6));
+    await json(await savePosition(server, `tree:${gone.workspaceId}`, 7, 8));
+
+    // A parked workspace can resume, so its places stay; an archived one never comes back (ADR 0176).
+    await json(await server.request("POST", `/api/workspaces/${parked.workspaceId}/park`, {}));
+    expect(positionRows(server)).toEqual([
+      `${parked.workspaceId} tree:${parked.workspaceId}`,
+      `${gone.workspaceId} tree:${gone.workspaceId}`,
+    ]);
+
+    await json(await server.request("POST", `/api/workspaces/${gone.workspaceId}/archive`, {}));
+    expect(positionRows(server)).toEqual([`${parked.workspaceId} tree:${parked.workspaceId}`]);
+  });
+
+  it("answers 400 for a saved place body that is not JSON", async () => {
+    const server = await start({});
+    await workspace(server, "bad-position-json");
+
+    // `server.request` always writes JSON, so the broken bytes go to the server that already listens for the agents.
+    const response = await fetch(`${server.url}/api/agent-graph/positions`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-pi-spore-token": TEST_TOKEN },
+      body: "{ node: tree:1, x: 1,",
+    });
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("invalid_request");
+    expect(body.error.message).toContain("not valid JSON");
+    expect(positionRows(server)).toEqual([]);
+  });
+
+  it("answers 400 for a saved place with no x, from the schema and not the node lookup", async () => {
+    const server = await start({});
+    const { workspaceId } = await workspace(server, "bad-position-x");
+
+    const response = await server.request("PUT", "/api/agent-graph/positions", {
+      node: `tree:${workspaceId}`,
+      y: 1,
+    });
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    // The node is one of the graph, so only the schema can stop it here, and it stops it before any write.
+    expect(body.error.code).toBe("invalid_request");
+    expect(body.error.message).toContain("must have required properties x");
+    expect(positionRows(server)).toEqual([]);
+  });
+
+  it.each([
+    ["a helper id", "run-1:0"],
+    ["a tree of no workspace", "tree:nope"],
+  ])("answers 400, naming the id, for %s", async (_name, node) => {
+    const server = await start({});
+    const { workspaceId } = await workspace(server, "bad-position-node");
+    expect((await graph(server)).map((tree) => tree.workspaceId)).toEqual([workspaceId]);
+
+    const response = await savePosition(server, node, 1, 2);
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("unknown_node");
+    expect(body.error.message).toContain(node);
+    expect(positionRows(server)).toEqual([]);
   });
 
   it("shows a worker's helper on its fix step only, not on its earlier task step", async () => {

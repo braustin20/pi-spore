@@ -2,11 +2,46 @@ import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
-import type { ServerModule } from "@pi-spore/module-api";
-import type { AgentGraph, AgentGraphEvent, ChildRun, GraphHelper } from "@pi-spore/shared";
+import { ApiError, type ServerModule } from "@pi-spore/module-api";
+import {
+  type AgentGraph,
+  type AgentGraphEvent,
+  type ChildRun,
+  type GraphHelper,
+  type GraphPosition,
+  type GraphTree,
+  groupNodeId,
+  parseJsonBody,
+  SavePositionRequest,
+  stepNodeId,
+  treeNodeId,
+} from "@pi-spore/shared";
 import { buildGraph, nodesOf } from "./graph.js";
 
 export const GRAPH_TOPIC = "agent-graph:trees";
+
+const MIGRATIONS = [
+  // ADR 0176, card 4: where the user dragged each node, by canvas node id, under the workspace of its tree.
+  `CREATE TABLE agent_graph_positions (
+    workspace_id TEXT NOT NULL,
+    node_id TEXT NOT NULL,
+    x REAL NOT NULL,
+    y REAL NOT NULL,
+    PRIMARY KEY (workspace_id, node_id)
+  )`,
+];
+
+/** The tree of the graph that shows this canvas node id, by its tree, group, or step node. Helpers have none. */
+function treeOfNode(trees: readonly GraphTree[], node: string): GraphTree | undefined {
+  return trees.find(
+    (tree) =>
+      treeNodeId(tree) === node ||
+      tree.groups.some(
+        (group) =>
+          groupNodeId(group) === node || group.steps.some((step) => stepNodeId(step) === node),
+      ),
+  );
+}
 
 /** How a helper that stopped running ended: `failed` for a failed or rejected step or run, else `done`. */
 function endState(children: ChildRun[], helperId: string): "done" | "failed" {
@@ -19,13 +54,15 @@ function endState(children: ChildRun[], helperId: string): "done" | "failed" {
 
 /**
  * The live agent graph (ADR 0176): every active workspace's agents as trees, at `GET /api/agent-graph` and on
- * topic `agent-graph:trees`, built from the agents, pipelines, runs, and workspaces interfaces. It stores nothing.
+ * topic `agent-graph:trees`, built from the agents, pipelines, runs, and workspaces interfaces. Its one table keeps
+ * where the user dragged each node (card 4); a workspace's rows go when it is archived or deleted.
  */
 export const agentGraphModule: ServerModule = {
   id: "agent-graph",
   requires: ["projects", "workspaces", "agents", "pipelines", "runs"],
   core: false,
   setup(host) {
+    host.store.migrate("agent-graph", MIGRATIONS);
     const sources = {
       agents: host.use(AgentsKey),
       pipelines: host.use(PipelinesKey),
@@ -34,10 +71,27 @@ export const agentGraphModule: ServerModule = {
     };
     const { agents } = sources;
 
+    // The one shape GET, the snapshot for a new subscriber, and each event use: the graph with its saved places.
+    const graph = (): GraphTree[] => {
+      const trees = buildGraph(sources);
+      for (const tree of trees)
+        tree.positions = Object.fromEntries(
+          host.store
+            .all<{ node_id: string; x: number; y: number }>(
+              "SELECT node_id, x, y FROM agent_graph_positions WHERE workspace_id = ?",
+              tree.workspaceId,
+            )
+            .map((row): [string, GraphPosition] => [row.node_id, { x: row.x, y: row.y }]),
+        );
+      return trees;
+    };
+    const deleteRows = (workspaceId: string) =>
+      host.store.run("DELETE FROM agent_graph_positions WHERE workspace_id = ?", workspaceId);
+
     // The running helpers of the last event, by agent id, so the next event can show each one that ended once.
     let shown = new Map<string, GraphHelper[]>();
     const publish = () => {
-      const trees = buildGraph(sources);
+      const trees = graph();
       // Each agent once, on the node that carries its helpers: its last one (see buildGraph).
       const nodes = [...new Map(nodesOf(trees).map((node) => [node.agentId, node])).values()];
       const running = new Map(nodes.map((node) => [node.agentId, node.helpers]));
@@ -79,12 +133,51 @@ export const agentGraphModule: ServerModule = {
     agents.afterWorkerChange(changed);
     sources.pipelines.onChange(changed);
     sources.runs.onChange(changed);
-    sources.workspaces.afterStateChange(changed);
-    sources.workspaces.beforeDeleteWorkspace(async () => changed());
+    sources.workspaces.afterStateChange((workspace) => {
+      // ADR 0176: an archived workspace never comes back, so its places go. A parked one can resume, so they stay.
+      if (workspace.state === "archived") deleteRows(workspace.id);
+      changed();
+    });
+    sources.workspaces.beforeDeleteWorkspace(async (workspace) => {
+      deleteRows(workspace.id);
+      changed();
+    });
 
     host.events.onSubscribe(GRAPH_TOPIC, (): AgentGraphEvent[] => [
-      { type: "graph", trees: buildGraph(sources) },
+      { type: "graph", trees: graph() },
     ]);
-    host.routes.get("/", (c) => c.json({ trees: buildGraph(sources) } satisfies AgentGraph));
+    host.routes.get("/", (c) => c.json({ trees: graph() } satisfies AgentGraph));
+
+    host.routes.put("/positions", async (c) => {
+      const request = parseJsonBody(
+        SavePositionRequest,
+        await c.req.text(),
+        "save position request",
+      );
+      const tree = treeOfNode(buildGraph(sources), request.node);
+      if (!tree)
+        throw new ApiError(
+          400,
+          "unknown_node",
+          `No graph node ${request.node}: save a tree, group, or step node of the graph`,
+        );
+      host.store.run(
+        `INSERT INTO agent_graph_positions (workspace_id, node_id, x, y) VALUES (?, ?, ?, ?)
+         ON CONFLICT (workspace_id, node_id) DO UPDATE SET x = excluded.x, y = excluded.y`,
+        tree.workspaceId,
+        request.node,
+        request.x,
+        request.y,
+      );
+      changed();
+      return c.json({ ok: true });
+    });
+
+    // The canvas's "Reset layout": every tree goes back to its automatic place.
+    host.routes.delete("/positions", (c) => {
+      host.store.run("DELETE FROM agent_graph_positions");
+      changed();
+      return c.json({ ok: true });
+    });
   },
 };
