@@ -19,6 +19,8 @@
 //                  argument, and waits there until the `bash-done` prompt; then it ends the tool, writes its result,
 //                  and gives the normal echo reply. Use it to watch a running tool. "bash-done" runs as a command,
 //                  even while streaming
+//   "agent-start-again"  writes a second `agent_start` in the open run, as Pi does when it retries or compacts and
+//                  continues before `agent_settled`. Runs as a command, even while streaming
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
@@ -614,6 +616,10 @@ const handle = (command) => {
         if (state === "gone") helpers.delete(runId);
         else helpers.set(runId, { agent, state, tool });
         publishHelpers();
+        return respond(id, type, { disposition: "handled" });
+      }
+      if (command.message === "agent-start-again") {
+        write({ type: "agent_start" });
         return respond(id, type, { disposition: "handled" });
       }
       if (command.message === "bash-done") {

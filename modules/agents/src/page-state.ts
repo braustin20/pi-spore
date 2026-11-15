@@ -75,6 +75,7 @@ export function reducePage(state: PageState, raw: unknown): PageState {
         agent: {
           ...agent,
           status: event.status as Agent["status"],
+          statusSince: event.since as number,
           ...(typeof event.error === "string" ? { error: event.error } : {}),
         },
       };
