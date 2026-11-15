@@ -181,6 +181,49 @@ describe("git changes", () => {
     expect((await changes.files(here(), { kind: "record", id: first }, 100)).files).toHaveLength(4);
   });
 
+  it("shows only the branch's own commits when the local base is behind its upstream", async () => {
+    // pi-spore merges PRs on GitHub (ADR 0142), so local main falls behind origin/main until the user pulls.
+    const origin = join(root, "origin.git");
+    git(root, "clone", "-q", "--bare", repo, origin);
+    const local = join(root, "local");
+    git(root, "clone", "-q", origin, local);
+    const other = join(root, "other");
+    git(root, "clone", "-q", origin, other);
+    for (const name of ["merged1.txt", "merged2.txt"]) {
+      writeFileSync(join(other, name), "x\n");
+      git(other, "add", name);
+      git(other, "commit", "-q", "-m", `merged ${name}`);
+    }
+    git(other, "push", "-q", "origin", "main");
+    git(local, "fetch", "-q", "origin");
+    const staleMain = git(local, "rev-parse", "main").trim();
+
+    // A branch that caught up with origin/main, and one that still starts at the stale local main.
+    const caughtUp = join(root, "caught-up");
+    git(local, "worktree", "add", "-q", "-b", "work", caughtUp, "main");
+    git(caughtUp, "merge", "-q", "--ff-only", "origin/main");
+    writeFileSync(join(caughtUp, "mine.txt"), "mine\n");
+    git(caughtUp, "add", "mine.txt");
+    git(caughtUp, "commit", "-q", "-m", "mine");
+    const stale = join(root, "stale");
+    git(local, "worktree", "add", "-q", "-b", "old", stale, "main");
+    writeFileSync(join(stale, "old.txt"), "changed\n");
+    git(stale, "commit", "-q", "-am", "old work");
+    expect(git(local, "rev-parse", "main").trim()).toBe(staleMain);
+
+    for (const [path, subject, file] of [
+      [caughtUp, "mine", "added mine.txt 1 0 false"],
+      [stale, "old work", "modified old.txt 1 2 false"],
+    ] as const) {
+      const records = await changes.records({ path }, "main", 50);
+      expect(records.map((record) => record.subject)).toEqual([subject]);
+      const { files } = await changes.files({ path }, { kind: "line", base: "main" }, 100);
+      expect(summary(files)).toEqual([file]);
+    }
+    // Reading the changes never moves the user's local main.
+    expect(git(local, "rev-parse", "main").trim()).toBe(staleMain);
+  });
+
   it("refuses a base or a commit id that is not a commit, and option-like names", async () => {
     await expect(changes.files(here(), { kind: "line", base: "nope" }, 100)).rejects.toMatchObject({
       code: "base_not_found",
