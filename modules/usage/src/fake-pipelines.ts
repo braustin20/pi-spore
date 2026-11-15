@@ -30,6 +30,8 @@ export function fakePipelines(): { module: ServerModule; end: (run: FakeRun) => 
   const implementation: Pipelines = {
     start: THROWS,
     report: THROWS,
+    askStage: THROWS,
+    answerStage: THROWS,
     stop: THROWS,
     setLaneLookup: THROWS,
     refreshWorking: THROWS,

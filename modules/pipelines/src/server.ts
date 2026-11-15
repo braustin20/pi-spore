@@ -24,6 +24,8 @@ import {
   tierOf,
 } from "@pi-spore/router";
 import {
+  type AnswerStageRequest,
+  type AskStageRequest,
   GATE_LOG_HEADING,
   logTail,
   type PipelineEvent,
@@ -34,6 +36,7 @@ import {
   type PipelineTurn,
   type PipelineTurnKind,
   parseJsonBody,
+  type StageQuestion,
   type StageReport,
   type StageRole,
   StartPipelineRequest,
@@ -105,6 +108,20 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN blocked_sent TEXT",
   // The slice's name, a label only: lets the user tell which run built which slice.
   "ALTER TABLE pipelines_runs ADD COLUMN name TEXT",
+  // A stage agent's question to the chat that answers it (ADR 0179). `state` is `open` or `answered`.
+  `CREATE TABLE pipelines_questions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    asked_agent_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER
+  )`,
+  "CREATE INDEX pipelines_questions_by_turn ON pipelines_questions (turn_id)",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -171,6 +188,32 @@ interface TurnRow {
   reported_at: number | null;
 }
 
+interface QuestionRow {
+  id: string;
+  run_id: string;
+  turn_id: string;
+  agent_id: string;
+  asked_agent_id: string;
+  question: string;
+  answer: string | null;
+  state: StageQuestion["state"];
+  created_at: number;
+  answered_at: number | null;
+}
+
+const questionToView = (row: QuestionRow): StageQuestion => ({
+  id: row.id,
+  runId: row.run_id,
+  turnId: row.turn_id,
+  agentId: row.agent_id,
+  askedAgentId: row.asked_agent_id,
+  question: row.question,
+  ...(row.answer === null ? {} : { answer: row.answer }),
+  state: row.state,
+  createdAt: row.created_at,
+  ...(row.answered_at === null ? {} : { answeredAt: row.answered_at }),
+});
+
 /** The job kind of a stage: key is the workspace id, so a workspace's stages run in order (ADR 0004). */
 const STAGE_JOB = "pipelines.stage";
 const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
@@ -219,7 +262,7 @@ function gateFailureMessage(name: string, error: string | undefined, log: string
   ].join("\n");
 }
 
-const turnToView = (row: TurnRow): PipelineTurn => ({
+const turnToView = (row: TurnRow, question?: PipelineTurn["question"]): PipelineTurn => ({
   id: row.id,
   runId: row.run_id,
   stageIndex: row.stage_index,
@@ -236,9 +279,16 @@ const turnToView = (row: TurnRow): PipelineTurn => ({
   ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
   ...(row.error === null ? {} : { error: row.error }),
   ...(row.model_note === null ? {} : { modelNote: row.model_note }),
+  ...(question ? { question } : {}),
 });
 
-const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): PipelineRun => ({
+/** `open` is the run's open turn and its open question, if it has one. */
+const runToView = (
+  row: RunRow,
+  turns: readonly TurnRow[],
+  blocked?: string,
+  open?: { turnId: string; question: PipelineTurn["question"] },
+): PipelineRun => ({
   id: row.id,
   workspaceId: row.workspace_id,
   pipelineId: row.pipeline_id,
@@ -255,7 +305,9 @@ const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): Pi
   ...(row.message === null ? {} : { message: row.message }),
   ...(blocked === undefined ? {} : { blocked }),
   tests: JSON.parse(row.tests) as TestProof[],
-  turns: turns.map(turnToView),
+  turns: turns.map((turn) =>
+    turnToView(turn, turn.id === open?.turnId ? open.question : undefined),
+  ),
   createdAt: row.created_at,
   ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
 });
@@ -393,6 +445,23 @@ const fixPrompt = (stage: PipelineStage, review: StageReport, turnId: string, la
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
 
+const questionMessage = (run: RunRow, turn: TurnRow, title: string, question: QuestionRow) =>
+  [
+    `Stage "${turn.stage}" of pipeline run ${run.id} asks (question ${question.id}). The ${turn.role} agent "${title}" wrote:`,
+    question.question,
+    "Answer it from your plan with answer_stage. If the plan does not say, ask the user with request_human_input first, then call answer_stage. The stage waits for your answer.",
+  ].join("\n");
+
+const answerMessage = (question: QuestionRow, answer: string) =>
+  [
+    `Your orchestrator answered your question ${question.id}.`,
+    `Question: ${question.question}`,
+    `Answer: ${answer}`,
+    "Go on with the turn, then call report with this turn.",
+    "",
+    `Turn: ${question.turn_id}`,
+  ].join("\n");
+
 const endedMessage = (turnId: string) =>
   `You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
 
@@ -437,7 +506,59 @@ export const pipelinesModule: ServerModule = {
             .list({ kind: STAGE_JOB, key: row.workspace_id, states: NOT_ENDED })
             .find((job) => (job.subject as StageSubject).runId === row.id && job.error !== null)
             ?.error ?? undefined);
-    const viewOf = (row: RunRow) => runToView(row, turnRows(row.id), blockedOf(row));
+    // Retention can delete a chat, or the run workspace of a lane, while a run still runs. One missing id must not
+    // stop the sync of the others; any other error still throws.
+    const unlessGone = <T>(read: () => T): T | undefined => {
+      try {
+        return read();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    };
+    // The open turn is the latest turn of a running run with no report and no error. Asking, answering, and the view
+    // all use this one rule (ADR 0179).
+    const openTurnOf = (run: RunRow): TurnRow | undefined => {
+      if (run.state !== "running") return undefined;
+      const turn = latestTurn(run.id);
+      return turn?.report === null && turn.error === null ? turn : undefined;
+    };
+    const loadQuestion = (id: string) =>
+      host.store.get<QuestionRow>("SELECT * FROM pipelines_questions WHERE id = ?", id);
+    const openQuestionOf = (turn: TurnRow) =>
+      host.store.get<QuestionRow>(
+        "SELECT * FROM pipelines_questions WHERE turn_id = ? AND state = 'open' ORDER BY created_at, id LIMIT 1",
+        turn.id,
+      );
+    // Retention may have deleted the closed chat a question was asked of; the run view then names its id.
+    const askedTitleOf = (agentId: string) => {
+      const agent = unlessGone(() => agents.get(agentId));
+      return agent?.title ?? agentId;
+    };
+    const titleOf = (agentId: string) => {
+      const agent = agents.get(agentId);
+      return agent.title ?? agent.id;
+    };
+    const viewOf = (row: RunRow) => {
+      const turn = openTurnOf(row);
+      const question = turn && openQuestionOf(turn);
+      return runToView(
+        row,
+        turnRows(row.id),
+        blockedOf(row),
+        turn && question
+          ? {
+              turnId: turn.id,
+              question: {
+                id: question.id,
+                question: question.question,
+                askedAgentId: question.asked_agent_id,
+                askedTitle: askedTitleOf(question.asked_agent_id),
+              },
+            }
+          : undefined,
+      );
+    };
     const runsOf = (workspaceId: string): PipelineRun[] =>
       host.store
         .all<RunRow>(
@@ -449,16 +570,6 @@ export const pipelinesModule: ServerModule = {
     // Chats that carry a "working" label for a running run. The label is in memory only, so boot sets it again.
     const labelled = new Set<string>();
     agents.beforeDeleteChat((agentId) => labelled.delete(agentId));
-    // Retention can delete a chat, or the run workspace of a lane, while a run still runs. One missing id must not
-    // stop the sync of the others; any other error still throws.
-    const unlessGone = <T>(read: () => T): T | undefined => {
-      try {
-        return read();
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return undefined;
-        throw error;
-      }
-    };
     /**
      * Marks the chat of each running run as working, so Home does not show it as done while its run works. A
      * waiting_user run gives no label (its approval is the Home item), and neither does an ended one (the chat
@@ -1070,6 +1181,8 @@ export const pipelinesModule: ServerModule = {
           `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" failed: ${failure}. Retry starts a fresh ${turn.role} agent for this turn.`,
         );
       }
+      // The agent asked its asking chat and ended its turn: the pipeline waits for the answer (ADR 0179).
+      if (openQuestionOf(turn)) return { wait: true, checkpoint: { ...checkpoint, boot: bootId } };
       if (checkpoint?.boot !== bootId) {
         // The server restarted while the agent worked. Its process is gone, so it gets one reminder (R6.6).
         return {
@@ -1081,6 +1194,8 @@ export const pipelinesModule: ServerModule = {
       if (!(await agents.endedRun(turn.agent_id))) return { wait: true };
       // The agent may have done the whole turn and reported while the awaits above read its session file.
       if (latestTurn(run.id)?.report !== null) return {};
+      // It may also have asked while those awaits ran.
+      if (openQuestionOf(turn)) return { wait: true, checkpoint: { ...checkpoint, boot: bootId } };
       // The agent ended its turn without a report: one reminder, then the stage blocks (ADR 0169).
       if (checkpoint.reminded === turn.id) {
         throw new Error(
@@ -1332,6 +1447,95 @@ export const pipelinesModule: ServerModule = {
       publish(requireRun(turn.run_id).workspace_id);
       return { turn: turnToView(turn) };
     };
+
+    /** The caller's running run and open turn, or 409 `turn_closed` when the caller is not that turn's agent. */
+    const requireOpenTurn = (caller: BridgeCaller) => {
+      const run = host.store.get<RunRow>(
+        "SELECT * FROM pipelines_runs WHERE workspace_id = ? AND state = 'running'",
+        caller.workspaceId,
+      );
+      const turn = run && openTurnOf(run);
+      if (!run || turn?.agent_id !== caller.agentId)
+        throw new ApiError(
+          409,
+          "turn_closed",
+          "Your turn is closed; no open turn of a run is yours",
+        );
+      return { run, turn };
+    };
+
+    const askStage = async (
+      caller: BridgeCaller,
+      request: AskStageRequest,
+    ): Promise<StageQuestion> => {
+      if (agents.get(caller.agentId).kind !== "stage")
+        throw new ApiError(403, "not_a_stage", "Only a pipeline stage agent asks the asking chat");
+      if (laneLookup?.(caller.workspaceId))
+        throw new ApiError(
+          403,
+          "in_lane",
+          "A stage agent in a lane asks its coordinator; use ask_coordinator",
+        );
+      const { run: first } = requireOpenTurn(caller);
+      const closed = agents.isClosed(first.asking_agent_id);
+      const worker = closed ? await agents.activeWorker(caller.workspaceId) : undefined;
+      const asked = host.store.transaction(() => {
+        // The awaits above may have let the turn close.
+        const { run, turn } = requireOpenTurn(caller);
+        const askedId = worker?.id ?? run.asking_agent_id;
+        if (worker) {
+          host.store.run(
+            "UPDATE pipelines_runs SET asking_agent_id = ? WHERE id = ?",
+            worker.id,
+            run.id,
+          );
+        }
+        const id = host.newId();
+        host.store.run(
+          `INSERT INTO pipelines_questions
+             (id, run_id, turn_id, agent_id, asked_agent_id, question, state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+          id,
+          run.id,
+          turn.id,
+          caller.agentId,
+          askedId,
+          request.question,
+          host.now(),
+        );
+        const row = loadQuestion(id) as QuestionRow;
+        agents.deliver(askedId, questionMessage(run, turn, titleOf(caller.agentId), row));
+        return questionToView(row);
+      });
+      publish(caller.workspaceId);
+      return asked;
+    };
+
+    const answerStage = (caller: BridgeCaller, request: AnswerStageRequest): StageQuestion => {
+      const question = loadQuestion(request.questionId);
+      if (!question)
+        throw new ApiError(404, "question_not_found", `No stage question ${request.questionId}`);
+      if (question.asked_agent_id !== caller.agentId)
+        throw new ApiError(403, "not_asked", `Question ${question.id} was asked of another chat`);
+      if (question.state !== "open")
+        throw new ApiError(409, "question_answered", `Question ${question.id} has an answer`);
+      const run = requireRun(question.run_id);
+      if (openTurnOf(run)?.id !== question.turn_id)
+        throw new ApiError(409, "turn_closed", `The turn of question ${question.id} is closed`);
+      const answered = host.store.transaction(() => {
+        host.store.run(
+          "UPDATE pipelines_questions SET answer = ?, state = 'answered', answered_at = ? WHERE id = ?",
+          request.answer,
+          host.now(),
+          question.id,
+        );
+        agents.deliver(question.agent_id, answerMessage(question, request.answer));
+        return questionToView(loadQuestion(question.id) as QuestionRow);
+      });
+      publish(run.workspace_id);
+      return answered;
+    };
+
     approvals.register({
       kind: ROUND_LIMIT,
       subject: RoundLimitSubject,
@@ -1493,6 +1697,8 @@ export const pipelinesModule: ServerModule = {
 
     const api: Pipelines = {
       report,
+      askStage,
+      answerStage,
       start,
       get: (runId) => viewOf(requireRun(runId)),
       runsOf,

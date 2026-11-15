@@ -10,7 +10,9 @@ import { ApiError, type BridgeCaller, bridgeCaller, type ServerModule } from "@p
 import {
   type ActionRun,
   AnswerLaneRequest,
+  AnswerStageRequest,
   AskCoordinatorRequest,
+  AskStageRequest,
   BridgeAddCardRequest,
   type BridgeArtifactFile,
   type BridgeArtifactList,
@@ -413,6 +415,20 @@ export const bridgeModule: ServerModule = {
       const caller = bridgeCaller(c);
       const request = parseJsonBody(StageReport, await c.req.text(), "report");
       return c.json(await pipelines.report(caller, request));
+    });
+
+    // A stage agent asks its run's asking chat (ADR 0179). Reviewers are read-only and may ask.
+    host.routes.post("/stage-questions", async (c) => {
+      const caller = bridgeCaller(c);
+      const request = parseJsonBody(AskStageRequest, await c.req.text(), "question");
+      return c.json({ question: await pipelines.askStage(caller, request) }, 201);
+    });
+
+    host.routes.post("/stage-answers", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "answer stage questions");
+      const request = parseJsonBody(AnswerStageRequest, await c.req.text(), "answer");
+      return c.json({ question: pipelines.answerStage(caller, request) });
     });
 
     host.routes.post("/runs", async (c) => {
