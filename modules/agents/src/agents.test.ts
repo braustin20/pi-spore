@@ -1192,6 +1192,12 @@ describe("chats (ADR 0030)", () => {
     await replied(agent.id, 2);
 
     const launch = launches()[0];
+    // These two first, so a wrong tool list names the tool it got wrong and not the whole argv.
+    // A planner chat starts read-only helpers with `start_helper`; the raw `subagent` tool could start a worker.
+    const argv = launch?.argv ?? [];
+    const plannerTools = argv[argv.indexOf("--tools") + 1]?.split(",") ?? [];
+    expect(plannerTools).toContain("start_helper");
+    expect(plannerTools).not.toContain("subagent");
     expect(launch?.argv).toEqual([
       "--mode",
       "rpc",
@@ -1207,11 +1213,6 @@ describe("chats (ADR 0030)", () => {
       "--exclude-tools",
       "mcp__*",
     ]);
-    // A planner chat starts read-only helpers with `start_helper`; the raw `subagent` tool could start a worker.
-    const argv = launch?.argv ?? [];
-    const plannerTools = argv[argv.indexOf("--tools") + 1]?.split(",") ?? [];
-    expect(plannerTools).toContain("start_helper");
-    expect(plannerTools).not.toContain("subagent");
     expect(launch?.env.PI_SPORE_CHAT_KIND).toBe("planner");
     expect(server.agentTokens.find(launch?.env.PI_SPORE_TOKEN)).toEqual({
       agentId: agent.id,
