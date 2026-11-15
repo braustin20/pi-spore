@@ -33,6 +33,8 @@ export const Lane = Type.Object({
   dependsOn: Type.Array(Type.String()),
   /** The artifact path of the brief, in the run workspace. */
   brief: Type.String(),
+  /** The card this lane does, from kanban (ADR 0180). */
+  cardId: Type.Optional(Type.String()),
   pipeline: Type.String(),
   model: Type.Optional(ModelRef),
   state: LaneState,
@@ -138,6 +140,8 @@ export const StartLaneRequest = Type.Object(
     name: Type.String({ minLength: 1, maxLength: 120 }),
     /** The artifact path of the brief, in the run workspace. */
     brief: Type.String({ minLength: 1 }),
+    /** The id of the card this lane does; pi-spore moves it with the run (ADR 0180). */
+    cardId: Type.Optional(Type.String({ minLength: 1 })),
     wave: Type.Integer({ minimum: 1 }),
     /** Lane ids of the same run. */
     dependsOn: Type.Optional(Type.Array(Type.String({ minLength: 1 }))),
