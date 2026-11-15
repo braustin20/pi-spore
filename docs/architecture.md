@@ -550,6 +550,7 @@ min_strength_over = "implement"   # a cloud worker may be reviewed by its own ti
 [[stage]]
 name = "adversarial"
 role = "adversarial-reviewer"
+with_previous = true      # runs next to review; its findings join the same fix
 rounds = 1
 fix_passes = 1            # a REVISE on the last round gets one fix, with no review after it
 
@@ -615,12 +616,10 @@ fail_first = "artifact"
   project files (R17.3). `worker = "reuse"` is allowed only on the worker stage, and not with `model` or `tier`.
   `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
   built (R6.1); it comes from the role default.
-- **Parallel groups** (ADR 0178, proposed, not built yet). A reviewer or gate stage with `with_previous = true` will
-  join the group of the stage before it, and a group's members will run each round together, with one fix for all
-  their findings and red gates. The key on the worker stage or the stage right after it will be 422 `bad_pipeline`.
-  `default` will group `review`, `adversarial`, and `gates`; `light` and `revise` will group `review` and `gates`.
-  Until the cards "Parallel stages 2" and "Parallel stages 3" land, the files above are the built ones and the key
-  is refused as unknown.
+- **Parallel groups** (ADR 0178). A reviewer stage with `with_previous = true` joins the group of the stage before
+  it; `stageGroups` in `@pi-spore/shared` lists the groups. The key on the worker stage or the stage right after it
+  is 422 `bad_pipeline`. A group with a gate stage is 422 too, until card "Parallel stages 3" builds gate members.
+  `default` groups `review` and `adversarial`. How a group runs is under "Parallel review rounds".
 - `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
   never falls back to the built-in one.
 - **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }`
@@ -645,19 +644,22 @@ fail_first = "artifact"
   previous run's last review, and are told to check that the brief's asks are met and nothing broke, with the same
   REVISE rule as round 2. Runs never stop their agents, and a delivery starts a stopped one. `PipelinesKey.get`
   returns a run's view, with `workerAgentId`.
-- **Stage jobs.** Each stage is a `pipelines.stage` job keyed by the workspace. Steps: `advance` (start the next
-  turn), `await` (wait for its report), `decide` (apply the verdict), `gate`, and `finish` (start the next stage's
-  job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
+- **Stage jobs.** Each group is a `pipelines.stage` job keyed by the workspace; a stage alone is a group of one. The
+  job's `stageIndex`, and the run's `stage_index` while it runs, is the group's first stage. Steps: `advance` (start
+  the next turns), `await` (wait for every open turn of the group), `decide` (apply the verdicts), `gate`, and
+  `finish` (start the next group's job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
   together. Prompts name the turn on a `Turn: <id>` line, and the brief is the workspace artifact
   `pipelines/<run>/brief.md`. A worker's task prompt also holds the brief's full text under `## Brief`, so
   `spore/auto` scores the real task on a new worker's first message (ADR 0144).
 - **Reports.** The bridge passes `report` calls to `PipelinesKey.report`. Only the turn's agent may report (403
-  `not_your_turn`), once per turn (a repeat returns the stored turn; an older turn is 409 `turn_closed`). Reviewers
+  `not_your_turn`), once per turn (a repeat returns the stored turn; an older turn is 409 `turn_closed`; the other reviews of the same group
+  round do not close a turn). Reviewers
   must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
   later report never drops a test.
 - **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
-  one and tells the agent once to continue and call `report`. If the agent ends its turn without a report, the step
-  reminds it once per turn (`reminded` in the checkpoint, also across a restart); a second such end blocks the stage
+  one and tells each agent of an open turn once to continue and call `report`. Turns that reported do not run again.
+  If an agent ends its turn without a report, the step reminds it once per turn (column `reminded` on the turn, also
+  across a restart); a second such end blocks the stage
   (ADR 0169). There are no other automatic reminders.
 - **Stage chat titles.** A run with a slice name (`name`) titles its stage agents `<slice name> - <stage title>`, such
   as `push_line tool - Review 1`. Without a name the titles stay `implement`, `Review 1`, ... A reused worker (`worker =
@@ -692,8 +694,15 @@ fail_first = "artifact"
   severity. The subject is `{ runId, stage, action }`, filed with `action: "fix"`. Its `decided` hook, in the
   decision's transaction, acts on the choice: `fix` starts one last fix turn with no review after it, then the stage
   ends; `accept` ends the stage without a fix; decline stops the run. Home shows the three as buttons, fix first.
+- **Parallel review rounds** (ADR 0178). A group runs in rounds. Round r starts every open member in one commit; all
+  of them read one diff, rendered once and written as each member's `<stage>-<r>.diff`. Round 1 opens every member.
+  Round r + 1 opens each member that said REVISE in round r, has rounds left, and was not stopped by Jev. When every
+  review of the round reported, one fix turn holds every REVISE, each under its stage name. The fix row has the
+  group's first stage index and `fix_for`, the member names (view `fixFor`). The round rules above apply per member.
+  One round-limit approval lists every member at its limit; accept drops their findings from the fix.
 - **Working label.** While a run is `running`, the pipelines module marks its chat with `Agents.setWorkingFor`, so
-  Home does not show the chat as done: `Pipeline: <stage>`, with `, round <n>` from round 2 of a review stage, or
+  Home does not show the chat as done: `Pipeline: <stages of the group, joined with ", ">`, with `, round <n>` from
+  round 2 of a review stage, or
   `Pipeline: <n> runs` for a coordinator with lanes. The chat is the lane's coordinator, else the asking chat. A
   `waiting_user` or ended run gives no label. The module syncs it at every `publish`, at boot, and when the runs
   module calls `Pipelines.refreshWorking` after a new coordinator took over. A target that retention deleted (the
@@ -752,10 +761,11 @@ fail_first = "artifact"
 - Web: a Pipeline tab (after PR) with a start form (pipeline, optional name, brief) when no run is active, and the
   runs, newest first. Only the newest run is open; an older run shows its header and step bar until clicked. A run
   shows a header line (the name, then the pipeline id as a chip, or the pipeline id alone; source, state, elapsed
-  time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage), the notices
+  time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage; a parallel group is one box with its
+  members side by side, each with its own state), the notices
   (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
   and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
-  block, ANSI codes removed. A fix row belongs to the worker stage. Each row is one line (kind and
+  block, ANSI codes removed. A fix row belongs to the worker stage and names the stages it fixes. Each row is one line (kind and
   round, verdict, finding counts, `model`, duration) and opens to the summary, findings by severity (minor closed),
   tests with proofs, the route, Jev's answer, and a link to the agent's chat. Only the newest or running row is open
   at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its

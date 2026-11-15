@@ -30,6 +30,7 @@ min_strength_over = "implement"
 [[stage]]
 name = "adversarial"
 role = "adversarial-reviewer"
+with_previous = true      # runs next to review; its findings join the same fix
 rounds = 1
 fix_passes = 1
 
@@ -109,8 +110,16 @@ export type PipelineEntry = Pipeline | FailedPipeline;
 const TOP_KEYS = ["id", "stage"];
 const AGENT_KEYS = ["name", "role", "model", "tier"];
 const WORKER_KEYS = [...AGENT_KEYS, "worker"];
-const REVIEWER_KEYS = [...AGENT_KEYS, "rounds", "fix_passes", "early_stop", "min_strength_over"];
-const GATE_KEYS = ["name", "gates", "fail_first"];
+const REVIEWER_KEYS = [
+  ...AGENT_KEYS,
+  "rounds",
+  "fix_passes",
+  "early_stop",
+  "min_strength_over",
+  "with_previous",
+];
+// with_previous passes the key check here so a gate stage gets the specific refusal in checkStages.
+const GATE_KEYS = ["name", "gates", "fail_first", "with_previous"];
 const ALL_STAGE_KEYS = new Set([...WORKER_KEYS, ...REVIEWER_KEYS, ...GATE_KEYS]);
 
 /** The model `tier = "route"` stands for (R4.9). */
@@ -203,6 +212,14 @@ function checkStages(
       throw bad(`${where}: tier ${stage.tier} is not built; use route or model`);
     if (stage.role === "worker" && index !== 0)
       throw bad(`${where}: only the first stage may be the worker stage`);
+    // ADR 0178: a group never holds the worker stage.
+    if (stage.with_previous === true && index === 1)
+      throw bad(
+        `${where}: with_previous = true needs a stage before it in the group; the worker stage is never in a group`,
+      );
+    // Card "Parallel stages 3" builds gate members; until then a group holds reviewer stages only.
+    if (stage.with_previous === true && (kind === "gate" || stages[index - 1]?.gates !== undefined))
+      throw bad(`${where}: a group with a gate stage is not built yet`);
     if (stage.min_strength_over !== undefined) {
       const earlier = stages
         .slice(0, index)
