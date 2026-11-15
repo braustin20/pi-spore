@@ -193,6 +193,20 @@ export function createGitChanges(exec: Exec): ChangeOps {
     return commit;
   };
 
+  /**
+   * The base commit, and its upstream commit too when it has one. Local main falls behind origin/main
+   * while PRs merge on GitHub (ADR 0142), so the local base alone is a stale fork point, and commits the
+   * line already took from the upstream are not the line's own work. Both lookups can miss: a base given
+   * as a sha, or a base that is already `origin/main`.
+   */
+  const baseCommits = async (cwd: string, base: string): Promise<[string, ...string[]]> => {
+    const commit = await baseCommit(cwd, base);
+    const upstream =
+      (await resolveCommit(exec, cwd, `${base}@{upstream}`)) ??
+      (await resolveCommit(exec, cwd, `refs/remotes/origin/${base}`));
+    return upstream && upstream !== commit ? [commit, upstream] : [commit];
+  };
+
   const recordCommit = async (cwd: string, id: string): Promise<string> => {
     if (!/^[0-9a-f]{4,64}$/i.test(id)) {
       throw new ApiError(400, "bad_record", `"${id}" is not a commit id`);
@@ -210,10 +224,12 @@ export function createGitChanges(exec: Exec): ChangeOps {
       case "staged":
         return ["diff", "--cached", (await head(cwd)) ?? (await emptyTree(run, cwd))];
       case "line": {
-        const base = await baseCommit(cwd, scope.base);
+        const [base, ...otherBases] = await baseCommits(cwd, scope.base);
         const tip = await head(cwd);
         if (!tip) return ["diff", base, base];
-        const fork = (await run(cwd, ["merge-base", base, tip], [0, 1])).trim();
+        // Given more than two commits, git returns the merge base of the first and a hypothetical merge of
+        // the rest, so a newer upstream base beats the stale local one.
+        const fork = (await run(cwd, ["merge-base", tip, base, ...otherBases], [0, 1])).trim();
         if (!fork) {
           throw new ApiError(
             409,
@@ -274,13 +290,16 @@ export function createGitChanges(exec: Exec): ChangeOps {
       const cwd = location.path;
       const tip = await head(cwd);
       if (!tip) return [];
-      const range = base ? `${await baseCommit(cwd, base)}..${tip}` : tip;
+      const exclude: string[] = base
+        ? (await baseCommits(cwd, base)).map((commit) => `^${commit}`)
+        : [];
       const output = await run(cwd, [
         "log",
         "--no-color",
         `--max-count=${limit}`,
         "--format=%H%x1f%h%x1f%an%x1f%at%x1f%s%x1e",
-        range,
+        tip,
+        ...exclude,
       ]);
       return output
         .split("\x1e")
