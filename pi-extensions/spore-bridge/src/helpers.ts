@@ -42,6 +42,8 @@ const REPLY_MS = 10_000;
 const NOT_LOADED =
   "start_helper needs the pi-subagents Pi package, and it is not loaded in this chat.";
 
+const CANCELLED = "start_helper was cancelled before it asked pi-subagents to start the helper.";
+
 /** What pi-subagents answers a request with. Anything else is a reply this tool cannot read. */
 const SpawnAnswer = Type.Union([
   Type.Object({
@@ -83,8 +85,7 @@ function wait<T>(
     const onAbort = (): void => settle({ status: "aborted" });
     unsubscribe = events.on(channel, (data) => settle({ status: "reply", value: data as T }));
     timer = setTimeout(() => settle({ status: "timeout" }), REPLY_MS);
-    if (signal?.aborted) settle({ status: "aborted" });
-    else signal?.addEventListener("abort", onAbort, { once: true });
+    signal?.addEventListener("abort", onAbort, { once: true });
   });
 }
 
@@ -140,6 +141,8 @@ export function registerHelperTool(pi: ExtensionAPI, env: BridgeEnv): void {
     }),
     async execute(_toolCallId, params, signal, _onUpdate, ctx) {
       if (!ready) throw new Error(NOT_LOADED);
+      // A call the user stopped before it dispatched must not start a run nobody is waiting for.
+      if (signal?.aborted) throw new Error(CANCELLED);
       const requestId = randomUUID();
       // Subscribe before the request: pi-subagents answers in about 30 ms, and a reply with no listener is lost.
       const pending = wait<unknown>(pi.events, replyChannel(requestId), signal);

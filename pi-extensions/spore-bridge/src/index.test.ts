@@ -1368,8 +1368,8 @@ describe("start_helper", () => {
     pi.bus.emit(replyChannel(requestId), { version: 1, requestId, ...reply });
   }
 
-  const call = (pi: FakePi, agent: string, ctx: unknown = CTX) =>
-    pi.tool("start_helper").execute("t1", { agent, task: TASK }, undefined, undefined, ctx);
+  const call = (pi: FakePi, agent: string, ctx: unknown = CTX, signal?: AbortSignal) =>
+    pi.tool("start_helper").execute("t1", { agent, task: TASK }, signal, undefined, ctx);
 
   it("is registered in a planner chat and a run coordinator, and nowhere else", () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
@@ -1476,6 +1476,57 @@ describe("start_helper", () => {
 
       await failed;
       expect(pi.bus.handlers.get(replyChannel(requestId))?.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A call the user stopped before it dispatched must not start a helper nobody is waiting for.
+  it("sends nothing when the tool call is already cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      const pi = chatWithSubagents();
+      const controller = new AbortController();
+      controller.abort();
+
+      const pending = call(pi, "scout", CTX, controller.signal);
+      // Settled first, so a rejection is never unhandled, and the request would be on the bus already.
+      const outcome = await pending.then(
+        () => "started",
+        (error: unknown) => (error as Error).message,
+      );
+
+      // Nothing on the bus, no reply listener next to the ready listener, and no wait left running.
+      expect(pi.bus.emitted.filter((entry) => entry.channel === REQUEST)).toEqual([]);
+      expect(pi.bus.handlers.size).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(outcome).toBe(
+        "start_helper was cancelled before it asked pi-subagents to start the helper.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The reply channel is per request, so an aborted call must drop its listener and its wait.
+  it("stops waiting when the tool call is aborted", async () => {
+    vi.useFakeTimers();
+    try {
+      const pi = chatWithSubagents();
+      const controller = new AbortController();
+      const pending = call(pi, "scout", CTX, controller.signal);
+      const { requestId } = sentRequest(pi);
+      expect(pi.bus.handlers.get(replyChannel(requestId))?.size).toBe(1);
+
+      controller.abort();
+      const outcome = await pending.then(
+        () => "started",
+        (error: unknown) => (error as Error).message,
+      );
+
+      expect(outcome).toBe(`start_helper stopped waiting for pi-subagents (request ${requestId}).`);
+      expect(pi.bus.handlers.get(replyChannel(requestId))?.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
     } finally {
       vi.useRealTimers();
     }
