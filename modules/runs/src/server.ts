@@ -110,6 +110,8 @@ const MIGRATIONS = [
   "ALTER TABLE runs_runs ADD COLUMN state TEXT NOT NULL DEFAULT 'running'",
   "ALTER TABLE runs_runs ADD COLUMN pr_approval_id TEXT",
   "ALTER TABLE runs_runs ADD COLUMN settings TEXT",
+  // ADR 0180: the card this lane does, from kanban. NULL when the lane names none.
+  "ALTER TABLE runs_lanes ADD COLUMN card_id TEXT",
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -141,6 +143,7 @@ interface LaneRow {
   pipeline_run_id: string | null;
   approval_id: string | null;
   message: string | null;
+  card_id: string | null;
   created_at: number;
 }
 
@@ -199,6 +202,7 @@ const laneToView = (row: LaneRow, blocked: string | undefined): Lane => ({
   wave: row.wave,
   dependsOn: JSON.parse(row.depends_on) as string[],
   brief: row.brief,
+  ...(row.card_id === null ? {} : { cardId: row.card_id }),
   pipeline: row.pipeline,
   ...(row.model === null ? {} : { model: row.model }),
   state: row.state,
@@ -329,6 +333,7 @@ export const runsModule: ServerModule = {
     const pipelines = host.use(PipelinesKey);
     const actions = host.use(ActionsKey);
     let openPr: Parameters<Runs["setPrOpener"]>[0] | undefined;
+    let linkCard: Parameters<Runs["setCardLinker"]>[0] | undefined;
 
     const loadRun = (id: string) =>
       host.store.get<RunRow>("SELECT * FROM runs_runs WHERE id = ?", id);
@@ -526,8 +531,37 @@ export const runsModule: ServerModule = {
       }
       if (request.model) await pipelines.requireModel(request.model, caller.agentId);
       const higher = request.model ? await aboveWorkerTier(request.model) : undefined;
+      if (request.cardId) {
+        if (!linkCard) {
+          throw new ApiError(
+            422,
+            "cards_not_supported",
+            "No module links cards to lanes, so a lane cannot name a card",
+          );
+        }
+        const named = host.store.get<LaneRow>(
+          "SELECT * FROM runs_lanes WHERE run_id = ? AND card_id = ?",
+          run.id,
+          request.cardId,
+        );
+        if (named) {
+          throw new ApiError(
+            409,
+            "card_in_lane",
+            `Card ${request.cardId} is already the card of lane "${named.name}" of this run`,
+          );
+        }
+      }
       const laneId = host.store.transaction(() => {
         const id = host.newId();
+        // ADR 0180: a refusal here rolls the lane back, so no lane starts on a bad card link.
+        if (request.cardId && linkCard) {
+          linkCard({
+            cardId: request.cardId,
+            projectId: run.project_id,
+            runWorkspaceId: run.workspace_id,
+          });
+        }
         const approval = higher
           ? approvals.file(
               { agentId: run.coordinator_agent_id, workspaceId: run.workspace_id },
@@ -540,8 +574,8 @@ export const runsModule: ServerModule = {
             )
           : undefined;
         host.store.run(
-          `INSERT INTO runs_lanes (id, run_id, name, wave, depends_on, brief, pipeline, model, state, approval_id, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          `INSERT INTO runs_lanes (id, run_id, name, wave, depends_on, brief, pipeline, model, state, approval_id, card_id, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           id,
           run.id,
           request.name,
@@ -552,6 +586,7 @@ export const runsModule: ServerModule = {
           request.model ?? null,
           approval ? "approval" : "waiting",
           approval?.id ?? null,
+          request.cardId ?? null,
           host.now(),
         );
         if (!approval) startLaneJob(id);
@@ -1292,6 +1327,10 @@ export const runsModule: ServerModule = {
       setPrOpener: (open) => {
         if (openPr) throw new Error("The runs module already has a PR opener");
         openPr = open;
+      },
+      setCardLinker: (link) => {
+        if (linkCard) throw new Error("The runs module already has a card linker");
+        linkCard = link;
       },
     };
     host.provide(RunsKey, api);

@@ -79,6 +79,14 @@ export interface Runs {
       request: { title: string; body: string; base: string },
     ) => Promise<PullRequest>,
   ): void;
+  /**
+   * Sets how a lane that names a card links it: the kanban module sets it, so runs does not depend on kanban
+   * (ADR 0180). At most one linker. `startLane` calls it inside the lane's transaction, before the lane is stored, so
+   * it must be synchronous and throws `ApiError` to refuse the lane (ADR 0180).
+   */
+  setCardLinker(
+    link: (card: { cardId: string; projectId: string; runWorkspaceId: string }) => void,
+  ): void;
 }
 
 export const RunsKey = defineInterface<Runs>("runs", "runs");
