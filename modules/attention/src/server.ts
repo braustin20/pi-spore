@@ -254,9 +254,11 @@ export function buildWorkspaceRows(items: RunningItem[]): RunningItem[] {
       row.rank = itemRank;
     } else if (item.status !== "pipeline") row.others += 1;
   }
-  return [...rows.values()].map(({ kept, others }) =>
-    others > 0 ? { ...kept, others } : { ...kept },
-  );
+  // A row can show an older chat than the one that first stood for its workspace, so sort the rows again: Home
+  // lists running work newest first.
+  const chosen = [...rows.values()];
+  chosen.sort((a, b) => b.kept.since - a.kept.since);
+  return chosen.map(({ kept, others }) => (others > 0 ? { ...kept, others } : { ...kept }));
 }
 
 /**
