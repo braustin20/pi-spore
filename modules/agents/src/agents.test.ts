@@ -45,7 +45,7 @@ let agentsModule: ReturnType<typeof createAgentsModule>;
 async function setup(
   options: AgentsModuleOptions = {},
   extraEnv: Record<string, string> = {},
-  serverOptions: { home?: string; firstId?: number } = {},
+  serverOptions: { home?: string; firstId?: number; startAt?: number } = {},
   extraModules: readonly ServerModule[] = [],
 ) {
   agentsModule = createAgentsModule({
@@ -1768,6 +1768,88 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
     ]);
     await json(await server.request("POST", `/api/agents/${agentId}/stop`));
     expect(await get("children/run-1/transcript")).toEqual([404, "child_not_found"]);
+  });
+});
+
+describe("workspace working labels (R7)", () => {
+  const DAY = 86_400_000;
+  const START = 1_700_000_000_000;
+
+  /** The `agents:working` maps published so far, oldest first. Each one is the whole map. */
+  const maps = () =>
+    (server.events.eventsOf("agents:working") as { workspaces: Record<string, string> }[]).map(
+      (event) => event.workspaces,
+    );
+
+  /**
+   * Labels every stored workspace while the module graph is set up. The retention sweep that deletes an archived
+   * workspace runs after every setup, so the labels are in place when the delete hook runs.
+   */
+  const bootLabelProbe = (): ServerModule => ({
+    id: "workspace-working-probe",
+    requires: ["agents", "workspaces"],
+    core: false,
+    setup(host) {
+      const agents = host.use(AgentsKey);
+      for (const row of host.store.all<{ id: string }>("SELECT id FROM workspaces_workspaces"))
+        agents.setWorkspaceWorkingFor(row.id, "Pipeline: gates");
+    },
+  });
+
+  it("marks a workspace as working, publishes the whole map once per change, and clears it", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { workspaceId } = await makeAgent("labelled");
+    const { workspaceId: otherId } = await makeAgent("also-labelled");
+    const changed: string[] = [];
+    probe.agents().onWorkspaceWorkingFor((id) => changed.push(id));
+
+    probe.agents().setWorkspaceWorkingFor(workspaceId, "Pipeline: gates");
+    probe.agents().setWorkspaceWorkingFor(workspaceId, "Pipeline: gates");
+    expect(maps()).toEqual([{ [workspaceId]: "Pipeline: gates" }]);
+    expect(changed).toEqual([workspaceId]);
+    expect(probe.agents().workspacesWorkingFor()).toEqual(
+      new Map([[workspaceId, "Pipeline: gates"]]),
+    );
+    // A page that opens later catches up on the current map, as it does with `agents:list`.
+    expect(await server.events.snapshot("agents:working")).toEqual([
+      { type: "working", workspaces: { [workspaceId]: "Pipeline: gates" } },
+    ]);
+
+    probe.agents().setWorkspaceWorkingFor(otherId, "Pipeline: implement");
+    expect(maps().at(-1)).toEqual({
+      [workspaceId]: "Pipeline: gates",
+      [otherId]: "Pipeline: implement",
+    });
+
+    probe.agents().setWorkspaceWorkingFor(workspaceId, undefined);
+    probe.agents().setWorkspaceWorkingFor(workspaceId, undefined);
+    expect(maps().at(-1)).toEqual({ [otherId]: "Pipeline: implement" });
+    expect(changed).toEqual([workspaceId, otherId, workspaceId]);
+    expect(probe.agents().workspacesWorkingFor()).toEqual(
+      new Map([[otherId, "Pipeline: implement"]]),
+    );
+  });
+
+  it("drops a workspace's label when retention deletes it, and keeps the others", async () => {
+    const home = join(scratch, "home");
+    mkdirSync(home, { recursive: true });
+    writeFileSync(join(home, "settings.json"), JSON.stringify({ retention: { days: 30 } }));
+    const probe = agentsProbe();
+    const modules = [probe.module, bootLabelProbe()];
+    await setup({}, {}, { home, startAt: START }, modules);
+    const gone = await makeAgent("gone");
+    const kept = await makeAgent("kept");
+    await json(await server.request("POST", `/api/workspaces/${gone.workspaceId}/archive`, {}));
+    await agentsModule.manager().stopAll();
+    server.close();
+
+    // A month later the sweep deletes the archived workspace, so the agents module drops its label.
+    await setup({}, {}, { home, startAt: START + 31 * DAY, firstId: 1_000 }, modules);
+
+    expect(probe.agents().workspacesWorkingFor().has(gone.workspaceId)).toBe(false);
+    expect(probe.agents().workspacesWorkingFor().get(kept.workspaceId)).toBe("Pipeline: gates");
+    expect(maps().at(-1)).toEqual({ [kept.workspaceId]: "Pipeline: gates" });
   });
 });
 
