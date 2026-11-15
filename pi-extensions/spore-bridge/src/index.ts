@@ -16,6 +16,7 @@ import {
   RunAnswer,
 } from "./client.js";
 import { registerServerGuard } from "./guard.js";
+import { registerHelperTool } from "./helpers.js";
 import { registerPipelineTool } from "./pipeline.js";
 import { registerReportTool } from "./report.js";
 import { applyRules } from "./rules.js";
@@ -235,6 +236,8 @@ export default function sporeBridge(pi: ExtensionAPI) {
   registerReportTool(pi, client, env);
   registerRunTools(pi, client, env);
   registerPipelineTool(pi, client, env);
+  // ADR 0176: the planner chat and the coordinator start read-only helpers, and only these two get the ceiling.
+  registerHelperTool(pi, env);
 
   pi.registerTool({
     name: "check",
