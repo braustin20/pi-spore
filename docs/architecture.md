@@ -101,7 +101,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     worker-kind chats with role `planner`: they start on `subagents.agentOverrides.planner`, else
     `agentOverrides.orchestrator` (ADR 0175), launch with
     `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_read_card`, `kanban_add_card`,
-    `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`; `--exclude-tools 'mcp__*'`), a read-only
+    `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`, `start_helper` (ADR 0176); no
+    `subagent`; `--exclude-tools 'mcp__*'`), a read-only
     token, and `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
     `planner_no_side_chats`. The bridge lets a planner token add and edit cards, and move them only between
     `backlog` and `ready`. Rename, park, resume, and archive of the planner workspace answer 409
@@ -209,6 +210,19 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     tools it gets only `kanban_list_cards`, `kanban_read_card`, and `kanban_add_card` (ADR 0154). A lane agent
     gets `ask_coordinator` `{ question }` in place of `request_human_input`; it files the question and ends the turn
     with `terminate: true`. Lane agents get one more paragraph of rules: ask the coordinator, never the user.
+  - `start_helper` `{ agent: "scout" | "researcher", task }`, only in the planner chat and the coordinator
+    (`pi-extensions/spore-bridge/src/helpers.ts`, ADR 0176). These chats have no `subagent` tool, which could start a
+    writing `worker`. The tool sends the pi-subagents event-bus RPC request `spawn`
+    `{ agent, task, context: "fresh", cwd }` on `subagents:rpc:v1:request` and waits up to 10 s for
+    `subagents:rpc:v1:reply:<requestId>`. `spawn` starts only background runs. It answers
+    `Started <agent> in the background (run <runId>) ...`; the result comes later as pi-subagents' completion
+    message. It fails loudly when pi-subagents is not loaded (no `subagents:rpc:v1:ready`), on no reply, and on a
+    refused spawn (the reply's code and message). At `session_start` the same two chats register a pi-subagents
+    capability ceiling for the session id, source `pi-spore`: `allowedAgents` scout and researcher, `allowedTools`
+    `read,grep,find,ls,web_search,fetch_content,get_search_content,source_check`. It is disposed at
+    `session_shutdown`. So the helpers and their children cannot write or run commands. spore-bridge pins
+    `pi-subagents` at `0.86.0`; an upgrade reruns the spike's two refusal checks
+    ([spike](spikes/readonly-helpers.md)). Their rules say to start helpers before deep reading and not to poll.
 - A process is started when an agent has work and stopped when it is idle for a while or its workspace is parked.
   Restarting it with `--session` restores the conversation.
 - Spike Q1 ([notes](spikes/q1-rpc-agents.md)) confirmed the full setup loads in RPC mode. Rules from it:
@@ -221,7 +235,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   waits for a slot, longest idle first (ADR 0026). Running background helpers count as live processes in the 8
   (ADR 0034).
 - **Helpers** (child runs, R3.3, ADR 0034, [spike Q5](spikes/q5-subagent-child-runs.md)). A worker's pi-subagents
-  helpers show under it in the chat.
+  helpers show under it in the chat. So do the scouts and researchers that a planner chat or a coordinator starts
+  with `start_helper` (ADR 0176), from the same widget.
   - Source: the `subagent-async` widget that pi-subagents sets in RPC mode, a `PI_SUBAGENT_ASYNC_JSON:` line with a
     version 1 snapshot of the agent's own session. `modules/agents/src/child-runs.ts` validates it (the one place
     that knows its format). A payload it does not understand is logged, shown as one chat notice, and the list stays
@@ -755,7 +770,7 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
   kanban_list_cards,kanban_read_card,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,
-  open_run_pr,run_status`: no write or shell tools. Its token is not read-only, so it writes artifacts and calls the
+  open_run_pr,run_status,start_helper`: no write or shell tools, and no `subagent` (ADR 0176). Its token is not read-only, so it writes artifacts and calls the
   run routes. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
 - **Follow-up cards** (ADR 0154). The coordinator adds a card for follow-up work out of the lanes' scope; it never
   changes or starts one. A card added from a run workspace goes to `backlog` with the label
