@@ -127,6 +127,8 @@ export interface TraitDefinition {
   worktreeCopy?: readonly string[];
   /** Warnings to show before copying from the main copy, for example "Unity has it open". */
   copyWarnings?(projectPath: string): Promise<string[]>;
+  /** Fixes up a new copy after its gitignored files landed, before the workspace exists (ADR 0177). */
+  afterCopy?(copyPath: string): Promise<void>;
 }
 
 export interface ResolvedProjectConfig extends ProjectConfigView {
@@ -134,6 +136,8 @@ export interface ResolvedProjectConfig extends ProjectConfigView {
   entries: SettingEntry[];
   /** Warnings from traits about copying from the main copy now. */
   copyWarnings(): Promise<string[]>;
+  /** Runs the traits' fix-ups on a new copy (ADR 0177). Only for a copy, never for the main checkout. */
+  afterCopy(copyPath: string): Promise<void>;
 }
 
 /** Throws an ApiError to stop a project from being removed. */

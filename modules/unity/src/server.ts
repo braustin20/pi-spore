@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionsKey } from "@pi-spore/mod-actions/server";
@@ -23,6 +23,7 @@ import {
   type UnityCommand,
 } from "./editors.js";
 import { pause, registerGates, TEST_DEADLINE_MS } from "./gates.js";
+import { libraryBee, registerRepair } from "./repair.js";
 
 export * from "./contract.js";
 
@@ -52,6 +53,11 @@ export const unityTrait: TraitDefinition = {
           "Unity may have the main project open. The copied Library can be inconsistent; close Unity for a clean copy.",
         ]
       : [];
+  },
+  // ADR 0177: the copied Library's build graph holds the main checkout's path, so Unity binds no scripts from the
+  // new one. Drop it in the copy only; Unity rebuilds it on the first open.
+  async afterCopy(copyPath) {
+    await rm(await libraryBee(copyPath), { recursive: true, force: true });
   },
 };
 
@@ -89,8 +95,10 @@ export function createUnityModule(options: UnityModuleOptions = {}): ServerModul
         workspaces,
       });
       host.provide(UnityEditorsKey, editors);
+      const actions = host.use(ActionsKey);
+      registerRepair({ actions, editors, projects });
       const recentTests = registerGates({
-        actions: host.use(ActionsKey),
+        actions,
         agents: host.use(AgentsKey),
         approvals: host.use(ApprovalsKey),
         artifacts: host.use(ArtifactsKey),

@@ -1,12 +1,15 @@
 // A stand-in for the `unity` CLI in tests: fake-unity.mjs <state.json> <command> [args...]
 // The state file holds { instances: [{ projectPath, pid, state }], calls: [argv...], openFails?, closeFails?,
-// pipelineMissing?, testFails?, noReport?, testHangs? }.
+// pipelineMissing?, testFails?, noReport?, testHangs?, missingScripts? }.
 //   status --json   prints the JSON envelope of CLI 1.0.0-beta.11 (exit 6 when no editor is found)
 //   open <path>     adds an instance and creates <path>/Temp/UnityLockfile, like a starting editor
 //   close <path>    removes the instance and the lock file. With pipelineMissing, only --force closes, as in the
 //                   real CLI for a project without the Pipeline package (spike Q17): plain close exits 6 with the JSON error.
 //   test <path> --mode M --output F   fails when an editor has <path> open, as Unity does for a locked project.
 //                   Otherwise writes an NUnit report to F; with testFails it has one failed test and exits 1.
+//                   With missingScripts it also writes <path>/Logs/Editor.log holding that many missing-script
+//                   lines plus a line that looks like a command line with an access token, and exits 2, as the real
+//                   Unity did with a stale copied Library (ADR 0177).
 // Every call is appended to `calls`, so tests can check that close never ran without a yes.
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -24,6 +27,9 @@ const save = () => writeFileSync(stateFile, JSON.stringify(state));
 const target = rest.find((arg) => !arg.startsWith("--"));
 
 const flag = (name) => rest[rest.indexOf(name) + 1];
+
+// One line per script Unity could not bind, the exact text of a stale Library copy (ADR 0177).
+const MISSING_SCRIPT_LINE = "The referenced script (Unknown) on this Behaviour is missing!";
 
 if (command === "status") {
   save();
@@ -98,6 +104,20 @@ if (command === "status") {
   console.log(`Running ${flag("--mode")} tests in ${target}`);
   if (failed) console.log("Failed: Calculator.Add_Negative expected 1 but was 2");
   console.log(`Total 3, passed ${3 - failed}, failed ${failed}`);
+  if (state.missingScripts > 0) {
+    // A Library copied with its Library/Bee binds no scripts: thousands of lines, and an exit code of 2. The real
+    // log echoes the command line, access token and all, which is why a gate may only count these lines.
+    mkdirSync(join(target, "Logs"), { recursive: true });
+    writeFileSync(
+      join(target, "Logs", "Editor.log"),
+      [
+        "-accessToken SECRET-TOKEN -batchmode -projectpath /home/dev/game",
+        ...Array.from({ length: state.missingScripts }, () => MISSING_SCRIPT_LINE),
+        "Exiting batch mode (-batchmode) with exit code 2",
+      ].join("\n"),
+    );
+    process.exit(2);
+  }
   // A hung editor: the report is on disk, but the process never ends by itself.
   if (state.testHangs) setInterval(() => {}, 1_000_000);
   else process.exit(failed ? 1 : 0);

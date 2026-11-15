@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -79,6 +80,9 @@ function makeUnityRepo(name = "game"): string {
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "init");
   mkdirSync(join(repo, "Library", "ScriptAssemblies"), { recursive: true });
+  mkdirSync(join(repo, "Library", "Bee"), { recursive: true });
+  writeFileSync(join(repo, "Library", "Bee", "graph.dag"), "bee graph of the main checkout");
+  writeFileSync(join(repo, "Library", "ArtifactDB"), "import cache");
   writeFileSync(join(repo, "Library", "ScriptAssemblies", "Game.dll"), "cache");
   writeFileSync(join(repo, "Game.csproj"), "<Project />");
   writeFileSync(join(repo, "game.sln"), "sln");
@@ -267,6 +271,64 @@ describe("workspaces with Git", () => {
     expect(git(workspace.path, "branch", "--show-current").trim()).toBe(workspace.line);
   });
 
+  // ADR 0177: a copied Library keeps its import cache but loses the build graph, which holds the main checkout's path.
+  it("drops Library/Bee from a copied Unity Library, for new and existing isolation", async () => {
+    const repo = makeUnityRepo();
+    git(repo, "branch", "feature/x");
+    const project = await addProject(repo);
+
+    for (const request of [
+      { name: "New lane", isolation: "new" as const },
+      { name: "Existing lane", isolation: "existing" as const, line: "feature/x" },
+    ]) {
+      const { workspace, copied } = await createWorkspace({ projectId: project.id, ...request });
+      expect(copied).toEqual(["Game.csproj", "Library", "game.sln"]);
+      expect(readFileSync(join(workspace.path, "Library", "ArtifactDB"), "utf8")).toBe(
+        "import cache",
+      );
+      expect(
+        readFileSync(join(workspace.path, "Library", "ScriptAssemblies", "Game.dll"), "utf8"),
+      ).toBe("cache");
+      expect(existsSync(join(workspace.path, "Library", "Bee"))).toBe(false);
+      expect(readFileSync(join(repo, "Library", "Bee", "graph.dag"), "utf8")).toBe(
+        "bee graph of the main checkout",
+      );
+    }
+  });
+
+  // ADR 0177: a symlinked Library stays one link in the copy, so removing through it would cut into the folder the
+  // main checkout points at. Refuse instead.
+  it("refuses to drop Library/Bee through a symlinked Library", async () => {
+    const cache = join(scratch, "shared-library");
+    mkdirSync(join(cache, "Bee"), { recursive: true });
+    writeFileSync(join(cache, "Bee", "graph.dag"), "bee graph of the shared cache");
+    writeFileSync(join(cache, "ArtifactDB"), "import cache");
+
+    const repo = makeUnityRepo();
+    rmSync(join(repo, "Library"), { recursive: true, force: true });
+    symlinkSync(cache, join(repo, "Library"), "dir");
+    const project = await addProject(repo);
+
+    const created = await server.request("POST", "/api/workspaces", {
+      projectId: project.id,
+      name: "Linked",
+      isolation: "new",
+    });
+    // The refusal must preserve what the link points at: the main checkout's Library is never changed (ADR 0177).
+    expect(readFileSync(join(cache, "Bee", "graph.dag"), "utf8")).toBe(
+      "bee graph of the shared cache",
+    );
+    const body = (await json(created, 409)) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("symlinked_library");
+    expect(body.error.message).toContain("symlink");
+    // Nothing was half-made.
+    expect(git(project.path, "worktree", "list").trim().split("\n")).toHaveLength(1);
+    expect(
+      parse(WorkspaceList, await json(await server.request("GET", "/api/workspaces"), 200), "list")
+        .workspaces,
+    ).toEqual([]);
+  });
+
   it("records the base a new branch starts from", async () => {
     const repo = makeUnityRepo();
     git(repo, "branch", "feature/x");
@@ -341,6 +403,8 @@ describe("workspaces with Git", () => {
     expect(workspace.line).toBeUndefined();
     expect(workspace.planner).toBe(false);
     expect(copied).toEqual([]);
+    // ADR 0177: no copy, so no trait afterCopy either: the main checkout's Library is untouched.
+    expect(existsSync(join(repo, "Library", "Bee", "graph.dag"))).toBe(true);
   });
 
   it("removes a clean worktree on archive and keeps the branch", async () => {

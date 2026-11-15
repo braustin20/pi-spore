@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -59,6 +60,8 @@ interface FakeState {
   testFails?: boolean;
   noReport?: boolean;
   testHangs?: boolean;
+  /** Write an Editor log with this many missing-script lines, as a stale Library copy does (ADR 0177), and exit 2. */
+  missingScripts?: number;
 }
 const readState = (): FakeState => JSON.parse(readFileSync(stateFile, "utf8"));
 const writeState = (change: Partial<FakeState>) =>
@@ -459,12 +462,13 @@ describe("Unity test gates (R10.6)", () => {
     rmSync(join(workspace.path, "Temp"), { recursive: true, force: true });
   };
 
-  it("offers EditMode and PlayMode gates for Unity projects", async () => {
+  it("offers the two gates and the Library repair for Unity projects", async () => {
     const { a } = await setup();
     const listed = (await json(await server.request("GET", `/api/actions/workspaces/${a.id}`))) as {
       actions: { name: string }[];
     };
     expect(listed.actions.map((action) => action.name)).toEqual([
+      "unity-repair-library",
       "unity-test-editmode",
       "unity-test-playmode",
     ]);
@@ -518,6 +522,125 @@ describe("Unity test gates (R10.6)", () => {
 
     expect(run.status).toBe("failed");
     expect(run.error).toContain("no report");
+  });
+
+  it("fails on a stale Library cache, and tells the log's token nothing", async () => {
+    const { a } = await setup();
+    writeState({ missingScripts: 4021 });
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toBe(
+      `stale Unity Library cache in ${a.path}: 4021 missing-script lines. Run the unity-repair-library action, then Retry.`,
+    );
+    // The editor log echoes the command line, which carries an access token: only the count leaves it.
+    expect(run.error).not.toContain("SECRET-TOKEN");
+    expect(await logOf(run.id)).not.toContain("SECRET-TOKEN");
+    // The report of the run is still kept, whatever the exit code.
+    expect(await (await report(a, run.id)).text()).toContain('passed="3"');
+  });
+
+  it("leaves a project with a few missing scripts alone", async () => {
+    const { a } = await setup();
+    writeState({ missingScripts: 5 });
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.exitCode).toBe(2);
+    expect(run.error ?? "").not.toContain("stale");
+  });
+
+  // ADR 0177: a worktree made before the fix, or one copied from a source with a stale Bee, is repaired by hand
+  // after the gate names it. The repair deletes only Library/Bee, never the main checkout's Library.
+  it("deletes Library/Bee in a worktree and keeps the import cache", async () => {
+    const { repo, a } = await setup();
+    mkdirSync(join(a.path, "Library", "Bee"), { recursive: true });
+    writeFileSync(
+      join(a.path, "Library", "Bee", "graph.dag"),
+      "a build graph of the main checkout",
+    );
+    writeFileSync(join(a.path, "Library", "ArtifactDB"), "the import cache, fine to keep");
+    // The main checkout's Library is the source of every copy: the repair must not touch it.
+    mkdirSync(join(repo, "Library", "Bee"), { recursive: true });
+    writeFileSync(join(repo, "Library", "Bee", "graph.dag"), "the real build graph");
+
+    const run = await ended((await startGate(a, "unity-repair-library")).id);
+
+    expect(run.status).toBe("succeeded");
+    expect(existsSync(join(a.path, "Library", "Bee"))).toBe(false);
+    expect(existsSync(join(a.path, "Library", "ArtifactDB"))).toBe(true);
+    expect(readFileSync(join(repo, "Library", "Bee", "graph.dag"), "utf8")).toBe(
+      "the real build graph",
+    );
+    expect(await logOf(run.id)).toContain(`Removing ${join(a.path, "Library", "Bee")}`);
+    // Repairing needs no editor work: it asks nothing of the unity CLI but a status read.
+    expect(actions()).toEqual([]);
+  });
+
+  it("refuses the main checkout, whose Library is the source of every copy", async () => {
+    const { repo, projectId } = await setup();
+    const main = parse(
+      CreateWorkspaceResponse,
+      await json(
+        await server.request("POST", "/api/workspaces", {
+          projectId,
+          name: "Quick fix",
+          isolation: "in-place",
+        }),
+        201,
+      ),
+      "create in place",
+    ).workspace;
+    mkdirSync(join(repo, "Library", "Bee"), { recursive: true });
+    writeFileSync(join(repo, "Library", "Bee", "x"), "the source Library");
+
+    const run = await ended((await startGate(main, "unity-repair-library")).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("main checkout");
+    expect(existsSync(join(repo, "Library", "Bee", "x"))).toBe(true);
+  });
+
+  it("refuses a worktree Unity has open and never closes the editor", async () => {
+    const { a } = await setup();
+    await json(await open(a));
+    mkdirSync(join(a.path, "Library", "Bee"), { recursive: true });
+    writeFileSync(join(a.path, "Library", "Bee", "x"), "a build graph of the main checkout");
+
+    const run = await ended((await startGate(a, "unity-repair-library")).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("open");
+    expect(existsSync(join(a.path, "Library", "Bee", "x"))).toBe(true);
+    // Deleting a Library under a running editor would corrupt it, so pi-spore waits for the user instead.
+    expect(steps().filter((step) => step.startsWith("close"))).toEqual([]);
+    expect(readState().calls.filter((call) => call[0] === "close")).toEqual([]);
+  });
+
+  it("ignores an editor log this run did not write", async () => {
+    const { a } = await setup();
+    // An old log from a broken run sits there; this run is clean, so the gate passes (ADR 0177).
+    mkdirSync(join(a.path, "Logs"), { recursive: true });
+    writeFileSync(
+      join(a.path, "Logs", "Editor.log"),
+      `${"The referenced script (Unknown) on this Behaviour is missing!\n".repeat(4021)}`,
+    );
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("succeeded");
+    expect(run.error).toBeUndefined();
+  });
+
+  it("fails loudly when the editor log cannot be read at all", async () => {
+    const { a } = await setup();
+    // A link to itself is not a missing file, so the gate may not treat it as no log and call the run clean.
+    mkdirSync(join(a.path, "Logs"), { recursive: true });
+    symlinkSync(join(a.path, "Logs", "Editor.log"), join(a.path, "Logs", "Editor.log"));
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("ELOOP");
+    expect(testCalls()).toHaveLength(0);
   });
 
   it("waits while an agent holds the editor, then runs without closing anything", async () => {
