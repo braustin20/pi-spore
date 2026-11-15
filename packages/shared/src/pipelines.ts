@@ -160,6 +160,11 @@ export const PipelineTurn = Type.Object({
       reasons: Type.Array(Type.String()),
     }),
   ),
+  /**
+   * The physical model the turn's agent answered on (`provider/id`). Before its first answer: the model the stage
+   * started it on.
+   */
+  model: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
   reportedAt: Type.Optional(Type.Integer()),
   /** Why the turn's agent failed. Retry started a fresh agent in its place. */
