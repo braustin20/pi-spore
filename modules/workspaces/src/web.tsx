@@ -31,6 +31,7 @@ import {
   SectionLabel,
   Select,
   StatusLine,
+  splitHash,
   switchPane,
   Tabs,
   TabsContent,
@@ -87,6 +88,7 @@ const stepNote = (step: StepReport): Note => ({
 const panels: WorkspacePanel[] = [];
 const tabs: WorkspaceTab[] = [];
 let Main: ComponentType<{ workspace: Workspace; chatId?: string }> | undefined;
+let Landing: ComponentType<{ projectId?: string | undefined }> | undefined;
 const NO_STATUS: ReadonlyMap<string, WorkspaceStatus> = new Map();
 const noStatus: UseWorkspaceStatus = () => NO_STATUS;
 let useStatus = noStatus;
@@ -498,7 +500,7 @@ function WorkspaceListColumn({
         <SectionLabel className="flex-1">Workspaces</SectionLabel>
         <Tooltip label="New workspace" side="bottom">
           <Button variant="ghost" size="icon-sm" aria-label="New workspace" asChild>
-            <a href={projectId ? `#/workspaces/in/${projectId}` : "#/workspaces"}>
+            <a href={projectId ? `#/workspaces/new/in/${projectId}` : "#/workspaces/new"}>
               <Plus />
             </a>
           </Button>
@@ -908,9 +910,15 @@ function CollapsedColumn({
 /**
  * The three panes: workspace list, the selected workspace's chat (or the create form), and its details with the
  * module panels. One component for every workspaces route, so the list keeps its state while you move between
- * workspaces.
+ * workspaces. `create` marks the new workspace pages, which always show the create form.
  */
-function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }) {
+function WorkspacesView({
+  params,
+  create = false,
+}: {
+  params: Readonly<Record<string, string>>;
+  create?: boolean;
+}) {
   const api = useApi();
   const selectedId = params.workspaceId;
   const projectId = params.projectId;
@@ -1005,7 +1013,8 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
         A workspace is a copy of a project for one piece of work. Add a project first.
       </EmptyState>
     );
-  } else {
+  } else if (create || Landing === undefined) {
+    // The module that sets the landing is optional (ADR 0176), so the landing routes keep the create form without it.
     middle = (
       <div className="flex h-full items-start justify-center overflow-y-auto px-6 py-10">
         <CreateForm
@@ -1019,6 +1028,8 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
         />
       </div>
     );
+  } else {
+    middle = <Landing projectId={projectId} />;
   }
 
   const listColumn = (
@@ -1147,6 +1158,23 @@ function WorkspacesView({ params }: { params: Readonly<Record<string, string>> }
   );
 }
 
+/** `#/workspaces/new` and `#/workspaces/new/in/<project>`. */
+const NEW_PAGE_PATH = "/workspaces/new";
+
+/**
+ * One page component for every workspaces route, so the list and the notes of the last create keep their state as
+ * the route changes. The new workspace pages show the create form, wherever the landing page is (ADR 0176).
+ */
+function WorkspacesPage({ params }: { params: Readonly<Record<string, string>> }) {
+  const { path } = splitHash(window.location.hash);
+  return (
+    <WorkspacesView
+      params={params}
+      create={path === NEW_PAGE_PATH || path.startsWith(`${NEW_PAGE_PATH}/`)}
+    />
+  );
+}
+
 export const workspacesWeb: WebModule = {
   id: "workspaces",
   requires: ["projects"],
@@ -1167,6 +1195,10 @@ export const workspacesWeb: WebModule = {
         if (Main) throw new Error("The workspace main pane is set twice");
         Main = component;
       },
+      setLanding: (component) => {
+        if (Landing) throw new Error("The workspaces landing page is set twice");
+        Landing = component;
+      },
       setStatus: (hook) => {
         if (useStatus !== noStatus) throw new Error("The workspace status source is set twice");
         useStatus = hook;
@@ -1177,22 +1209,33 @@ export const workspacesWeb: WebModule = {
       path: "/workspaces",
       title: "Workspaces",
       rail: { order: 10, icon: Layers },
-      component: WorkspacesView,
+      component: WorkspacesPage,
     });
     host.addPage({
       path: "/workspaces/in/:projectId",
       title: "Workspaces",
-      component: WorkspacesView,
+      component: WorkspacesPage,
     });
+    host.addPage({
+      path: NEW_PAGE_PATH,
+      title: "New workspace",
+      component: WorkspacesPage,
+    });
+    host.addPage({
+      path: `${NEW_PAGE_PATH}/in/:projectId`,
+      title: "New workspace",
+      component: WorkspacesPage,
+    });
+    // The router takes the first match, so the new workspace pages must come before this one: `new` is not an id.
     host.addPage({
       path: "/workspaces/:workspaceId",
       title: "Workspace",
-      component: WorkspacesView,
+      component: WorkspacesPage,
     });
     host.addPage({
       path: "/workspaces/:workspaceId/chats/:chatId",
       title: "Workspace",
-      component: WorkspacesView,
+      component: WorkspacesPage,
     });
   },
 };

@@ -1829,8 +1829,10 @@ workspace as `POST /api/workspaces` does, for modules that start work, such as k
 
 The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
 and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
-panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<project>` (filtered to a project),
-`#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. The list
+panels. Routes: `#/workspaces` and `#/workspaces/in/<project>` (filtered to a project) show the landing page, and
+`#/workspaces/new` and `#/workspaces/new/in/<project>` show the create form. `#/workspaces/<id>` shows one workspace.
+One component serves them all, so the list keeps its state. The router takes the first page that matches, so the new
+workspace pages are added before `#/workspaces/<id>`: `new` is never a workspace id. The list
 follows the topic `workspaces:list`: a snapshot of every workspace on subscribe and after a reconnect, then one
 `workspace` event for each create, rename, park, resume, and archive, wherever it came from. An active or parked
 row shows an archive button on hover or keyboard focus. It asks first, as the Details archive does. With more than
@@ -1848,6 +1850,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   mounts only while the tab is open.
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
   passes `chatId`; without it the pane shows the active orchestrator chat.
+- `setLanding` sets the landing page: what `#/workspaces` and `#/workspaces/in/<project>` show with no workspace
+  open (ADR 0176). Without it those routes show the create form.
 - `setStatus` sets a React hook that returns one status line per workspace, with the row's open chats in `chats`
   (label, hint, icon, and whether it works). The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
