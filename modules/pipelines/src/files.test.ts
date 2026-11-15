@@ -178,15 +178,15 @@ describe("pipeline files", () => {
     );
   });
 
-  it("refuses a group with a gate stage, as a member or as its first stage", () => {
+  it("accepts a gate stage that joins a reviewer, and a reviewer that joins a gate stage", () => {
     const gateJoins = `${implementOnly("p")}\n[[stage]]\nname = "review"\nrole = "reviewer"\n\n[[stage]]\nname = "gates"\ngates = ["check"]\nwith_previous = true\n`;
-    expect(refusal(gateJoins)).toBe(
-      '/files/p.toml: stage "gates": a group with a gate stage is not built yet',
-    );
     const reviewerJoinsGate = `${implementOnly("p")}\n[[stage]]\nname = "gates"\ngates = ["check"]\n\n[[stage]]\nname = "review"\nrole = "reviewer"\nwith_previous = true\n`;
-    expect(refusal(reviewerJoinsGate)).toBe(
-      '/files/p.toml: stage "review": a group with a gate stage is not built yet',
-    );
+
+    const joined = parsePipeline(Buffer.from(gateJoins), "p", "user", "/files/p.toml");
+    const joinedGate = parsePipeline(Buffer.from(reviewerJoinsGate), "p", "user", "/files/p.toml");
+
+    expect(joined.stages[2]).toMatchObject({ name: "gates", with_previous: true });
+    expect(joinedGate.stages[2]).toMatchObject({ name: "review", with_previous: true });
   });
 
   it("accepts with_previous on a reviewer stage after another reviewer stage", () => {

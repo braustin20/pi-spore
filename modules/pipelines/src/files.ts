@@ -217,9 +217,6 @@ function checkStages(
       throw bad(
         `${where}: with_previous = true needs a stage before it in the group; the worker stage is never in a group`,
       );
-    // Card "Parallel stages 3" builds gate members; until then a group holds reviewer stages only.
-    if (stage.with_previous === true && (kind === "gate" || stages[index - 1]?.gates !== undefined))
-      throw bad(`${where}: a group with a gate stage is not built yet`);
     if (stage.min_strength_over !== undefined) {
       const earlier = stages
         .slice(0, index)

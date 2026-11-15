@@ -1849,40 +1849,40 @@ const config = (modes: Record<string, string>) =>
     )
     .join("\n");
 
+/** A workspace artifact, as a worker would have saved it. */
+const saveArtifact = (server: TestServer, workspaceId: string, path: string, content: string) => {
+  const file = join(server.paths.artifacts, "workspaces", workspaceId, path);
+  mkdirSync(dirname(file), { recursive: true });
+  writeFileSync(file, content);
+};
+
+const actionRuns = async (server: TestServer, workspaceId: string) =>
+  (
+    await json<{ runs: ActionRun[] }>(
+      await server.request("GET", `/api/actions/workspaces/${workspaceId}/runs`),
+    )
+  ).runs;
+
+/** Starts `pipeline` in a fresh workspace whose actions run in `modes`, with the proof `adds` already saved. */
+async function startGates(
+  server: TestServer,
+  name: string,
+  pipeline: string,
+  modes: Record<string, string>,
+) {
+  const { workspaceId } = await workspace(server, name, { config: config(modes) });
+  saveArtifact(server, workspaceId, "proofs/adds.md", "FAIL: adds\n");
+  userPipeline(server.paths.root, "p", pipeline);
+  const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+  return { workspaceId, runId: run.id };
+}
+
+const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
+  until(async () => (await getRun(server, runId)).state === state);
+
 describe("a gate stage", () => {
   const GATES = `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check", "test"]\nfail_first = "artifact"\n`;
   const reviewThenGates = `${withReview("rounds = 1", "fix_passes = 1")}\n[[stage]]\nname = "gates"\ngates = ["check"]\nfail_first = "artifact"\n`;
-
-  /** A workspace artifact, as a worker would have saved it. */
-  const saveArtifact = (server: TestServer, workspaceId: string, path: string, content: string) => {
-    const file = join(server.paths.artifacts, "workspaces", workspaceId, path);
-    mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, content);
-  };
-
-  const actionRuns = async (server: TestServer, workspaceId: string) =>
-    (
-      await json<{ runs: ActionRun[] }>(
-        await server.request("GET", `/api/actions/workspaces/${workspaceId}/runs`),
-      )
-    ).runs;
-
-  /** Starts `pipeline` in a fresh workspace whose actions run in `modes`, with the proof `adds` already saved. */
-  async function startGates(
-    server: TestServer,
-    name: string,
-    pipeline: string,
-    modes: Record<string, string>,
-  ) {
-    const { workspaceId } = await workspace(server, name, { config: config(modes) });
-    saveArtifact(server, workspaceId, "proofs/adds.md", "FAIL: adds\n");
-    userPipeline(server.paths.root, "p", pipeline);
-    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
-    return { workspaceId, runId: run.id };
-  }
-
-  const untilState = (server: TestServer, runId: string, state: PipelineRun["state"]) =>
-    until(async () => (await getRun(server, runId)).state === state);
 
   it("fails the run for a missing proof, and starts no gate action", async () => {
     const server = await start({ env: scriptEnv({ worker: [DONE] }) });
@@ -2104,8 +2104,8 @@ fail_first = "artifact"
       test: "pass",
     });
     await untilState(server, runId, "passed");
-    // A crash after the actions ended but before the stage moved on leaves this state: the job is on the gate step
-    // with no checkpoint. The test sets it by hand, since a real crash cannot be timed.
+    // A crash after the actions ended but before the stage moved on leaves this state: the job is on the await step
+    // at the first gate of round 1. The test sets it by hand, since a real crash cannot be timed.
     server.store.run(
       "UPDATE pipelines_runs SET state = 'running', ended_at = NULL, message = NULL WHERE id = ?",
       runId,
@@ -2114,7 +2114,8 @@ fail_first = "artifact"
       .list({ kind: "pipelines.stage" })
       .find((found) => (found.subject as { stageIndex: number }).stageIndex === 1) as JobView;
     server.store.run(
-      "UPDATE core_jobs SET state = 'waiting', step = 'gate', checkpoint = NULL WHERE id = ?",
+      "UPDATE core_jobs SET state = 'waiting', step = 'await', checkpoint = ? WHERE id = ?",
+      JSON.stringify({ round: 1, places: { gates: { gate: 0, attempt: 0 } } }),
       job.id,
     );
 
@@ -2143,6 +2144,115 @@ fail_first = "artifact"
 
     expect(ran()).toEqual(["check", "test"]);
     expect(await actionRuns(server, workspaceId)).toHaveLength(2);
+  });
+});
+
+describe("gates in a parallel group (ADR 0178)", () => {
+  const APPROVE = { summary: "Good", verdict: "approve" };
+  /** A review stage with `review` keys, and a gate stage in its group. */
+  const gated = (...review: string[]) =>
+    `${withReview(...review)}\n[[stage]]\nname = "gates"\nwith_previous = true\ngates = ["check", "test"]\nfail_first = "artifact"\n`;
+  const PASS = { check: "pass", test: "pass" };
+
+  it("starts the gates before the reviewer reports", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE], reviewer: ["hang"] }) });
+
+    const { runId } = await startGates(server, "early", gated(), PASS);
+    await until(() => ran().length === 2);
+
+    expect(ran()).toEqual(["check", "test"]);
+    const review = (await getRun(server, runId)).turns.find((turn) => turn.kind === "review");
+    expect(review).toBeDefined();
+    expect(review?.report).toBeUndefined();
+  });
+
+  it("passes when the reviewer approves and the gates are green, with one gate run", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }) });
+
+    const { runId } = await startGates(server, "green", gated(), PASS);
+    await untilState(server, runId, "passed");
+
+    expect(kinds(await getRun(server, runId))).toEqual(["task1", "review1"]);
+    expect(ran()).toEqual(["check", "test"]);
+  });
+
+  it("runs the gates again with round 2 after a REVISE and its fix", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE, APPROVE] }),
+    });
+
+    const { runId } = await startGates(
+      server,
+      "round2",
+      gated("rounds = 2", "fix_passes = 1"),
+      PASS,
+    );
+    await untilState(server, runId, "passed");
+
+    expect(kinds(await getRun(server, runId))).toEqual(["task1", "review1", "fix1", "review2"]);
+    expect(ran()).toEqual(["check", "test", "check", "test"]);
+  });
+
+  it("runs the gates once more, alone, after the last fix", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, FIX], reviewer: [REVISE] }) });
+
+    const { runId } = await startGates(
+      server,
+      "finalgates",
+      gated("rounds = 1", "fix_passes = 1"),
+      PASS,
+    );
+    await untilState(server, runId, "passed");
+
+    expect(kinds(await getRun(server, runId))).toEqual(["task1", "review1", "fix1"]);
+    expect(ran()).toEqual(["check", "test", "check", "test"]);
+  });
+
+  it("resumes a gate run that a restart cut off, with one new attempt", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({ worker: [DONE], reviewer: [APPROVE] });
+    const first = await start({ home, env });
+    const { workspaceId } = await workspace(first, "grouprestartgate", {
+      config: config({ check: "pass", test: "hang-first" }),
+    });
+    saveArtifact(first, workspaceId, "proofs/adds.md", "FAIL: adds\n");
+    userPipeline(home, "p", gated());
+    const { run } = await json<{ run: PipelineRun }>(await startRun(first, workspaceId), 201);
+    await until(
+      async () =>
+        ran().length === 2 &&
+        (await getRun(first, run.id)).turns.some(
+          (turn) => turn.kind === "review" && turn.report !== undefined,
+        ),
+    );
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+    await untilState(second, run.id, "passed");
+
+    expect(ran()).toEqual(["check", "test", "test"]);
+    const runs = await actionRuns(second, workspaceId);
+    expect(runs.map((found) => [found.action, found.status]).sort()).toEqual([
+      ["check", "succeeded"],
+      ["test", "interrupted"],
+      ["test", "succeeded"],
+    ]);
+  });
+
+  it("runs two gate members of a group with no reviewer, and a red gate fails the run", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const pipeline = `${IMPLEMENT}\n[[stage]]\nname = "a"\ngates = ["check"]\n\n[[stage]]\nname = "b"\nwith_previous = true\ngates = ["test"]\n`;
+
+    const { runId } = await startGates(server, "twogates", pipeline, {
+      check: "fail",
+      test: "pass",
+    });
+    await untilState(server, runId, "failed");
+
+    expect([...ran()].sort()).toEqual(["check", "test"]);
+    expect((await getRun(server, runId)).message).toMatch(/^gate check failed\n/);
   });
 });
 
