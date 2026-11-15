@@ -579,6 +579,19 @@ describe("spore-bridge", () => {
     );
   });
 
+  // ADR 0176: the planner may start read-only helpers, so "you cannot start agents" is no longer true.
+  it("tells the planner to start read-only helpers with start_helper", () => {
+    expect(PLANNER_RULES).toContain("Start helpers with start_helper before you read deeply");
+    expect(PLANNER_RULES).toContain("Do not poll for it");
+    expect(PLANNER_RULES).not.toContain("start agents");
+  });
+
+  // ADR 0176: the coordinator gets the same helpers, and still never edits files or runs commands.
+  it("tells the coordinator to start read-only helpers with start_helper", () => {
+    expect(COORDINATOR_RULES).toContain("Start helpers with start_helper before you read deeply");
+    expect(COORDINATOR_RULES).toContain("Do not poll for it");
+  });
+
   it("names request_human_input in the guideline that teaches steps", () => {
     const guidelines = fakePi().tool("request_human_input").promptGuidelines ?? [];
     const aboutSteps = guidelines.find((line) => line.includes("with steps")) ?? "";
