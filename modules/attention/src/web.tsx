@@ -480,9 +480,10 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
                   >
                     {run.detail ?? RUNNING_TEXT[run.status]}
                   </Chip>
-                  {run.others !== undefined && (
-                    <span className="shrink-0 text-xs text-muted">+{run.others} more</span>
-                  )}
+                  {/* A fixed slot on every row, so the columns line up with and without the count. */}
+                  <span className="w-14 shrink-0 text-xs whitespace-nowrap text-muted max-md:w-auto max-md:empty:hidden">
+                    {run.others !== undefined && `+${run.others} more`}
+                  </span>
                   <span className="w-28 shrink-0 text-right text-xs whitespace-nowrap text-muted max-md:w-auto">
                     since {ago(run.since, Date.now())}
                   </span>
