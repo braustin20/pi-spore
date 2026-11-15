@@ -23,7 +23,7 @@ import {
   type UnityCommand,
 } from "./editors.js";
 import { pause, registerGates, TEST_DEADLINE_MS } from "./gates.js";
-import { libraryBee } from "./repair.js";
+import { libraryBee, registerRepair } from "./repair.js";
 
 export * from "./contract.js";
 
@@ -95,8 +95,10 @@ export function createUnityModule(options: UnityModuleOptions = {}): ServerModul
         workspaces,
       });
       host.provide(UnityEditorsKey, editors);
+      const actions = host.use(ActionsKey);
+      registerRepair({ actions, editors, projects });
       const recentTests = registerGates({
-        actions: host.use(ActionsKey),
+        actions,
         agents: host.use(AgentsKey),
         approvals: host.use(ApprovalsKey),
         artifacts: host.use(ArtifactsKey),

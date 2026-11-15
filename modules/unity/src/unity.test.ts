@@ -462,12 +462,13 @@ describe("Unity test gates (R10.6)", () => {
     rmSync(join(workspace.path, "Temp"), { recursive: true, force: true });
   };
 
-  it("offers EditMode and PlayMode gates for Unity projects", async () => {
+  it("offers the two gates and the Library repair for Unity projects", async () => {
     const { a } = await setup();
     const listed = (await json(await server.request("GET", `/api/actions/workspaces/${a.id}`))) as {
       actions: { name: string }[];
     };
     expect(listed.actions.map((action) => action.name)).toEqual([
+      "unity-repair-library",
       "unity-test-editmode",
       "unity-test-playmode",
     ]);
@@ -547,6 +548,73 @@ describe("Unity test gates (R10.6)", () => {
     expect(run.status).toBe("failed");
     expect(run.exitCode).toBe(2);
     expect(run.error ?? "").not.toContain("stale");
+  });
+
+  // ADR 0177: a worktree made before the fix, or one copied from a source with a stale Bee, is repaired by hand
+  // after the gate names it. The repair deletes only Library/Bee, never the main checkout's Library.
+  it("deletes Library/Bee in a worktree and keeps the import cache", async () => {
+    const { repo, a } = await setup();
+    mkdirSync(join(a.path, "Library", "Bee"), { recursive: true });
+    writeFileSync(
+      join(a.path, "Library", "Bee", "graph.dag"),
+      "a build graph of the main checkout",
+    );
+    writeFileSync(join(a.path, "Library", "ArtifactDB"), "the import cache, fine to keep");
+    // The main checkout's Library is the source of every copy: the repair must not touch it.
+    mkdirSync(join(repo, "Library", "Bee"), { recursive: true });
+    writeFileSync(join(repo, "Library", "Bee", "graph.dag"), "the real build graph");
+
+    const run = await ended((await startGate(a, "unity-repair-library")).id);
+
+    expect(run.status).toBe("succeeded");
+    expect(existsSync(join(a.path, "Library", "Bee"))).toBe(false);
+    expect(existsSync(join(a.path, "Library", "ArtifactDB"))).toBe(true);
+    expect(readFileSync(join(repo, "Library", "Bee", "graph.dag"), "utf8")).toBe(
+      "the real build graph",
+    );
+    expect(await logOf(run.id)).toContain(`Removing ${join(a.path, "Library", "Bee")}`);
+    // Repairing needs no editor work: it asks nothing of the unity CLI but a status read.
+    expect(actions()).toEqual([]);
+  });
+
+  it("refuses the main checkout, whose Library is the source of every copy", async () => {
+    const { repo, projectId } = await setup();
+    const main = parse(
+      CreateWorkspaceResponse,
+      await json(
+        await server.request("POST", "/api/workspaces", {
+          projectId,
+          name: "Quick fix",
+          isolation: "in-place",
+        }),
+        201,
+      ),
+      "create in place",
+    ).workspace;
+    mkdirSync(join(repo, "Library", "Bee"), { recursive: true });
+    writeFileSync(join(repo, "Library", "Bee", "x"), "the source Library");
+
+    const run = await ended((await startGate(main, "unity-repair-library")).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("main checkout");
+    expect(existsSync(join(repo, "Library", "Bee", "x"))).toBe(true);
+  });
+
+  it("refuses a worktree Unity has open and never closes the editor", async () => {
+    const { a } = await setup();
+    await json(await open(a));
+    mkdirSync(join(a.path, "Library", "Bee"), { recursive: true });
+    writeFileSync(join(a.path, "Library", "Bee", "x"), "a build graph of the main checkout");
+
+    const run = await ended((await startGate(a, "unity-repair-library")).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("open");
+    expect(existsSync(join(a.path, "Library", "Bee", "x"))).toBe(true);
+    // Deleting a Library under a running editor would corrupt it, so pi-spore waits for the user instead.
+    expect(steps().filter((step) => step.startsWith("close"))).toEqual([]);
+    expect(readState().calls.filter((call) => call[0] === "close")).toEqual([]);
   });
 
   it("ignores an editor log this run did not write", async () => {
