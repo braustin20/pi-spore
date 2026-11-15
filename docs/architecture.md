@@ -719,6 +719,11 @@ fail_first = "artifact"
   reset, so the run is `blocked` until Retry. A pinned stage model is never swapped. Settings never change.
 - **Route** (R4.7). A worker report stores the newest `routing.jsonl` record for the worker agent on its turn
   (`routing`: route, model, reasons). A stage on a fixed model has none.
+- **Turn model.** Every turn has `model` (`provider/id`): the physical model its agent answered on. The report
+  stores it in `pipelines_turns.model`, so a reused worker that fixes on another model does not change an older
+  turn. A turn of a running run with no report and no error reads it live from `AgentsKey.liveState`: the model of
+  the newest answer, else the model the stage started the agent on. A stage agent's `activity` change (each
+  `message_end`) publishes the runs event, so the tab follows it without polling.
 - **Gates** (R6.5, ADR 0016). With `fail_first = "artifact"`, each test in the manifest needs a non-empty proof
   artifact, or the run fails with `missing fail-first proof for <test>` before any action runs. Then each gate
   action runs once through `ActionsKey.start(..., "pipeline", { key })` with the key `<run>:<stage>:<action>:<attempt>`,
@@ -750,7 +755,7 @@ fail_first = "artifact"
   (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
   and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
   block, ANSI codes removed. A fix row belongs to the worker stage. Each row is one line (kind and
-  round, verdict, finding counts, model, duration) and opens to the summary, findings by severity (minor closed),
+  round, verdict, finding counts, `model`, duration) and opens to the summary, findings by severity (minor closed),
   tests with proofs, the route, Jev's answer, and a link to the agent's chat. Only the newest or running row is open
   at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its
   open findings.
