@@ -28,10 +28,24 @@ export const PipelineStage = Type.Object(
     min_strength_over: Type.Optional(PipelineName),
     gates: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
     fail_first: Type.Optional(Type.Literal("artifact")),
+    /** The stage joins the parallel group of the stage before it (ADR 0178). */
+    with_previous: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
 export type PipelineStage = Static<typeof PipelineStage>;
+
+/** The parallel groups of a pipeline's stages (ADR 0178): each group lists its stage indexes in order. A stage
+ * without `with_previous = true` starts a new group. */
+export function stageGroups(stages: readonly PipelineStage[]): number[][] {
+  const groups: number[][] = [];
+  stages.forEach((stage, index) => {
+    const last = groups.at(-1);
+    if (stage.with_previous === true && last) last.push(index);
+    else groups.push([index]);
+  });
+  return groups;
+}
 
 /** A pipeline file (`<id>.toml`) after TOML parsing. */
 export const PipelineFile = Type.Object(
