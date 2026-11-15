@@ -83,14 +83,27 @@ export interface Pipelines {
    * because a lane's run belongs to its coordinator and nothing in the pipelines module changed.
    */
   refreshWorking(): void;
+  /** The runs module calls it after a lane question is asked or answered, so the lane's runs publish again. */
+  laneQuestionChanged(workspaceId: string): void;
   /**
-   * Sets how a run's approvals name a lane workspace, and which chat hears that a lane's run is blocked. The runs
-   * module sets it, because runs requires pipelines. At most one.
+   * Sets how a run's approvals name a lane workspace, which chat hears that a lane's run is blocked, and which open
+   * lane question holds a turn's `await` step (ADR 0179). `openQuestion` gives the oldest open question the agent
+   * asked since `since`, the turn's start, so a reused agent's old question never holds a later turn. The runs module
+   * sets it, because runs requires pipelines. At most one.
    */
   setLaneLookup(
-    lookup: (
-      workspaceId: string,
-    ) => { run: string; laneId: string; lane: string; coordinatorAgentId: string } | undefined,
+    lookup: (workspaceId: string) =>
+      | {
+          laneId: string;
+          lane: string;
+          coordinatorAgentId: string;
+          runWorkspaceId: string;
+          openQuestion(
+            agentId: string,
+            since: number,
+          ): { id: string; question: string } | undefined;
+        }
+      | undefined,
   ): void;
 }
 

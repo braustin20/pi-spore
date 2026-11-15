@@ -683,7 +683,11 @@ fail_first = "artifact"
   An open turn with an open question gets no reminder, no block, and no restart reminder; the `await` step waits for
   it. It checks again after it reads the agent's session, because the agent may ask during that read. A failed agent
   still blocks the stage. The run view sets `question` on each open turn with an open question, and the Pipeline tab
-  shows "Waiting for an answer from <chat>." with a link to that chat and the question.
+  shows "Waiting for an answer from <chat>." with a link to that chat (in `askedWorkspaceId`) and the question.
+  In a lane, the open question is the agent's `ask_coordinator` question since the turn started. The pipelines module
+  reads it through the lane lookup the runs module sets (`setLaneLookup`, ADR 0003), and the asked chat is the
+  coordinator in the run workspace. `askCoordinator` and `answerLane` call `laneQuestionChanged`, so the Pipeline tab
+  updates.
 - **Stage chat titles.** A run with a slice name (`name`) titles its stage agents `<slice name> - <stage title>`, such
   as `push_line tool - Review 1`. Without a name the titles stay `implement`, `Review 1`, ... A reused worker (`worker =
   "reuse"`) is renamed to the new run's slice name when the run has one, in the same commit that gives it the task, so

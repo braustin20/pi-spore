@@ -60,6 +60,11 @@
    open, ask with `ask_orchestrator` (in a lane: `ask_coordinator`); never use `contact_supervisor`; do not guess.
 8. **The user sees why.** The Pipeline tab shows an open question on its turn: "Waiting for an answer from
    <chat>".
+9. **Lane questions wait too.** A lane stage agent's `ask_coordinator` question holds its turn the same way: no
+   reminder, no block, no restart reminder until `answer_lane`. The runs module keeps those questions in
+   `runs_questions`, so the pipelines module learns of them through the lane lookup that runs gives it
+   (`setLaneLookup`, ADR 0003). The lookup counts only questions the agent asked since the turn started. The Pipeline
+   tab names the coordinator chat and links to it in the run workspace.
 
 ## Consequences
 

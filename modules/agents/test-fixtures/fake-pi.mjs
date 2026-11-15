@@ -34,6 +34,8 @@
 //   { "ask": "<text>" }  asks the run's asking chat, as ask_orchestrator does: the fake POSTs { question } to
 //             /api/bridge/stage-questions with its token and a receipt, replies with the server's answer, and ends
 //             the turn with stopReason "stop". No report is sent.
+//   { "askCoordinator": "<text>" }  asks the lane's coordinator, as ask_coordinator does: the same, but it POSTs to
+//             /api/bridge/coordinator/questions.
 //   {...}     a report: the fake first writes an assistant message with a tool call, as Pi does before a tool runs, so
 //             the session already records the model. An entry field `model: "<provider>/<id>"` switches the model
 //             first, as `set_model` does; the field is not sent. A field `routing: { route, model, reasons }` is not
@@ -358,10 +360,10 @@ async function ask(question, toolCallId) {
   }
 }
 
-/** What spore-bridge's ask_orchestrator sends: the agent token, and the tool call id as the receipt. */
-async function askStage(question, receipt) {
+/** What spore-bridge's ask_orchestrator and ask_coordinator send: the agent token, and the tool call id as the receipt. */
+async function askStage(route, question, receipt) {
   try {
-    const response = await fetch(`${process.env.PI_SPORE_URL}/api/bridge/stage-questions`, {
+    const response = await fetch(`${process.env.PI_SPORE_URL}/api/bridge/${route}`, {
       method: "POST",
       headers: {
         authorization: `Bearer ${process.env.PI_SPORE_TOKEN}`,
@@ -408,15 +410,17 @@ async function scripted(text) {
     process.exit(3);
   }
   if (entry.error !== undefined) return { error: entry.error };
-  if (entry.ask !== undefined) {
+  if (entry.ask !== undefined || entry.askCoordinator !== undefined) {
+    const lane = entry.askCoordinator !== undefined;
+    const question = lane ? entry.askCoordinator : entry.ask;
     const receipt = `ask_${role}_${position}`;
     toolCallMessage({
       type: "toolCall",
       id: receipt,
-      name: "ask_orchestrator",
-      arguments: { question: entry.ask },
+      name: lane ? "ask_coordinator" : "ask_orchestrator",
+      arguments: { question },
     });
-    return askStage(entry.ask, receipt);
+    return askStage(lane ? "coordinator/questions" : "stage-questions", question, receipt);
   }
   const turn = /^Turn: (\S+)$/m.exec(text)?.[1];
   if (!turn) return "no turn id in the prompt";
