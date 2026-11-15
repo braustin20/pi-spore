@@ -47,7 +47,8 @@ not built in v1.
 - R3.3 A worker can start pi-subagents helpers. The UI shows them as child runs of that worker.
 - R3.4 pi-spore never changes a role's model without approval. Choosing a router model (R4) counts as approval
   for every model that router picks.
-- R3.5 Agents have a `request_human_input` tool. Agents in a run ask their coordinator instead (R7).
+- R3.5 Agents have a `request_human_input` tool. Agents in a run ask their coordinator instead (R7). Pipeline stage
+  agents outside a run ask the chat that started their pipeline (ADR 0179).
 - R3.6 Concurrency and nesting limits for agents are settings, with safe defaults.
 - R3.7 The user can exclude extensions from pi-spore agents while keeping them in the `pi` CLI.
 - R3.8 A workspace can start a fresh orchestrator chat; earlier orchestrator chats stay readable and can be made active again.

@@ -217,6 +217,27 @@ describe("Timeline", () => {
     expect(root.textContent).toContain("Waiting for the report.");
   });
 
+  it("shows an open stage question in place of the report wait", async () => {
+    const asking = turn({
+      id: "t-ask",
+      createdAt: 100_000,
+      question: {
+        id: "q1",
+        question: "Which color?",
+        askedAgentId: "chat",
+        askedTitle: "Plan chat",
+      },
+    });
+    const root = await mount(
+      <Timeline run={run({ turns: [asking] })} workspaceId="w1" now={100_000 + MIN} />,
+    );
+    expect(root.textContent).toContain("Waiting for an answer from Plan chat.");
+    expect(root.textContent).toContain("Which color?");
+    expect(root.textContent).not.toContain("Waiting for the report.");
+    const link = [...root.querySelectorAll("a")].find((a) => a.textContent === "Plan chat");
+    expect(link?.getAttribute("href")).toBe("#/workspaces/w1/chats/chat");
+  });
+
   it("shows the turn's model on a running turn with no route", async () => {
     const running = turn({ id: "t-run", createdAt: 100_000, model: "strata/qwen" });
     const root = await mount(

@@ -234,7 +234,24 @@ function TurnBody({ turn, workspaceId }: { turn: PipelineTurn; workspaceId: stri
       {report?.earlyStop && <EarlyStopLine earlyStop={report.earlyStop} />}
       {turn.modelNote && <p className="m-0 whitespace-pre-wrap text-muted">{turn.modelNote}</p>}
       {turn.error && <p className="m-0 whitespace-pre-wrap text-muted">{turn.error}</p>}
-      {!report && !turn.error && <p className="m-0 text-muted">Waiting for the report.</p>}
+      {!report && !turn.error && turn.question && (
+        <>
+          <p className="m-0 text-muted">
+            Waiting for an answer from{" "}
+            <a
+              href={`#/workspaces/${workspaceId}/chats/${turn.question.askedAgentId}`}
+              className="text-accent-strong"
+            >
+              {turn.question.askedTitle}
+            </a>
+            .
+          </p>
+          <p className="m-0 whitespace-pre-wrap">{turn.question.question}</p>
+        </>
+      )}
+      {!report && !turn.error && !turn.question && (
+        <p className="m-0 text-muted">Waiting for the report.</p>
+      )}
       <a
         href={`#/workspaces/${workspaceId}/chats/${turn.agentId}`}
         className="text-xs text-accent-strong"

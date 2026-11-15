@@ -17,7 +17,7 @@ import {
 } from "./client.js";
 import { registerServerGuard } from "./guard.js";
 import { registerHelperTool } from "./helpers.js";
-import { registerPipelineTool } from "./pipeline.js";
+import { registerPipelineTools } from "./pipeline.js";
 import { registerReportTool } from "./report.js";
 import { applyRules } from "./rules.js";
 import { registerRunTools } from "./runs.js";
@@ -160,8 +160,9 @@ export default function sporeBridge(pi: ExtensionAPI) {
     applyRules(event.systemPromptOptions, getAgentDir(), env);
   });
 
-  // R3.5, R7.5: agents in a lane ask their coordinator (ask_coordinator) instead.
-  if (env.runRole !== "lane")
+  // R3.5, R7.5, ADR 0179: a stage agent asks its run's asking chat (ask_orchestrator) and a lane agent asks its
+  // coordinator (ask_coordinator), because only those paths hold the pipeline. Every other chat asks the user here.
+  if (env.runRole !== "lane" && env.chatKind !== "stage")
     pi.registerTool({
       name: "request_human_input",
       label: "Ask the user",
@@ -235,7 +236,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
   registerArtifactTools(pi, client);
   registerReportTool(pi, client, env);
   registerRunTools(pi, client, env);
-  registerPipelineTool(pi, client, env);
+  registerPipelineTools(pi, client, env);
   // ADR 0176: the planner chat and the coordinator start read-only helpers, and only these two get the ceiling.
   registerHelperTool(pi, env);
 

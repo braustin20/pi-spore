@@ -43,15 +43,24 @@ export const PLANNER_CHAT_TOOLS: readonly string[] = [
 ];
 
 /**
- * The tools of a read-only pipeline stage agent (R6): the side chat's tools, plus spore-bridge's `report`, the one tool
- * that ends its turn, and `ask_coordinator`, which spore-bridge registers only inside a run lane.
+ * The tools of a read-only pipeline stage agent (R6): the side chat's read tools, plus spore-bridge's `report`, the
+ * one tool that ends its turn, and the two ask tools, which spore-bridge registers only where they belong:
+ * `ask_coordinator` inside a run lane and `ask_orchestrator` outside one (ADR 0179). `request_human_input` is left
+ * out, so a stage question goes through the path the pipeline waits for.
  */
 export const STAGE_REVIEWER_TOOLS: readonly string[] = [
   "--tools",
-  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report,ask_coordinator",
+  "read,grep,find,ls,artifacts_list,artifacts_read,report,ask_coordinator,ask_orchestrator",
   "--exclude-tools",
   "mcp__*",
 ];
+
+/**
+ * The tools of a pipeline stage worker (R6, ADR 0179): Pi's normal tools, less `contact_supervisor`. That tool comes
+ * from pi-subagents and works only in a child pi-subagents started; a stage agent is a top-level Pi process, so the
+ * call only fails, and the agent then guesses. It asks with `ask_orchestrator` instead.
+ */
+export const STAGE_WORKER_TOOLS: readonly string[] = ["--exclude-tools", "contact_supervisor"];
 
 /**
  * The launch arguments that load the user's Pi setup minus excluded packages (ADR 0025): `--no-extensions`,

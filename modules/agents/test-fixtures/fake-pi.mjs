@@ -31,6 +31,9 @@
 //   "crash"   after Pi accepted the prompt, writes to stderr and exits with code 3, as the "crash" prompt does
 //   { "error": "<text>" }  ends the turn as Pi does when the provider refused it: the last assistant message has
 //             stopReason "error", errorMessage <text>, and no text. No report is sent.
+//   { "ask": "<text>" }  asks the run's asking chat, as ask_orchestrator does: the fake POSTs { question } to
+//             /api/bridge/stage-questions with its token and a receipt, replies with the server's answer, and ends
+//             the turn with stopReason "stop". No report is sent.
 //   {...}     a report: the fake first writes an assistant message with a tool call, as Pi does before a tool runs, so
 //             the session already records the model. An entry field `model: "<provider>/<id>"` switches the model
 //             first, as `set_model` does; the field is not sent. A field `routing: { route, model, reasons }` is not
@@ -355,6 +358,27 @@ async function ask(question, toolCallId) {
   }
 }
 
+/** What spore-bridge's ask_orchestrator sends: the agent token, and the tool call id as the receipt. */
+async function askStage(question, receipt) {
+  try {
+    const response = await fetch(`${process.env.PI_SPORE_URL}/api/bridge/stage-questions`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.PI_SPORE_TOKEN}`,
+        "content-type": "application/json",
+        "idempotency-key": receipt,
+      },
+      body: JSON.stringify({ question }),
+    });
+    const body = await response.json();
+    return response.ok
+      ? `asked: ${body.question.id}`
+      : `ask failed: ${response.status} ${body.error?.code}`;
+  } catch (error) {
+    return `ask failed: ${error.message}`;
+  }
+}
+
 /** The next scripted answer for this stage agent's role; see the header. */
 async function scripted(text) {
   const file = process.env.FAKE_PI_SCRIPT;
@@ -384,6 +408,16 @@ async function scripted(text) {
     process.exit(3);
   }
   if (entry.error !== undefined) return { error: entry.error };
+  if (entry.ask !== undefined) {
+    const receipt = `ask_${role}_${position}`;
+    toolCallMessage({
+      type: "toolCall",
+      id: receipt,
+      name: "ask_orchestrator",
+      arguments: { question: entry.ask },
+    });
+    return askStage(entry.ask, receipt);
+  }
   const turn = /^Turn: (\S+)$/m.exec(text)?.[1];
   if (!turn) return "no turn id in the prompt";
   const { model: switchTo, routing, ...fields } = entry;
