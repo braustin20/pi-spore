@@ -1,6 +1,6 @@
 # 0176. The planner and the coordinator start read-only helpers with `start_helper`
 
-- Status: Proposed
+- Status: Accepted; changes [0174](0174-project-planner-chat.md) in part
 - Date: 2026-11-14
 - Requirements: R3.3, R3.6, R3.9, R7.1
 

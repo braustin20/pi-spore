@@ -1,6 +1,6 @@
 # 0174. Each project has a planner chat that reads and adds cards
 
-- Status: Accepted; superseded in part by [0175](0175-planner-model-and-early-picks.md)
+- Status: Accepted; superseded in part by [0175](0175-planner-model-and-early-picks.md) and [0176](0176-read-only-helpers-for-planner-and-coordinator.md)
 - Date: 2026-11-11
 - Requirements: R3.9, R11 (kanban)
 
