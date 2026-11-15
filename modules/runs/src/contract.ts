@@ -67,6 +67,8 @@ export interface Runs {
   laneOf(workspaceId: string): { runId: string; laneId: string } | undefined;
   /** The run whose workspace this is. */
   runOf(workspaceId: string): Run | undefined;
+  /** Runs after each change that `runs:list` publishes, so a reader of runs follows them without polling. */
+  onChange(listener: () => void): void;
   /**
    * Sets how a run's PR opens when the user approves a `run-pr` approval. The github-pr module sets it, so runs
    * does not depend on it (kanban requires runs, and github-pr requires kanban). At most one opener.

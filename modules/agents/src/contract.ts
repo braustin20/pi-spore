@@ -1,10 +1,18 @@
 import { defineInterface } from "@pi-spore/module-api";
-import type { Agent, AgentDialog, AgentRole, StageRole, Workspace } from "@pi-spore/shared";
+import type {
+  Agent,
+  AgentDialog,
+  AgentRole,
+  ChildRun,
+  StageRole,
+  Workspace,
+} from "@pi-spore/shared";
 import type { RoleDefaults } from "./launch.js";
 
 /**
  * What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers.
- * `working`: its `workingFor` label. `activity`: its `activity` text.
+ * `children`: its child run list, a step, a state, or a current tool, so a reader of `liveState` can follow it
+ * while `helpers` stays rare for Home. `working`: its `workingFor` label. `activity`: its `activity` text.
  */
 export type AgentChange =
   | "status"
@@ -12,8 +20,18 @@ export type AgentChange =
   | "waiting"
   | "chat"
   | "helpers"
+  | "children"
   | "working"
   | "activity";
+
+/** What an agent's live process shows now, for the agent graph (ADR 0176). Models are `provider/id`. */
+export interface AgentLiveState {
+  /** The model in memory, else the one stored on the agent's row. */
+  model?: string;
+  /** The physical model of its newest answer, when it is not `model` (a virtual model routed it). */
+  routedModel?: string;
+  children: ChildRun[];
+}
 
 /** One agent with what Home shows about it (R15). */
 export interface AgentAttention {
@@ -94,6 +112,8 @@ export interface Agents {
   rename(agentId: string, title: string): void;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */
   get(agentId: string): Agent;
+  /** The agent's live model, routed model, and child runs. Throws a 404 ApiError for an unknown id. */
+  liveState(agentId: string): AgentLiveState;
   /**
    * Marks the agent as working for something while it is idle or stopped, such as a pipeline run, so Home and the
    * workspace list show it as working, not done. `undefined` clears it. The label is in memory only. It does not

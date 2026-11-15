@@ -123,6 +123,24 @@ export function chatActivity(chat: ChatState): string | undefined {
   return undefined;
 }
 
+/**
+ * The physical model the router picked for a virtual model such as `spore/auto`, or undefined before any answer.
+ * Pi records the physical model on each assistant message, so this follows reloads and reconnects (ADR 0009).
+ */
+export function routedModel(chat: ChatState): { provider: string; id: string } | undefined {
+  const messages = chat.streaming ? [...chat.messages, chat.streaming] : chat.messages;
+  for (const message of messages.toReversed()) {
+    if (
+      message.role === "assistant" &&
+      typeof message.provider === "string" &&
+      typeof message.model === "string"
+    ) {
+      return { provider: message.provider, id: message.model };
+    }
+  }
+  return undefined;
+}
+
 /** The same message seen twice (in a snapshot and again in a live event) has the same role and timestamp. */
 function sameMessage(a: ChatMessage, b: ChatMessage): boolean {
   return a.role === b.role && a.timestamp !== undefined && a.timestamp === b.timestamp;

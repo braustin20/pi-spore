@@ -402,6 +402,37 @@ describe("Home inbox", () => {
     expect((await inbox()).running).toEqual([]);
   });
 
+  it("does not rebuild Home when only a running helper's current tool changes", async () => {
+    const { agentId } = await makeAgent("tooled");
+    await json(await prompt(agentId, "hello"));
+    await until(async () => (await kinds()).includes("finished tooled"));
+    // A helper command is a prompt, which clears the wait; clear it first so only helper changes count.
+    await json(await server.request("POST", `/api/agents/${agentId}/seen`));
+    await server.events.snapshot(INBOX_TOPIC);
+    const pushed = () => server.events.eventsOf(INBOX_TOPIC) as InboxEvent[];
+    const running = () => pushed().at(-1)?.inbox.running.length;
+    await json(await prompt(agentId, "helper:run-1:scout:running"));
+    await until(async () => running() === 1);
+    const before = pushed().length;
+    const tools = () =>
+      server.events
+        .eventsOf(`agent:${agentId}`)
+        .flatMap((event) =>
+          (event as { type: string }).type === "children"
+            ? [(event as { children: { currentTool?: string }[] }).children[0]?.currentTool]
+            : [],
+        );
+
+    await json(await prompt(agentId, "helper:run-1:scout:running:read"));
+    await until(async () => tools().includes("read"));
+    await json(await prompt(agentId, "helper:run-1:scout:running:bash"));
+    await until(async () => tools().includes("bash"));
+    await json(await prompt(agentId, "helper:run-1:scout:complete"));
+    await until(async () => running() === 0);
+    // Only the end of the helper, which changes the running count, built Home again.
+    expect(pushed().length - before).toBe(1);
+  });
+
   it("shows an idle chat that works for a pipeline as running, and finished once that ends", async () => {
     const { agentId } = await makeAgent("piped");
     await json(await prompt(agentId, "one"));

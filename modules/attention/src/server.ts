@@ -420,6 +420,8 @@ export const attentionModule: ServerModule = {
     };
     host.jobs.onChange(changed);
     agents.onChange((agentId, change) => {
+      // Home shows only the running count (`helpers`), not each helper step or tool (ADR 0176).
+      if (change === "children") return;
       if (change === "chat" && !agents.get(agentId).active) closeQuestions(agentId);
       changed();
     });

@@ -1495,6 +1495,7 @@ export const pipelinesModule: ServerModule = {
       report,
       start,
       get: (runId) => viewOf(requireRun(runId)),
+      runsOf,
       stop,
       afterRunEnded: (listener) => {
         endListeners.push(listener);

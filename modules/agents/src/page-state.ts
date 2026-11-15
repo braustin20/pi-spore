@@ -7,6 +7,7 @@ import {
   type ChildRun,
   type ContextUsage,
   emptyChat,
+  routedModel as sharedRoutedModel,
   toolActivity,
 } from "@pi-spore/shared";
 
@@ -143,22 +144,7 @@ export function activity(state: PageState): string | undefined {
   return "Thinking";
 }
 
-/**
- * The physical model the router picked for a virtual model such as `spore/auto`, or undefined before any answer.
- * Pi records the physical model on each assistant message, so this follows reloads and reconnects (ADR 0009).
- */
+/** The physical model of the newest answer (ADR 0009). */
 export function routedModel(state: PageState): { provider: string; id: string } | undefined {
-  const messages = state.chat.streaming
-    ? [...state.chat.messages, state.chat.streaming]
-    : state.chat.messages;
-  for (const message of messages.toReversed()) {
-    if (
-      message.role === "assistant" &&
-      typeof message.provider === "string" &&
-      typeof message.model === "string"
-    ) {
-      return { provider: message.provider, id: message.model };
-    }
-  }
-  return undefined;
+  return sharedRoutedModel(state.chat);
 }

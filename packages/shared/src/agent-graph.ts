@@ -1,0 +1,97 @@
+import Type, { type Static } from "typebox";
+import { AgentRole, AgentStatus, ChatKind } from "./agents.js";
+import { PipelineRunState } from "./pipelines.js";
+
+/** A running step of an agent's background child run (ADR 0176). The id is `<child run id>:<step index>`. */
+export const GraphHelper = Type.Object({
+  id: Type.String(),
+  agent: Type.Optional(Type.String()),
+  /** `provider/id`. */
+  model: Type.Optional(Type.String()),
+  /** `done` and `failed` only in the one topic event after the helper ended. */
+  state: Type.Union([Type.Literal("running"), Type.Literal("done"), Type.Literal("failed")]),
+  currentTool: Type.Optional(Type.String()),
+  startedAt: Type.Optional(Type.Integer()),
+});
+export type GraphHelper = Static<typeof GraphHelper>;
+
+/** One agent of the graph. Models are `provider/id`. */
+export const GraphAgent = Type.Object({
+  agentId: Type.String(),
+  workspaceId: Type.String(),
+  kind: ChatKind,
+  role: AgentRole,
+  title: Type.Optional(Type.String()),
+  status: AgentStatus,
+  workingFor: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+  /** The physical model of its newest answer, when it differs from `model`. */
+  routedModel: Type.Optional(Type.String()),
+  /** When it entered its status. */
+  since: Type.Integer(),
+  helpers: Type.Array(GraphHelper),
+});
+export type GraphAgent = Static<typeof GraphAgent>;
+
+/** One node of a pipeline run's group. The id is the turn id, or `<pipeline run id>:<stage index>` without a turn. */
+export const GraphStep = Type.Object({
+  id: Type.String(),
+  stage: Type.String(),
+  kind: Type.Union([
+    Type.Literal("task"),
+    Type.Literal("review"),
+    Type.Literal("fix"),
+    Type.Literal("gates"),
+  ]),
+  round: Type.Optional(Type.Integer()),
+  state: Type.Union([
+    Type.Literal("waiting"),
+    Type.Literal("running"),
+    Type.Literal("done"),
+    Type.Literal("failed"),
+  ]),
+  gates: Type.Optional(Type.Array(Type.String())),
+  agent: Type.Optional(GraphAgent),
+});
+export type GraphStep = Static<typeof GraphStep>;
+
+/** One pipeline run of a tree: a lane's run, or a run of a workspace. */
+export const GraphGroup = Type.Object({
+  pipelineRunId: Type.String(),
+  workspaceId: Type.String(),
+  laneId: Type.Optional(Type.String()),
+  /** The slice name, else the lane name, else the pipeline id. */
+  name: Type.String(),
+  state: PipelineRunState,
+  /** The current stage's name. */
+  stage: Type.String(),
+  round: Type.Optional(Type.Integer()),
+  /** True while the run is `running`. */
+  live: Type.Boolean(),
+  steps: Type.Array(GraphStep),
+});
+export type GraphGroup = Static<typeof GraphGroup>;
+
+/** A run's coordinator with its lanes, or a workspace's worker chat with its pipeline runs. */
+export const GraphTree = Type.Object({
+  kind: Type.Union([Type.Literal("run"), Type.Literal("workspace")]),
+  workspaceId: Type.String(),
+  projectId: Type.String(),
+  /** The workspace's name. */
+  name: Type.String(),
+  runId: Type.Optional(Type.String()),
+  root: GraphAgent,
+  groups: Type.Array(GraphGroup),
+});
+export type GraphTree = Static<typeof GraphTree>;
+
+/** `GET /api/agent-graph`: every tree, by workspace creation time, oldest first. */
+export const AgentGraph = Type.Object({ trees: Type.Array(GraphTree) });
+export type AgentGraph = Static<typeof AgentGraph>;
+
+/** The only event of topic `agent-graph:trees`: the whole graph again. */
+export const AgentGraphEvent = Type.Object({
+  type: Type.Literal("graph"),
+  trees: Type.Array(GraphTree),
+});
+export type AgentGraphEvent = Static<typeof AgentGraphEvent>;

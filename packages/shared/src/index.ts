@@ -9,6 +9,15 @@ export {
   StartActionRequest,
 } from "./actions.js";
 export {
+  AgentGraph,
+  AgentGraphEvent,
+  GraphAgent,
+  GraphGroup,
+  GraphHelper,
+  GraphStep,
+  GraphTree,
+} from "./agent-graph.js";
+export {
   Agent,
   AgentDialog,
   AgentList,
@@ -107,6 +116,7 @@ export {
   type ImageRef,
   isImageRef,
   type RunningTool,
+  routedModel,
   toolActivity,
 } from "./chat.js";
 export { HealthResponse } from "./health.js";

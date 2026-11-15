@@ -2039,7 +2039,11 @@ function probe() {
     if (!pipelines) throw new Error("The probe module is not set up");
     pipelines.stop(...args);
   };
-  return { module, ended, startThrough, stopThrough };
+  const runsOfThrough = (workspaceId: string) => {
+    if (!pipelines) throw new Error("The probe module is not set up");
+    return pipelines.runsOf(workspaceId);
+  };
+  return { module, ended, startThrough, stopThrough, runsOfThrough };
 }
 
 describe("the pipelines interface (start, afterRunEnded)", () => {
@@ -2058,6 +2062,24 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
     expect(run).toMatchObject({ state: "running", askingAgentId: agentId });
     expect(ended).toHaveLength(1);
     expect(ended[0]).toMatchObject({ id: run.id, state: "passed", endedAt: expect.any(Number) });
+  });
+
+  it("lists the workspace's runs newest first", async () => {
+    const { module, startThrough, stopThrough, runsOfThrough } = probe();
+    const server = await start({
+      env: scriptEnv({ worker: ["hang", "hang"] }),
+      extraModules: [module],
+    });
+    const { workspaceId } = await workspace(server, "keylist");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const first = await startThrough(workspaceId, { pipeline: "p", brief: "One" });
+    stopThrough(first.id, "Stopped");
+    const second = await startThrough(workspaceId, { pipeline: "p", brief: "Two" });
+
+    expect(runsOfThrough(workspaceId).map((run) => [run.id, run.state])).toEqual([
+      [second.id, "running"],
+      [first.id, "stopped"],
+    ]);
   });
 
   it("stops a running run with the given message and rejects a run that ended", async () => {
