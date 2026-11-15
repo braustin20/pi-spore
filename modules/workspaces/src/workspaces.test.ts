@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -293,6 +294,35 @@ describe("workspaces with Git", () => {
         "bee graph of the main checkout",
       );
     }
+  });
+
+  // ADR 0177: a symlinked Library stays one link in the copy, so removing through it would cut into the folder the
+  // main checkout points at. Refuse instead.
+  it("refuses to drop Library/Bee through a symlinked Library", async () => {
+    const cache = join(scratch, "shared-library");
+    mkdirSync(join(cache, "Bee"), { recursive: true });
+    writeFileSync(join(cache, "Bee", "graph.dag"), "bee graph of the shared cache");
+    writeFileSync(join(cache, "ArtifactDB"), "import cache");
+
+    const repo = makeUnityRepo();
+    rmSync(join(repo, "Library"), { recursive: true, force: true });
+    symlinkSync(cache, join(repo, "Library"), "dir");
+    const project = await addProject(repo);
+
+    const created = await server.request("POST", "/api/workspaces", {
+      projectId: project.id,
+      name: "Linked",
+      isolation: "new",
+    });
+    const body = (await json(created, 409)) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("symlinked_library");
+    expect(body.error.message).toContain("symlink");
+    // The cache the main checkout's Library points at kept its build graph, and nothing was half-made.
+    expect(git(project.path, "worktree", "list").trim().split("\n")).toHaveLength(1);
+    expect(
+      parse(WorkspaceList, await json(await server.request("GET", "/api/workspaces"), 200), "list")
+        .workspaces,
+    ).toEqual([]);
   });
 
   it("records the base a new branch starts from", async () => {
