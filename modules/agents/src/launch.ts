@@ -31,12 +31,13 @@ export const SIDE_CHAT_TOOLS: readonly string[] = [
 ];
 
 /**
- * The tools of a planner chat (ADR 0174): the side chat's tools, plus the kanban tools to write the plan as cards and
- * the web tools to research it. Built like `SIDE_CHAT_TOOLS`, so nothing that edits files or runs commands loads.
+ * The tools of a planner chat (ADR 0174): the side chat's tools, plus the kanban tools to write the plan as cards,
+ * the web tools to research it, and `start_helper` (ADR 0176) for read-only scouts and researchers. Built like
+ * `SIDE_CHAT_TOOLS`, so nothing that edits files or runs commands loads. Not `subagent`: that could start a worker.
  */
 export const PLANNER_CHAT_TOOLS: readonly string[] = [
   "--tools",
-  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_read_card,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content",
+  "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_read_card,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content,start_helper",
   "--exclude-tools",
   "mcp__*",
 ];

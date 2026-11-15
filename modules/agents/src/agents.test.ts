@@ -1192,6 +1192,12 @@ describe("chats (ADR 0030)", () => {
     await replied(agent.id, 2);
 
     const launch = launches()[0];
+    // These two first, so a wrong tool list names the tool it got wrong and not the whole argv.
+    // A planner chat starts read-only helpers with `start_helper`; the raw `subagent` tool could start a worker.
+    const argv = launch?.argv ?? [];
+    const plannerTools = argv[argv.indexOf("--tools") + 1]?.split(",") ?? [];
+    expect(plannerTools).toContain("start_helper");
+    expect(plannerTools).not.toContain("subagent");
     expect(launch?.argv).toEqual([
       "--mode",
       "rpc",
@@ -1203,7 +1209,7 @@ describe("chats (ADR 0030)", () => {
       "--model",
       "plan-1",
       "--tools",
-      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_read_card,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content",
+      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_read_card,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content,start_helper",
       "--exclude-tools",
       "mcp__*",
     ]);

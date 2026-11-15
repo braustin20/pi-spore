@@ -3,7 +3,10 @@ import { createServer, type IncomingMessage, type Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import type { Tool as PiTool, ToolCall } from "@earendil-works/pi-ai";
+import { validateToolArguments } from "@earendil-works/pi-ai/utils/validation";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { resolveCurrentSubagentCapabilityCeiling } from "pi-subagents/capability-ceiling";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { bridgeEnv } from "./client.js";
 import { STOP_REASON } from "./guard.js";
@@ -92,23 +95,48 @@ interface Tool {
   ): Promise<{ content: { text: string }[]; details?: unknown; terminate?: boolean }>;
 }
 
+/** Pi's event bus, as the pi-subagents RPC uses it: channels of handlers, and an unsubscribe from `on`. */
+function fakeBus() {
+  const handlers = new Map<string, Set<(data: unknown) => void>>();
+  const emitted: { channel: string; data: unknown }[] = [];
+  return {
+    handlers,
+    emitted,
+    emit(channel: string, data: unknown) {
+      emitted.push({ channel, data });
+      for (const handler of [...(handlers.get(channel) ?? [])]) handler(data);
+    },
+    on(channel: string, handler: (data: unknown) => void) {
+      const set = handlers.get(channel) ?? new Set<(data: unknown) => void>();
+      handlers.set(channel, set);
+      set.add(handler);
+      return () => set.delete(handler);
+    },
+    /** How many live listeners a chat added to the bus. */
+    live() {
+      return [...handlers.values()].reduce((total, set) => total + set.size, 0);
+    },
+  };
+}
+
 /** The parts of the extension API spore-bridge uses, recording what it registers. */
 function fakePi() {
   const tools = new Map<string, Tool>();
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
-  const api = {
+  const bus = fakeBus();
+  // SAFETY: spore-bridge only calls registerTool, on, and events.
+  sporeBridge({
     registerTool: (tool: Tool) => tools.set(tool.name, tool),
     on: (name: string, handler: (event: unknown, ctx: unknown) => unknown) =>
       handlers.set(name, handler),
-  };
-  // SAFETY: spore-bridge only calls registerTool and on.
-  sporeBridge(api as unknown as ExtensionAPI);
+    events: bus,
+  } as unknown as ExtensionAPI);
   const tool = (name: string) => {
     const found = tools.get(name);
     if (!found) throw new Error(`No tool ${name}`);
     return found;
   };
-  return { tools, handlers, tool };
+  return { tools, handlers, bus, tool };
 }
 
 const run = (status: string, extra: Record<string, unknown> = {}) => ({
@@ -549,6 +577,19 @@ describe("spore-bridge", () => {
     expect(COORDINATOR_RULES).toContain(
       "Ask related decisions in one request_human_input call with steps",
     );
+  });
+
+  // ADR 0176: the planner may start read-only helpers, so "you cannot start agents" is no longer true.
+  it("tells the planner to start read-only helpers with start_helper", () => {
+    expect(PLANNER_RULES).toContain("Start helpers with start_helper before you read deeply");
+    expect(PLANNER_RULES).toContain("Do not poll for it");
+    expect(PLANNER_RULES).not.toContain("start agents");
+  });
+
+  // ADR 0176: the coordinator gets the same helpers, and still never edits files or runs commands.
+  it("tells the coordinator to start read-only helpers with start_helper", () => {
+    expect(COORDINATOR_RULES).toContain("Start helpers with start_helper before you read deeply");
+    expect(COORDINATOR_RULES).toContain("Do not poll for it");
   });
 
   it("names request_human_input in the guideline that teaches steps", () => {
@@ -1292,5 +1333,231 @@ describe("spore-bridge run tools", () => {
     ).toThrow('PI_SPORE_RUN_ROLE must be coordinator or lane, not "boss"');
     vi.stubEnv("PI_SPORE_RUN_ROLE", "boss");
     expect(fakePi().tools.size).toBe(0);
+  });
+});
+
+// ADR 0176: a planner chat and a run coordinator start read-only scouts and researchers with start_helper,
+// through pi-subagents' event-bus RPC. A fake bus stands in for pi-subagents; no helper runs here (AGENTS.md).
+describe("start_helper", () => {
+  const READY = "subagents:rpc:v1:ready";
+  const REQUEST = "subagents:rpc:v1:request";
+  const replyChannel = (requestId: string) => `subagents:rpc:v1:reply:${requestId}`;
+  const TASK = "Where does the bridge client read its env?";
+  const CTX = { cwd: "/work/repo" };
+  const HELPERS = [
+    "read",
+    "grep",
+    "find",
+    "ls",
+    "web_search",
+    "fetch_content",
+    "get_search_content",
+    "source_check",
+  ];
+
+  type FakePi = ReturnType<typeof fakePi>;
+  type Request = { version: number; requestId: string; method: string; params: unknown };
+
+  /** A planner chat with pi-subagents loaded: the tool is registered and the RPC answered ready. */
+  function chatWithSubagents() {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    const pi = fakePi();
+    pi.bus.emit(READY, { version: 1 });
+    return pi;
+  }
+
+  /** The one spawn request the tool sent. It sends it before it waits, so it is there already. */
+  function sentRequest(pi: FakePi): Request {
+    const sent = pi.bus.emitted
+      .filter((entry) => entry.channel === REQUEST)
+      .map((entry) => entry.data as Request);
+    if (sent.length !== 1) throw new Error(`Expected one spawn request, got ${sent.length}`);
+    return sent[0] as Request;
+  }
+
+  /** Answers the spawn request the tool sent, as pi-subagents would. */
+  function answer(pi: FakePi, reply: Record<string, unknown>) {
+    const { requestId } = sentRequest(pi);
+    pi.bus.emit(replyChannel(requestId), { version: 1, requestId, ...reply });
+  }
+
+  const call = (pi: FakePi, agent: string, ctx: unknown = CTX, signal?: AbortSignal) =>
+    pi.tool("start_helper").execute("t1", { agent, task: TASK }, signal, undefined, ctx);
+
+  it("is registered in a planner chat and a run coordinator, and nowhere else", () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    expect(fakePi().tools.has("start_helper")).toBe(true);
+
+    vi.stubEnv("PI_SPORE_CHAT_KIND", undefined);
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
+    expect(fakePi().tools.has("start_helper")).toBe(true);
+
+    const elsewhere = (env: Record<string, string>) => {
+      vi.stubEnv("PI_SPORE_CHAT_KIND", undefined);
+      vi.stubEnv("PI_SPORE_RUN_ROLE", undefined);
+      vi.stubEnv("PI_SPORE_RUN_ID", undefined);
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      const pi = fakePi();
+      expect(pi.tools.has("start_helper")).toBe(false);
+      // Nothing is registered: no tool and no listener waiting for pi-subagents.
+      expect(pi.bus.live()).toBe(0);
+    };
+    elsewhere({});
+    elsewhere({ PI_SPORE_CHAT_KIND: "side" });
+    elsewhere({ PI_SPORE_RUN_ROLE: "lane", PI_SPORE_RUN_ID: "U1" });
+  });
+
+  it("refuses another agent by name, and takes only agent and task", () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    const tool = fakePi().tool("start_helper");
+    const parameters = { name: "start_helper", parameters: tool.parameters } as unknown as PiTool;
+    const toolCall = {
+      type: "toolCall",
+      id: "t1",
+      name: "start_helper",
+      arguments: { agent: "worker", task: TASK },
+    } as unknown as ToolCall;
+
+    // The message a model gets from Pi's own argument check (ADR 0176, Errors).
+    expect(() => validateToolArguments(parameters, toolCall)).toThrow(
+      'agent: expected one of ["scout","researcher"]',
+    );
+    expect(Object.keys((tool.parameters as unknown as { properties: object }).properties)).toEqual([
+      "agent",
+      "task",
+    ]);
+  });
+
+  it("sends the spawn request and answers with its own text", async () => {
+    const pi = chatWithSubagents();
+    const pending = call(pi, "scout");
+
+    expect(sentRequest(pi)).toEqual({
+      version: 1,
+      requestId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+      ),
+      method: "spawn",
+      params: { agent: "scout", task: TASK, context: "fresh", cwd: "/work/repo" },
+    });
+
+    answer(pi, { success: true, data: { text: "started", details: { runId: "run-1" } } });
+    const result = await pending;
+    expect(result.content[0]?.text).toBe(
+      "Started scout in the background (run run-1). Its result comes back to this chat as a message. Do not poll for it.",
+    );
+    expect(result.details).toEqual({ runId: "run-1" });
+    expect(result.terminate).toBeUndefined();
+  });
+
+  it("fails when pi-subagents never answered ready", async () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    const pi = fakePi();
+    await expect(call(pi, "scout")).rejects.toThrow(
+      /^start_helper needs the pi-subagents Pi package, and it is not loaded in this chat\.$/,
+    );
+    expect(pi.bus.emitted).toEqual([]);
+  });
+
+  it("fails with the reply's code and message, unchanged", async () => {
+    const pi = chatWithSubagents();
+    const pending = call(pi, "researcher");
+    answer(pi, {
+      success: false,
+      error: { code: "blocked", message: "Nested subagent call blocked (depth=0, max=0)" },
+    });
+    await expect(pending).rejects.toThrow(
+      /^blocked: Nested subagent call blocked \(depth=0, max=0\)$/,
+    );
+  });
+
+  it("fails when pi-subagents does not answer in 10 s, and stops listening", async () => {
+    vi.useFakeTimers();
+    try {
+      const pi = chatWithSubagents();
+      const pending = call(pi, "scout");
+      const { requestId } = sentRequest(pi);
+      // Attached before the wait ends, so the rejection is never unhandled.
+      const failed = expect(pending).rejects.toThrow(
+        /^pi-subagents did not answer the spawn request in 10 s\.$/,
+      );
+
+      await vi.advanceTimersByTimeAsync(9_000);
+      expect(pi.bus.handlers.get(replyChannel(requestId))?.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+
+      await failed;
+      expect(pi.bus.handlers.get(replyChannel(requestId))?.size).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // A call the user stopped before it dispatched must not start a helper nobody is waiting for.
+  it("sends nothing when the tool call is already cancelled", async () => {
+    vi.useFakeTimers();
+    try {
+      const pi = chatWithSubagents();
+      const controller = new AbortController();
+      controller.abort();
+
+      const pending = call(pi, "scout", CTX, controller.signal);
+      // Settled first, so a rejection is never unhandled, and the request would be on the bus already.
+      const outcome = await pending.then(
+        () => "started",
+        (error: unknown) => (error as Error).message,
+      );
+
+      // Nothing on the bus, no reply listener next to the ready listener, and no wait left running.
+      expect(pi.bus.emitted.filter((entry) => entry.channel === REQUEST)).toEqual([]);
+      expect(pi.bus.handlers.size).toBe(1);
+      expect(vi.getTimerCount()).toBe(0);
+      expect(outcome).toBe(
+        "start_helper was cancelled before it asked pi-subagents to start the helper.",
+      );
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  // The reply channel is per request, so an aborted call must drop its listener and its wait.
+  it("stops waiting when the tool call is aborted", async () => {
+    vi.useFakeTimers();
+    try {
+      const pi = chatWithSubagents();
+      const controller = new AbortController();
+      const pending = call(pi, "scout", CTX, controller.signal);
+      const { requestId } = sentRequest(pi);
+      expect(pi.bus.handlers.get(replyChannel(requestId))?.size).toBe(1);
+
+      controller.abort();
+      const outcome = await pending.then(
+        () => "started",
+        (error: unknown) => (error as Error).message,
+      );
+
+      expect(outcome).toBe(`start_helper stopped waiting for pi-subagents (request ${requestId}).`);
+      expect(pi.bus.handlers.get(replyChannel(requestId))?.size).toBe(0);
+      expect(vi.getTimerCount()).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("registers the ceiling for the session, and drops it at shutdown", async () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
+    const pi = fakePi();
+    const ctx = { sessionManager: { getSessionId: () => "s1" } };
+
+    await pi.handlers.get("session_start")?.({ type: "session_start", reason: "startup" }, ctx);
+    const ceiling = resolveCurrentSubagentCapabilityCeiling("s1");
+    expect(ceiling?.allowedAgents).toEqual(["researcher", "scout"]);
+    expect(ceiling?.allowedTools).toEqual([...HELPERS].sort());
+    expect(ceiling?.denyExtensions).toBe(false);
+    expect(ceiling?.sources).toEqual(["pi-spore"]);
+
+    await pi.handlers.get("session_shutdown")?.({ type: "session_shutdown", reason: "quit" }, ctx);
+    expect(resolveCurrentSubagentCapabilityCeiling("s1")).toBeUndefined();
   });
 });

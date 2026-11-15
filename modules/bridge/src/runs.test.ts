@@ -404,6 +404,9 @@ describe("launch context", () => {
     );
     expect(COORDINATOR_TOOLS).not.toContain("kanban_update_card");
     expect(COORDINATOR_TOOLS).not.toContain("kanban_start_card");
+    // A coordinator starts read-only helpers; the raw `subagent` tool could start a worker (ADR 0176).
+    expect(COORDINATOR_TOOLS).toContain("start_helper");
+    expect(COORDINATOR_TOOLS).not.toContain("subagent");
     expect(launchOf(worker.agentId)?.env).toMatchObject({
       PI_SPORE_RUN_ID: run.id,
       PI_SPORE_RUN_ROLE: "lane",
