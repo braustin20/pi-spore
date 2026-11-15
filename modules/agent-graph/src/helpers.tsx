@@ -1,7 +1,7 @@
-import type { GraphHelper, GraphTree } from "@pi-spore/shared";
+import { type GraphHelper, type GraphTree, stepNodeId, treeNodeId } from "@pi-spore/shared";
 import { cn } from "@pi-spore/ui";
 import { type CSSProperties, createContext, useContext, useMemo, useState } from "react";
-import { HELPER_ROW, shortModel, stepNodeId, treeNodeId } from "./layout.js";
+import { HELPER_ROW, shortModel } from "./layout.js";
 
 /** `bud`: arrived after the page's first snapshot, until its bud ends. `done` and `failed` pop, then leave. */
 type Phase = "show" | "bud" | "done" | "failed";

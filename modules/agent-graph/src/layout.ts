@@ -45,9 +45,6 @@ const STEP_W = GROUP_W - 26;
 const STEP_H = 50;
 const STEP_CY = 22;
 
-// The canvas node ids live in shared, where the saved positions name them too (ADR 0176, card 4).
-export { groupNodeId, stepNodeId, treeNodeId };
-
 /** The helpers shown under each node, by node id. */
 export type HelpersByNode = ReadonlyMap<string, readonly HelperLife[]>;
 

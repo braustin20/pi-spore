@@ -1485,9 +1485,12 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     first; in a tree, the root on top and its groups side by side; steps top-down. Phone: trees and groups stack,
     the root thread down the left. Each pod reserves one row per helper under it.
   - Nodes: a tree box (the root pod is its drag handle, so dragging the root moves the tree), a group panel, and a
-    step pod. Every pod with an agent links to `#/workspaces/<workspace>/chats/<agent>`. A drag lasts until a
-    reload: the canvas does not send its places to `PUT /api/agent-graph/positions` yet, and does not read the saved
-    ones. Fit fits the graph; zoom, pan, and pinch are React Flow's.
+    step pod. Every pod with an agent links to `#/workspaces/<workspace>/chats/<agent>`. A drag's end sends
+    one `PUT /api/agent-graph/positions`; the canvas draws each node at this mount's drag, else at its tree's
+    `positions`, else at the automatic place. A step's place is relative to its group, so a moved tree keeps its
+    children, and helpers move with their pod. Reset layout sends `DELETE /api/agent-graph/positions`. A failed save
+    shows its error over the canvas until the next one works. Fit fits the graph; zoom, pan, and pinch are React
+    Flow's.
   - Look (the approved mockup): roots `--accent` (coordinator) or `--accent-strong` (chat); a step pod takes its
     look from the step's own `state`, never its agent's status, since a task step and its fix steps share one
     worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A fix

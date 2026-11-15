@@ -110,9 +110,16 @@ async function render(trees: GraphTree[], projectId?: string) {
   const Landing = landing();
   let push: ((event: unknown) => void) | undefined;
   const topics: string[] = [];
+  const sent: [string, string, unknown][] = [];
+  let fail: Error | undefined;
   const api = {
     get: async () => {
       throw new Error("the graph must not GET");
+    },
+    send: async (method: string, path: string, body?: unknown) => {
+      sent.push([method, path, body]);
+      if (fail) throw fail;
+      return { ok: true };
     },
     subscribe: (topic: string, onEvent: (event: unknown) => void) => {
       topics.push(topic);
@@ -141,6 +148,12 @@ async function render(trees: GraphTree[], projectId?: string) {
   return {
     scope,
     topics,
+    /** Every `api.send` call, as `[method, path, body]`. */
+    sent,
+    /** Makes every later `api.send` reject with `error`, or resolve again with `undefined`. */
+    failWith: (error: Error | undefined) => {
+      fail = error;
+    },
     /** Changes the route's project, as the workspaces view does, without a new mount. */
     show,
     send: async (next: GraphTree[]) => {
@@ -170,6 +183,21 @@ async function drag(element: Element | null, dx: number, dy: number) {
   } finally {
     box.mockRestore();
   }
+}
+
+const nodeOf = (id: string) =>
+  container?.querySelector<HTMLElement>(`.react-flow__node[data-id="${id}"]`) ?? null;
+const transformOf = (id: string) => nodeOf(id)?.style.transform;
+/** The x and y of a `translate(Xpx, Ypx)` transform. */
+const translation = (transform: string | undefined) =>
+  (transform?.match(/-?[\d.]+/g) ?? []).map(Number);
+const button = (scope: Element, name: string) =>
+  [...scope.querySelectorAll("button")].find((each) => each.textContent === name) ?? null;
+async function click(element: Element | null) {
+  if (!element) throw new Error("nothing to click");
+  await act(async () => {
+    element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+  });
 }
 
 const podLinks = (scope: Element) =>
@@ -229,25 +257,90 @@ describe("the agent graph canvas", () => {
     expect(roleOf("#/workspaces/W9/chats/C9")).toBe("planner");
   });
 
-  it("keeps a dragged pod where it was put after the page comes back, until a reload", async () => {
+  it("keeps a dragged pod where it was put after the page comes back, from the saved places", async () => {
     const first = await render([runTree]);
-    const node = () =>
-      container?.querySelector<HTMLElement>('.react-flow__node[data-id="step:T3"]') ?? null;
-    const before = node()?.style.transform;
+    const before = transformOf("step:T3");
     expect(before).toMatch(/translate/);
-    await drag(node(), 40, 30);
-    const moved = node()?.style.transform;
+    await drag(nodeOf("step:T3"), 40, 30);
+    const moved = transformOf("step:T3");
     expect(moved).not.toBe(before);
 
-    // A later event keeps it.
+    // A later event keeps it, before the server echoes the saved place.
     await first.send([runTree]);
-    expect(node()?.style.transform).toBe(moved);
+    expect(transformOf("step:T3")).toBe(moved);
 
-    // The workspaces view unmounts the landing while a chat is open, and mounts it again on the way back.
+    // The workspaces view unmounts the landing while a chat is open, and mounts it again on the way back. The
+    // snapshot then holds the place the drag saved.
+    const [, , body] = first.sent[0] ?? [];
+    const { x, y } = body as { x: number; y: number };
     unmount();
     expect(document.querySelector(".react-flow")).toBeNull();
+    await render([{ ...runTree, positions: { "step:T3": { x, y } } }]);
+    expect(transformOf("step:T3")).toBe(moved);
+  });
+
+  it("saves a drag with one PUT when it ends, at the place it draws", async () => {
+    const { sent } = await render([runTree]);
+    const auto = layoutGraph([runTree], new Map(), false).nodes.find((n) => n.id === "step:T3");
+    const [x0 = 0, y0 = 0] = translation(transformOf("step:T3"));
+    await drag(nodeOf("step:T3"), 40, 30);
+    const [x1 = 0, y1 = 0] = translation(transformOf("step:T3"));
+    expect([x1 - x0, y1 - y0]).not.toEqual([0, 0]);
+    expect(sent).toEqual([
+      [
+        "PUT",
+        "agent-graph/positions",
+        {
+          node: "step:T3",
+          x: (auto?.position.x ?? 0) + x1 - x0,
+          y: (auto?.position.y ?? 0) + y1 - y0,
+        },
+      ],
+    ]);
+  });
+
+  it("does not save a click without a drag", async () => {
+    const { sent } = await render([runTree]);
+    await drag(nodeOf("step:T3"), 0, 0);
+    expect(sent).toEqual([]);
+  });
+
+  it("draws a tree at its saved place", async () => {
+    await render([{ ...runTree, positions: { "tree:W1": { x: 500, y: 300 } } }]);
+    expect(transformOf("tree:W1")).toBe("translate(500px,300px)");
+  });
+
+  it("draws a step at its saved place, relative to its group", async () => {
     await render([runTree]);
-    expect(node()?.style.transform).toBe(moved);
+    const auto = layoutGraph([runTree], new Map(), false).nodes.find((n) => n.id === "step:T3");
+    const [autoX = 0, autoY = 0] = translation(transformOf("step:T3"));
+    await render([{ ...runTree, positions: { "step:T3": { x: 5, y: 7 } } }]);
+    // The group's absolute place, plus the saved place.
+    expect(translation(transformOf("step:T3"))).toEqual([
+      autoX - (auto?.position.x ?? 0) + 5,
+      autoY - (auto?.position.y ?? 0) + 7,
+    ]);
+  });
+
+  it("puts every node back at its automatic place on Reset layout", async () => {
+    const { scope, sent } = await render([runTree]);
+    const before = transformOf("step:T3");
+    await drag(nodeOf("step:T3"), 40, 30);
+    expect(transformOf("step:T3")).not.toBe(before);
+    sent.length = 0;
+    await click(button(scope, "Reset layout"));
+    expect(sent).toEqual([["DELETE", "agent-graph/positions", undefined]]);
+    expect(transformOf("step:T3")).toBe(before);
+  });
+
+  it("shows why a save failed, until the next one works", async () => {
+    const { scope, failWith } = await render([runTree]);
+    failWith(new Error("the graph changed"));
+    await drag(nodeOf("step:T3"), 40, 30);
+    expect(scope.textContent).toContain("the graph changed");
+    failWith(undefined);
+    await drag(nodeOf("step:T3"), 10, 10);
+    expect(scope.textContent).not.toContain("the graph changed");
   });
 
   it("shows a running fix as the working step, and the implement and review it answers as done", async () => {
