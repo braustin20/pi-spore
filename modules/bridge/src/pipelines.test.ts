@@ -41,6 +41,7 @@ import type {
   Approval,
   BridgeArtifactFile,
   Inbox,
+  PipelineEvent,
   PipelineList,
   PipelineRun,
   PipelineTurn,
@@ -764,6 +765,45 @@ describe("each turn's model", () => {
     expect(running.turns[0]?.report).toBeUndefined();
     // The agent still runs on the stage's model: the turn shows the physical model of its answer.
     expect(modelOf(workerId)).toBe("spore/auto");
+  });
+
+  it("sends the Pipeline tab a runs event with the model when the stage agent answers", async () => {
+    // The worker hangs on its task, is aborted, then answers a prompt on strata/qwen. With the stage job held, no job
+    // change sends an event: only the answer does.
+    const server = await start({
+      env: scriptEnv({
+        worker: ["hang", { ...DONE, model: "strata/qwen", verdict: "approve" }],
+      }),
+    });
+    const { workspaceId } = await workspace(server, "live-event");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId, workerId } = await startAndWork(server, workspaceId);
+    const turnId = (await getRun(server, runId)).turns[0]?.id;
+    holdJobs(server);
+    await json(await server.request("POST", `/api/agents/${workerId}/abort`));
+    await until(
+      async () =>
+        (
+          await json<{ agent: { status: string } }>(
+            await server.request("GET", `/api/agents/${workerId}`),
+          )
+        ).agent.status === "idle",
+    );
+    await json(
+      await server.request("POST", `/api/agents/${workerId}/prompt`, {
+        message: `Turn: ${turnId}`,
+      }),
+    );
+    await until(
+      () => said(server, workerId).filter((line) => line.startsWith("assistant:")).length >= 4,
+    );
+
+    const events = server.events.eventsOf(`pipelines:${workspaceId}`) as PipelineEvent[];
+    expect(
+      events.some(
+        (event) => event.type === "runs" && event.runs[0]?.turns[0]?.model === "strata/qwen",
+      ),
+    ).toBe(true);
   });
 
   it("keeps the model each turn reported on when the reused worker fixes on another model", async () => {
