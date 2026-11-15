@@ -117,7 +117,10 @@ type Entry =
 /** All turns by time, with a Gates entry where each started gate stage comes in the run. */
 function entriesOf(run: PipelineRun): Entry[] {
   const workerStage = run.stages.findIndex((stage) => stage.role === "worker");
-  const started = (index: number) => run.state === "passed" || index <= run.stageIndex;
+  // A gate member starts with its group, and `run.stageIndex` is the group's first stage (ADR 0178 rule 22).
+  const groups = stageGroups(run.stages);
+  const started = (index: number) =>
+    run.state === "passed" || groupAt(groups, index) <= groupAt(groups, run.stageIndex);
   const pending = run.stages.flatMap((stage, index) =>
     stage.gates && started(index) ? [{ index, gates: stage.gates }] : [],
   );
@@ -294,7 +297,10 @@ export function Timeline({
   const isLive = (entry: Entry) =>
     "turn" in entry
       ? isRunning(run, entry.turn)
-      : isActive(run) && entry.stageIndex === run.stageIndex;
+      : // A gate member is live while its group runs; `run.stageIndex` is the group's first stage.
+        isActive(run) &&
+        groupAt(stageGroups(run.stages), entry.stageIndex) ===
+          groupAt(stageGroups(run.stages), run.stageIndex);
   const defaultKey = (entries.findLast(isLive) ?? entries.at(-1))?.key;
   const seen = new Set<number>();
 

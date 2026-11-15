@@ -5,10 +5,15 @@
 //   vitest-fail prints colored vitest-like output with two failed tests (one named twice) and exits 1
 //   hang-first  the first run of this label hangs until killed (so a test can cut it off with a restart); later
 //               runs of the label exit 0. A hung run ends by itself after two minutes.
+//   fail-first  the first run of this label prints "gate output: boom" and exits 1; later runs of the label exit 0
 import { appendFileSync, readFileSync } from "node:fs";
 
 const [counter, label, mode] = process.argv.slice(2);
 appendFileSync(counter, `${label}\n`);
+const runsOfLabel = () =>
+  readFileSync(counter, "utf8")
+    .split("\n")
+    .filter((line) => line === label).length;
 
 if (mode === "fail") {
   console.log("gate output: boom");
@@ -22,11 +27,13 @@ if (mode === "vitest-fail") {
   console.log(fail("src/b.test.ts > subtracts"));
   process.exit(1);
 }
-if (mode === "hang-first") {
-  const runs = readFileSync(counter, "utf8")
-    .split("\n")
-    .filter((line) => line === label);
-  if (runs.length === 1) {
+if (mode === "fail-first") {
+  if (runsOfLabel() === 1) {
+    console.log("gate output: boom");
+    process.exit(1);
+  }
+} else if (mode === "hang-first") {
+  if (runsOfLabel() === 1) {
     console.log("waiting");
     setTimeout(() => process.exit(1), 120_000);
     setInterval(() => {}, 1_000);

@@ -130,6 +130,9 @@ const MIGRATIONS = [
     answered_at INTEGER
   )`,
   "CREATE INDEX pipelines_questions_by_turn ON pipelines_questions (turn_id)",
+  // The red gate results of the run, as a JSON list of `GateRed` (ADR 0178). On the run, not in the job's checkpoint:
+  // the round-limit approval and Retry build a fix outside the job.
+  "ALTER TABLE pipelines_runs ADD COLUMN gate_reds TEXT NOT NULL DEFAULT '[]'",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -175,8 +178,17 @@ interface RunRow {
   fix_base: string | null;
   blocked_sent: string | null;
   name: string | null;
+  gate_reds: string;
   created_at: number;
   ended_at: number | null;
+}
+
+/** A gate member that ended red in a gate round: a failed or cancelled action, or a missing fail-first proof. */
+interface GateRed {
+  round: number;
+  stage: string;
+  message: string;
+  logPath?: string;
 }
 
 interface TurnRow {
@@ -237,12 +249,13 @@ interface StageSubject {
 
 /**
  * `boot` is the server start that last waited for the stage's report; a different one means a restart (R6.6).
- * `gate` and `attempt` are a gate stage's place: the gate to run, and how often a restart cut it off.
+ * `round` is the gate round that `places` belong to. A place, by gate stage name, is the gate to run and how often a
+ * restart cut it off (ADR 0178 rule 22).
  */
 interface StageCheckpoint {
   boot?: string;
-  gate?: number;
-  attempt?: number;
+  round?: number;
+  places?: Record<string, { gate: number; attempt: number }>;
 }
 
 /** How much of a failed gate's log goes into the run's message. */
@@ -450,35 +463,56 @@ const findingLines = (report: StageReport) =>
     ];
   });
 
-/** The fix prompt of one group round: the findings of each member that said REVISE, under its stage name. */
+/**
+ * The fix prompt of one group round: the findings of each member that said REVISE and each red gate, under its stage
+ * name. `gated` says the group has gate members, which run again after the fix (ADR 0178 rules 8-10).
+ */
 const fixPrompt = (
   reviews: readonly { name: string; report: StageReport }[],
+  reds: readonly GateRed[],
   turnId: string,
   last: boolean,
-) =>
-  [
-    ...(reviews.length === 1
-      ? [`The reviewer of stage "${reviews[0]?.name}" asked for changes.`]
-      : [
-          `The reviewers of stages ${reviews.map((review) => `"${review.name}"`).join(", ")} asked for changes.`,
-        ]),
+  gated: boolean,
+) => {
+  const named = reviews.length + reds.length > 1;
+  return [
+    ...(reviews.length === 0
+      ? []
+      : reviews.length === 1
+        ? [`The reviewer of stage "${reviews[0]?.name}" asked for changes.`]
+        : [
+            `The reviewers of stages ${reviews.map((review) => `"${review.name}"`).join(", ")} asked for changes.`,
+          ]),
+    ...reds.map((red) => `The gates of stage "${red.stage}" failed.`),
     "",
     `Turn: ${turnId}`,
     "",
     ...reviews.flatMap(({ name, report }) => [
-      ...(reviews.length === 1 ? [] : [`Stage "${name}":`]),
+      ...(named ? [`Stage "${name}":`] : []),
       `Reviewer summary: ${report.summary}`,
       "Findings:",
       ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
       "",
     ]),
+    // The log tail stays in the log: the worker gets its path instead.
+    ...reds.flatMap((red) => [
+      ...(named ? [`Stage "${red.stage}":`] : []),
+      (red.message.split(`\n${GATE_LOG_HEADING}`)[0] as string).trimEnd(),
+      ...(red.logPath ? [`Log: ${red.logPath}`] : []),
+      "",
+    ]),
     "Fix what the findings ask for. Write each new test first and keep its failing run as a workspace artifact, as before.",
-    last
-      ? "This is the last fix: no review follows it."
-      : "A fresh reviewer checks the result next.",
+    gated
+      ? last
+        ? "This is the last fix: no review follows it. The gates run once more after it."
+        : "A fresh reviewer checks the result next, and the gates run again."
+      : last
+        ? "This is the last fix: no review follows it."
+        : "A fresh reviewer checks the result next.",
     `When you are done, call report with turn ${turnId}, a short summary, and tests: one entry for each test you added in this turn.`,
     "Your turn ends only with that report.",
   ].join("\n");
+};
 
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
@@ -830,7 +864,10 @@ export const pipelinesModule: ServerModule = {
       const round = reviewRound(turns);
       return round > 0 && liveTurn(turns, "fix", round) ? round + 1 : Math.max(round, 1);
     };
-    /** The members that run in `round`: all in round 1, then each that said REVISE and has rounds left. */
+    /**
+     * The reviewer members that run in `round`: all in round 1, then each that said REVISE and has rounds left. Gate
+     * members run every round; see `gateMembers`.
+     */
     const openMembers = (
       run: RunRow,
       group: readonly number[],
@@ -838,7 +875,7 @@ export const pipelinesModule: ServerModule = {
       round: number,
     ) =>
       round === 1
-        ? [...group]
+        ? group.filter((index) => isReviewer(stageOf(run, index)))
         : group.filter((index) => {
             const stage = stageOf(run, index);
             const review = liveTurn(turns, "review", round - 1, index);
@@ -852,6 +889,22 @@ export const pipelinesModule: ServerModule = {
           });
     const isReviewer = (stage: PipelineStage) =>
       stage.role !== undefined && stage.role !== "worker";
+    const gateMembers = (run: RunRow, group: readonly number[]) =>
+      group.filter((index) => stageOf(run, index).gates !== undefined);
+    const redsOf = (run: RunRow) => JSON.parse(run.gate_reds) as GateRed[];
+    const isRed = (reds: readonly GateRed[], round: number, stage: string) =>
+      reds.some((red) => red.round === round && red.stage === stage);
+    /** Adds the reds the stored list lacks: one entry per round and stage, whatever step wrote it first. */
+    const writeReds = (runId: string, reds: readonly GateRed[]) => {
+      if (reds.length === 0) return;
+      const stored = redsOf(requireRun(runId));
+      const fresh = reds.filter((red) => !isRed(stored, red.round, red.stage));
+      host.store.run(
+        "UPDATE pipelines_runs SET gate_reds = ? WHERE id = ?",
+        JSON.stringify([...stored, ...fresh]),
+        runId,
+      );
+    };
     const modelOf = (stage: PipelineStage) =>
       stage.model ?? (stage.tier === "route" ? ROUTE_MODEL : undefined);
     const rolesTitle = (role: StageRole) => (role === "reviewer" ? "Review" : "Adversarial");
@@ -1087,8 +1140,8 @@ export const pipelinesModule: ServerModule = {
     };
 
     /**
-     * Starts the worker's one fix turn of a group round, with the round's review of each member in `members` (ADR 0178).
-     * `last` tells the worker no review follows.
+     * Starts the worker's one fix turn of a group round (ADR 0178 rule 8). Each member in `members` brings its part of
+     * `round`: a reviewer its review, a gate member its red. `last` tells the worker no review follows.
      */
     const startFix = (
       run: RunRow,
@@ -1099,10 +1152,15 @@ export const pipelinesModule: ServerModule = {
     ) => {
       const worker = run.worker_agent_id as string;
       const turns = turnRows(run.id);
-      const reviews = members.map((index) => ({
-        name: stageOf(run, index).name,
-        report: reportOf(liveTurn(turns, "review", round, index) as TurnRow),
-      }));
+      const stored = redsOf(run);
+      const reviews = [];
+      const reds = [];
+      for (const index of members) {
+        const name = stageOf(run, index).name;
+        const review = liveTurn(turns, "review", round, index);
+        if (review) reviews.push({ name, report: reportOf(review) });
+        else reds.push(stored.find((red) => red.round === round && red.stage === name) as GateRed);
+      }
       const turnId = insertTurn(
         run,
         groupStart,
@@ -1112,9 +1170,10 @@ export const pipelinesModule: ServerModule = {
         "worker",
         worker,
         undefined,
-        reviews.map((review) => review.name),
+        members.map((index) => stageOf(run, index).name),
       );
-      agents.deliver(worker, fixPrompt(reviews, turnId, last));
+      const gated = gateMembers(run, groupOf(run, groupStart)).length > 0;
+      agents.deliver(worker, fixPrompt(reviews, reds, turnId, last, gated));
     };
 
     /** The workspace's change operations (none when its project has no version control that shows them). */
@@ -1145,8 +1204,9 @@ export const pipelinesModule: ServerModule = {
       artifacts.write({ scope: "workspace", id: run.workspace_id }, path, text);
 
     /**
-     * Starts the open members of a reviewer group's round at once (ADR 0178). A member whose review of the round is
-     * live already is not started again, so after Retry replaced a failed review only that member starts.
+     * Starts the open members of a group's round at once (ADR 0178). A member whose review of the round is live already
+     * is not started again, so after Retry replaced a failed review only that member starts. A new round also opens the
+     * gate round: every gate member goes back to its first gate, and `await` runs the gates.
      */
     const advanceGroup = async (
       run: RunRow,
@@ -1161,14 +1221,39 @@ export const pipelinesModule: ServerModule = {
         checkpoint?.boot === bootId
           ? []
           : turns.filter((turn) => turn.error === null && turn.report === null);
+      // Retry runs this step again in the same round: the places stay, and the proofs are not checked twice.
+      const gates = gateMembers(run, group);
+      const opened: StageCheckpoint = {};
+      const reds: GateRed[] = [];
+      if (gates.length > 0 && checkpoint?.round !== round) {
+        opened.round = round;
+        opened.places = {};
+        for (const index of gates) {
+          const stage = stageOf(run, index);
+          opened.places[stage.name] = { gate: 0, attempt: 0 };
+          // ADR 0016: the manifest grows with each fix report, so each gate round checks it (ADR 0178 rule 14).
+          if (stage.fail_first !== "artifact") continue;
+          for (const test of JSON.parse(run.tests) as TestProof[]) {
+            if (await hasProof(run, test)) continue;
+            reds.push({
+              round,
+              stage: stage.name,
+              message: `missing fail-first proof for ${test.name} (${test.proof})`,
+            });
+            break;
+          }
+        }
+      }
       // A replacement after Retry keeps the diff its failed turn had, so every member of a round reads one snapshot.
       const written = turns.some((turn) => turn.kind === "review" && turn.round === round);
-      const settings = await loadSettings(host.home.root);
+      let settings: RouterSettings | undefined;
       const members: { index: number; stage: PipelineStage; model?: string; note?: string }[] = [];
       for (const index of openMembers(run, group, turns, round)) {
         if (liveTurn(turns, "review", round, index)) continue;
         const stage = stageOf(run, index);
         const role = stage.role as StageRole;
+        // Read only when a reviewer starts, so a group of gates alone does not depend on settings.json.
+        settings ??= await loadSettings(host.home.root);
         const chosen = await reviewerModel(stage, settings);
         if (stage.min_strength_over) {
           // Checked before any reviewer exists, so a refused model creates no agent. A throw waits for a settings fix.
@@ -1186,10 +1271,10 @@ export const pipelinesModule: ServerModule = {
         }
         members.push({ index, stage, ...chosen });
       }
-      // Every member of the round reads the same diff, rendered once.
-      const diff = written ? undefined : await renderChanges(run);
+      // Every member of the round reads the same diff, rendered once. Gates read the working copy, not a diff.
+      const diff = written || members.length === 0 ? undefined : await renderChanges(run);
       const fixDiff =
-        written || run.previous_run_id === null
+        written || members.length === 0 || run.previous_run_id === null
           ? undefined
           : await renderChanges(run, run.fix_base);
       const previousReview =
@@ -1230,8 +1315,9 @@ export const pipelinesModule: ServerModule = {
         });
       }
       return {
-        checkpoint: { ...checkpoint, boot: bootId },
+        checkpoint: { ...checkpoint, boot: bootId, ...opened },
         commit: () => {
+          writeReds(run.id, reds);
           for (const turn of resumed) agents.deliver(turn.agent_id, restartMessage(turn.id));
           for (const { member, prompt } of starts) {
             const role = member.stage.role as StageRole;
@@ -1272,31 +1358,7 @@ export const pipelinesModule: ServerModule = {
       if (!run) return { next: null };
       const stage = stageOf(run, subject.stageIndex);
       if (stage.role === "worker") return advanceWorker(run, stage, subject.stageIndex);
-      if (stage.role) return advanceGroup(run, groupOf(run, subject.stageIndex), checkpoint);
-      return advanceGates(run, stage);
-    };
-
-    /** ADR 0016: the proofs are checked once, before any gate action starts. The gate steps then run the actions. */
-    const advanceGates = async (
-      run: RunRow,
-      stage: PipelineStage,
-    ): Promise<StepOutcome<StageCheckpoint>> => {
-      if (stage.fail_first === "artifact") {
-        for (const test of JSON.parse(run.tests) as TestProof[]) {
-          if (!(await hasProof(run, test))) {
-            return {
-              next: null,
-              commit: () =>
-                endRun(
-                  run.id,
-                  "failed",
-                  `missing fail-first proof for ${test.name} (${test.proof})`,
-                ),
-            };
-          }
-        }
-      }
-      return { next: "gate" };
+      return advanceGroup(run, groupOf(run, subject.stageIndex), checkpoint);
     };
 
     /** A proof is a non-empty workspace artifact. A path the artifacts module refuses is as missing as an absent file. */
@@ -1315,53 +1377,89 @@ export const pipelinesModule: ServerModule = {
       }
     };
 
+    // Action runs whose end wakes the stage job. In memory: after a restart the next await step watches them again.
+    const watched = new Set<string>();
+    const watch = (workspaceId: string, actionRunId: string) => {
+      if (watched.has(actionRunId)) return;
+      watched.add(actionRunId);
+      actions
+        .wait(actionRunId)
+        .then(() => host.jobs.wake(STAGE_JOB, workspaceId))
+        .catch((error: unknown) =>
+          host.log.error("A gate action's end did not wake its stage", {
+            actionRunId,
+            error: String(error),
+          }),
+        );
+    };
+
     /**
-     * Runs the gate at the checkpoint's place. The key is built from the run, stage, gate, and attempt, so a step that
-     * runs again after a restart gets the same action run back instead of starting another. An unknown action throws:
-     * the job waits with the error until the user fixes config.toml and retries.
+     * Moves each gate member of the checkpoint's round as far as it can without waiting (ADR 0178 rules 13, 15, 24).
+     * The key holds the round, gate, and attempt, so a step that runs again gets the same action run back instead of
+     * starting another. A member that waits on a running action wakes the job when it ends. An unknown action throws:
+     * the job waits with the error until the user fixes config.toml and retries. `done` is true when every gate member
+     * is green or red.
      */
-    const runGate = async ({
-      subject,
-      checkpoint,
-    }: {
-      subject: StageSubject;
-      checkpoint: StageCheckpoint | undefined;
-    }): Promise<StepOutcome<StageCheckpoint>> => {
-      const run = runOf(subject);
-      if (!run) return { next: null };
-      const stage = stageOf(run, subject.stageIndex);
-      const gates = stage.gates as string[];
-      const gate = checkpoint?.gate ?? 0;
-      const attempt = checkpoint?.attempt ?? 0;
-      const name = gates[gate] as string;
-      const started = await actions
-        .start(run.workspace_id, name, "pipeline", {
-          key: `${run.id}:${stage.name}:${name}:${attempt}`,
-        })
-        .catch(async (error: unknown) => {
-          if (!(error instanceof ApiError) || error.code !== "action_not_found") throw error;
-          const project = await projects.get(workspaces.get(run.workspace_id).projectId);
-          throw new Error(
-            `stage "${stage.name}": no action "${name}" in ${join(project.path, ".pi-spore", "config.toml")}. Add it there, then Retry.`,
-          );
-        });
-      const ended = await actions.wait(started.id);
-      if (ended.status === "interrupted")
-        return { next: "gate", checkpoint: { gate, attempt: attempt + 1 } };
-      if (ended.status === "succeeded") {
-        return gate + 1 < gates.length
-          ? { next: "gate", checkpoint: { gate: gate + 1, attempt: 0 } }
-          : { next: "finish" };
+    const driveGates = async (
+      run: RunRow,
+      group: readonly number[],
+      round: number,
+      start: NonNullable<StageCheckpoint["places"]>,
+    ) => {
+      const places = { ...start };
+      const known = redsOf(run);
+      const reds: GateRed[] = [];
+      let done = true;
+      for (const index of gateMembers(run, group)) {
+        const stage = stageOf(run, index);
+        if (isRed(known, round, stage.name)) continue;
+        const gates = stage.gates as string[];
+        let { gate, attempt } = places[stage.name] ?? { gate: 0, attempt: 0 };
+        while (gate < gates.length) {
+          const name = gates[gate] as string;
+          const started = await actions
+            .start(run.workspace_id, name, "pipeline", {
+              key: `${run.id}:${stage.name}:${round}:${name}:${attempt}`,
+            })
+            .catch(async (error: unknown) => {
+              if (!(error instanceof ApiError) || error.code !== "action_not_found") throw error;
+              const project = await projects.get(workspaces.get(run.workspace_id).projectId);
+              throw new Error(
+                `stage "${stage.name}": no action "${name}" in ${join(project.path, ".pi-spore", "config.toml")}. Add it there, then Retry.`,
+              );
+            });
+          if (started.status === "succeeded") {
+            gate += 1;
+            attempt = 0;
+          } else if (started.status === "interrupted") {
+            attempt += 1;
+          } else if (started.status === "failed" || started.status === "cancelled") {
+            const { text } = await actions.readLog(started.id, undefined);
+            reds.push({
+              round,
+              stage: stage.name,
+              message: gateFailureMessage(name, started.error, text),
+              logPath: started.logPath,
+            });
+            break;
+          } else {
+            watch(run.workspace_id, started.id);
+            done = false;
+            break;
+          }
+        }
+        places[stage.name] = { gate, attempt };
       }
-      const { text } = await actions.readLog(ended.id, undefined);
-      const message = gateFailureMessage(name, ended.error, text);
-      return { next: null, commit: () => endRun(run.id, "failed", message) };
+      return { places, reds, done };
     };
 
     const failedMessage = (turn: TurnRow, problem: string) =>
       `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" ${problem}. Retry starts a fresh ${turn.role} agent for this turn.`;
 
-    /** Waits until no turn of the group is open: each open turn reports, or blocks the step with its agent's failure. */
+    /**
+     * Waits until no turn of the group is open and every gate member of the round is green or red. Each open turn
+     * reports, or blocks the step with its agent's failure.
+     */
     const awaitReport = async ({
       subject,
       checkpoint,
@@ -1391,7 +1489,25 @@ export const pipelinesModule: ServerModule = {
         return { next: "advance", commit: () => failed.forEach(renameFailed) };
       }
       const open = turns.filter((turn) => turn.error === null && turn.report === null);
-      if (open.length === 0) return {};
+      // The gates run while the reviewers work, never while the worker fixes: they must see the fixed code.
+      const gated =
+        checkpoint?.round === undefined || open.some((turn) => turn.kind === "fix")
+          ? undefined
+          : await driveGates(run, group, checkpoint.round, checkpoint.places ?? {});
+      // Gate progress rides on every outcome, the restart one too: a group with no reviewer has no agent to wake it.
+      const withGates = (outcome: StepOutcome<StageCheckpoint>): StepOutcome<StageCheckpoint> => ({
+        ...outcome,
+        checkpoint: {
+          ...checkpoint,
+          ...outcome.checkpoint,
+          ...(gated ? { places: gated.places } : {}),
+        },
+        commit: () => {
+          writeReds(run.id, gated?.reds ?? []);
+          outcome.commit?.();
+        },
+      });
+      if (open.length === 0) return withGates(gated?.done === false ? { wait: true } : {});
       for (const turn of open) {
         const failure = await agents.turnError(turn.agent_id);
         if (failure !== undefined) throw new Error(failedMessage(turn, `failed: ${failure}`));
@@ -1400,13 +1516,13 @@ export const pipelinesModule: ServerModule = {
       const waiting = open.filter((turn) => !openQuestionOf(turn));
       if (checkpoint?.boot !== bootId) {
         // The server restarted while the agents worked. Their processes are gone, so each gets one reminder (R6.6).
-        return {
+        return withGates({
           wait: true,
-          checkpoint: { ...checkpoint, boot: bootId },
+          checkpoint: { boot: bootId },
           commit: () => {
             for (const turn of waiting) agents.deliver(turn.agent_id, restartMessage(turn.id));
           },
-        };
+        });
       }
       // The agent that ends its turn without a report gets one reminder, then the stage blocks (ADR 0169). An agent
       // that asked its asking chat waits for the answer instead (ADR 0179); it may have asked while endedRun read.
@@ -1420,8 +1536,7 @@ export const pipelinesModule: ServerModule = {
         }
         remind.push(turn);
       }
-      if (remind.length === 0) return { wait: true };
-      return {
+      return withGates({
         wait: true,
         commit: () => {
           for (const turn of remind) {
@@ -1429,7 +1544,7 @@ export const pipelinesModule: ServerModule = {
             agents.deliver(turn.agent_id, endedMessage(turn.id));
           }
         },
-      };
+      });
     };
 
     // The failed agent stays, renamed.
@@ -1516,6 +1631,10 @@ export const pipelinesModule: ServerModule = {
       const first = limited[0] as TurnRow;
       const group = groupOf(run, first.stage_index);
       const last = openMembers(run, group, groupTurns(run, group), first.round + 1).length === 0;
+      const reds = redsOf(run);
+      const redNames = gateMembers(run, group)
+        .map((index) => stageOf(run, index).name)
+        .filter((name) => isRed(reds, first.round, name));
       const approval = approvals.file(
         { agentId: run.asking_agent_id, workspaceId: run.workspace_id },
         {
@@ -1529,11 +1648,19 @@ export const pipelinesModule: ServerModule = {
               "Findings:",
               ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
             ]),
+            ...(redNames.length === 0
+              ? []
+              : [
+                  "",
+                  `The red gates of ${redNames.length === 1 ? "stage" : "stages"} ${redNames.map((name) => `"${name}"`).join(", ")} go into the fix either way.`,
+                ]),
             "",
             last
               ? "Fix: the worker makes one last fix for these findings, with no review after it, and the run goes on."
               : "Fix: the worker makes one fix for these findings and the others of this round; the stages with rounds left review it.",
-            "Accept: the run goes on without a fix.",
+            redNames.length === 0
+              ? "Accept: the run goes on without a fix."
+              : "Accept: the fix leaves out these findings; it still fixes the red gates.",
             "Decline: the run stops.",
           ].join("\n"),
           subject: {
@@ -1551,11 +1678,13 @@ export const pipelinesModule: ServerModule = {
       );
     };
 
-    /** Picks what comes next from the group's turns, by round, not from a checkpoint. */
+    /** Picks what comes next from the group's turns and red gates, by round. The checkpoint says which gate round ran. */
     const decide = async ({
       subject,
+      checkpoint,
     }: {
       subject: StageSubject;
+      checkpoint: StageCheckpoint | undefined;
     }): Promise<StepOutcome<StageCheckpoint>> => {
       const run = loadRun(subject.runId);
       if (!run || run.stage_index !== subject.stageIndex) return { next: null };
@@ -1565,17 +1694,37 @@ export const pipelinesModule: ServerModule = {
       // The user accepted the round limit and nothing is left to fix: the group ends.
       if (run.approval_id !== null) return { next: "finish" };
       // The worker stage ends when its task reported.
-      if (!isReviewer(stageOf(run, subject.stageIndex))) return { next: "finish" };
+      if (stageOf(run, subject.stageIndex).role === "worker") return { next: "finish" };
       const group = groupOf(run, subject.stageIndex);
       const turns = groupTurns(run, group);
       const round = reviewRound(turns);
+      const hasGates = gateMembers(run, group).length > 0;
+      const reds = redsOf(run);
+      const firstRed = (gateRound: number) =>
+        gateMembers(run, group)
+          .map((index) =>
+            reds.find((red) => red.round === gateRound && red.stage === stageOf(run, index).name),
+          )
+          .find((red) => red !== undefined);
+      const failOn = (red: GateRed): StepOutcome<StageCheckpoint> => ({
+        next: null,
+        commit: () => endRun(run.id, "failed", red.message),
+      });
       const fix = liveTurn(turns, "fix", round);
       if (fix) {
         // The user chose a last fix at the round limit: its turn is open.
-        if (fix.report === null) return { next: "await", checkpoint: { boot: bootId } };
-        return {
-          next: openMembers(run, group, turns, round + 1).length > 0 ? "advance" : "finish",
-        };
+        if (fix.report === null)
+          return { next: "await", checkpoint: { ...checkpoint, boot: bootId } };
+        // After a fix the gates run again, with the next review round or alone (ADR 0178 rules 9, 10).
+        if (
+          openMembers(run, group, turns, round + 1).length > 0 ||
+          (hasGates && checkpoint?.round !== round + 1)
+        ) {
+          return { next: "advance" };
+        }
+        // The final gate run ran: it gets no fix.
+        const red = firstRed(round + 1);
+        return red ? failOn(red) : { next: "finish" };
       }
       const reviews = group.flatMap((index) => liveTurn(turns, "review", round, index) ?? []);
       for (const review of reviews) {
@@ -1589,22 +1738,26 @@ export const pipelinesModule: ServerModule = {
           };
         }
       }
+      // A group with no reviewer gets no fix: its first red gate ends the run (ADR 0178 rule 11).
+      if (!group.some((index) => isReviewer(stageOf(run, index)))) {
+        const red = firstRed(groupRound(turns));
+        return red ? failOn(red) : { next: "finish" };
+      }
+      const redGates = gateMembers(run, group).filter((index) =>
+        isRed(reds, groupRound(turns), stageOf(run, index).name),
+      );
       const revisers = reviews.filter((review) => reportOf(review).verdict === "revise");
-      if (revisers.length === 0) return { next: "finish" };
+      if (revisers.length === 0 && redGates.length === 0) return { next: "finish" };
       const limited = revisers.filter((review) => atLimit(stageOf(run, review.stage_index), round));
       if (limited.length > 0) return { wait: true, commit: () => askRoundLimit(run, limited) };
       const last = openMembers(run, group, turns, round + 1).length === 0;
+      const members = [...revisers.map((review) => review.stage_index), ...redGates].sort(
+        (a, b) => a - b,
+      );
       return {
         next: "await",
-        checkpoint: { boot: bootId },
-        commit: () =>
-          startFix(
-            run,
-            group[0] as number,
-            round,
-            revisers.map((review) => review.stage_index),
-            last,
-          ),
+        checkpoint: { ...checkpoint, boot: bootId },
+        commit: () => startFix(run, group[0] as number, round, members, last),
       };
     };
 
@@ -1638,7 +1791,8 @@ export const pipelinesModule: ServerModule = {
       { name: "advance", run: advance },
       { name: "await", run: awaitReport },
       { name: "decide", run: decide },
-      { name: "gate", run: runGate },
+      // A job stored on the gate step before gate members goes back to `advance`, which opens the gate round.
+      { name: "gate", run: async () => ({ next: "advance" }) },
       { name: "finish", run: finish },
     ];
     host.jobs.define(STAGE_JOB, steps);
@@ -1830,20 +1984,22 @@ export const pipelinesModule: ServerModule = {
       approve: async (subject) =>
         subject.action === "fix"
           ? `The user chose fix: the worker makes one last fix for stage ${subject.stage}, with no review after it; then the run goes on.`
-          : `The user chose accept: the run goes on after stage ${subject.stage} without a fix.`,
+          : `The user chose accept: the run goes on after stage ${subject.stage} without a fix for its findings.`,
       decided: (subject: RoundLimitSubject, approval, approved) => {
         const run = loadRun(subject.runId);
         // A run that was stopped or moved on ignores the decision.
         if (run?.state !== "waiting_user" || run.approval_id !== approval.id) return;
         if (approved) {
-          // Fix keeps every REVISE of the round; accept drops the members at their limit.
+          // Fix keeps every REVISE of the round; accept drops the members at their limit. Red gates go into the fix
+          // either way (ADR 0178 rule 7).
           const group = groupOf(run, run.stage_index);
           const turns = groupTurns(run, group);
           const round = reviewRound(turns);
+          const reds = redsOf(run);
           const members = group.filter((index) => {
             const review = liveTurn(turns, "review", round, index);
+            if (review === undefined) return isRed(reds, round, stageOf(run, index).name);
             return (
-              review !== undefined &&
               reportOf(review).verdict === "revise" &&
               (subject.action === "fix" || !atLimit(stageOf(run, index), round))
             );

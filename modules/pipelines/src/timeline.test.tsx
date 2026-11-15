@@ -354,4 +354,26 @@ describe("Timeline of a parallel group", () => {
     );
     expect(rows(root)[1]?.textContent).toContain("Fix for review, adversarial round 1");
   });
+
+  it("shows the Gates row of a gate member while its group runs", async () => {
+    const stages = [
+      { name: "implement", role: "worker" as const },
+      { name: "review", role: "reviewer" as const },
+      { name: "gates", with_previous: true, gates: ["check", "test"] },
+    ];
+    const root = await mount(
+      <Timeline
+        run={run({
+          stages,
+          stageIndex: 1,
+          turns: [TASK, turn({ id: "t-open", createdAt: 100_000 })],
+        })}
+        workspaceId="w1"
+        now={600_000}
+      />,
+    );
+    expect(rows(root).map((row) => row.textContent)).toContainEqual(
+      expect.stringContaining("Gates: check, test"),
+    );
+  });
 });

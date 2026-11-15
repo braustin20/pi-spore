@@ -534,7 +534,7 @@ interface ChangeOps {
 See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
 [ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md),
 [ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md), [ADR 0162](decisions/0162-orchestrator-starts-pipeline-runs.md),
-and [ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md) (proposed, not built yet). Requirements R6, R4.4,
+and [ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md). Requirements R6, R4.4,
 R4.9.
 
 The `pipelines` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`,
@@ -569,6 +569,7 @@ fix_passes = 1            # a REVISE on the last round gets one fix, with no rev
 
 [[stage]]
 name = "gates"
+with_previous = true      # runs while the reviewers read; runs again after every fix
 gates = ["check", "test"] # action names from config.toml
 fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
 ```
@@ -595,6 +596,7 @@ min_strength_over = "implement"
 
 [[stage]]
 name = "gates"
+with_previous = true
 gates = ["check", "test"]
 fail_first = "artifact"
 ```
@@ -619,6 +621,7 @@ min_strength_over = "fix"
 
 [[stage]]
 name = "gates"
+with_previous = true
 gates = ["check", "test"]
 fail_first = "artifact"
 ```
@@ -629,10 +632,10 @@ fail_first = "artifact"
   project files (R17.3). `worker = "reuse"` is allowed only on the worker stage, and not with `model` or `tier`.
   `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
   built (R6.1); it comes from the role default.
-- **Parallel groups** (ADR 0178). A reviewer stage with `with_previous = true` joins the group of the stage before
-  it; `stageGroups` in `@pi-spore/shared` lists the groups. The key on the worker stage or the stage right after it
-  is 422 `bad_pipeline`. A group with a gate stage is 422 too, until card "Parallel stages 3" builds gate members.
-  `default` groups `review` and `adversarial`. How a group runs is under "Parallel review rounds".
+- **Parallel groups** (ADR 0178). A reviewer or gate stage with `with_previous = true` joins the group of the stage
+  before it; `stageGroups` in `@pi-spore/shared` lists the groups. The key on the worker stage or the stage right
+  after it is 422 `bad_pipeline`. `default` groups `review`, `adversarial`, and `gates`; `light` and `revise` group
+  `review` and `gates`. How a group runs is under "Parallel review rounds" and "Gates".
 - `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
   never falls back to the built-in one.
 - **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }`
@@ -659,8 +662,8 @@ fail_first = "artifact"
   returns a run's view, with `workerAgentId`.
 - **Stage jobs.** Each group is a `pipelines.stage` job keyed by the workspace; a stage alone is a group of one. The
   job's `stageIndex`, and the run's `stage_index` while it runs, is the group's first stage. Steps: `advance` (start
-  the next turns), `await` (wait for every open turn of the group), `decide` (apply the verdicts), `gate`, and
-  `finish` (start the next group's job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
+  the next turns), `await` (wait for every open turn of the group and run its gates), `decide` (apply the
+  verdicts and red gates), and `finish` (start the next group's job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
   together. Prompts name the turn on a `Turn: <id>` line, and the brief is the workspace artifact
   `pipelines/<run>/brief.md`. A worker's task prompt also holds the brief's full text under `## Brief`, so
   `spore/auto` scores the real task on a new worker's first message (ADR 0144).
@@ -731,7 +734,8 @@ fail_first = "artifact"
   Round r + 1 opens each member that said REVISE in round r, has rounds left, and was not stopped by Jev. When every
   review of the round reported, one fix turn holds every REVISE, each under its stage name. The fix row has the
   group's first stage index and `fix_for`, the member names (view `fixFor`). The round rules above apply per member.
-  One round-limit approval lists every member at its limit; accept drops their findings from the fix.
+  One round-limit approval lists every member at its limit; accept drops their findings from the fix. A gate
+  member runs every round; its red gates join the round's one fix, and accept keeps them.
 - **Working label.** While a run is `running`, the pipelines module marks its chat with `Agents.setWorkingFor`, and
   its workspace with `Agents.setWorkspaceWorkingFor`, so Home and the workspace list do not show them as done:
   `Pipeline: <stages of the group, joined with ", ">`, with `, round <n>` from round 2 of a review stage, or
@@ -766,14 +770,28 @@ fail_first = "artifact"
   turn. A turn of a running run with no report and no error reads it live from `AgentsKey.liveState`: the model of
   the newest answer, else the model the stage started the agent on. A stage agent's `activity` change (each
   `message_end`) publishes the runs event, so the tab follows it without polling.
-- **Gates** (R6.5, ADR 0016). With `fail_first = "artifact"`, each test in the manifest needs a non-empty proof
-  artifact, or the run fails with `missing fail-first proof for <test>` before any action runs. Then each gate
-  action runs once through `ActionsKey.start(..., "pipeline", { key })` with the key `<run>:<stage>:<action>:<attempt>`,
-  so a step that runs again gets the same action run back. A run a restart cut off starts once more under the next
-  attempt. A failure ends the run `failed` with the last 4 KiB of its log. The message has no color codes and lists
-  the failed vitest tests (up to 10) above the log. The failing tests are never run again.
-  A gate action that config.toml does not declare blocks the run with the stage, the action, and the config.toml
-  path to fix.
+- **Gates** (R6.5, ADR 0016, ADR 0178). A gate stage is a group member like a reviewer; a gate stage alone is a
+  group of one. `advance` opens the group's gate round with the review round: the job checkpoint holds `round` and
+  each gate member's place (`places`: gate and attempt, by stage name). With `fail_first = "artifact"`, each test in
+  the manifest needs a non-empty proof artifact, checked every gate round because fixes add tests; a missing one
+  makes the member red with `missing fail-first proof for <test> (<proof>)` and runs none of its actions. `await`
+  drives the gates without blocking, next to the open review turns: each gate runs through
+  `ActionsKey.start(..., "pipeline", { key })` with the key `<run>:<stage>:<round>:<action>:<attempt>`, so a step that
+  runs again gets the same action run back, and a re-run after a fix starts a new one. A queued or running action
+  wakes the job when it ends. A run a restart cut off starts once more under the next attempt. Two gate members run
+  at the same time; exclusive actions such as the Unity test gates queue per folder in the actions module (R12.2),
+  so they take the editor lease in turn. No gate runs while a fix turn is open. A red member is stored on the run
+  (`gate_reds`: round, stage, message, log path), because the round-limit answer and Retry build a fix outside the
+  job. The message is `gate <action> failed`, the action error, the failed vitest tests (up to 10), and the last 4 KiB
+  of the log, with no color codes.
+  - In a group with a reviewer, a red gate does not stop the reviews. When the round ends, every REVISE and every
+    red gate go into one fix turn: each red gate gives its headline and `Log: <path>`. After every fix the gates run
+    again, with the next review round, or alone when no reviewer is open (the final gate run). A red final gate run
+    ends the run `failed`, with no fix.
+  - A group with no reviewer (a gate stage alone) gets no fix: a red gate ends the run `failed` with its message.
+  - The gates run only the final suite. The failing test runs of the proofs are never run again.
+  - A gate action that config.toml does not declare blocks the run with the stage, the action, and the config.toml
+    path to fix. A job stored on the old `gate` step goes back to `advance`.
 - **Blocked message.** When a stage job waits with an error, the run's chat gets one message: the run, its
   workspace label (a lane names its lane, lane id, and run), the stage, the error, and that Retry runs the step
   again. A lane's message goes to its run's current coordinator, which the lane lookup gives; any other run's goes
@@ -1650,8 +1668,11 @@ See [ADR 0011](decisions/0011-unity-support.md).
 - unity-mcp per worktree: the relay accepts `--project-path`. Agents get `PI_SPORE_UNITY_PROJECT=<worktree>`, and
   `~/.unity/relay/unity-mcp.sh` passes it on when set (ADR 0011).
 - A Unity project's pipeline lists the test gates in a gate stage, for example
-  `gates = ["check", "unity-test-editmode"]`. The Unity panel shows the last gate runs: mode, status, and the report
-  artifact. The log of a run is in the Actions panel.
+  `gates = ["check", "unity-test-editmode"]`. To run both modes, list them in one gate stage (ADR 0178 rule 18).
+  In a parallel group the gates run next to the reviews, but the test gates are exclusive per folder, so two of them
+  never run at the same time: the second waits in the actions queue, then takes the editor lease in its turn. The
+  Unity panel shows the last gate runs: mode, status, and the report artifact. The log of a run is in the Actions
+  panel.
 
 ## 12. Kanban
 
