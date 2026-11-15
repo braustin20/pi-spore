@@ -2023,7 +2023,7 @@ describe("stage agents (R6)", () => {
       "--thinking",
       "low",
       "--tools",
-      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report,ask_coordinator",
+      "read,grep,find,ls,artifacts_list,artifacts_read,report,ask_coordinator,ask_orchestrator",
       "--exclude-tools",
       "mcp__*",
     ]);
@@ -2039,7 +2039,7 @@ describe("stage agents (R6)", () => {
     expect(agentsModule.manager().liveCount()).toBe(2);
   });
 
-  it("gives a stage worker Pi's normal tools and a writable token, with its role's thinking level", async () => {
+  it("gives a stage worker no contact_supervisor, and a writable token, with its role's thinking level", async () => {
     await setupStages();
     const { workspaceId } = await makeAgent();
     const stage = start(workspaceId, { role: "worker", title: "Implement" });
@@ -2047,7 +2047,8 @@ describe("stage agents (R6)", () => {
 
     const launch = launches()[0];
     expect(launch?.argv).not.toContain("--tools");
-    expect(launch?.argv).not.toContain("--exclude-tools");
+    // pi-subagents' contact_supervisor works only in a child it started, so a stage agent must not have it.
+    expect(launch?.argv).toEqual(expect.arrayContaining(["--exclude-tools", "contact_supervisor"]));
     expect(launch?.argv).toEqual(expect.arrayContaining(["--thinking", "high"]));
     expect(launch?.env).toMatchObject({
       PI_SPORE_CHAT_KIND: "stage",

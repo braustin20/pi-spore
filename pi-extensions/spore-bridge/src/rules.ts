@@ -120,6 +120,9 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
 - Each prompt from the pipeline names a turn id. End every turn by calling \`report\` with that turn id. The pipeline
   waits for it.
 - Write the code the brief asks for, in this workspace's folder. Do not start other agents.
+- When the brief leaves a decision open, ask with \`ask_orchestrator\` (in a lane: \`ask_coordinator\`).
+  Call it alone, as the last tool call of your turn, then stop; the pipeline waits for the answer.
+  Never use \`contact_supervisor\`; it does not work here. Do not guess.
 - Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
   with \`stop_action\`.
 - Fail-first proof: before you make a new test pass, run it and see it fail. Save that failing run with
@@ -140,6 +143,9 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
 
 - You can read and search files and artifacts. You cannot change files, run commands, or start agents; those tools
   are not there.
+- When the brief leaves a decision open, ask with \`ask_orchestrator\` (in a lane: \`ask_coordinator\`).
+  Call it alone, as the last tool call of your turn, then stop; the pipeline waits for the answer.
+  Never use \`contact_supervisor\`; it does not work here. Do not guess.
 - Read the brief, the diff, and the test list your prompt names. Check each fail-first proof artifact: it must show
   the new test failing for the right reason. A new test without a proof is a blocking finding.
 - End your turn by calling \`report\` with the turn id, a verdict (\`approve\` or \`revise\`), and findings marked
