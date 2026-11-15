@@ -840,7 +840,8 @@ See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-qu
 [ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
 [ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md),
 [ADR 0154](decisions/0154-coordinator-adds-cards.md), [ADR 0157](decisions/0157-finished-run-follows-the-active-chat.md), and
-[ADR 0165](decisions/0165-finished-run-pushes-each-merge.md). Requirements R7, R4.8.
+[ADR 0165](decisions/0165-finished-run-pushes-each-merge.md), and [ADR 0180](decisions/0180-lanes-name-their-card.md).
+Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
@@ -859,6 +860,12 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   changes or starts one. A card added from a run workspace goes to `backlog` with the label
   `from-run:<slug of the run name, up to 31 characters>`; the bridge sets both. A card change or start from a run
   workspace answers 403 `run_coordinator`. Lane agents keep all five card tools.
+- **Lane cards** (ADR 0180). `start_lane` takes an optional `cardId`: the card the lane does, one at most. The lane
+  stores it in `runs_lanes.card_id` and shows it as `cardId`. Runs does not require kanban: kanban sets a card
+  linker with `RunsKey.setCardLinker`, and `startLane` calls it inside the transaction that stores the lane, so a
+  refusal rolls the lane back. Without a linker a `cardId` answers 422 `cards_not_supported`. A card another lane of
+  the run names answers 409 `card_in_lane`. Kanban's checks and the move are in section 12. `revise_lane` keeps the
+  card; a cancelled, failed, or declined lane leaves it where it is.
 - **Lanes.** `start_lane` takes a brief that is an artifact of the run workspace (404 `brief_not_found`), a wave
   (1 or more), lane ids it depends on (400 `bad_depends_on`), a pipeline (default `default`), and a model.
   - Model (R4.8, ADR 0014): no model, or one whose tier (ADR 0023) is not above the worker role default's, makes
@@ -1712,6 +1719,12 @@ R11.
   coordinator chat, in one transaction. A project without `integrate` answers 422 `not_supported` and the card stays
   where it was. Because the card links to the run workspace, it follows the run through that workspace: a PR on it
   → Review, its archive → Done. Runs have no archive of their own.
+- A lane that names a card (ADR 0180, section 9) links it through the linker kanban sets with
+  `RunsKey.setCardLinker`. The linker refuses a card that is missing, has no project, or is of another project (404
+  `card_not_found`), a card in Done (409 `card_done`), and a card an open workspace other than the run workspace
+  holds (409 `card_has_workspace`, naming that workspace). Then it links the card to the run workspace, not the lane
+  workspace, and moves it to In progress with reason `lane-started`. From there it follows the run as above. The
+  coordinator still never changes a card itself (ADR 0154).
 - The model of the new chat (ADR 0120): the request's `model`, else the card's, else `agentOverrides.orchestrator`.
   It goes to `AgentsKey.activeWorker`, or for a run to the coordinator through `RunsKey.create`. In an existing workspace the chat keeps its model, so a `model` in the request
   answers 400 `model_needs_new_workspace`; the card's model is then unused.
@@ -1722,7 +1735,7 @@ R11.
   target and model the user chose (a changed subject is checked with the same schema), and tells the asking agent
   where it started.
 - Automatic moves happen only on a state change, so a manual move stays until the next one:
-  - workspace or run started from the card → In progress;
+  - workspace or run started from the card, or a lane that names it → In progress;
   - workspace archived → Done (any archive; the user moves the card back if the work was dropped). The module
     listens with `WorkspacesKey.afterStateChange`.
   - Later modules move cards through `CardsKey.workChanged(workspaceId, column, reason)`: pipeline passed or PR
