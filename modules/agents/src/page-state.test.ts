@@ -173,6 +173,28 @@ describe("activity", () => {
     });
     expect(activity(running)).toBe("Running read");
   });
+
+  it("names the newest running tool with the argument a row shows", () => {
+    let running = reducePage(busy, {
+      type: "pi",
+      event: { type: "tool_execution_start", toolCallId: "c1", toolName: "read", args: {} },
+    });
+    running = reducePage(running, {
+      type: "pi",
+      event: {
+        type: "tool_execution_start",
+        toolCallId: "c2",
+        toolName: "bash",
+        args: { command: "npm test" },
+      },
+    });
+    expect(activity(running)).toBe("Running bash: npm test");
+    running = reducePage(running, {
+      type: "pi",
+      event: { type: "tool_execution_end", toolCallId: "c2" },
+    });
+    expect(activity(running)).toBe("Running read");
+  });
 });
 
 describe("routedModel", () => {

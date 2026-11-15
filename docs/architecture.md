@@ -1085,7 +1085,13 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   dialog opened, and `waiting_since` on `agents_agents`. `waiting_since` is set when a run settles without an abort,
   and cleared when the user sends a message, opens the chat, the chat page sees the run end while it is visible, or
   the user dismisses it (`POST /api/agents/:id/seen`). Statuses and dialogs live in memory; after a restart every
-  agent is stopped.
+  agent is stopped. Each entry also has `activity`, one line of at most 80 characters about what the agent did last,
+  built from its live chat by `chatActivity` in `packages/shared/src/chat.ts`: a tool that runs now ("Running bash:
+  npm test"), else the newest assistant message's last tool call ("Ran read: <path>") or the first line of its text
+  ("Replied: ..."), and "Asked a question" while a dialog is open. Only bash's command and the path of read, edit,
+  and write show; never a tool's result. The chat page's working indicator uses the same `toolActivity` text. The
+  agents module fires `onChange(id, "activity")` only when a tool starts or a message ends, never per streamed
+  token, and that change does not republish `agents:list`.
 - The Home page (`#/`, attention web module) shows the items as cards: a question one step at a time (`QuestionCard`
   in `question-card.tsx`): "Step 2 of 4", Back, Next, and Send answer on the last step, which sends every answer in
   one request. Nothing is sent before that. Answers are kept while the user moves, and in `sessionStorage`
@@ -1098,7 +1104,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   6), read through `host.jobs` and shown as "Interrupted work" with Retry and Cancel. Running work is a short list
   below, one row per workspace. A row shows a stage chat that works, then a stage chat that waits for a worker slot,
   then the workspace's active worker chat, and the newest of the rest; "+N more" counts the workspace's other chats
-  that work, and a worker chat that only waits for its stage (status `pipeline`) is not one of them. The Home rail
+  that work, and a worker chat that only waits for its stage (status `pipeline`) is not one of them. Under the chat
+  name, a row shows its chat's `activity` as a muted line, cut to the row's width, with the full text as its title;
+  on a phone that line takes the whole row. The Home rail
   icon shows the count of items and interrupted jobs through `RailItem.useBadge`.
 - The chat page shows its own open questions and approvals above the composer, so the user need not go to Home. The
   agents web interface has `AgentsWebKey.addChatPanel(id, component)`: the chat page renders each added component,

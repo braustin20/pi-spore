@@ -237,6 +237,8 @@ export const RunningItem = Type.Object({
   status: Type.Union([AgentStatus, Type.Literal("helpers"), Type.Literal("pipeline")]),
   /** Replaces the status text, e.g. "Waiting for <model>" from the router (R4.5). */
   detail: Type.Optional(Type.String()),
+  /** What the row's chat did last, from the agents module (R15). */
+  activity: Type.Optional(Type.String()),
   /** Other chats of the workspace that work too; a worker that only waits for its stage is out. */
   others: Type.Optional(Type.Integer({ minimum: 1 })),
   since: Type.Integer(),

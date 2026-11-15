@@ -7,6 +7,7 @@ import {
   type ChildRun,
   type ContextUsage,
   emptyChat,
+  toolActivity,
 } from "@pi-spore/shared";
 
 export interface Notice {
@@ -130,9 +131,8 @@ export function activity(state: PageState): string | undefined {
   if (status === "waiting") return "Waiting for a free agent slot";
   if (status === "starting") return "Starting the agent";
   if (status !== "busy" && !state.chat.busy) return undefined;
-  if (state.chat.running.length > 0) {
-    return `Running ${state.chat.running.map((tool) => tool.toolName).join(", ")}`;
-  }
+  const tool = state.chat.running.at(-1);
+  if (tool) return toolActivity("Running", tool.toolName, tool.args);
   const content = state.chat.streaming?.content;
   const last = Array.isArray(content)
     ? (content.at(-1) as { type?: unknown; name?: unknown } | undefined)

@@ -428,6 +428,19 @@ describe("Home inbox", () => {
     expect((await inbox()).running).toMatchObject([{ agentId, status: "busy" }]);
   });
 
+  it("carries the agent's last activity on the running item", async () => {
+    const { agentId } = await makeAgent("working");
+    await json(await prompt(agentId, "bash:npm test"));
+    await until(async () => (await inbox()).running[0]?.activity === "Running bash: npm test");
+    expect((await inbox()).running).toMatchObject([
+      { agentId, status: "busy", activity: "Running bash: npm test" },
+    ]);
+
+    // The tool ends, so the run does, and Home stops showing the row.
+    await json(await prompt(agentId, "bash-done"));
+    await until(async () => (await inbox()).running.length === 0);
+  });
+
   it("does not show an aborted run as finished", async () => {
     const { agentId } = await makeAgent("aborted");
     await json(await prompt(agentId, "slow:400"));

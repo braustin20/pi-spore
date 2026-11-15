@@ -14,6 +14,10 @@
 //   "helper-bad"   sets the widget to a payload of an unknown version
 //   "router-status:<text>"  sets the router's `pi-spore-router` status, as its extension does while a local model is
 //                  busy; "router-status-clear" clears it. Both run as commands, even while streaming
+//   "bash:<command>"  writes an assistant message with a `bash` tool call, starts that tool with the command as its
+//                  argument, and waits there until the `bash-done` prompt; then it ends the tool, writes its result,
+//                  and gives the normal echo reply. Use it to watch a running tool. "bash-done" runs as a command,
+//                  even while streaming
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
@@ -144,6 +148,8 @@ let model = {
 let thinkingLevel = arg("--thinking") ?? "medium";
 let streaming = false;
 let abortRun = null;
+/** Set while a `bash:<command>` run waits for its `bash-done` command. */
+let bashDone = null;
 const followUps = [];
 // Real time, like Pi: a resumed session must not reuse the first process's message timestamps.
 let clock = Date.now();
@@ -264,6 +270,41 @@ async function screenshot() {
     { type: "text", text: "Captured" },
     { type: "image", data: FAKE_PNG, mimeType: "image/png" },
   ];
+  write({
+    type: "tool_execution_end",
+    toolCallId: call.id,
+    toolName: call.name,
+    result: { content },
+    isError: false,
+  });
+  const result = {
+    role: "toolResult",
+    toolCallId: call.id,
+    toolName: call.name,
+    content,
+    isError: false,
+    timestamp: ++clock,
+  };
+  write({ type: "message_start", message: result });
+  write({ type: "message_end", message: result });
+  appendMessage(result);
+}
+
+/** A `bash` tool that runs and waits, so a test can read the state while the tool is in flight. */
+async function runBashTool(command) {
+  const call = { type: "toolCall", id: "call-bash", name: "bash", arguments: { command } };
+  toolCallMessage(call);
+  write({
+    type: "tool_execution_start",
+    toolCallId: call.id,
+    toolName: call.name,
+    args: { command },
+  });
+  await new Promise((resolve) => {
+    bashDone = resolve;
+  });
+  bashDone = null;
+  const content = [{ type: "text", text: `ran: ${command}` }];
   write({
     type: "tool_execution_end",
     toolCallId: call.id,
@@ -414,6 +455,7 @@ async function run(text, images = []) {
     await screenshot();
     reply = "Here is the screenshot.";
   }
+  if (text.startsWith("bash:")) await runBashTool(text.slice("bash:".length));
   if (text === "tools") reply = `tools: ${arg("--tools") ?? "read,bash,edit,write"}`;
   if (text.startsWith("ask:")) reply = await ask(text.slice(4), `toolu_${entryCount}`);
   let refusal;
@@ -527,6 +569,12 @@ const handle = (command) => {
         if (state === "gone") helpers.delete(runId);
         else helpers.set(runId, { agent, state });
         publishHelpers();
+        return respond(id, type, { disposition: "handled" });
+      }
+      if (command.message === "bash-done") {
+        const done = bashDone;
+        bashDone = null;
+        done?.();
         return respond(id, type, { disposition: "handled" });
       }
       if (command.message.startsWith("router-status")) {

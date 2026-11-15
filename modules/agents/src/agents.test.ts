@@ -22,7 +22,7 @@ import { createTestServer, type TestServer } from "@pi-spore/server-core/testing
 import { type Agent, type ChatState, MODEL_TIERS, type Workspace } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { FAKE_PNG } from "../test-fixtures/png.mjs";
-import type { Agents, LaunchHook } from "./contract.js";
+import type { AgentChange, Agents, LaunchHook } from "./contract.js";
 import type { AgentsModuleOptions } from "./server.js";
 import { type AgentEvent, AgentsKey, createAgentsModule } from "./server.js";
 import { reduceAgentList, workspaceStatus } from "./status.js";
@@ -851,6 +851,72 @@ function agentsProbe() {
     },
   };
 }
+
+describe("each agent's last activity (R15)", () => {
+  const activity = async (agentId: string) =>
+    agentsModule
+      .manager()
+      .attention()
+      .find((entry) => entry.agent.id === agentId)?.activity;
+  /** The steps Home counts: a tool that starts, and a message that is finished. */
+  const steps = (agentId: string) =>
+    events(agentId).flatMap((event) =>
+      event.type === "pi" &&
+      ["message_end", "tool_execution_start"].includes(
+        (event.event as { type?: string }).type ?? "",
+      )
+        ? [1]
+        : [],
+    ).length;
+
+  it("says nothing before the agent has run", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    const entry = agentsModule
+      .manager()
+      .attention()
+      .find((entry) => entry.agent.id === agentId);
+    expect(entry).toBeDefined();
+    expect(entry).not.toHaveProperty("activity");
+  });
+
+  it("names the running tool, then the reply, and calls onChange for each step", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    const changes: [string, AgentChange][] = [];
+    probe.agents().onChange((id, change) => changes.push([id, change]));
+
+    await json(await prompt(agentId, "bash:npm test"));
+    await until(async () => (await activity(agentId)) === "Running bash: npm test");
+    expect(changes.filter(([, change]) => change === "activity").length).toBeGreaterThan(0);
+
+    await json(await prompt(agentId, "bash-done"));
+    await until(() => status(agentId) === "idle");
+    expect(await activity(agentId)).toBe("Replied: echo: bash:npm test");
+    // One change per step: a tool that starts or a message that ends, none for a streamed token.
+    expect(changes.filter(([id, change]) => id === agentId && change === "activity")).toHaveLength(
+      steps(agentId),
+    );
+  });
+
+  it("says the agent asked a question while its dialog is open", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "/dialog"));
+    await until(() => events(agentId).some((event) => event.type === "dialog"));
+    expect(await activity(agentId)).toBe("Asked a question");
+
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/dialog`, {
+        dialogId: "dlg-1",
+        confirmed: true,
+      }),
+    );
+    await until(() => status(agentId) === "idle");
+    expect(await activity(agentId)).toBe("Replied: confirmed: true");
+  });
+});
 
 describe("chats (ADR 0030)", () => {
   const view = async (agentId: string) =>

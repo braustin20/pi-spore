@@ -76,6 +76,11 @@ afterEach(async () => {
 });
 
 async function render(shown: Question) {
+  return renderInbox(inboxWith(shown));
+}
+
+/** Home with `shownInbox` as the only inbox the fake server reports. */
+async function renderInbox(shownInbox: Inbox) {
   let page: ComponentType | undefined;
   const send = vi.fn(async () => undefined);
   let emit: (event: unknown) => void = () => {};
@@ -84,7 +89,7 @@ async function render(shown: Question) {
     send,
     subscribe: (_topic: string, listener: (event: unknown) => void) => {
       emit = listener;
-      listener({ type: "inbox", inbox: inboxWith(shown) });
+      listener({ type: "inbox", inbox: shownInbox });
       return () => {};
     },
   } as unknown as ApiClient;
@@ -164,6 +169,43 @@ async function render(shown: Question) {
 }
 
 const checked = (element: HTMLElement) => element.getAttribute("aria-checked") === "true";
+
+/** Home with one busy row in its Running panel, and what that chat did last when the agents module has something. */
+const runningInbox = (activity?: string): Inbox => ({
+  items: [],
+  interrupted: [],
+  running: [
+    {
+      agentId: "A1",
+      workspace: { id: "W1", name: "work", projectName: "proj", state: "active" },
+      chat: { id: "C1", kind: "worker", active: true },
+      status: "busy",
+      since: 1,
+      ...(activity === undefined ? {} : { activity }),
+    },
+  ],
+});
+
+describe("the Running panel", () => {
+  it("shows what the chat did last, with the whole line as its title", async () => {
+    const { container } = await renderInbox(runningInbox("Ran bash: npm test"));
+    const row = container.querySelector("li") as HTMLElement;
+    const line = row.querySelector("[title]");
+    expect(line?.getAttribute("title")).toBe("Ran bash: npm test");
+    expect(line?.textContent).toBe("Ran bash: npm test");
+    // The line goes under the chat name, not in its place.
+    expect(row.querySelector("a[href='#/workspaces/W1/chats/C1']")?.textContent).toBeTruthy();
+  });
+
+  it("shows no activity line for a chat that has done nothing yet", async () => {
+    const { container } = await renderInbox(runningInbox());
+    const row = container.querySelector("li") as HTMLElement;
+    expect(row.querySelector("[title]")).toBeNull();
+    const chat = row.querySelector("a[href='#/workspaces/W1/chats/C1']") as HTMLElement;
+    // The chat name keeps its own line: an empty activity element beside it would waste one.
+    expect(chat.parentElement?.childElementCount).toBe(1);
+  });
+});
 
 describe("the choices of a question on Home", () => {
   it("marks the recommended choice and no other", async () => {

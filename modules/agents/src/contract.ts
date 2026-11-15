@@ -4,9 +4,16 @@ import type { RoleDefaults } from "./launch.js";
 
 /**
  * What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers.
- * `working`: its `workingFor` label.
+ * `working`: its `workingFor` label. `activity`: its `activity` text.
  */
-export type AgentChange = "status" | "dialog" | "waiting" | "chat" | "helpers" | "working";
+export type AgentChange =
+  | "status"
+  | "dialog"
+  | "waiting"
+  | "chat"
+  | "helpers"
+  | "working"
+  | "activity";
 
 /** One agent with what Home shows about it (R15). */
 export interface AgentAttention {
@@ -19,6 +26,11 @@ export interface AgentAttention {
    * opens its chat, or dismisses it.
    */
   waitingSince?: number;
+  /**
+   * What it did last, as one short line, from its live chat: a tool that runs now, the tool it called last, or its
+   * reply (R15). `"Asked a question"` while a dialog waits for the user. Absent before the chat shows anything.
+   */
+  activity?: string;
 }
 
 /** What a launch hook adds to one agent's Pi process. */
