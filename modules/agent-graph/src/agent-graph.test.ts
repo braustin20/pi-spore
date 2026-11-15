@@ -16,7 +16,7 @@ import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { BridgeCaller, ServerModule } from "@pi-spore/module-api";
-import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
+import { createTestServer, TEST_TOKEN, type TestServer } from "@pi-spore/server-core/testing";
 import type {
   AgentGraph,
   AgentGraphEvent,
@@ -494,16 +494,38 @@ describe("the agent graph (ADR 0176)", () => {
     expect(positionRows(server)).toEqual([`${parked.workspaceId} tree:${parked.workspaceId}`]);
   });
 
-  it.each([
-    ["broken JSON", "{ not json"],
-    ["a body with no x", { node: "tree:any", y: 1 }],
-  ])("answers 400 for a saved place request with %s", async (_name, body) => {
+  it("answers 400 for a saved place body that is not JSON", async () => {
     const server = await start({});
-    await workspace(server, "bad-position-body");
+    await workspace(server, "bad-position-json");
 
-    const response = await server.request("PUT", "/api/agent-graph/positions", body);
+    // `server.request` always writes JSON, so the broken bytes go to the server that already listens for the agents.
+    const response = await fetch(`${server.url}/api/agent-graph/positions`, {
+      method: "PUT",
+      headers: { "content-type": "application/json", "x-pi-spore-token": TEST_TOKEN },
+      body: "{ node: tree:1, x: 1,",
+    });
 
     expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("invalid_request");
+    expect(body.error.message).toContain("not valid JSON");
+    expect(positionRows(server)).toEqual([]);
+  });
+
+  it("answers 400 for a saved place with no x, from the schema and not the node lookup", async () => {
+    const server = await start({});
+    const { workspaceId } = await workspace(server, "bad-position-x");
+
+    const response = await server.request("PUT", "/api/agent-graph/positions", {
+      node: `tree:${workspaceId}`,
+      y: 1,
+    });
+
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    // The node is one of the graph, so only the schema can stop it here, and it stops it before any write.
+    expect(body.error.code).toBe("invalid_request");
+    expect(body.error.message).toContain("must have required properties x");
     expect(positionRows(server)).toEqual([]);
   });
 
