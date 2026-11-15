@@ -104,6 +104,12 @@ function Pod({
   );
 }
 
+/** The server makes a workspace's root its worker chat; `orchestrator` is the role of every workspace chat. */
+function rootRole(tree: GraphTree): string {
+  if (tree.kind === "run") return "coordinator";
+  return tree.root.role === "orchestrator" ? `${tree.root.kind} chat` : tree.root.role;
+}
+
 function TreeBox({ data, width }: NodeProps<TreeNode>) {
   const { tree, tone, root, live } = data;
   return (
@@ -123,7 +129,7 @@ function TreeBox({ data, width }: NodeProps<TreeNode>) {
           } as CSSProperties
         }
         shape={<SporeLogo />}
-        role={tree.kind === "run" ? "coordinator" : "worker chat"}
+        role={rootRole(tree)}
         title={tree.root.title}
         meta={`${tree.root.status === "busy" ? "working" : tree.root.status} · ${shortModel(tree.root)}`}
       />
@@ -260,16 +266,15 @@ function FitButton() {
   );
 }
 
-function Canvas({
-  trees,
-  moved,
-  onMove,
-}: {
-  trees: readonly GraphTree[];
-  moved: ReadonlyMap<string, XYPosition>;
-  onMove: (positions: ReadonlyMap<string, XYPosition>) => void;
-}) {
+/**
+ * Drag positions by node id, for the page's life: they outlive the landing, which the workspaces view unmounts
+ * while a chat is open. Card 4 saves them.
+ */
+let kept: ReadonlyMap<string, XYPosition> = new Map();
+
+function Canvas({ trees }: { trees: readonly GraphTree[] }) {
   const phone = usePhone();
+  const [moved, setMoved] = useState(kept);
   const layout = useMemo(() => layoutGraph(trees, phone), [trees, phone]);
   const nodes = useMemo(
     () =>
@@ -279,16 +284,14 @@ function Canvas({
       }),
     [layout, moved],
   );
-  const onNodesChange = useCallback(
-    (changes: NodeChange<GraphNode>[]) => {
-      const positions = new Map<string, XYPosition>();
-      for (const change of changes)
-        if (change.type === "position" && change.position)
-          positions.set(change.id, change.position);
-      if (positions.size > 0) onMove(positions);
-    },
-    [onMove],
-  );
+  const onNodesChange = useCallback((changes: NodeChange<GraphNode>[]) => {
+    const positions = new Map<string, XYPosition>();
+    for (const change of changes)
+      if (change.type === "position" && change.position) positions.set(change.id, change.position);
+    if (positions.size === 0) return;
+    kept = new Map([...kept, ...positions]);
+    setMoved(kept);
+  }, []);
   // A drag ends with a click on the pod under the pointer; that click must not open the chat.
   const dragged = useRef(false);
   return (
@@ -364,8 +367,6 @@ const LEGEND_STATES = [
 export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
   const api = useApi();
   const [all, setAll] = useState<readonly GraphTree[]>();
-  // Drag positions by node id, until a reload.
-  const [moved, setMoved] = useState<ReadonlyMap<string, XYPosition>>(new Map());
   useEffect(
     () => api.subscribe("agent-graph:trees", (event) => setAll((event as AgentGraphEvent).trees)),
     [api],
@@ -373,11 +374,6 @@ export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
   const trees = useMemo(
     () => all?.filter((tree) => projectId === undefined || tree.projectId === projectId),
     [all, projectId],
-  );
-  const onMove = useCallback(
-    (positions: ReadonlyMap<string, XYPosition>) =>
-      setMoved((before) => new Map([...before, ...positions])),
-    [],
   );
 
   return (
@@ -416,7 +412,7 @@ export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
           }
         />
       )}
-      {trees && trees.length > 0 && <Canvas trees={trees} moved={moved} onMove={onMove} />}
+      {trees && trees.length > 0 && <Canvas trees={trees} />}
     </div>
   );
 }

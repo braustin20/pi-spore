@@ -4,7 +4,7 @@ import type { GraphAgent, GraphGroup, GraphStep, GraphTree } from "@pi-spore/sha
 import { TooltipProvider } from "@pi-spore/ui";
 import { act, type ComponentType } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { layoutGraph } from "./layout.js";
 import { agentGraphWeb } from "./web.js";
 
@@ -139,6 +139,29 @@ async function render(trees: GraphTree[], projectId?: string) {
   };
 }
 
+/**
+ * Drags `element` by (dx, dy) with the mouse, as d3-drag inside React Flow reads it. happy-dom has no layout, so
+ * every box is 0 by 0 and the pointer always looks past the canvas edge, which starts React Flow's auto-pan loop.
+ * A canvas-sized box keeps the pointer inside, as in a browser.
+ */
+async function drag(element: Element | null, dx: number, dy: number) {
+  if (!element) throw new Error("nothing to drag");
+  const box = vi
+    .spyOn(Element.prototype, "getBoundingClientRect")
+    .mockReturnValue(new DOMRect(0, 0, 1440, 900));
+  const at = (x: number, y: number) => ({ bubbles: true, clientX: x, clientY: y, view: window });
+  try {
+    await act(async () => {
+      element.dispatchEvent(new MouseEvent("mousedown", at(400, 400)));
+      window.dispatchEvent(new MouseEvent("mousemove", at(400 + dx / 2, 400 + dy / 2)));
+      window.dispatchEvent(new MouseEvent("mousemove", at(400 + dx, 400 + dy)));
+      window.dispatchEvent(new MouseEvent("mouseup", at(400 + dx, 400 + dy)));
+    });
+  } finally {
+    box.mockRestore();
+  }
+}
+
 const podLinks = (scope: Element) =>
   [...scope.querySelectorAll<HTMLAnchorElement>('a[href*="/chats/"]')].map((link) =>
     link.getAttribute("href"),
@@ -179,6 +202,40 @@ describe("the agent graph canvas", () => {
     const { scope } = await render([runTree, workspaceTree], "p1");
     expect(podLinks(scope)).toContain("#/workspaces/W1/chats/C1");
     expect(podLinks(scope)).not.toContain("#/workspaces/W2/chats/C2");
+  });
+
+  it("labels each root by its agent", async () => {
+    const planner: GraphTree = {
+      ...workspaceTree,
+      workspaceId: "W9",
+      root: agent("C9", "W9", { kind: "worker", role: "planner" }),
+      groups: [],
+    };
+    const { scope } = await render([runTree, workspaceTree, planner]);
+    const roleOf = (href: string) =>
+      scope.querySelector(`a[href="${href}"] .ag-role`)?.textContent ?? `no pod for ${href}`;
+    expect(roleOf("#/workspaces/W1/chats/C1")).toBe("coordinator");
+    expect(roleOf("#/workspaces/W2/chats/C2")).toBe("worker chat");
+    expect(roleOf("#/workspaces/W9/chats/C9")).toBe("planner");
+  });
+
+  it("keeps a dragged pod where it was put after the page comes back, until a reload", async () => {
+    const first = await render([runTree]);
+    const node = () =>
+      container?.querySelector<HTMLElement>('.react-flow__node[data-id="step:T3"]') ?? null;
+    const before = node()?.style.transform;
+    expect(before).toMatch(/translate/);
+    await drag(node(), 40, 30);
+    const moved = node()?.style.transform;
+    expect(moved).not.toBe(before);
+
+    // A later event keeps it.
+    await first.send([runTree]);
+    expect(node()?.style.transform).toBe(moved);
+
+    // The workspaces view unmounts the landing while a chat is open, and mounts it again on the way back.
+    await render([runTree]);
+    expect(node()?.style.transform).toBe(moved);
   });
 
   it("says when no agent works, with a link to a new workspace", async () => {

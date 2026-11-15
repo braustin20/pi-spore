@@ -16,11 +16,14 @@
 .ag-tree-name {
   position: absolute;
   left: 22px;
+  right: 22px;
   top: 13px;
   font-size: 14px;
   font-weight: 600;
   color: var(--text);
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .ag-group {
@@ -268,7 +271,8 @@
   .ag-drops {
     display: none;
   }
-  .ag-pod .ag-shape {
+  /* As specific as the working rule, so it wins. */
+  .ag-pod.s-work .ag-shape {
     animation: none;
   }
 }
