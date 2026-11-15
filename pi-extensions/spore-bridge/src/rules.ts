@@ -182,6 +182,8 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
   write cards as artifacts. The card goes to the backlog with a from-run label. You never start a card; the user
   does.
 - When a card names other cards, read them with kanban_read_card. Do not ask the user to paste them.
+- When a lane does one card, pass its \`cardId\` to start_lane. pi-spore moves that card with the run. You still never
+  change a card yourself.
 - The user is often away. Ask and stop; every answer and result comes back as a new message, possibly after a
   restart. Do not poll.
 - Never end a turn to wait for the user without request_human_input. A turn that ends with plain text puts nothing

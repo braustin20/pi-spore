@@ -149,6 +149,13 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
       dependsOn: Type.Optional(
         Type.Array(Type.String({ minLength: 1 }), { description: "Ids of lanes to wait for" }),
       ),
+      cardId: Type.Optional(
+        Type.String({
+          minLength: 1,
+          description:
+            "The id of the card this lane does, from kanban_list_cards. One card per lane at most.",
+        }),
+      ),
       pipeline: Type.Optional(
         Type.String({ minLength: 1, description: "Pipeline id; default: default" }),
       ),
