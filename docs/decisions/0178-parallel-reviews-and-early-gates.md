@@ -1,6 +1,6 @@
 # 0178. Read-only stages of a pipeline run together in a parallel group
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-11-15
 - Requirements: R6.1, R6.3, R6.4, R6.5, R6.6, R3.6, R12.2
 - Changes: [ADR 0006](0006-declared-pipelines.md), [ADR 0015](0015-review-rounds.md),

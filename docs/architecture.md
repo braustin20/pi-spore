@@ -516,7 +516,7 @@ interface ChangeOps {
 See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
 [ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md),
 [ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md), [ADR 0162](decisions/0162-orchestrator-starts-pipeline-runs.md),
-and [ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md) (proposed, not built yet). Requirements R6, R4.4,
+and [ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md) (not built yet). Requirements R6, R4.4,
 R4.9.
 
 The `pipelines` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`,
@@ -610,7 +610,7 @@ fail_first = "artifact"
   project files (R17.3). `worker = "reuse"` is allowed only on the worker stage, and not with `model` or `tier`.
   `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
   built (R6.1); it comes from the role default.
-- **Parallel groups** (ADR 0178, proposed, not built yet). A reviewer or gate stage with `with_previous = true` will
+- **Parallel groups** (ADR 0178, not built yet). A reviewer or gate stage with `with_previous = true` will
   join the group of the stage before it, and a group's members will run each round together, with one fix for all
   their findings and red gates. The key on the worker stage or the stage right after it will be 422 `bad_pipeline`.
   `default` will group `review`, `adversarial`, and `gates`; `light` and `revise` will group `review` and `gates`.
