@@ -515,8 +515,9 @@ interface ChangeOps {
 
 See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
 [ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md),
-[ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md), and [ADR 0162](decisions/0162-orchestrator-starts-pipeline-runs.md).
-Requirements R6, R4.4, R4.9.
+[ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md), [ADR 0162](decisions/0162-orchestrator-starts-pipeline-runs.md),
+and [ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md) (proposed, not built yet). Requirements R6, R4.4,
+R4.9.
 
 The `pipelines` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`,
 `actions`) runs declared pipelines on a workspace. A run needs no coordinator run (R6.8).
@@ -609,6 +610,12 @@ fail_first = "artifact"
   project files (R17.3). `worker = "reuse"` is allowed only on the worker stage, and not with `model` or `tier`.
   `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
   built (R6.1); it comes from the role default.
+- **Parallel groups** (ADR 0178, proposed, not built yet). A reviewer or gate stage with `with_previous = true` will
+  join the group of the stage before it, and a group's members will run each round together, with one fix for all
+  their findings and red gates. The key on the worker stage or the stage right after it will be 422 `bad_pipeline`.
+  `default` will group `review`, `adversarial`, and `gates`; `light` and `revise` will group `review` and `gates`.
+  Until the cards "Parallel stages 2" and "Parallel stages 3" land, the files above are the built ones and the key
+  is refused as unknown.
 - `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
   never falls back to the built-in one.
 - **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }`
@@ -752,8 +759,8 @@ fail_first = "artifact"
   uses it to record outcomes (section 11a). `onChange(listener)` runs with the workspace id whenever its runs
   change, as the topic does; the runs module uses it to show a lane's `blocked`. `runsOf(workspaceId)` returns the
   workspace's runs, newest first, as `GET /api/pipelines/workspaces/:id/runs` does.
-- Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, and moving the
-  card when a run passes.
+- Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, moving the
+  card when a run passes, and parallel groups (ADR 0178).
 
 ## 9. Runs and lanes
 

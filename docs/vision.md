@@ -106,8 +106,12 @@ not built in v1.
   1. `implement`: the worker.
   2. `review`: a fresh read-only reviewer each round, at most 2 rounds. A REVISE on round 2 gets one last fix pass,
      with no review after it.
-  3. `adversarial`: an adversarial reviewer, one fix pass on REVISE.
+  3. `adversarial`: an adversarial reviewer, 1 round, one fix pass on REVISE.
   4. `gates`: the project's checks, plus a recorded fail-first proof for each new test.
+
+  Stages 2 to 4 run together as one parallel group (ADR 0178). Each round runs its reviewers and the gates at the
+  same time. One fix gets the findings of every reviewer and every red gate. After each fix, the gates run again.
+  A stage joins the group of the stage before it with `with_previous = true`; the worker stage never joins a group.
 - R6.4 Round limits are hard: no stage runs more review rounds than it declares. A stage may declare one last fix
   pass after its last round. A Jev check after each review round may stop early when the remaining findings are
   minor. It can never add rounds. A stage with no last fix pass asks the user at its limit: fix once, go on, or
