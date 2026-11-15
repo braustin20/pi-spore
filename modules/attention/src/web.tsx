@@ -465,12 +465,18 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
                   <span className="w-24 shrink-0 truncate text-muted max-md:w-auto">
                     {run.workspace.projectName}
                   </span>
-                  <a
-                    href={chatHref(run.workspace, run.chat)}
-                    className="w-56 shrink-0 truncate text-muted max-md:w-auto max-md:max-w-full"
-                  >
-                    {chatName(run.chat)}
-                  </a>
+                  {/* The chat name, then what it did last, so the two read as one column (R15). On a phone the
+                      column takes a whole line, so the long activity text has room. */}
+                  <div className="flex w-56 min-w-0 shrink-0 flex-col max-md:basis-full">
+                    <a href={chatHref(run.workspace, run.chat)} className="truncate text-muted">
+                      {chatName(run.chat)}
+                    </a>
+                    {run.activity !== undefined && (
+                      <span title={run.activity} className="truncate text-xs text-muted">
+                        {run.activity}
+                      </span>
+                    )}
+                  </div>
                   <Chip
                     tone={
                       run.status === "waiting" || (run.detail && run.status !== "pipeline")
