@@ -496,13 +496,20 @@ export const kanbanModule: ServerModule = {
       return workspace;
     };
 
-    const refuseOpenWorkspace = (row: CardRow) => {
-      if (row.workspace_id !== null && workspaces.get(row.workspace_id).state !== "archived") {
-        throw new ApiError(
-          409,
-          "card_has_workspace",
-          "This card already has an open workspace; archive it first",
-        );
+    /**
+     * A card an open workspace already holds cannot start elsewhere (ADR 0100). `keepId` is the workspace the card may
+     * keep: the run workspace of a lane that names the card (ADR 0180).
+     */
+    const refuseOpenWorkspace = (row: CardRow, keepId?: string) => {
+      if (row.workspace_id !== null && row.workspace_id !== keepId) {
+        const workspace = workspaces.get(row.workspace_id);
+        if (workspace.state !== "archived") {
+          throw new ApiError(
+            409,
+            "card_has_workspace",
+            `This card already has the open workspace "${workspace.name}"; archive it first`,
+          );
+        }
       }
     };
 
@@ -666,6 +673,33 @@ export const kanbanModule: ServerModule = {
           subject: { cardId: card.id, target: request.target },
         });
       },
+    });
+
+    // ADR 0180: a lane names the card it does, and the card follows the run. The runs module calls the linker inside
+    // the lane's transaction, so it is synchronous and a refusal rolls the lane back.
+    runs.setCardLinker(({ cardId, projectId, runWorkspaceId }) => {
+      const row = load(cardId);
+      // ADR 0100: a card with no project, or one of another project, is not there.
+      if (row.project_id !== projectId)
+        throw new ApiError(404, "card_not_found", `No card ${cardId}`);
+      if (row.column_id === "done") {
+        throw new ApiError(
+          409,
+          "card_done",
+          `Card "${row.title}" is done; a lane does not take it back`,
+        );
+      }
+      refuseOpenWorkspace(row, runWorkspaceId);
+      // The card links to the run workspace, not the lane's: the run's PR and archive move it, not the lane's state.
+      host.store.run(
+        "UPDATE kanban_cards SET workspace_id = ?, updated_at = ? WHERE id = ?",
+        runWorkspaceId,
+        host.now(),
+        row.id,
+      );
+      move(load(row.id), "in-progress", undefined, "lane-started");
+      // The lane's transaction is still open, so the board publishes after it commits, as runs does.
+      queueMicrotask(publish);
     });
 
     workspaces.afterStateChange((workspace) => {
