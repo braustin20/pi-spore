@@ -314,10 +314,14 @@ describe("workspaces with Git", () => {
       name: "Linked",
       isolation: "new",
     });
+    // The refusal must preserve what the link points at: the main checkout's Library is never changed (ADR 0177).
+    expect(readFileSync(join(cache, "Bee", "graph.dag"), "utf8")).toBe(
+      "bee graph of the shared cache",
+    );
     const body = (await json(created, 409)) as { error: { code: string; message: string } };
     expect(body.error.code).toBe("symlinked_library");
     expect(body.error.message).toContain("symlink");
-    // The cache the main checkout's Library points at kept its build graph, and nothing was half-made.
+    // Nothing was half-made.
     expect(git(project.path, "worktree", "list").trim().split("\n")).toHaveLength(1);
     expect(
       parse(WorkspaceList, await json(await server.request("GET", "/api/workspaces"), 200), "list")
