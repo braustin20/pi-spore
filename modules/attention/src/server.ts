@@ -258,7 +258,7 @@ export function buildWorkspaceRows(items: RunningItem[]): RunningItem[] {
   // lists running work newest first.
   const chosen = [...rows.values()];
   chosen.sort((a, b) => b.kept.since - a.kept.since);
-  return chosen.map(({ kept, others }) => (others > 0 ? { ...kept, others } : { ...kept }));
+  return chosen.map(({ kept, others }) => (others > 0 ? { ...kept, others } : kept));
 }
 
 /**
