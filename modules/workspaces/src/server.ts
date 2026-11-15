@@ -208,6 +208,8 @@ export const workspacesModule: ServerModule = {
         base = location.base ?? request.base;
         try {
           copied = await copyIgnoredFiles(host.exec, project.path, path, config.worktreeCopy.value);
+          // A trait's fix-up on the new copy only, never on the main checkout (ADR 0177).
+          await config.afterCopy(path);
         } catch (error) {
           // Leave nothing half-made behind: the copy is new and holds no work yet.
           await provider

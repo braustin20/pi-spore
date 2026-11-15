@@ -79,6 +79,9 @@ function makeUnityRepo(name = "game"): string {
   git(repo, "add", ".");
   git(repo, "commit", "-q", "-m", "init");
   mkdirSync(join(repo, "Library", "ScriptAssemblies"), { recursive: true });
+  mkdirSync(join(repo, "Library", "Bee"), { recursive: true });
+  writeFileSync(join(repo, "Library", "Bee", "graph.dag"), "bee graph of the main checkout");
+  writeFileSync(join(repo, "Library", "ArtifactDB"), "import cache");
   writeFileSync(join(repo, "Library", "ScriptAssemblies", "Game.dll"), "cache");
   writeFileSync(join(repo, "Game.csproj"), "<Project />");
   writeFileSync(join(repo, "game.sln"), "sln");
@@ -267,6 +270,31 @@ describe("workspaces with Git", () => {
     expect(git(workspace.path, "branch", "--show-current").trim()).toBe(workspace.line);
   });
 
+  // ADR 0177: a copied Library keeps its import cache but loses the build graph, which holds the main checkout's path.
+  it("drops Library/Bee from a copied Unity Library, for new and existing isolation", async () => {
+    const repo = makeUnityRepo();
+    git(repo, "branch", "feature/x");
+    const project = await addProject(repo);
+
+    for (const request of [
+      { name: "New lane", isolation: "new" as const },
+      { name: "Existing lane", isolation: "existing" as const, line: "feature/x" },
+    ]) {
+      const { workspace, copied } = await createWorkspace({ projectId: project.id, ...request });
+      expect(copied).toEqual(["Game.csproj", "Library", "game.sln"]);
+      expect(readFileSync(join(workspace.path, "Library", "ArtifactDB"), "utf8")).toBe(
+        "import cache",
+      );
+      expect(
+        readFileSync(join(workspace.path, "Library", "ScriptAssemblies", "Game.dll"), "utf8"),
+      ).toBe("cache");
+      expect(existsSync(join(workspace.path, "Library", "Bee"))).toBe(false);
+      expect(readFileSync(join(repo, "Library", "Bee", "graph.dag"), "utf8")).toBe(
+        "bee graph of the main checkout",
+      );
+    }
+  });
+
   it("records the base a new branch starts from", async () => {
     const repo = makeUnityRepo();
     git(repo, "branch", "feature/x");
@@ -341,6 +369,8 @@ describe("workspaces with Git", () => {
     expect(workspace.line).toBeUndefined();
     expect(workspace.planner).toBe(false);
     expect(copied).toEqual([]);
+    // ADR 0177: no copy, so no trait afterCopy either: the main checkout's Library is untouched.
+    expect(existsSync(join(repo, "Library", "Bee", "graph.dag"))).toBe(true);
   });
 
   it("removes a clean worktree on archive and keeps the branch", async () => {

@@ -1,4 +1,4 @@
-import { readFile, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionsKey } from "@pi-spore/mod-actions/server";
@@ -52,6 +52,11 @@ export const unityTrait: TraitDefinition = {
           "Unity may have the main project open. The copied Library can be inconsistent; close Unity for a clean copy.",
         ]
       : [];
+  },
+  // ADR 0177: the copied Library's build graph holds the main checkout's path, so Unity binds no scripts from the
+  // new one. Drop it in the copy only; Unity rebuilds it on the first open.
+  async afterCopy(copyPath) {
+    await rm(join(copyPath, "Library", "Bee"), { recursive: true, force: true });
   },
 };
 

@@ -125,16 +125,21 @@ export const projectsModule: ServerModule = {
           (id) => traits.find((trait) => trait.id === id)?.worktreeCopy,
           override,
         );
+        const active = traits.filter((trait) =>
+          project.traits.some((found) => found.id === trait.id),
+        );
         return {
           ...view,
           copyWarnings: async () => {
-            const active = traits.filter((trait) =>
-              project.traits.some((found) => found.id === trait.id),
-            );
             const lists = await Promise.all(
               active.map((trait) => trait.copyWarnings?.(project.path) ?? []),
             );
             return lists.flat();
+          },
+          afterCopy: async (copyPath: string) => {
+            for (const trait of active) {
+              await trait.afterCopy?.(copyPath);
+            }
           },
         };
       },
