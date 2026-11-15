@@ -1,5 +1,6 @@
 import type { GraphAgent, GraphGroup, GraphStep, GraphTree } from "@pi-spore/shared";
 import { type Edge, type Node, type NodeHandle, Position } from "@xyflow/react";
+import type { HelperLife } from "./helpers.js";
 
 /** How a pod looks: working, idle (done or an idle agent), not started, or failed (ADR 0176, the approved mockup). */
 export type PodState = "work" | "idle" | "none" | "fail";
@@ -26,8 +27,8 @@ export const STAGE_R = 14;
 const GROUP_W = 236;
 const GROUP_GAP = 14;
 const STEP = 72;
-/** One row under a pod per helper, so slice 3's helpers never cover the next node. */
-const HELPER_ROW = 26;
+/** One row under a pod per helper, popping ones too, so helpers never cover the next node. */
+export const HELPER_ROW = 26;
 const PAD = 18;
 const HEADER = 44;
 const TREE_GAP = 22;
@@ -36,9 +37,14 @@ const STEP_W = GROUP_W - 26;
 const STEP_H = 50;
 const STEP_CY = 22;
 
+export const treeNodeId = (tree: GraphTree) => `tree:${tree.workspaceId}`;
+export const stepNodeId = (step: GraphStep) => `step:${step.id}`;
+
+/** The helpers shown under each node, by node id. */
+export type HelpersByNode = ReadonlyMap<string, readonly HelperLife[]>;
+
 /** `anthropic/claude-opus-5-5` -> `opus 5.5`. */
-export function shortModel(agent: GraphAgent | undefined): string {
-  const ref = agent?.routedModel ?? agent?.model;
+export function shortModel(ref: string | undefined): string {
   if (ref === undefined) return "—";
   return ref
     .slice(ref.lastIndexOf("/") + 1)
@@ -86,15 +92,16 @@ export const rootHandles = (root: { x: number; y: number; r: number }) => [
   handle("root", "source", root.x, root.y + root.r),
 ];
 
-function layoutTree(tree: GraphTree, phone: boolean, x: number, y: number) {
-  const id = `tree:${tree.workspaceId}`;
+function layoutTree(tree: GraphTree, helpers: HelpersByNode, phone: boolean, x: number, y: number) {
+  const id = treeNodeId(tree);
+  const rows = (nodeId: string) => helpers.get(nodeId)?.length ?? 0;
   const tone: Tone = tree.kind === "run" ? "coord" : "chat";
   const rootR = ROOT_R[tone];
   // On a phone a tree's groups stack and the root thread runs down the left.
   const stacked = phone && tree.groups.length > 1;
   const perRow = phone ? 1 : Math.max(1, tree.groups.length);
   const ry = HEADER + rootR + 6;
-  let top = ry + Math.max(30, rootR + tree.root.helpers.length * HELPER_ROW) + 30;
+  let top = ry + Math.max(30, rootR + rows(id) * HELPER_ROW) + 30;
   const gx0 = stacked ? PAD + 34 : PAD;
   const rowW = Math.min(perRow, tree.groups.length) * (GROUP_W + GROUP_GAP) - GROUP_GAP;
   const rx = stacked || tree.groups.length <= 1 ? PAD + 32 : PAD + rowW / 2 - 70;
@@ -108,7 +115,7 @@ function layoutTree(tree: GraphTree, phone: boolean, x: number, y: number) {
       let podY = 56;
       const ys = group.steps.map((step) => {
         const at = podY;
-        podY += STEP + (step.agent?.helpers.length ?? 0) * HELPER_ROW;
+        podY += STEP + rows(stepNodeId(step)) * HELPER_ROW;
         return at;
       });
       return { group, ys, height: podY - STEP + 38 };
@@ -129,7 +136,7 @@ function layoutTree(tree: GraphTree, phone: boolean, x: number, y: number) {
       const active = group.live ? group.steps.findIndex((each) => each.state === "running") : -1;
       let previous = id;
       group.steps.forEach((step, index) => {
-        const stepId = `step:${step.id}`;
+        const stepId = stepNodeId(step);
         steps.push({
           id: stepId,
           type: "step",
@@ -187,13 +194,16 @@ function layoutTree(tree: GraphTree, phone: boolean, x: number, y: number) {
  */
 export function layoutGraph(
   trees: readonly GraphTree[],
+  helpers: HelpersByNode,
   phone: boolean,
 ): { nodes: GraphNode[]; edges: ThreadEdge[] } {
   const nodes: GraphNode[] = [];
   const edges: ThreadEdge[] = [];
   let offset = 0;
   for (const tree of trees) {
-    const placed = phone ? layoutTree(tree, true, 0, offset) : layoutTree(tree, false, offset, 0);
+    const placed = phone
+      ? layoutTree(tree, helpers, true, 0, offset)
+      : layoutTree(tree, helpers, false, offset, 0);
     nodes.push(...placed.nodes);
     edges.push(...placed.edges);
     offset += (phone ? placed.height : placed.width) + TREE_GAP;

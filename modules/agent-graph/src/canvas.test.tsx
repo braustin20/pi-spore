@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { type ApiClient, ApiContext, type WebHost } from "@pi-spore/module-api";
-import type { GraphAgent, GraphGroup, GraphStep, GraphTree } from "@pi-spore/shared";
+import type { GraphAgent, GraphGroup, GraphHelper, GraphStep, GraphTree } from "@pi-spore/shared";
 import { TooltipProvider } from "@pi-spore/ui";
 import { act, type ComponentType } from "react";
 import { createRoot, type Root } from "react-dom/client";
@@ -123,19 +123,24 @@ async function render(trees: GraphTree[], projectId?: string) {
   container.style.width = "1440px";
   container.style.height = "900px";
   root = createRoot(container);
-  await act(async () => {
-    root?.render(
-      <ApiContext value={api}>
-        <TooltipProvider>
-          <Landing projectId={projectId} />
-        </TooltipProvider>
-      </ApiContext>,
-    );
-  });
+  const show = async (project: string | undefined) => {
+    await act(async () => {
+      root?.render(
+        <ApiContext value={api}>
+          <TooltipProvider>
+            <Landing projectId={project} />
+          </TooltipProvider>
+        </ApiContext>,
+      );
+    });
+  };
+  await show(projectId);
   const scope = container;
   return {
     scope,
     topics,
+    /** Changes the route's project, as the workspaces view does, without a new mount. */
+    show,
     send: async (next: GraphTree[]) => {
       await act(async () => push?.({ type: "graph", trees: next }));
     },
@@ -288,7 +293,7 @@ describe("the agent graph canvas", () => {
 describe("the graph layout", () => {
   const trees = [runTree, workspaceTree, { ...workspaceTree, workspaceId: "W3" }];
   const boxes = (phone: boolean) =>
-    layoutGraph(trees, phone)
+    layoutGraph(trees, new Map(), phone)
       .nodes.filter((node) => node.type === "tree")
       .map((node) => ({ ...node.position, width: node.width ?? 0, height: node.height ?? 0 }));
 
@@ -310,5 +315,240 @@ describe("the graph layout", () => {
       expect(after?.y).toBeGreaterThanOrEqual((before?.y ?? 0) + (before?.height ?? 0));
       expect(after?.x).toBe(before?.x);
     }
+  });
+});
+
+describe("helpers on the canvas", () => {
+  const researcher: GraphHelper = {
+    id: "H1",
+    agent: "researcher",
+    model: "anthropic/claude-sonnet-5-5",
+    state: "running",
+    currentTool: "read",
+  };
+  const scout: GraphHelper = {
+    id: "H2",
+    agent: "scout",
+    model: "anthropic/claude-haiku-5-5",
+    state: "running",
+    currentTool: "bash",
+  };
+  /** The run tree with `rootHelpers` on its coordinator and `stepHelpers` on step T3's agent. */
+  const withHelpers = (rootHelpers: GraphHelper[], stepHelpers: GraphHelper[]): GraphTree => ({
+    ...runTree,
+    root: { ...runTree.root, helpers: rootHelpers },
+    groups: [
+      runTree.groups[0] as GraphGroup,
+      group("PR2", "L2", [
+        step("T3", { state: "running", agent: agent("S3", "L2", { helpers: stepHelpers }) }),
+      ]),
+    ],
+  });
+  const helperEl = (scope: Element, id: string) =>
+    scope.querySelector<HTMLElement>(`[data-helper="${id}"]`);
+  const end = async (scope: Element, id: string) => {
+    const spore = helperEl(scope, id)?.querySelector(".ag-spore");
+    if (!spore) throw new Error(`no spore for helper ${id}`);
+    await act(async () => {
+      spore.dispatchEvent(new Event("animationend", { bubbles: true }));
+    });
+  };
+
+  it("draws a helper inside its parent's pod, with its name and short model", async () => {
+    const { scope } = await render([withHelpers([researcher], [scout])]);
+    const onRoot = helperEl(scope, "H1");
+    expect(onRoot?.closest("a")?.getAttribute("href")).toBe("#/workspaces/W1/chats/C1");
+    expect(onRoot?.closest("[data-pod]")?.classList).toContain("ag-root");
+    expect(onRoot?.textContent).toContain("researcher");
+    expect(onRoot?.textContent).toContain("sonnet 5.5");
+    const onStep = helperEl(scope, "H2");
+    expect(onStep?.closest("a")?.getAttribute("href")).toBe("#/workspaces/L2/chats/S3");
+    expect(onStep?.closest(".react-flow__node")?.getAttribute("data-id")).toBe("step:T3");
+    expect(onStep?.textContent).toContain("scout");
+    expect(onStep?.textContent).toContain("haiku 5.5");
+  });
+
+  it("names the helper's current tool on hover", async () => {
+    const { scope } = await render([withHelpers([researcher], [scout])]);
+    expect(helperEl(scope, "H2")?.title).toBe("scout · bash");
+    expect(helperEl(scope, "H1")?.title).toBe("researcher · read");
+  });
+
+  it("pops a helper that ends, then drops it", async () => {
+    const { scope, send } = await render([withHelpers([researcher], [scout])]);
+    await send([withHelpers([researcher], [{ ...scout, state: "done" }])]);
+    expect(helperEl(scope, "H2")?.classList).toContain("pop");
+    expect(helperEl(scope, "H2")?.classList).not.toContain("fail");
+    expect(helperEl(scope, "H1")?.classList).not.toContain("pop");
+    await end(scope, "H2");
+    expect(helperEl(scope, "H2")).toBeNull();
+    expect(helperEl(scope, "H1")).not.toBeNull();
+  });
+
+  it("pops a helper that fails in the fail color, then drops it", async () => {
+    const { scope, send } = await render([withHelpers([researcher], [scout])]);
+    await send([withHelpers([{ ...researcher, state: "failed" }], [scout])]);
+    expect(helperEl(scope, "H1")?.classList).toContain("pop");
+    expect(helperEl(scope, "H1")?.classList).toContain("fail");
+    await end(scope, "H1");
+    expect(helperEl(scope, "H1")).toBeNull();
+  });
+
+  it("pops a helper that leaves the list, then drops it", async () => {
+    const { scope, send } = await render([withHelpers([researcher], [scout])]);
+    await send([withHelpers([researcher], [])]);
+    expect(helperEl(scope, "H2")?.classList).toContain("pop");
+    expect(helperEl(scope, "H2")?.classList).not.toContain("fail");
+    await end(scope, "H2");
+    expect(helperEl(scope, "H2")).toBeNull();
+  });
+
+  it("keeps the rows of helpers that still pop, so the stage below waits to move up", async () => {
+    const two = (helpers: GraphHelper[]): GraphTree => ({
+      ...runTree,
+      groups: [
+        group("PR1", "L1", [
+          step("T1", { state: "running", agent: agent("S1", "L1", { helpers }) }),
+          step("T2", { kind: "review", stage: "review", round: 1, state: "waiting" }),
+        ]),
+      ],
+    });
+    const { scope, send } = await render([two([researcher, scout])]);
+    const below = () =>
+      scope.querySelector<HTMLElement>('.react-flow__node[data-id="step:T2"]')?.style.transform;
+    const before = below();
+    expect(before).toMatch(/translate/);
+    await send([
+      two([
+        { ...researcher, state: "done" },
+        { ...scout, state: "done" },
+      ]),
+    ]);
+    // The server's next event leaves the ended helpers out.
+    await send([two([])]);
+    expect(helperEl(scope, "H1")?.classList).toContain("pop");
+    expect(helperEl(scope, "H2")?.classList).toContain("pop");
+    expect(below()).toBe(before);
+    await end(scope, "H1");
+    await end(scope, "H2");
+    expect(below()).not.toBe(before);
+  });
+
+  it("buds a helper that comes with a new pod in a later event", async () => {
+    const { scope, send } = await render([withHelpers([], [])]);
+    const later: GraphTree = {
+      ...withHelpers([], []),
+      groups: [
+        ...withHelpers([], []).groups,
+        group("PR9", "L9", [
+          step("T9", { state: "running", agent: agent("S9", "L9", { helpers: [scout] }) }),
+        ]),
+      ],
+    };
+    await send([later]);
+    expect(helperEl(scope, "H2")?.closest(".react-flow__node")?.getAttribute("data-id")).toBe(
+      "step:T9",
+    );
+    expect(helperEl(scope, "H2")?.classList).toContain("bud");
+  });
+
+  it("moves a running helper to the fix step of its agent, with no pop and no second copy", async () => {
+    // The server puts a reused stage agent's helpers on its last node: a new fix step takes them over.
+    const worker = (helpers: GraphHelper[]) => agent("S5", "L5", { helpers });
+    const lane = (steps: GraphStep[]): GraphTree => ({
+      ...runTree,
+      groups: [group("PR5", "L5", steps)],
+    });
+    const { scope, send } = await render([
+      lane([step("T5", { state: "running", agent: worker([scout]) })]),
+    ]);
+    await send([
+      lane([
+        step("T5", { agent: worker([]) }),
+        step("T7", {
+          kind: "fix",
+          stage: "review",
+          round: 1,
+          state: "running",
+          agent: worker([scout]),
+        }),
+      ]),
+    ]);
+    const copies = scope.querySelectorAll('[data-helper="H2"]');
+    expect(copies).toHaveLength(1);
+    expect(copies[0]?.closest(".react-flow__node")?.getAttribute("data-id")).toBe("step:T7");
+    expect(copies[0]?.classList).not.toContain("pop");
+    expect(copies[0]?.classList).not.toContain("bud");
+  });
+
+  it("does not bud a helper again when it moves after its bud ended", async () => {
+    const worker = (helpers: GraphHelper[]) => agent("S5", "L5", { helpers });
+    const lane = (steps: GraphStep[]): GraphTree => ({
+      ...runTree,
+      groups: [group("PR5", "L5", steps)],
+    });
+    const { scope, send } = await render([
+      lane([step("T5", { state: "running", agent: worker([]) })]),
+    ]);
+    await send([lane([step("T5", { state: "running", agent: worker([scout]) })])]);
+    expect(helperEl(scope, "H2")?.classList).toContain("bud");
+    await end(scope, "H2");
+    expect(helperEl(scope, "H2")?.classList).not.toContain("bud");
+    await send([
+      lane([
+        step("T5", { agent: worker([]) }),
+        step("T7", {
+          kind: "fix",
+          stage: "review",
+          round: 1,
+          state: "running",
+          agent: worker([scout]),
+        }),
+      ]),
+    ]);
+    expect(helperEl(scope, "H2")?.closest(".react-flow__node")?.getAttribute("data-id")).toBe(
+      "step:T7",
+    );
+    expect(helperEl(scope, "H2")?.classList).not.toContain("bud");
+  });
+
+  it("does not show a helper that ended in a hidden project when that project is shown", async () => {
+    const other = (helpers: GraphHelper[]): GraphTree => ({
+      ...workspaceTree,
+      root: { ...workspaceTree.root, helpers },
+    });
+    const { scope, send, show } = await render([runTree, other([scout])], "p1");
+    await send([runTree, other([{ ...scout, state: "done" }])]);
+    await send([runTree, other([])]);
+    await show("p2");
+    expect(podLinks(scope)).toContain("#/workspaces/W2/chats/C2");
+    expect(helperEl(scope, "H2")).toBeNull();
+  });
+
+  it("does not bud a helper when its project is shown after the helper came", async () => {
+    const explorer: GraphHelper = { ...researcher, id: "H3", agent: "explorer" };
+    const other = (helpers: GraphHelper[]): GraphTree => ({
+      ...workspaceTree,
+      root: { ...workspaceTree.root, helpers },
+    });
+    const { scope, send, show } = await render([runTree, other([])], "p1");
+    // It comes while its project is hidden.
+    await send([runTree, other([scout])]);
+    await show("p2");
+    expect(helperEl(scope, "H2")?.classList).not.toContain("bud");
+    // It comes while its project is shown, and the user leaves before its bud ends.
+    await send([runTree, other([scout, explorer])]);
+    expect(helperEl(scope, "H3")?.classList).toContain("bud");
+    await show("p1");
+    await show("p2");
+    expect(helperEl(scope, "H3")?.classList).not.toContain("bud");
+  });
+
+  it("buds a helper that a later event brings, not one of the snapshot", async () => {
+    const { scope, send } = await render([withHelpers([researcher], [])]);
+    expect(helperEl(scope, "H1")?.classList).not.toContain("bud");
+    await send([withHelpers([researcher], [scout])]);
+    expect(helperEl(scope, "H2")?.classList).toContain("bud");
+    expect(helperEl(scope, "H1")?.classList).not.toContain("bud");
   });
 });

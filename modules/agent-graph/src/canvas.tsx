@@ -24,9 +24,11 @@ import {
   useRef,
   useState,
 } from "react";
+import { Helpers, HelpersContext, useHelpers } from "./helpers.js";
 import {
   type GraphNode,
   type GroupNode,
+  type HelpersByNode,
   layoutGraph,
   type PodState,
   rootHandles,
@@ -62,7 +64,7 @@ function Handles({ handles }: { handles: readonly NodeHandle[] }) {
   ));
 }
 
-/** A pod: a link to its agent's chat, or a plain box for a step without an agent. */
+/** A pod: a link to its agent's chat, or a plain box for a step without an agent. Its helpers go in `children`. */
 function Pod({
   agent,
   className,
@@ -71,6 +73,7 @@ function Pod({
   role,
   title,
   meta,
+  children,
 }: {
   agent: GraphAgent | undefined;
   className: string;
@@ -79,6 +82,7 @@ function Pod({
   role: string;
   title: string | undefined;
   meta: string;
+  children?: ReactNode;
 }) {
   const body = (
     <>
@@ -88,6 +92,7 @@ function Pod({
         <span className="ag-title">{title}</span>
         <span className="ag-meta">{meta}</span>
       </span>
+      {children}
     </>
   );
   const props = { className: cn("ag-pod", className), style, "data-pod": "" };
@@ -110,7 +115,7 @@ function rootRole(tree: GraphTree): string {
   return tree.root.role === "orchestrator" ? `${tree.root.kind} chat` : tree.root.role;
 }
 
-function TreeBox({ data, width }: NodeProps<TreeNode>) {
+function TreeBox({ id, data, width }: NodeProps<TreeNode>) {
   const { tree, tone, root, live } = data;
   return (
     <div className={cn("ag-tree", live && "live")}>
@@ -131,8 +136,10 @@ function TreeBox({ data, width }: NodeProps<TreeNode>) {
         shape={<SporeLogo />}
         role={rootRole(tree)}
         title={tree.root.title}
-        meta={`${tree.root.status === "busy" ? "working" : tree.root.status} · ${shortModel(tree.root)}`}
-      />
+        meta={`${tree.root.status === "busy" ? "working" : tree.root.status} · ${shortModel(tree.root.routedModel ?? tree.root.model)}`}
+      >
+        <Helpers node={id} r={root.r} />
+      </Pod>
       <Handles handles={rootHandles(root)} />
     </div>
   );
@@ -154,7 +161,7 @@ function stepRole(step: GraphStep): string {
     : `${name} r${step.round}`;
 }
 
-function StepPod({ data }: NodeProps<StepNode>) {
+function StepPod({ id, data }: NodeProps<StepNode>) {
   const { step } = data;
   const state = stepState(step);
   return (
@@ -172,8 +179,10 @@ function StepPod({ data }: NodeProps<StepNode>) {
         }
         role={stepRole(step)}
         title={step.agent?.title ?? step.gates?.join(" · ")}
-        meta={`${STATE_TEXT[state]} · ${shortModel(step.agent)}`}
-      />
+        meta={`${STATE_TEXT[state]} · ${shortModel(step.agent?.routedModel ?? step.agent?.model)}`}
+      >
+        {step.agent && <Helpers node={id} r={STAGE_R} />}
+      </Pod>
       <Handles handles={stepHandles} />
     </>
   );
@@ -274,10 +283,10 @@ function FitButton() {
  */
 let kept: ReadonlyMap<string, XYPosition> = new Map();
 
-function Canvas({ trees }: { trees: readonly GraphTree[] }) {
+function Canvas({ trees, helpers }: { trees: readonly GraphTree[]; helpers: HelpersByNode }) {
   const phone = usePhone();
   const [moved, setMoved] = useState(kept);
-  const layout = useMemo(() => layoutGraph(trees, phone), [trees, phone]);
+  const layout = useMemo(() => layoutGraph(trees, helpers, phone), [trees, helpers, phone]);
   const nodes = useMemo(
     () =>
       layout.nodes.map((node) => {
@@ -377,6 +386,7 @@ export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
     () => all?.filter((tree) => projectId === undefined || tree.projectId === projectId),
     [all, projectId],
   );
+  const helpers = useHelpers(all, trees);
 
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -414,7 +424,11 @@ export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
           }
         />
       )}
-      {trees && trees.length > 0 && <Canvas trees={trees} />}
+      {trees && trees.length > 0 && (
+        <HelpersContext value={helpers}>
+          <Canvas trees={trees} helpers={helpers.byNode} />
+        </HelpersContext>
+      )}
     </div>
   );
 }
