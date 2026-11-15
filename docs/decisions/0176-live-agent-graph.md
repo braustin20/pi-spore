@@ -73,7 +73,9 @@ and model, a workspace's pipeline runs, and a change hook for runs.
   not rebuild for each tool call.
 - A helper is a step in state `running` of a child run in state `running`. Its id is the run id, a colon, and the
   step index, so it stays the same across events. It carries the step's agent name, model, state, current tool, and
-  `startedAt` when the snapshot has it.
+  `startedAt` when the snapshot has it. One stage agent can back several steps (a task turn and its fix turns, or a
+  reused worker in two groups); its helpers show on its last node in the graph only, so each helper id appears
+  once.
 - When a helper stops qualifying, the next topic event still has it once, with its end state, so the canvas pops it
   in the right color: `failed` for a step or run that is `failed` or `rejected`, else `done` (also when its run is
   gone). The module then publishes one more event without it. `GET` and the snapshot for a new subscriber show only
@@ -87,7 +89,9 @@ and model, a workspace's pipeline runs, and a change hook for runs.
 - `GET /api/agent-graph` answers `{ trees }`.
 - Topic `agent-graph:trees`, event `{ type: "graph", trees }`: the whole graph again, at most once per tick, after
   a change. A new subscriber gets the current graph first. The change sources are `AgentsKey.onChange` (with
-  `children`), `PipelinesKey.onChange`, a new `RunsKey.onChange`, and the workspace state change and delete hooks.
+  `children`), `AgentsKey.afterWorkerChange` (a workspace's first chat fires no `onChange`),
+  `PipelinesKey.onChange`, a new `RunsKey.onChange`, and the workspace state change and delete hooks. A model
+  change shows at the agent's next status change; it has no change kind of its own.
   Nothing polls.
 - New interface methods for this: `AgentsKey.liveState`, `PipelinesKey.runsOf(workspaceId)` (the workspace's runs,
   newest first, as `GET /api/pipelines/workspaces/:id/runs`), and `RunsKey.onChange(listener)` (after each change

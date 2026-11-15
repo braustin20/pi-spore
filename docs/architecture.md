@@ -233,7 +233,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     for a slot but never stops a run that exists. A queued run counts nothing. An agent with a running helper does
     not stop for idleness, and the Stop button of the chat is disabled.
   - The agent view carries `helpersRunning`, the count of `running` runs, left out when 0. A change of the count is
-    an `AgentChange` of kind `helpers`, so `agents:list` and Home follow it. An idle chat with a running helper shows
+    an `AgentChange` of kind `helpers`, so `agents:list` and Home follow it.
+  - Other modules read the whole list with `AgentsKey.liveState(agentId)`: `{ model?, routedModel?, children }`,
+    the in-memory model, the physical model of the newest answer when it differs (`routedModel` in
+    `packages/shared/src/chat.ts`, which the chat page uses too), and the child runs. Any change of the list (a run,
+    a step, a state, a current tool, or the empty list at process exit) is an `AgentChange` of kind `children`.
+    `agents:list` and Home ignore it; the agent graph follows it (section 11g, ADR 0176). An idle chat with a running helper shows
     as working: "Working (helper running)" in the workspace list and on Home, `working (helper running)` in the chat
     header. It is not done; its process gets the helper's result.
   - Another module can mark an agent as working for something with `Agents.setWorkingFor(agentId, label)`, for
@@ -725,7 +730,8 @@ fail_first = "artifact"
   that run never asks about the local implementer.
   `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
   uses it to record outcomes (section 11a). `onChange(listener)` runs with the workspace id whenever its runs
-  change, as the topic does; the runs module uses it to show a lane's `blocked`.
+  change, as the topic does; the runs module uses it to show a lane's `blocked`. `runsOf(workspaceId)` returns the
+  workspace's runs, newest first, as `GET /api/pipelines/workspaces/:id/runs` does.
 - Not built yet: tiers other than `route`, a thinking level per stage, a brief preset from the card, and moving the
   card when a run passes.
 
@@ -827,7 +833,8 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 - Routes: `GET /api/runs?projectId=`, `GET /api/runs/:id` (with lanes and open questions), `POST /api/runs`,
   `POST /api/runs/:id/cancel`. `RunsKey.create` does the same as `POST /api/runs` for other modules, with an
   optional coordinator model; kanban starts runs from cards with it (section 12). Topic `runs:list` sends
-  `{ type: "runs", runs }` on subscribe and after every change.
+  `{ type: "runs", runs }` on subscribe and after every change. `RunsKey.onChange(listener)` runs after each of
+  those publishes; a throw is logged and the other listeners still run.
 - Web: a Runs page (`#/runs`, rail icon) with a start form and every run's state and lanes by wave, and a run panel
   on a run workspace (the same card) or a lane workspace (a link to its run). A blocked lane shows `Blocked`, the
   error, and Retry, which calls the pipeline's retry route. A running run's card has Cancel, with
@@ -1430,6 +1437,40 @@ See [ADR 0070](decisions/0070-artifacts-per-workspace-and-project.md). Requireme
   `.md` or `.markdown` file opens the same viewer in a dialog through the `view` route. The agents module offers this
   slot as `AgentsWeb.setFileLink`; without it the link stays plain.
 
+## 11g. Agent graph
+
+See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R15.
+
+- The `agent-graph` module (requires `projects`, `workspaces`, `agents`, `pipelines`, `runs`) builds one live picture
+  of every agent that works now, as trees. It stores nothing yet. It reads the other modules only through
+  `WorkspacesKey`, `AgentsKey` (`get`, `inWorkspace`, `isClosed`, `attention`, `liveState`), `PipelinesKey` (`get`,
+  `runsOf`), and `RunsKey` (`runOf`, `laneOf`). The build is `buildGraph` in `modules/agent-graph/src/graph.ts`.
+- Trees, for workspaces in state `active` only, not the planner workspace, oldest workspace first:
+  - A run workspace gives a `run` tree: root the coordinator chat, one group per lane whose workspace is active and
+    that has a pipeline run. A lane workspace gives no tree of its own.
+  - Any other workspace with an active worker chat that is not closed gives a `workspace` tree: root that chat, one
+    group per pipeline run that is `running` or `waiting_user`, plus the newest run when it ended.
+  - Side chats and planner chats are not in the graph.
+- A group (`GraphGroup`) has the pipeline run id, workspace, lane id for a lane, a name (slice name, lane name, or
+  pipeline id), the run state, the current stage and round, `live` (state `running`), and its steps in pipeline
+  order. A started agent stage gives one step per turn (`task`, `review`, or `fix`, with its round and agent). A
+  gate stage gives one `gates` step with the gate names. A stage not reached gives one `waiting` step. A step whose
+  agent retention deleted has no agent.
+- An agent node (`GraphAgent`) has its id, workspace, kind, role, title, status, `workingFor`, model, routed model,
+  `since` (from `AgentsKey.attention`, else its creation time), and `helpers`: one per `running` step of a
+  `running` child run, with id `<child run id>:<step index>`, agent name, model, current tool, and start time. One
+  stage agent can back several steps (a task turn and its fix turns); its helpers show on its last node only.
+- `GET /api/agent-graph` answers `{ trees }`. Topic `agent-graph:trees` sends `{ type: "graph", trees }` on
+  subscribe and again after a change, at most once per tick (`setImmediate`). Changes come from `AgentsKey.onChange`
+  and `afterWorkerChange` (a workspace's first chat), `PipelinesKey.onChange`, `RunsKey.onChange`, and the
+  workspace state change and delete hooks. Nothing polls.
+- A helper that stopped running is in the next topic event once more, with state `failed` (its step or run is
+  `failed` or `rejected`) or `done`, so the canvas can pop it in the right color; one more event drops it. `GET` and
+  the snapshot show running helpers only. Foreground helpers are the parent's `subagent` tool call and are not
+  nodes.
+- Web: the module is registered with no page yet. The canvas (`@xyflow/react`) on the workspaces landing page comes
+  next (ADR 0176).
+
 ## 11. Unity module
 
 See [ADR 0011](decisions/0011-unity-support.md).
@@ -1876,7 +1917,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - REST under `/api/<module>/...`, schemas in TypeBox, validated at the boundary.
 - One WebSocket at `/api/ws` for server events and one per terminal. Topics: `agent:<id>` (one agent's stream),
   `agents:list` (agent list snapshots and updates), `workspaces:list` (workspace list snapshots and updates),
-  `attention:inbox` (Home), `kanban:board` (the board), and `runs:list` (runs).
+  `attention:inbox` (Home), `kanban:board` (the board), `runs:list` (runs), and `agent-graph:trees` (the agent
+  graph).
 - Modules add their own WebSocket routes with `host.sockets.add(path, open)`, under `/api/<module id>/`. `open`
   gets the path params and throws an ApiError to refuse the upgrade with its status. Every upgrade, `/api/ws`
   included, passes `guardRequest` (Host, Origin, peer, and login; section 13, Remote access) and needs the user's
