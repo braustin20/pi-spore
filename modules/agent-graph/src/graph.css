@@ -1,0 +1,281 @@
+/*
+ * The agent graph (ADR 0176), in the approved Mycelium look. Values come from the mockup; colors only from theme
+ * tokens. Stage pods are colored by state, roots and threads by type: `--c` is the color of the thing.
+ */
+
+.ag-tree {
+  width: 100%;
+  height: 100%;
+  border-radius: 28px;
+  background: color-mix(in oklab, var(--text) 1.5%, transparent);
+  border: 1.2px solid color-mix(in oklab, var(--text) 16%, transparent);
+}
+.ag-tree.live {
+  border-color: color-mix(in oklab, var(--accent) 38%, transparent);
+}
+.ag-tree-name {
+  position: absolute;
+  left: 22px;
+  top: 13px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.ag-group {
+  width: 100%;
+  height: 100%;
+  border-radius: 24px;
+  background: color-mix(in oklab, var(--raised) 88%, transparent);
+  border: 1px solid color-mix(in oklab, var(--text) 13%, transparent);
+}
+.ag-group.live {
+  border-color: color-mix(in oklab, var(--accent) 30%, transparent);
+}
+.ag-group-name {
+  padding: 11px 12px 0 50px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* A pod: the circle, and the text to its right. The circle's center is 22px from the top. */
+.ag-pod {
+  --c: var(--text-muted);
+  position: absolute;
+  display: block;
+  height: 50px;
+  padding-left: calc(var(--r) * 2 + 10px);
+  color: inherit;
+  text-decoration: none;
+  white-space: nowrap;
+}
+.ag-step {
+  left: 0;
+  top: 0;
+  right: 0;
+}
+.ag-root {
+  /* The tree box lets the pointer through to the canvas; the root pod takes it, to drag the tree. */
+  pointer-events: auto;
+  cursor: grab;
+}
+.ag-shape {
+  position: absolute;
+  left: 0;
+  top: calc(22px - var(--r));
+  width: calc(var(--r) * 2);
+  height: calc(var(--r) * 2);
+  border-radius: 50%;
+  background: var(--c);
+  border: 1.5px solid var(--c);
+}
+.ag-text > * {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.ag-role {
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--c) 85%, var(--text));
+}
+.ag-title {
+  font-size: 14.5px;
+  line-height: 18px;
+  color: var(--text);
+}
+.ag-meta {
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--text-muted);
+}
+
+/* Roots: the spore logo in a ring of the type color. */
+.ag-root.t-coord {
+  --c: var(--accent);
+}
+.ag-root.t-chat {
+  --c: var(--accent-strong);
+}
+.ag-root .ag-shape {
+  display: grid;
+  place-items: center;
+  border-width: 2px;
+  background: color-mix(in oklab, var(--c) 16%, var(--bg));
+  color: var(--c);
+}
+.ag-root .ag-shape svg {
+  width: 68%;
+  height: 68%;
+}
+.ag-root.s-idle {
+  opacity: 0.45;
+}
+
+/* Stages, by state. Idle is an opaque color, not opacity, so the drops pass behind it, not through it. */
+.ag-step.s-work {
+  --c: var(--run);
+}
+.ag-pod.s-fail {
+  --c: var(--fail);
+}
+.ag-step.s-idle .ag-shape {
+  background: color-mix(in oklab, var(--text-muted) 75%, var(--raised));
+  border-color: transparent;
+}
+.ag-step.s-idle .ag-text {
+  opacity: 0.6;
+}
+.ag-step.s-none .ag-shape {
+  background: var(--bg);
+  border-color: color-mix(in oklab, var(--c) 60%, transparent);
+}
+.ag-step.s-none .ag-role {
+  color: color-mix(in oklab, var(--c) 55%, var(--text-muted));
+}
+.ag-step.s-none .ag-title {
+  color: var(--text-muted);
+}
+.ag-step.s-fail .ag-shape svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+  fill: none;
+  stroke: var(--bg);
+  stroke-width: 2;
+  stroke-linecap: round;
+}
+.ag-pod.s-work .ag-shape {
+  animation: ag-breathe 3.2s ease-in-out infinite;
+}
+@keyframes ag-breathe {
+  0%,
+  100% {
+    transform: scale(0.93);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.ag-handle.react-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  border: 0;
+  bottom: auto;
+  transform: none;
+  opacity: 0;
+}
+
+/* Threads, like fungus roots. */
+.ag-thread {
+  --c: var(--text-muted);
+}
+.ag-thread.t-coord {
+  --c: var(--accent);
+}
+.ag-thread.t-chat {
+  --c: var(--accent-strong);
+}
+.ag-thread :is(.ag-main, .ag-twin) {
+  fill: none;
+  stroke: color-mix(in oklab, var(--c) 38%, var(--line));
+  stroke-width: 2.6;
+  stroke-linecap: round;
+}
+.ag-thread .ag-twin {
+  stroke-width: 1.4;
+  opacity: 0.5;
+}
+.ag-thread.live .ag-main {
+  stroke: color-mix(in oklab, var(--c) 55%, var(--line));
+}
+.ag-thread.dim :is(.ag-main, .ag-twin) {
+  opacity: 0.5;
+}
+.ag-drop {
+  fill: light-dark(var(--c), color-mix(in oklab, var(--c) 70%, white));
+}
+
+/* The legend under the header. */
+.ag-legend {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  padding-top: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.ag-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.ag-legend i {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--c);
+}
+.ag-legend .t-coord {
+  --c: var(--accent);
+}
+.ag-legend .t-chat {
+  --c: var(--accent-strong);
+}
+.ag-legend .t-work {
+  --c: var(--run);
+}
+.ag-legend .t-idle {
+  --c: var(--text-muted);
+}
+.ag-legend i.st {
+  background: transparent;
+  border: 1.5px solid var(--text-muted);
+}
+.ag-legend i.st.work {
+  background: var(--text);
+  border-color: var(--text);
+}
+.ag-legend i.st.idle {
+  background: color-mix(in oklab, var(--text-muted) 50%, transparent);
+  border-color: transparent;
+}
+.ag-legend i.st.fail {
+  background: var(--fail);
+  border-color: var(--fail);
+}
+.ag-legend .ag-sep {
+  width: 1px;
+  height: 14px;
+  background: var(--line);
+}
+
+/* Reduced motion: no drops, no breathing, steady color. */
+@media (prefers-reduced-motion: reduce) {
+  .ag-drops {
+    display: none;
+  }
+  .ag-pod .ag-shape {
+    animation: none;
+  }
+}
+
+.ag-canvas {
+  --xy-attribution-background-color: transparent;
+}
+.ag-canvas .react-flow__attribution a {
+  color: var(--text-muted);
+}

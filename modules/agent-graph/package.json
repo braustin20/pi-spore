@@ -21,7 +21,10 @@
     "@pi-spore/mod-runs": "0.0.0",
     "@pi-spore/mod-workspaces": "0.0.0",
     "@pi-spore/module-api": "0.0.0",
-    "@pi-spore/shared": "0.0.0"
+    "@pi-spore/shared": "0.0.0",
+    "@pi-spore/ui": "0.0.0",
+    "@xyflow/react": "12.12.1",
+    "react": "19.3.1"
   },
   "devDependencies": {
     "@pi-spore/mod-actions": "0.0.0",
@@ -32,6 +35,7 @@
     "@pi-spore/mod-projects": "0.0.0",
     "@pi-spore/mod-vcs-folder": "0.0.0",
     "@pi-spore/mod-vcs-git": "0.0.0",
-    "@pi-spore/server-core": "0.0.0"
+    "@pi-spore/server-core": "0.0.0",
+    "react-dom": "19.3.1"
   }
 }
