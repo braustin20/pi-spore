@@ -553,23 +553,43 @@ export const pipelinesModule: ServerModule = {
     };
     const loadQuestion = (id: string) =>
       host.store.get<QuestionRow>("SELECT * FROM pipelines_questions WHERE id = ?", id);
-    const openQuestionOf = (turn: TurnRow) =>
-      host.store.get<QuestionRow>(
+    // A lane's stage agent asks its coordinator, whose questions the runs module keeps (ADR 0003, ADR 0179).
+    const openQuestionOf = (
+      turn: TurnRow,
+    ):
+      | { id: string; question: string; askedAgentId: string; askedWorkspaceId: string }
+      | undefined => {
+      const workspaceId = requireRun(turn.run_id).workspace_id;
+      const lane = laneLookup?.(workspaceId);
+      if (lane) {
+        const question = lane.openQuestion(turn.agent_id, turn.created_at);
+        return (
+          question && {
+            id: question.id,
+            question: question.question,
+            askedAgentId: lane.coordinatorAgentId,
+            askedWorkspaceId: lane.runWorkspaceId,
+          }
+        );
+      }
+      const row = host.store.get<QuestionRow>(
         "SELECT * FROM pipelines_questions WHERE turn_id = ? AND state = 'open' ORDER BY created_at, id LIMIT 1",
         turn.id,
       );
+      return (
+        row && {
+          id: row.id,
+          question: row.question,
+          askedAgentId: row.asked_agent_id,
+          askedWorkspaceId: workspaceId,
+        }
+      );
+    };
     // Retention may have deleted the closed chat a question was asked of; the run view then names its id.
     const titleOf = (agentId: string) => unlessGone(() => agents.get(agentId))?.title ?? agentId;
     const questionView = (turn: TurnRow): PipelineTurn["question"] => {
       const question = openQuestionOf(turn);
-      return (
-        question && {
-          id: question.id,
-          question: question.question,
-          askedAgentId: question.asked_agent_id,
-          askedTitle: titleOf(question.asked_agent_id),
-        }
-      );
+      return question && { ...question, askedTitle: titleOf(question.askedAgentId) };
     };
     const viewOf = (row: RunRow) =>
       runToView(
@@ -712,7 +732,9 @@ export const pipelinesModule: ServerModule = {
     const workspaceLabel = (workspaceId: string) => {
       const name = `workspace "${workspaces.get(workspaceId).name}"`;
       const lane = laneLookup?.(workspaceId);
-      return lane ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${lane.run}"` : name;
+      return lane
+        ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${workspaces.get(lane.runWorkspaceId).name}"`
+        : name;
     };
 
     /** What the asking chat reads when its run ends: the state, the stop or failure text, and the last review. */
@@ -1988,6 +2010,7 @@ export const pipelinesModule: ServerModule = {
         changeListeners.push(listener);
       },
       refreshWorking: syncWorking,
+      laneQuestionChanged: publish,
       setLaneLookup: (lookup) => {
         if (laneLookup) throw new Error("The pipelines module already has a lane lookup");
         laneLookup = lookup;

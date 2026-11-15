@@ -36,6 +36,7 @@ export function fakePipelines(): { module: ServerModule; end: (run: FakeRun) => 
     stop: THROWS,
     setLaneLookup: THROWS,
     refreshWorking: THROWS,
+    laneQuestionChanged: THROWS,
     get: THROWS,
     runsOf: THROWS,
     onChange: THROWS,

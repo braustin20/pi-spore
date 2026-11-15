@@ -3127,6 +3127,7 @@ describe("a stage agent's question to the asking chat (ADR 0179)", () => {
       id: question.id,
       question: "Which color?",
       askedAgentId: agentId,
+      askedWorkspaceId: workspaceId,
       askedTitle: expect.any(String),
     });
 
