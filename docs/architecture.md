@@ -129,8 +129,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
     `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
   - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
-    picker), because the pipeline judges a reviewer by the model it ran on (R4.4). A stage whose agent failed gets a
-    fresh agent on Retry instead (section 8, "Failed turns").
+    picker and shows the model read-only, with the routed model after `→`), because the pipeline judges a reviewer
+    by the model it ran on (R4.4). A stage whose agent failed gets a fresh agent on Retry instead (section 8,
+    "Failed turns").
   - `turnError(agentId)` says why the agent's last run failed: the error of a `failed` status, or the
     `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a provider that
     refused, such as a full usage window). `rename(agentId, title)` sets the title.

@@ -1,6 +1,6 @@
 // @vitest-environment happy-dom
 import { type ApiClient, ApiContext, type WebHost } from "@pi-spore/module-api";
-import type { Agent, Workspace } from "@pi-spore/shared";
+import { type Agent, emptyChat, type Workspace } from "@pi-spore/shared";
 import { PHONE_QUERY, TooltipProvider } from "@pi-spore/ui";
 import type { ComponentType } from "react";
 import { act } from "react";
@@ -61,14 +61,22 @@ afterEach(() => {
   window.location.hash = "";
 });
 
-async function render({ phone, agent }: { phone: boolean; agent: Agent }) {
+async function render({
+  phone,
+  agent,
+  snapshot = {},
+}: {
+  phone: boolean;
+  agent: Agent;
+  snapshot?: Record<string, unknown>;
+}) {
   screen(phone);
   const Pane = mainPane();
   const api = {
     get: async () => ({ agents: [agent] }),
     send: async () => ({}),
     subscribe: (topic: string, onEvent: (event: unknown) => void) => {
-      if (topic === `agent:${agent.id}`) onEvent({ type: "snapshot", agent });
+      if (topic === `agent:${agent.id}`) onEvent({ type: "snapshot", agent, ...snapshot });
       return () => {};
     },
   } as unknown as ApiClient;
@@ -130,4 +138,32 @@ describe("the composer on a wide screen", () => {
     expect(labelled("Model for the next message")).not.toBeNull();
     expect(labelled("Thinking level")).not.toBeNull();
   });
+});
+
+describe("the composer of a stage chat", () => {
+  const stage: Agent = { ...idle, id: "a2", role: "worker", kind: "stage" };
+  // spore/auto answered through a local model: Pi records the physical model on the assistant message (ADR 0009).
+  const snapshot = {
+    model: { provider: "spore", id: "auto", name: "Auto" },
+    thinkingLevel: "high",
+    chat: {
+      ...emptyChat(),
+      messages: [
+        { role: "user", content: "Review it", timestamp: 1 },
+        { role: "assistant", provider: "strata", model: "qwen", content: [], timestamp: 2 },
+      ],
+    },
+  };
+
+  for (const phone of [false, true]) {
+    it(`shows the model read-only, with the routed model, on a ${phone ? "phone" : "wide screen"}`, async () => {
+      await render({ phone, agent: stage, snapshot });
+      expect(labelled("Model for the next message")).toBeNull();
+      const model = labelled("Model");
+      expect(model?.textContent).toBe("Auto (spore) → qwen");
+      expect(model?.getAttribute("title")).toBe("Auto (spore) → qwen");
+      expect(model?.tagName).not.toBe("BUTTON");
+      expect(row().contains(model as Node)).toBe(true);
+    });
+  }
 });
