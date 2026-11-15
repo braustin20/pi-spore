@@ -1481,7 +1481,8 @@ See [ADR 0011](decisions/0011-unity-support.md).
   `Temp/UnityLockfile` exists in the main checkout. After the copy, the trait's `afterCopy` hook deletes
   `<worktree>/Library/Bee`: a copied script build graph holds the main checkout's path and makes Unity build DLLs
   whose scripts do not bind ([ADR 0177](decisions/0177-unity-worktree-library-drops-bee.md)). Lane workspaces and the
-  run's merge checkout both get it, through `workspaces.create`.
+  run's merge checkout both get it, through `workspaces.create`. If the main checkout's `Library` is a symlink, the
+  copy is the same link, so creation fails with 409 `symlinked_library` and removes the new copy.
 - Editor control through the `unity` CLI (run with `host.exec`, plus `--no-banner --non-interactive`):
   - `unity open <path>` to open (it returns at once);
   - `unity status --json` to see open editors, their project paths, and pids;

@@ -37,7 +37,9 @@ Any Library copied with its `Bee` breaks, however clean the source. The import c
   every isolation except `in-place`. Lane workspaces and the run's merge checkout both come from
   `workspaces.create`, so both get it. A failing hook fails the creation and removes the new copy, as a failed copy
   does.
-- Never a symlink or a shared Library. Never a change to the main checkout's Library.
+- Never a symlink or a shared Library. Never a change to the main checkout's Library. If the main checkout's
+  `Library` is a symlink, `cp -a` copies the link, and deleting `Bee` through it would change the shared folder. So
+  the hook refuses with 409 `symlinked_library`, and the new copy is removed.
 - The Unity test gates check the Editor log after `unity test` ends. When `<worktree>/Logs/Editor.log` was written
   by this run and has at least 100 lines that are exactly
   `The referenced script (Unknown) on this Behaviour is missing!`, the gate fails with
