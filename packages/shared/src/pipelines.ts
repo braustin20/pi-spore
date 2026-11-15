@@ -180,6 +180,8 @@ export const PipelineTurn = Type.Object({
   error: Type.Optional(Type.String()),
   /** Why a review turn's agent runs on another model than its role default: the default's plan was full. */
   modelNote: Type.Optional(Type.String()),
+  /** A fix turn's member stages whose findings it holds (ADR 0178). Absent on fix turns from before parallel groups. */
+  fixFor: Type.Optional(Type.Array(Type.String())),
 });
 export type PipelineTurn = Static<typeof PipelineTurn>;
 

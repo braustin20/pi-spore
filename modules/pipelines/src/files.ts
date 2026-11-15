@@ -30,6 +30,7 @@ min_strength_over = "implement"
 [[stage]]
 name = "adversarial"
 role = "adversarial-reviewer"
+with_previous = true      # runs next to review; its findings join the same fix
 rounds = 1
 fix_passes = 1
 

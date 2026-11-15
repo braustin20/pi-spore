@@ -118,7 +118,8 @@ if (forkSource) {
 } else if (!argv.includes("--no-session")) {
   const dir = arg("--session-dir");
   mkdirSync(dir, { recursive: true });
-  sessionFile = join(dir, `${Date.now()}_fake.jsonl`);
+  // The pid keeps two agents that start in the same millisecond (a parallel review group) apart, as Pi's uuid does.
+  sessionFile = join(dir, `${Date.now()}_${process.pid}_fake.jsonl`);
   const header = `${JSON.stringify({ type: "session", version: 3, id: "s", cwd: process.cwd() })}\n`;
   if (process.env.FAKE_PI_LAZY_SESSION === "1") unwritten = header;
   else writeFileSync(sessionFile, header);
