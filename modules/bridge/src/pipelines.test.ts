@@ -1180,9 +1180,10 @@ describe("a stage agent whose turn failed", () => {
   });
 });
 
+const reminderOf = (turnId: string) =>
+  `user: You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
+
 describe("a stage agent that ends its turn without a report (ADR 0169)", () => {
-  const reminderOf = (turnId: string) =>
-    `user: You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
   const reminders = async (server: TestServer, agentId: string, turnId: string) =>
     (await chat(server, agentId)).filter((message) => message === reminderOf(turnId));
 
@@ -2697,8 +2698,6 @@ describe("the run's chat while the run works", () => {
 describe("a stage agent's question to the asking chat (ADR 0179)", () => {
   const ASK = { ask: "Which color?" };
   const APPROVE = { summary: "Good", verdict: "approve" };
-  const reminderOf = (turnId: string) =>
-    `user: You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
   const restartOf = (turnId: string) =>
     `user: pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
 
@@ -2789,6 +2788,20 @@ describe("a stage agent's question to the asking chat (ADR 0179)", () => {
     expect(await missing.json()).toMatchObject({ error: { code: "question_not_found" } });
     expect(second.status).toBe(409);
     expect(await second.json()).toMatchObject({ error: { code: "question_answered" } });
+  });
+
+  it("refuses an answer after the run stopped", async () => {
+    const server = await start({ env: scriptEnv({ worker: [ASK, DONE] }) });
+    const { workspaceId, agentId } = await workspace(server, "stopped");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    const question = await openQuestion(server, run.id);
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/cancel`));
+
+    const late = await answer(server, agentId, workspaceId, question.id);
+
+    expect(late.status).toBe(409);
+    expect(await late.json()).toMatchObject({ error: { code: "turn_closed" } });
   });
 
   it("sends the question to the active worker chat when the asking chat is closed, and that chat gets the end message", async () => {

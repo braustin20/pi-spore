@@ -531,14 +531,7 @@ export const pipelinesModule: ServerModule = {
         turn.id,
       );
     // Retention may have deleted the closed chat a question was asked of; the run view then names its id.
-    const askedTitleOf = (agentId: string) => {
-      const agent = unlessGone(() => agents.get(agentId));
-      return agent?.title ?? agentId;
-    };
-    const titleOf = (agentId: string) => {
-      const agent = agents.get(agentId);
-      return agent.title ?? agent.id;
-    };
+    const titleOf = (agentId: string) => unlessGone(() => agents.get(agentId))?.title ?? agentId;
     const viewOf = (row: RunRow) => {
       const turn = openTurnOf(row);
       const question = turn && openQuestionOf(turn);
@@ -553,7 +546,7 @@ export const pipelinesModule: ServerModule = {
                 id: question.id,
                 question: question.question,
                 askedAgentId: question.asked_agent_id,
-                askedTitle: askedTitleOf(question.asked_agent_id),
+                askedTitle: titleOf(question.asked_agent_id),
               },
             }
           : undefined,
@@ -1477,7 +1470,8 @@ export const pipelinesModule: ServerModule = {
           "A stage agent in a lane asks its coordinator; use ask_coordinator",
         );
       const { run: first } = requireOpenTurn(caller);
-      const closed = agents.isClosed(first.asking_agent_id);
+      // Retention deletes only closed chats, so a gone asking chat counts as closed.
+      const closed = unlessGone(() => agents.isClosed(first.asking_agent_id)) ?? true;
       const worker = closed ? await agents.activeWorker(caller.workspaceId) : undefined;
       const asked = host.store.transaction(() => {
         // The awaits above may have let the turn close.
