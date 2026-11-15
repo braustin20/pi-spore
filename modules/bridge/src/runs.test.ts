@@ -1088,6 +1088,28 @@ describe("the runs:list topic", () => {
   });
 });
 
+describe("the runs onChange listener", () => {
+  it("runs after a run is created and after a lane changes state", async () => {
+    const server = await start();
+    const before = server.events.eventsOf("runs:list").length;
+    const published = () => server.events.eventsOf("runs:list").length - before;
+    let calls = 0;
+    runs.onChange(() => {
+      calls += 1;
+    });
+    const { projectId } = await project(server, "listen");
+    const { run, coordinator } = await createRun(server, projectId, "listen");
+    expect(calls).toBeGreaterThan(0);
+
+    const created = calls;
+    const lane = await startLane(run, coordinator, "one");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    // Every publish of runs:list calls the listener.
+    await until(() => calls === published());
+    expect(calls).toBeGreaterThan(created);
+  });
+});
+
 describe("cancelling a run (ADR 0150)", () => {
   const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
   const cancel = (server: TestServer, runId: string) =>

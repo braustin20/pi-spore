@@ -20,6 +20,7 @@ import {
   emptyChat,
   ModelChoices,
   parse,
+  routedModel,
   type Workspace,
 } from "@pi-spore/shared";
 import {
@@ -28,7 +29,7 @@ import {
   parseInspectReply,
   runningCount,
 } from "./child-runs.js";
-import type { AgentAttention, AgentChange, LaunchContext } from "./contract.js";
+import type { AgentAttention, AgentChange, AgentLiveState, LaunchContext } from "./contract.js";
 import { ChatImages } from "./images.js";
 import {
   modelArgs,
@@ -305,6 +306,18 @@ export class AgentManager {
       ...(live.workingFor ? { workingFor: live.workingFor } : {}),
       ...(live.routerStatus ? { routerStatus: live.routerStatus } : {}),
       createdAt: record.createdAt,
+    };
+  }
+
+  liveState(id: string): AgentLiveState {
+    const live = this.get(id);
+    const model = live.model ? `${live.model.provider}/${live.model.id}` : live.record.model;
+    const routed = routedModel(live.chat);
+    const routedId = routed && `${routed.provider}/${routed.id}`;
+    return {
+      ...(model ? { model } : {}),
+      ...(routedId && routedId !== model ? { routedModel: routedId } : {}),
+      children: live.children,
     };
   }
 
@@ -1096,6 +1109,7 @@ export class AgentManager {
     if (JSON.stringify(children) === JSON.stringify(live.children)) return;
     const before = runningCount(live.children);
     live.children = children;
+    this.options.onChange(live.record.id, "children");
     if (runningCount(children) !== before) this.options.onChange(live.record.id, "helpers");
     this.publish(live, { type: "children", children });
     if (runningCount(children) < before) this.releaseSlot();
@@ -1151,6 +1165,7 @@ export class AgentManager {
     if (live.children.length > 0) {
       live.children = [];
       this.publish(live, { type: "children", children: [] });
+      this.options.onChange(live.record.id, "children");
     }
     live.inspects.clear();
     this.setRouterStatus(live, undefined);

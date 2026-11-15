@@ -25,6 +25,8 @@ export interface Pipelines {
   start(workspaceId: string, request: StartRunRequest): Promise<PipelineRun>;
   /** The run as `GET /api/pipelines/runs/:id` returns it. Throws 404 `run_not_found`. */
   get(runId: string): PipelineRun;
+  /** The workspace's runs, newest first, as `GET /api/pipelines/workspaces/:id/runs` returns them. */
+  runsOf(workspaceId: string): PipelineRun[];
   /**
    * Runs for every run that ends (passed, failed, or stopped), inside the transaction that ends it, with the run as it
    * is after the update. A throw rolls the end back.

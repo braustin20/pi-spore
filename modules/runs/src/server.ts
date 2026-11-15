@@ -365,9 +365,18 @@ export const runsModule: ServerModule = {
         .all<RunRow>("SELECT * FROM runs_runs ORDER BY created_at DESC, id DESC")
         .map(viewOf);
 
+    const changeListeners: (() => void)[] = [];
     const publish = () => {
       const event: RunEvent = { type: "runs", runs: allRuns() };
       host.events.publish(RUNS_TOPIC, event);
+      // One broken listener must not keep the others from the change.
+      for (const listener of changeListeners) {
+        try {
+          listener();
+        } catch (error) {
+          host.log.error("A runs change listener failed", { error: String(error) });
+        }
+      }
     };
     // A change made inside someone else's transaction publishes after it ends: the transaction is synchronous, so
     // the microtask runs after the commit.
@@ -1270,6 +1279,9 @@ export const runsModule: ServerModule = {
       runOf: (workspaceId) => {
         const run = runByWorkspace(workspaceId);
         return run ? viewOf(run) : undefined;
+      },
+      onChange: (listener) => {
+        changeListeners.push(listener);
       },
       setPrOpener: (open) => {
         if (openPr) throw new Error("The runs module already has a PR opener");

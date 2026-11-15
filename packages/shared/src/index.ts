@@ -107,6 +107,7 @@ export {
   type ImageRef,
   isImageRef,
   type RunningTool,
+  routedModel,
   toolActivity,
 } from "./chat.js";
 export { HealthResponse } from "./health.js";

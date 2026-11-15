@@ -1452,6 +1452,67 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
     ]);
   });
 
+  it("calls onChange with children for each list change and helpers only for a new running count", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    const changes: AgentChange[] = [];
+    probe.agents().onChange((id, change) => {
+      if (id === agentId && (change === "children" || change === "helpers")) changes.push(change);
+    });
+
+    await json(await helper(agentId, "run-1", "running"));
+    await json(await helper(agentId, "run-1", "running"));
+    await json(await helper(agentId, "run-2", "queued", "worker"));
+    await until(() => latest(agentId)?.length === 2);
+    expect(changes).toEqual(["children", "helpers", "children"]);
+
+    await json(await server.request("POST", `/api/agents/${agentId}/stop`));
+    await until(() => latest(agentId)?.length === 0);
+    expect(changes.slice(3)).toEqual(["children"]);
+  });
+
+  it("calls onChange with children alone when a running helper's current tool changes", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+    const changes: AgentChange[] = [];
+    probe.agents().onChange((id, change) => {
+      if (id === agentId && (change === "children" || change === "helpers")) changes.push(change);
+    });
+
+    await json(await prompt(agentId, "helper:run-1:scout:running:read"));
+    await json(await prompt(agentId, "helper:run-1:scout:running:read"));
+    await json(await prompt(agentId, "helper:run-1:scout:running:bash"));
+    await until(() => latest(agentId)?.[0]?.currentTool === "bash");
+    expect(changes).toEqual(["children", "children"]);
+  });
+
+  it("gives the live model, the routed model of the newest answer, and the child runs", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "hello"));
+    await until(() => status(agentId) === "idle");
+    // The answer ran on the agent's own model, so nothing was routed elsewhere.
+    expect(probe.agents().liveState(agentId)).toEqual({ model: "fake/fake-1", children: [] });
+
+    await json(await helper(agentId, "run-1", "running"));
+    await until(() => latest(agentId)?.length === 1);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/model`, {
+        provider: "fake",
+        modelId: "fake-2",
+      }),
+    );
+    const state = probe.agents().liveState(agentId);
+    expect(state).toMatchObject({ model: "fake/fake-2", routedModel: "fake/fake-1" });
+    expect(state.children.map((run) => run.id)).toEqual(["run-1"]);
+    expect(() => probe.agents().liveState("nope")).toThrow(/No agent nope/);
+  });
+
   it("empties the list when the agent's process exits, since nothing reports the helpers then", async () => {
     await setup();
     const { agentId } = await makeAgent();

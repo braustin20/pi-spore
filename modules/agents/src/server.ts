@@ -266,8 +266,8 @@ export function createAgentsModule(
           host.store.run("UPDATE agents_agents SET title = ? WHERE id = ?", title, agentId);
         },
         onChange: (agentId, change) => {
-          // The activity text is not on the agent view, so the list has nothing new to send.
-          if (change !== "activity")
+          // The activity text and the child runs are not on the agent view, so the list has nothing new to send.
+          if (change !== "activity" && change !== "children")
             host.events.publish(
               "agents:list",
               agents.isClosed(agentId)
@@ -464,6 +464,7 @@ export function createAgentsModule(
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),
+        liveState: (agentId) => agents.liveState(agentId),
         setWorkingFor: (agentId, label) => agents.setWorkingFor(agentId, label),
         isClosed: (agentId) => agents.isClosed(agentId),
         inWorkspace: (workspaceId) =>

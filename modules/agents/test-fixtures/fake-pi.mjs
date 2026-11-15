@@ -7,9 +7,10 @@
 //                  ends the turn; the reply says the question id or the server's refusal
 //   "tools"        replies with the tool allowlist it got (`--tools`), or Pi's default tools
 //   "screenshot"   calls a `screenshot` tool whose result has an image block (FAKE_PNG in png.mjs)
-//   "helper:<id>:<agent>:<state>"  sets the `subagent-async` widget as pi-subagents does in RPC mode, with one run
-//                  <id> that has one step on <agent>. The model is `fake/helper-model`. Several ids add up. A run with
-//                  state "gone" leaves the snapshot. Send it as a prompt, or as one while streaming (it is a command).
+//   "helper:<id>:<agent>:<state>[:<tool>]"  sets the `subagent-async` widget as pi-subagents does in RPC mode, with
+//                  one run <id> that has one step on <agent>. The model is `fake/helper-model`. <tool> is the current
+//                  tool of the run and its step. Several ids add up. A run with state "gone" leaves the snapshot. Send
+//                  it as a prompt, or as one while streaming (it is a command).
 //   "helper-clear" clears the widget, as pi-subagents does about 10 s after the last run ends
 //   "helper-bad"   sets the widget to a payload of an unknown version
 //   "router-status:<text>"  sets the router's `pi-spore-router` status, as its extension does while a local model is
@@ -176,13 +177,17 @@ function publishHelpers() {
     state: helper.state,
     startedAt: 1000,
     updatedAt: Date.now(),
-    activity: { lastActivityAt: Date.now() },
+    activity: {
+      lastActivityAt: Date.now(),
+      ...(helper.tool ? { currentTool: helper.tool } : {}),
+    },
     children: [
       {
         id: "step:0",
         kind: "step",
         label: helper.agent,
         state: helper.state,
+        ...(helper.tool ? { activity: { currentTool: helper.tool } } : {}),
         agent: helper.agent,
         model: "fake/helper-model",
         thinking: "low",
@@ -565,9 +570,9 @@ const handle = (command) => {
         return respond(id, type, { disposition: "handled" });
       }
       if (command.message.startsWith("helper:")) {
-        const [, runId, agent, state] = command.message.split(":");
+        const [, runId, agent, state, tool] = command.message.split(":");
         if (state === "gone") helpers.delete(runId);
-        else helpers.set(runId, { agent, state });
+        else helpers.set(runId, { agent, state, tool });
         publishHelpers();
         return respond(id, type, { disposition: "handled" });
       }
