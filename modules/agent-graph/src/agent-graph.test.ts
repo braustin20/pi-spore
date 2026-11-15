@@ -368,6 +368,23 @@ describe("the agent graph (ADR 0176)", () => {
     await until(() => events(server).length > mark && events(server).at(-1)?.trees.length === 0);
   });
 
+  it("ends every member of the group a stopped run was in, not only the first (ADR 0178)", async () => {
+    // The adversarial reviewer's model is too weak, so the group blocks before any member has a turn.
+    const grouped = `${WITH_REVIEW}\n[[stage]]\nname = "adversarial"\nrole = "reviewer"\nwith_previous = true\nmodel = "fake/weak"\nmin_strength_over = "implement"\n`;
+    const server = await start({ worker: [DONE] }, grouped);
+    const { workspaceId } = await workspace(server, "group");
+    const run = await startRun(server, workspaceId);
+    await until(async () => (await getPipelineRun(server, run.id)).blocked !== undefined);
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/cancel`));
+
+    const [tree] = (await graph(server)) as [GraphTree];
+    expect(tree.groups[0]?.steps.map(({ stage, state }) => ({ stage, state }))).toEqual([
+      { stage: "implement", state: "done" },
+      { stage: "review", state: "failed" },
+      { stage: "adversarial", state: "failed" },
+    ]);
+  });
+
   it("keeps a step whose stage chat retention deleted, without its agent", async () => {
     const first = await start({ worker: [DONE] });
     const { workspaceId } = await workspace(first, "retained");

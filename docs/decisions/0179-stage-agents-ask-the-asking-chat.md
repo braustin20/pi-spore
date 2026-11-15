@@ -34,8 +34,9 @@
    `POST /api/bridge/stage-questions` with the tool call id as its receipt (R16.3). The route refuses:
    - a caller that is not a stage agent: 403 `not_a_stage`;
    - a stage agent in a lane: 403 `in_lane` (it asks with `ask_coordinator`);
-   - a caller that is not the agent of its run's open turn: 409 `turn_closed`. The open turn is the latest turn of
-     a `running` run with no report and no error. Ask, answer, and the Pipeline tab use this one rule.
+   - a caller that is not the agent of an open turn: 409 `turn_closed`. An open turn is a turn of a
+     `running` run with no report and no error; a parallel review group has several (ADR 0178). Ask, answer, and
+     the Pipeline tab use this one rule.
    In one transaction it writes the row and delivers the question to the asked chat with `agents.deliver`. The
    message names the run, the stage, the stage agent, and the question id, and says: answer from the plan with
    `answer_stage`; when the plan does not say, ask the user with `request_human_input` first, then call
@@ -44,12 +45,12 @@
    with no run role), the same chats that get `start_pipeline`. It posts to `POST /api/bridge/stage-answers` with a
    receipt. The route answers 404 `question_not_found` for an unknown id, 403 `not_asked` when the caller is not
    the question's asked chat, 409 `question_answered` for a question with an answer, and 409 `turn_closed` when the
-   question's turn is no longer the run's open turn (the turn reported, Retry replaced it, or the run ended). In one
+   question's turn is no longer open (the turn reported, Retry replaced it, or the run ended). In one
    transaction it stores the answer and delivers it to the stage agent with the `Turn:` line. The delivery starts
    the agent's next run.
-6. **The pipeline waits.** While the open turn has an open question, `awaitReport` waits: no reminder and no block.
-   It checks for the question again after it reads the agent's session, as it does for the report, because the
-   agent may ask while that read runs. This also holds after a restart: the restart reminder (R6.6) is skipped,
+6. **The pipeline waits.** While an open turn has an open question, `awaitReport` waits for it: no reminder and no
+   block. It checks for the question again after it reads the agent's session, as it does for the report, because
+   the agent may ask while that read runs. This also holds after a restart: the restart reminder (R6.6) is skipped,
    because the answer's delivery starts the agent again. An agent whose run failed still blocks the stage, as
    before. Once the question has an answer, the reminder and block rule of ADR 0169 applies again.
 7. **One path for questions.** Stage agents lose `request_human_input` outside lanes too, so every stage question

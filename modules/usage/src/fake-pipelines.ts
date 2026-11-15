@@ -29,6 +29,7 @@ export function fakePipelines(): { module: ServerModule; end: (run: FakeRun) => 
   const listeners: ((run: PipelineRun) => void)[] = [];
   const implementation: Pipelines = {
     start: THROWS,
+    requireModel: THROWS,
     report: THROWS,
     askStage: THROWS,
     answerStage: THROWS,

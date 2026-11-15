@@ -41,6 +41,7 @@ import type {
   Approval,
   BridgeArtifactFile,
   Inbox,
+  PipelineEvent,
   PipelineList,
   PipelineRun,
   PipelineTurn,
@@ -747,6 +748,102 @@ describe("a review stage", () => {
   });
 });
 
+describe("each turn's model", () => {
+  it("shows a running turn's model as the model its agent's newest answer ran on", async () => {
+    // A worker report with a verdict is refused, so the turn stays open and the run keeps running.
+    const server = await start({
+      env: scriptEnv({ worker: [{ ...DONE, model: "strata/qwen", verdict: "approve" }, "hang"] }),
+    });
+    const { workspaceId } = await workspace(server, "live-model");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId, workerId } = await startAndWork(server, workspaceId);
+
+    const running = await getRun(server, runId);
+
+    expect(running.state).toBe("running");
+    expect(running.turns[0]).toMatchObject({ agentId: workerId, model: "strata/qwen" });
+    expect(running.turns[0]?.report).toBeUndefined();
+    // The agent still runs on the stage's model: the turn shows the physical model of its answer.
+    expect(modelOf(workerId)).toBe("spore/auto");
+  });
+
+  it("sends the Pipeline tab a runs event with the model when the stage agent answers", async () => {
+    // The worker hangs on its task, is aborted, then answers a prompt on strata/qwen. With the stage job held, no job
+    // change sends an event: only the answer does.
+    const server = await start({
+      env: scriptEnv({
+        worker: ["hang", { ...DONE, model: "strata/qwen", verdict: "approve" }],
+      }),
+    });
+    const { workspaceId } = await workspace(server, "live-event");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId, workerId } = await startAndWork(server, workspaceId);
+    const turnId = (await getRun(server, runId)).turns[0]?.id;
+    holdJobs(server);
+    await json(await server.request("POST", `/api/agents/${workerId}/abort`));
+    await until(
+      async () =>
+        (
+          await json<{ agent: { status: string } }>(
+            await server.request("GET", `/api/agents/${workerId}`),
+          )
+        ).agent.status === "idle",
+    );
+    await json(
+      await server.request("POST", `/api/agents/${workerId}/prompt`, {
+        message: `Turn: ${turnId}`,
+      }),
+    );
+    await until(
+      () => said(server, workerId).filter((line) => line.startsWith("assistant:")).length >= 4,
+    );
+
+    const events = server.events.eventsOf(`pipelines:${workspaceId}`) as PipelineEvent[];
+    expect(
+      events.some(
+        (event) => event.type === "runs" && event.runs[0]?.turns[0]?.model === "strata/qwen",
+      ),
+    ).toBe(true);
+  });
+
+  it("keeps the model each turn reported on when the reused worker fixes on another model", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [
+          { ...DONE, model: "strata/qwen" },
+          { ...FIX, model: "fake/strong" },
+        ],
+        reviewer: [
+          { summary: "Not yet", verdict: "revise", findings: [FINDING] },
+          { summary: "Good", verdict: "approve" },
+        ],
+      }),
+    });
+
+    const { run } = await runUntil(server, "kept-model", withReview("rounds = 2"), "passed");
+
+    const [task, , fix] = run.turns as [PipelineTurn, PipelineTurn, PipelineTurn];
+    expect(fix.agentId).toBe(task.agentId);
+    expect(task.model).toBe("strata/qwen");
+    expect(fix.model).toBe("fake/strong");
+  });
+
+  it("shows the stage's model on a review turn whose agent has not reported", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE], reviewer: ["hang"] }) });
+    const { workspaceId } = await workspace(server, "stage-model");
+    userPipeline(server.paths.root, "p", withReview('model = "fake/strong"'));
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).turns.length > 1);
+
+    const running = await getRun(server, run.id);
+    const review = running.turns[1] as PipelineTurn;
+
+    expect(running.state).toBe("running");
+    expect(review.model).toBe("fake/strong");
+    expect(review.report).toBeUndefined();
+  });
+});
+
 const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
 
 describe("the round limit", () => {
@@ -1035,7 +1132,7 @@ describe("a stage agent whose turn failed", () => {
 
   const agentOf = async (server: TestServer, agentId: string) =>
     (
-      await json<{ agent: { title: string } }>(
+      await json<{ agent: { title: string; deliveryError?: string } }>(
         await server.request("GET", `/api/agents/${agentId}`),
       )
     ).agent;
@@ -1131,6 +1228,32 @@ describe("a stage agent whose turn failed", () => {
     expect((await agentOf(server, failed.agentId)).title).toBe("implement (failed)");
   });
 
+  it("blocks the stage when Pi refuses the task, and Retry gives it to a fresh worker", async () => {
+    const NO_KEY =
+      "No API key found for anthropic. Use /login to log into a provider via OAuth or API key.";
+    const refuse = join(scratch, "refuse");
+    writeFileSync(refuse, NO_KEY);
+    const server = await start({
+      env: { ...scriptEnv({ worker: [DONE] }), FAKE_PI_REFUSE_FILE: refuse },
+    });
+    const { run } = await blockedRun(server, "no-key", IMPLEMENT);
+    const failed = run.turns[0] as PipelineTurn;
+    expect(run.blocked).toBe(
+      `stage implement: the worker agent "implement" failed: ${NO_KEY}. Retry starts a fresh worker agent for this turn.`,
+    );
+
+    rmSync(refuse);
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(kinds(passed)).toEqual(["task1", "task1"]);
+    expect(passed.turns[1]?.agentId).not.toBe(failed.agentId);
+    expect((await agentOf(server, failed.agentId)).title).toBe("implement (failed)");
+    // Retry drops the old agent's refused task, so it never gets it later, such as when the workspace is resumed.
+    expect((await agentOf(server, failed.agentId)).deliveryError).toBeUndefined();
+  });
+
   it("gives a refused fix turn to a fresh worker, and the next review round runs", async () => {
     const server = await start({
       env: scriptEnv({
@@ -1173,7 +1296,10 @@ describe("a stage agent whose turn failed", () => {
 
     const after = await getRun(second, run.id);
     expect(after.blocked).toBe(run.blocked);
-    expect(after.turns).toEqual(run.turns);
+    // An open turn's model is its agent's live one, and the new server has no process for the stage agent that
+    // already ended. Every stored field of the turns is the same.
+    const stored = (turns: PipelineTurn[]) => turns.map((turn) => ({ ...turn, model: undefined }));
+    expect(stored(after.turns)).toEqual(stored(run.turns));
     expect(launches().filter((launch) => launch.env.PI_SPORE_CHAT_KIND === "stage")).toHaveLength(
       2,
     );
@@ -1841,6 +1967,7 @@ min_strength_over = "implement"
 [[stage]]
 name = "adversarial"
 role = "adversarial-reviewer"
+with_previous = true
 model = "fake/strong"
 rounds = 1
 fix_passes = 1
@@ -2127,7 +2254,10 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
 
   it("runs the worker stage on the workerModel for this run only", async () => {
     const { module, startThrough } = probe();
-    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const server = await start({
+      env: { ...scriptEnv({ worker: [DONE] }), FAKE_PI_MODELS: "fake/fake-1,fake/other-1" },
+      extraModules: [module],
+    });
     const { workspaceId } = await workspace(server, "keymodel");
     userPipeline(server.paths.root, "p", IMPLEMENT);
 
@@ -2151,6 +2281,29 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
       "--model",
       "other-1",
     ]);
+  });
+
+  it("refuses a workerModel Pi cannot run, and takes spore/auto, which Pi need not list", async () => {
+    const { module, startThrough, runsOfThrough } = probe();
+    const server = await start({
+      env: { ...scriptEnv({ worker: [DONE] }), FAKE_PI_MODELS: "fake/one" },
+      extraModules: [module],
+    });
+    const { workspaceId } = await workspace(server, "unknownmodel");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const request = { pipeline: "p", brief: "Build the thing" };
+
+    await expect(
+      startThrough(workspaceId, { ...request, workerModel: "other/one" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "unknown_model",
+      message: expect.stringMatching(/other\/one[\s\S]*fake\/one/),
+    });
+    expect(runsOfThrough(workspaceId)).toEqual([]);
+
+    const routed = await startThrough(workspaceId, { ...request, workerModel: "spore/auto" });
+    await untilState(server, routed.id, "passed");
   });
 });
 
@@ -2695,6 +2848,226 @@ describe("the run's chat while the run works", () => {
   });
 });
 
+describe("a parallel review group (ADR 0178)", () => {
+  const GROUP = `${IMPLEMENT}
+[[stage]]
+name = "review"
+role = "reviewer"
+rounds = 2
+fix_passes = 1
+
+[[stage]]
+name = "adversarial"
+role = "adversarial-reviewer"
+with_previous = true
+rounds = 1
+fix_passes = 1
+`;
+  const APPROVE = { summary: "Good", verdict: "approve" };
+  const LIMIT = "The provider refused the turn";
+  const finding = (title: string) => ({ severity: "important", title });
+  const restarted = (turnId: string) =>
+    `user: pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
+
+  it("starts both reviewer turns before either reports", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: ["hang"], "adversarial-reviewer": ["hang"] }),
+    });
+    const { workspaceId } = await workspace(server, "both");
+    userPipeline(server.paths.root, "p", GROUP);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    const reviews = async () =>
+      (await getRun(server, run.id)).turns.filter(
+        (turn) => turn.kind === "review" && turn.round === 1,
+      );
+    await until(async () => (await reviews()).length === 2);
+
+    expect((await reviews()).map((turn) => turn.stage).sort()).toEqual(["adversarial", "review"]);
+    expect((await reviews()).every((turn) => turn.report === undefined)).toBe(true);
+  });
+
+  it("goes to the next stage when both approve", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE],
+        reviewer: [APPROVE, APPROVE],
+        "adversarial-reviewer": [APPROVE],
+      }),
+    });
+
+    const { run } = await runUntil(
+      server,
+      "approve",
+      `${GROUP}\n[[stage]]\nname = "final"\nrole = "reviewer"\n`,
+      "passed",
+    );
+
+    expect(kinds(run)).toEqual(["task1", "review1", "review1", "review1"]);
+    const final = run.turns.find((turn) => turn.stage === "final") as PipelineTurn;
+    for (const turn of run.turns.filter(
+      (found) => found.stage !== "final" && found.kind === "review",
+    ))
+      expect(final.createdAt).toBeGreaterThanOrEqual(turn.reportedAt as number);
+    // One job per group: the group of stages 1 and 2 never starts a job at stage 2.
+    const started = server.services.jobs
+      .list({ kind: "pipelines.stage" })
+      .map((job) => (job.subject as { stageIndex: number }).stageIndex)
+      .sort();
+    expect(started).toEqual([0, 1, 3]);
+  });
+
+  it("gives the worker one fix with the findings of both reviewers", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [finding("A")] }, APPROVE],
+        "adversarial-reviewer": [
+          { summary: "Breaks", verdict: "revise", findings: [finding("B")] },
+        ],
+      }),
+    });
+
+    const { run } = await runUntil(server, "onefix", GROUP, "passed");
+
+    expect(kinds(run)).toEqual(["task1", "review1", "review1", "fix1", "review2"]);
+    const fix = run.turns[3] as PipelineTurn;
+    expect(fix.fixFor).toEqual(["review", "adversarial"]);
+    const prompt = (await chat(server, fix.agentId)).find((message) =>
+      message.includes(`Turn: ${fix.id}`),
+    );
+    expect(prompt).toContain('Stage "review":');
+    expect(prompt).toContain('Stage "adversarial":');
+    expect(prompt).toContain("1. [important] A");
+    expect(prompt).toContain("1. [important] B");
+    expect(prompt).toContain("A fresh reviewer checks the result next.");
+    expect(run.turns[4]?.stage).toBe("review");
+  });
+
+  it("resumes the group after a restart, and reminds only the open member", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({
+      worker: [DONE],
+      reviewer: [APPROVE],
+      "adversarial-reviewer": ["hang", APPROVE],
+    });
+    const first = await start({ home, env });
+    const { workspaceId } = await workspace(first, "grouprestart");
+    userPipeline(home, "p", GROUP);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(first, workspaceId), 201);
+    const turnOf = async (stage: string) =>
+      (await getRun(first, run.id)).turns.find((turn) => turn.stage === stage);
+    await until(async () => {
+      const review = await turnOf("review");
+      const adversarial = await turnOf("adversarial");
+      return (
+        review?.report !== undefined &&
+        adversarial !== undefined &&
+        said(first, adversarial.agentId).some((message) => message.startsWith("assistant:"))
+      );
+    });
+    const review = (await turnOf("review")) as PipelineTurn;
+    const adversarial = (await turnOf("adversarial")) as PipelineTurn;
+    // Both members started together, so the open one started before the other reported.
+    expect(adversarial.createdAt).toBeLessThan(review.reportedAt as number);
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+    await until(async () => (await getRun(second, run.id)).state === "passed");
+
+    expect(kinds(await getRun(second, run.id))).toEqual(["task1", "review1", "review1"]);
+    expect(
+      (await chat(second, adversarial.agentId)).filter(
+        (message) => message === restarted(adversarial.id),
+      ),
+    ).toHaveLength(1);
+    expect(
+      (await chat(second, review.agentId)).filter((message) =>
+        message.startsWith("user: pi-spore restarted"),
+      ),
+    ).toEqual([]);
+  });
+
+  it("resumes the open member when Retry replaces a failed one after a restart", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({
+      worker: [DONE],
+      reviewer: [{ error: LIMIT }, APPROVE],
+      "adversarial-reviewer": ["hang", APPROVE],
+    });
+    const first = await start({ home, env });
+    const { workspaceId } = await workspace(first, "blockedrestart");
+    userPipeline(home, "p", GROUP);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(first, workspaceId), 201);
+    const adversarialOf = async (server: TestServer) =>
+      (await getRun(server, run.id)).turns.find((turn) => turn.stage === "adversarial");
+    await until(async () => {
+      const adversarial = await adversarialOf(first);
+      return (
+        (await getRun(first, run.id)).blocked !== undefined &&
+        adversarial !== undefined &&
+        said(first, adversarial.agentId).some((message) => message.startsWith("assistant:"))
+      );
+    });
+    const adversarial = (await adversarialOf(first)) as PipelineTurn;
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000 });
+    const stageJob = () =>
+      second.services.jobs.list({
+        kind: "pipelines.stage",
+        key: workspaceId,
+        states: ["running", "waiting"],
+      })[0] as JobView;
+    await until(() => stageJob().state === "waiting" && stageJob().error !== null);
+    await json(await second.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+    await until(async () => (await getRun(second, run.id)).state === "passed");
+
+    expect(kinds(await getRun(second, run.id))).toEqual(["task1", "review1", "review1", "review1"]);
+    expect(
+      (await chat(second, adversarial.agentId)).filter(
+        (message) => message === restarted(adversarial.id),
+      ),
+    ).toHaveLength(1);
+  });
+
+  it("gives a reviewer that Retry starts the diff its round started with", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE],
+        reviewer: [{ error: LIMIT }, APPROVE],
+        "adversarial-reviewer": [APPROVE],
+      }),
+    });
+    const { workspaceId, agentId, folder } = await workspace(server, "samediff", { git: true });
+    userPipeline(server.paths.root, "p", GROUP);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    writeFileSync(join(folder, "later.txt"), "written while the group was blocked\n");
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const read = async (name: string) =>
+      (
+        await json<BridgeArtifactFile>(
+          await asAgent(
+            server,
+            agentId,
+            workspaceId,
+          )("GET", `artifacts/file?scope=workspace&path=pipelines/${run.id}/${name}`),
+        )
+      ).content;
+    const review = await read("review-1.diff");
+    expect(review).toBe(await read("adversarial-1.diff"));
+    expect(review).not.toContain("later.txt");
+  });
+});
+
 describe("a stage agent's question to the asking chat (ADR 0179)", () => {
   const ASK = { ask: "Which color?" };
   const APPROVE = { summary: "Good", verdict: "approve" };
@@ -2841,6 +3214,53 @@ describe("a stage agent's question to the asking chat (ADR 0179)", () => {
     await json(await answer(server, agentId, workspaceId, question.id, "Yes"));
 
     await until(async () => (await getRun(server, run.id)).state === "passed");
+  });
+
+  it("holds only the member that asked in a parallel review group (ADR 0178)", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE],
+        reviewer: [{ ask: "Is this enough?" }, APPROVE],
+        "adversarial-reviewer": ["silent", APPROVE],
+      }),
+    });
+    const { workspaceId, agentId } = await workspace(server, "group");
+    const adversarialStage = ["[[stage]]", 'name = "adversarial"', 'role = "adversarial-reviewer"'];
+    userPipeline(
+      server.paths.root,
+      "p",
+      withReview("", ...adversarialStage, "with_previous = true"),
+    );
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    const turnOf = async (stage: string) =>
+      (await getRun(server, run.id)).turns.find((turn) => turn.stage === stage);
+    const stageJob = () =>
+      server.services.jobs.list({
+        kind: "pipelines.stage",
+        states: ["running", "waiting"],
+      })[0] as JobView;
+
+    // The reviewer asked and ended its turn; the adversarial reviewer got its reminder and reported. The step that
+    // saw that report also saw the reviewer's ended turn, so only the open question keeps a reminder from it.
+    await until(async () => (await turnOf("review"))?.question !== undefined);
+    const review = (await turnOf("review")) as PipelineTurn;
+    await until(async () =>
+      (await chat(server, review.agentId)).some((line) => line.startsWith("assistant: asked:")),
+    );
+    await until(async () => (await turnOf("adversarial"))?.report !== undefined);
+    // A job that is gone means the run ended: the reminder made the reviewer report without its answer.
+    await until(
+      () =>
+        stageJob() === undefined || (stageJob().state === "waiting" && stageJob().step === "await"),
+    );
+    const adversarial = (await turnOf("adversarial")) as PipelineTurn;
+    expect(await chat(server, adversarial.agentId)).toContain(reminderOf(adversarial.id));
+    expect((await turnOf("review"))?.report).toBeUndefined();
+
+    const questionId = (review.question as { id: string }).id;
+    await json(await answer(server, agentId, workspaceId, questionId, "Yes"));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    expect(await chat(server, review.agentId)).not.toContain(reminderOf(review.id));
   });
 
   it("refuses a chat that is not a stage agent with 403 not_a_stage", async () => {

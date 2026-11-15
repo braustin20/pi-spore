@@ -77,7 +77,12 @@ const probe: ServerModule = {
   },
 };
 
-const TIERS = { "fake/weak": "local", "fake/mid": "medium", "fake/strong": "heavy" };
+const TIERS = {
+  "fake/weak": "local",
+  "fake/mid": "medium",
+  "fake/strong": "heavy",
+  "fake/one": "local",
+};
 
 /** A worker pipeline stage that the tests report by hand, so they control when a lane passes. */
 const IMPLEMENT = `id = "p"
@@ -132,6 +137,7 @@ async function start(
       PATH: process.env.PATH,
       FAKE_PI_SCRIPT: script,
       FAKE_PI_RECORD: join(scratch, "record.jsonl"),
+      FAKE_PI_MODELS: "fake/weak,fake/mid,fake/strong,fake/one",
     },
     idleStopMs: 60_000,
     startTimeoutMs: 1_000,
@@ -624,6 +630,32 @@ describe("the lane model approval (R4.8)", () => {
     );
 
     await until(async () => (await laneOf(server, run.id, strong.id)).state === "running");
+  });
+
+  it("refuses a lane model Pi cannot run, and names the model Pi has with that id", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "unknown");
+    const { run, coordinator } = await createRun(server, projectId, "unknown");
+
+    await expect(
+      startLane(run, coordinator, "other", { model: "other/one" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "unknown_model",
+      message: expect.stringMatching(/other\/one[\s\S]*fake\/one/),
+    });
+    await expect(
+      startLane(run, coordinator, "none", { model: "other/none" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "unknown_model",
+      message: expect.stringContaining("other/none"),
+    });
+
+    expect((await getRun(server, run.id)).lanes).toEqual([]);
+    expect((await startLane(run, coordinator, "listed", { model: "fake/one" })).state).toBe(
+      "waiting",
+    );
   });
 
   it("makes a declined lane declined, and a lane of a later wave no longer waits for it", async () => {

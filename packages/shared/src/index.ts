@@ -171,6 +171,7 @@ export {
   StageQuestion,
   StageReport,
   StartPipelineRequest,
+  stageGroups,
   TestProof,
 } from "./pipelines.js";
 export {

@@ -165,6 +165,39 @@ describe("pipeline files", () => {
     );
   });
 
+  it("refuses with_previous on the worker stage", () => {
+    expect(refusal(implementOnly("p", "with_previous = true"))).toBe(
+      '/files/p.toml: stage "implement": key "with_previous" is not allowed on a worker stage',
+    );
+  });
+
+  it("refuses with_previous on the stage right after the worker stage", () => {
+    const text = `${implementOnly("p")}\n[[stage]]\nname = "review"\nrole = "reviewer"\nwith_previous = true\n`;
+    expect(refusal(text)).toBe(
+      '/files/p.toml: stage "review": with_previous = true needs a stage before it in the group; the worker stage is never in a group',
+    );
+  });
+
+  it("refuses a group with a gate stage, as a member or as its first stage", () => {
+    const gateJoins = `${implementOnly("p")}\n[[stage]]\nname = "review"\nrole = "reviewer"\n\n[[stage]]\nname = "gates"\ngates = ["check"]\nwith_previous = true\n`;
+    expect(refusal(gateJoins)).toBe(
+      '/files/p.toml: stage "gates": a group with a gate stage is not built yet',
+    );
+    const reviewerJoinsGate = `${implementOnly("p")}\n[[stage]]\nname = "gates"\ngates = ["check"]\n\n[[stage]]\nname = "review"\nrole = "reviewer"\nwith_previous = true\n`;
+    expect(refusal(reviewerJoinsGate)).toBe(
+      '/files/p.toml: stage "review": a group with a gate stage is not built yet',
+    );
+  });
+
+  it("accepts with_previous on a reviewer stage after another reviewer stage", () => {
+    const text = `${implementOnly("p")}\n[[stage]]\nname = "review"\nrole = "reviewer"\nwith_previous = false\n\n[[stage]]\nname = "adversarial"\nrole = "adversarial-reviewer"\nwith_previous = true\n`;
+
+    const pipeline = parsePipeline(Buffer.from(text), "p", "user", "/files/p.toml");
+
+    expect(pipeline.stages[1]).toMatchObject({ name: "review", with_previous: false });
+    expect(pipeline.stages[2]).toMatchObject({ name: "adversarial", with_previous: true });
+  });
+
   it("uses a user file named default in place of the built-in one", async () => {
     write(userDir, "default", implementOnly("default"));
 

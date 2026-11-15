@@ -30,6 +30,12 @@ export interface Pipelines {
    * 409 `pipeline_running`, 404 `pipeline_not_found`, 422 `bad_pipeline`.
    */
   start(workspaceId: string, request: StartRunRequest): Promise<PipelineRun>;
+  /**
+   * Refuses a model (`provider/id`) Pi cannot run: 400 `unknown_model`, naming the model and any model Pi has with
+   * the same id under another provider. `spore/auto` always passes. Pi's 502 `models_unavailable` goes up as it is.
+   * `callerAgentId` is the agent that waits on the answer; see `Agents.availableModels`.
+   */
+  requireModel(model: string, callerAgentId?: string): Promise<void>;
   /** The run as `GET /api/pipelines/runs/:id` returns it. Throws 404 `run_not_found`. */
   get(runId: string): PipelineRun;
   /** The workspace's runs, newest first, as `GET /api/pipelines/workspaces/:id/runs` returns them. */

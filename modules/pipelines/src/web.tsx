@@ -12,6 +12,7 @@ import {
   type PipelineRunState,
   type PipelineView,
   parse,
+  stageGroups,
   type Workspace,
 } from "@pi-spore/shared";
 import {
@@ -309,7 +310,13 @@ function PipelinePanel({ workspace }: { workspace: Workspace }) {
       <div className="flex flex-wrap items-center gap-1.5 text-sm">
         <span>{run.pipelineId}</span>
         <Chip tone={shown.tone}>{shown.text}</Chip>
-        <Chip mono>stage {run.stages[run.stageIndex]?.name}</Chip>
+        <Chip mono>
+          stage{" "}
+          {stageGroups(run.stages)
+            .find((group) => group.includes(run.stageIndex))
+            ?.map((index) => run.stages[index]?.name)
+            .join(", ")}
+        </Chip>
         {run.blocked && <Chip tone="warn">Stuck</Chip>}
       </div>
       {counts && (
