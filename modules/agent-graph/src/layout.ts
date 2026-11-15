@@ -47,11 +47,14 @@ export function shortModel(agent: GraphAgent | undefined): string {
     .replaceAll("-", " ");
 }
 
+/**
+ * From the step's own state, never its agent's status: a task step and its fix steps share one worker agent, so
+ * during a fix the done task step's agent is busy too.
+ */
 export function stepState(step: GraphStep): PodState {
   if (step.state === "failed") return "fail";
   if (step.state === "waiting") return "none";
-  if (step.state === "done" || step.agent?.status === "idle") return "idle";
-  return "work";
+  return step.state === "done" ? "idle" : "work";
 }
 
 export function rootState(agent: GraphAgent): PodState {

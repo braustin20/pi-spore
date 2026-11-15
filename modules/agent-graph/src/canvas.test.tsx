@@ -243,6 +243,37 @@ describe("the agent graph canvas", () => {
     expect(node()?.style.transform).toBe(moved);
   });
 
+  it("shows a running fix as the working step, and the implement and review it answers as done", async () => {
+    // The task step and its fix share one worker agent, busy during the fix; the group's stage still says review.
+    const worker = agent("S5", "W5", { title: "Cut the extra schema" });
+    const fixing: GraphTree = {
+      ...workspaceTree,
+      workspaceId: "W5",
+      projectId: "p1",
+      root: agent("C5", "W5", { kind: "worker", role: "orchestrator" }),
+      groups: [
+        group("PR5", "W5", [
+          step("T5", { agent: worker }),
+          step("T6", {
+            kind: "review",
+            stage: "review",
+            round: 1,
+            agent: agent("S6", "W5", { role: "reviewer", status: "idle" }),
+          }),
+          step("T7", { kind: "fix", stage: "review", round: 1, state: "running", agent: worker }),
+        ]),
+      ],
+    };
+    const { scope } = await render([fixing]);
+    const pod = (id: string) =>
+      scope.querySelector(`.react-flow__node[data-id="step:${id}"] [data-pod]`);
+    expect(pod("T5")?.classList).toContain("s-idle");
+    expect(pod("T6")?.classList).toContain("s-idle");
+    expect(pod("T7")?.classList).toContain("s-work");
+    expect(pod("T7")?.querySelector(".ag-role")?.textContent).toBe("fix r1");
+    expect(pod("T7")?.getAttribute("href")).toBe("#/workspaces/W5/chats/S5");
+  });
+
   it("says when no agent works, with a link to a new workspace", async () => {
     const all = await render([]);
     expect(all.scope.textContent).toContain("No agents work now.");
