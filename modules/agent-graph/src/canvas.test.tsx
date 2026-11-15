@@ -66,6 +66,7 @@ const runTree: GraphTree = {
     ]),
     group("PR2", "L2", [step("T3", { state: "running", agent: agent("S3", "L2") })]),
   ],
+  positions: {},
 };
 
 const workspaceTree: GraphTree = {
@@ -75,6 +76,7 @@ const workspaceTree: GraphTree = {
   name: "theme-picker-fix",
   root: agent("C2", "W2", { kind: "worker", role: "orchestrator", status: "idle" }),
   groups: [group("PR3", "W2", [step("T4", { agent: agent("S4", "W2", { status: "idle" }) })])],
+  positions: {},
 };
 
 /** The landing component the module gives the workspaces view. */

@@ -72,6 +72,10 @@ export const GraphGroup = Type.Object({
 });
 export type GraphGroup = Static<typeof GraphGroup>;
 
+/** A place on the canvas, in px. */
+export const GraphPosition = Type.Object({ x: Type.Number(), y: Type.Number() });
+export type GraphPosition = Static<typeof GraphPosition>;
+
 /** A run's coordinator with its lanes, or a workspace's worker chat with its pipeline runs. */
 export const GraphTree = Type.Object({
   kind: Type.Union([Type.Literal("run"), Type.Literal("workspace")]),
@@ -82,8 +86,28 @@ export const GraphTree = Type.Object({
   runId: Type.Optional(Type.String()),
   root: GraphAgent,
   groups: Type.Array(GraphGroup),
+  /**
+   * Where the user dragged each node, by node id (`treeNodeId`, `groupNodeId`, `stepNodeId`); empty when nobody
+   * dragged it. A tree's place is absolute; a step's is relative to its group, so a moved tree keeps its children
+   * in place.
+   */
+  positions: Type.Record(Type.String(), GraphPosition),
 });
 export type GraphTree = Static<typeof GraphTree>;
+
+/** `PUT /api/agent-graph/positions`: save where the user dropped one node of the current graph. */
+export const SavePositionRequest = Type.Object({
+  /** The canvas node id: `tree:<workspace id>`, `group:<pipeline run id>`, or `step:<step id>`. */
+  node: Type.String({ minLength: 1 }),
+  x: Type.Number(),
+  y: Type.Number(),
+});
+export type SavePositionRequest = Static<typeof SavePositionRequest>;
+
+/** The canvas node ids, the same in the layout and in the saved positions. Helpers have none: they are never saved. */
+export const treeNodeId = (tree: GraphTree) => `tree:${tree.workspaceId}`;
+export const groupNodeId = (group: GraphGroup) => `group:${group.pipelineRunId}`;
+export const stepNodeId = (step: GraphStep) => `step:${step.id}`;
 
 /** `GET /api/agent-graph`: every tree, by workspace creation time, oldest first. */
 export const AgentGraph = Type.Object({ trees: Type.Array(GraphTree) });

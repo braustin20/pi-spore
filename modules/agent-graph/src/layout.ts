@@ -1,4 +1,12 @@
-import type { GraphAgent, GraphGroup, GraphStep, GraphTree } from "@pi-spore/shared";
+import {
+  type GraphAgent,
+  type GraphGroup,
+  type GraphStep,
+  type GraphTree,
+  groupNodeId,
+  stepNodeId,
+  treeNodeId,
+} from "@pi-spore/shared";
 import { type Edge, type Node, type NodeHandle, Position } from "@xyflow/react";
 import type { HelperLife } from "./helpers.js";
 
@@ -37,8 +45,8 @@ const STEP_W = GROUP_W - 26;
 const STEP_H = 50;
 const STEP_CY = 22;
 
-export const treeNodeId = (tree: GraphTree) => `tree:${tree.workspaceId}`;
-export const stepNodeId = (step: GraphStep) => `step:${step.id}`;
+// The canvas node ids live in shared, where the saved positions name them too (ADR 0176, card 4).
+export { groupNodeId, stepNodeId, treeNodeId };
 
 /** The helpers shown under each node, by node id. */
 export type HelpersByNode = ReadonlyMap<string, readonly HelperLife[]>;
@@ -122,7 +130,7 @@ function layoutTree(tree: GraphTree, helpers: HelpersByNode, phone: boolean, x: 
     });
     const rowH = Math.max(56, ...placed.map(({ height }) => height));
     placed.forEach(({ group, ys }, column) => {
-      const groupId = `group:${group.pipelineRunId}`;
+      const groupId = groupNodeId(group);
       groups.push({
         id: groupId,
         type: "pipeline",

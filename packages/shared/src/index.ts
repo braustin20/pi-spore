@@ -14,8 +14,13 @@ export {
   GraphAgent,
   GraphGroup,
   GraphHelper,
+  GraphPosition,
   GraphStep,
   GraphTree,
+  groupNodeId,
+  SavePositionRequest,
+  stepNodeId,
+  treeNodeId,
 } from "./agent-graph.js";
 export {
   Agent,
