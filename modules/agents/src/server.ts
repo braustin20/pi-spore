@@ -265,6 +265,7 @@ export function createAgentsModule(
         saveTitle: (agentId, title) => {
           host.store.run("UPDATE agents_agents SET title = ? WHERE id = ?", title, agentId);
         },
+        deliveryError: (agentId) => queue.failure(agentId),
         onChange: (agentId, change) => {
           // The activity text and the child runs are not on the agent view, so the list has nothing new to send.
           if (change !== "activity" && change !== "children")
@@ -309,6 +310,7 @@ export function createAgentsModule(
         send: async (agentId, message, options) => {
           await agents.prompt(agentId, message, options?.whileBusy ?? "followUp", options?.images);
         },
+        changed: (agentId) => agents.deliveryChanged(agentId),
       });
       workspaces.afterResume((workspace) => {
         const rows = host.store.all<Row>(

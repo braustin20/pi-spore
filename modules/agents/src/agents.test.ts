@@ -2206,6 +2206,28 @@ describe("stage agents (R6)", () => {
       expect(await api.turnError(stage.id)).toBe("usage limit reached");
     });
 
+    it("returns the error of a message Pi refused, shows it on the agent, and clears it once a message gets in", async () => {
+      const NO_KEY = "No API key found for anthropic.";
+      const refuse = join(scratch, "refuse");
+      writeFileSync(refuse, NO_KEY);
+      await setup({}, { FAKE_PI_REFUSE_FILE: refuse }, {}, [probe]);
+      const { workspaceId } = await makeAgent();
+      const stage = start(workspaceId, { role: "worker", title: "Implement" }, "go");
+
+      await until(async () => (await api.turnError(stage.id)) !== undefined);
+      expect(await api.turnError(stage.id)).toBe(NO_KEY);
+      expect(status(stage.id)).toBe("idle");
+      expect(api.get(stage.id).deliveryError).toBe(NO_KEY);
+      const { agent } = await json<{ agent: Agent }>(
+        await server.request("GET", `/api/agents/${stage.id}`),
+      );
+      expect(agent.deliveryError).toBe(NO_KEY);
+
+      rmSync(refuse);
+      api.deliver(stage.id, "again");
+      await until(() => api.get(stage.id).deliveryError === undefined);
+    });
+
     it("returns the status error after a crash", async () => {
       const stage = await scripted(["crash"]);
       await until(() => status(stage.id) === "failed");

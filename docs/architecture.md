@@ -135,7 +135,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     "Failed turns").
   - `turnError(agentId)` says why the agent's last run failed: the error of a `failed` status, or the
     `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a provider that
-    refused, such as a full usage window). `rename(agentId, title)` sets the title.
+    refused, such as a full usage window). While the agent is not busy, starting, or waiting, it first returns the
+    error of a pending delivery Pi refused (section 6). `rename(agentId, title)` sets the title.
   - `endedRun(agentId)` says the agent's last run ended on its own and nothing new waits for it: the agent is
     `idle`, it has no pending delivery, and its last assistant message did not end with `stopReason` "error" or
     "aborted". A pending delivery counts because a process goes idle once at start-up, before Pi takes its prompt.
@@ -433,6 +434,9 @@ See [ADR 0004](decisions/0004-state-in-sqlite.md).
     while the workspace or the chat is not active, and after a failed send (the row records attempts and the
     error). It is woken when the agent becomes idle, when its workspace is resumed, when its chat is made active,
     and when a new message for the agent comes. A parked or archived workspace keeps its rows.
+  - The error of the agent's oldest pending delivery shows on the agent as `deliveryError`. The chat shows it in place
+    of its empty state. Setting or clearing it publishes the agent and fires `onChange(agentId, "delivery")`, so a
+    pipeline stage whose task Pi refused (such as a provider with no API key) blocks instead of waiting forever.
   - Delivery is at least once: a crash between Pi's accept and the `done` write sends the message again.
 - **Idempotency.** Mutating API requests carry an `Idempotency-Key`. The response is stored and replayed for a repeat
   of the same key. Server errors (5xx) are not stored, so a retry runs again. Retention deletes stored responses
@@ -659,12 +663,13 @@ fail_first = "artifact"
   "reuse"`) is renamed to the new run's slice name when the run has one, in the same commit that gives it the task, so
   its tab names the run that uses it now. Without a name it keeps its title. The `(failed)` suffix goes on the end.
 - **Failed turns** (ADR 0140). The pipeline listens to the stage agents' status. When the open turn's agent fails
-  (`turnError`: a crash, or a turn that ended with `stopReason: "error"`), the `await` step throws
+  (`turnError`: a crash, a turn that ended with `stopReason: "error"`, or a task Pi refused to take), the `await` step throws
   `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The job
   waits with that error, so the run stays `running` and shows it as `blocked`. A turn that ended twice without a report
   blocks the same way (`... ended its turn twice without a report ...`, ADR 0169), and Retry covers it. The old agent
   may still report while the run is blocked. Retry (`POST /api/pipelines/runs/:id/retry`) writes the error on the turn,
-  and `await` then replaces it in one commit: the old agent is renamed `<title> (failed)` and keeps its tab, and a fresh
+  and `await` then replaces it in one commit: the old agent is renamed `<title> (failed)`, keeps its tab, and loses its
+  pending deliveries, and a fresh
   agent takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
   is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The fresh
   agent has the stage's or run's model, else the role default read when it starts, so a settings fix works. A restart or

@@ -13,6 +13,7 @@ import type { RoleDefaults } from "./launch.js";
  * What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers.
  * `children`: its child run list, a step, a state, or a current tool, so a reader of `liveState` can follow it
  * while `helpers` stays rare for Home. `working`: its `workingFor` label. `activity`: its `activity` text.
+ * `delivery`: the error of its pending delivery was set or cleared.
  */
 export type AgentChange =
   | "status"
@@ -22,7 +23,8 @@ export type AgentChange =
   | "helpers"
   | "children"
   | "working"
-  | "activity";
+  | "activity"
+  | "delivery";
 
 /** What an agent's live process shows now, for the agent graph (ADR 0176). Models are `provider/id`. */
 export interface AgentLiveState {
@@ -98,7 +100,8 @@ export interface Agents {
    * Why the agent's last run failed. For a `failed` agent it is the status error. While the run is not over (`busy`,
    * `starting`, `waiting`) it is undefined. Otherwise it is the `errorMessage` of the last assistant message in the
    * session file when Pi ended that turn with `stopReason: "error"` (a provider that refused), or a fixed text when
-   * the message has none. Undefined without a session. Throws a 404 ApiError for an unknown id.
+   * the message has none. Before the session file, it returns the error of a pending delivery Pi refused. Undefined
+   * without a session. Throws a 404 ApiError for an unknown id.
    */
   turnError(agentId: string): Promise<string | undefined>;
   /**

@@ -1035,7 +1035,7 @@ describe("a stage agent whose turn failed", () => {
 
   const agentOf = async (server: TestServer, agentId: string) =>
     (
-      await json<{ agent: { title: string } }>(
+      await json<{ agent: { title: string; deliveryError?: string } }>(
         await server.request("GET", `/api/agents/${agentId}`),
       )
     ).agent;
@@ -1129,6 +1129,32 @@ describe("a stage agent whose turn failed", () => {
     expect(passed.turns[1]?.agentId).not.toBe(failed.agentId);
     expect(passed.workerAgentId).toBe(passed.turns[1]?.agentId);
     expect((await agentOf(server, failed.agentId)).title).toBe("implement (failed)");
+  });
+
+  it("blocks the stage when Pi refuses the task, and Retry gives it to a fresh worker", async () => {
+    const NO_KEY =
+      "No API key found for anthropic. Use /login to log into a provider via OAuth or API key.";
+    const refuse = join(scratch, "refuse");
+    writeFileSync(refuse, NO_KEY);
+    const server = await start({
+      env: { ...scriptEnv({ worker: [DONE] }), FAKE_PI_REFUSE_FILE: refuse },
+    });
+    const { run } = await blockedRun(server, "no-key", IMPLEMENT);
+    const failed = run.turns[0] as PipelineTurn;
+    expect(run.blocked).toBe(
+      `stage implement: the worker agent "implement" failed: ${NO_KEY}. Retry starts a fresh worker agent for this turn.`,
+    );
+
+    rmSync(refuse);
+    await retry(server, run.id);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(kinds(passed)).toEqual(["task1", "task1"]);
+    expect(passed.turns[1]?.agentId).not.toBe(failed.agentId);
+    expect((await agentOf(server, failed.agentId)).title).toBe("implement (failed)");
+    // Retry drops the old agent's refused task, so it never gets it later, such as when the workspace is resumed.
+    expect((await agentOf(server, failed.agentId)).deliveryError).toBeUndefined();
   });
 
   it("gives a refused fix turn to a fresh worker, and the next review round runs", async () => {

@@ -515,9 +515,11 @@ export const pipelinesModule: ServerModule = {
       publish(job.key);
       tellBlocked((job.subject as StageSubject).runId);
     });
-    // A failed or refused turn never reports, so the agent's status change wakes `await` to see it.
+    // A failed or refused turn never reports, so the agent's status change wakes `await` to see it. So does a
+    // refused delivery: Pi never takes the message, so the agent's status does not change.
     agents.onChange((agentId, change) => {
-      if (change !== "status" || agents.get(agentId).kind !== "stage") return;
+      if ((change !== "status" && change !== "delivery") || agents.get(agentId).kind !== "stage")
+        return;
       const open = host.store.get<{ workspace_id: string }>(
         `SELECT r.workspace_id FROM pipelines_turns t JOIN pipelines_runs r ON r.id = t.run_id
          WHERE t.agent_id = ? AND t.report IS NULL AND t.error IS NULL AND r.state = 'running'`,
@@ -1100,8 +1102,11 @@ export const pipelinesModule: ServerModule = {
       stageIndex: number,
       turn: TurnRow,
     ): Promise<StepOutcome<StageCheckpoint>> => {
-      const rename = () =>
+      const rename = () => {
         agents.rename(turn.agent_id, `${agents.get(turn.agent_id).title} (failed)`);
+        // The old agent must not get its refused task later, for example when the workspace resumes.
+        agents.dropDeliveries(turn.agent_id);
+      };
       if (turn.kind !== "fix") return { next: "advance", commit: rename };
       const stage = stageOf(run, stageIndex);
       const model = run.worker_model ?? modelOf(stage);
