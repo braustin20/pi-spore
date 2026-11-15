@@ -59,6 +59,8 @@ interface FakeState {
   testFails?: boolean;
   noReport?: boolean;
   testHangs?: boolean;
+  /** Write an Editor log with this many missing-script lines, as a stale Library copy does (ADR 0177), and exit 2. */
+  missingScripts?: number;
 }
 const readState = (): FakeState => JSON.parse(readFileSync(stateFile, "utf8"));
 const writeState = (change: Partial<FakeState>) =>
@@ -518,6 +520,46 @@ describe("Unity test gates (R10.6)", () => {
 
     expect(run.status).toBe("failed");
     expect(run.error).toContain("no report");
+  });
+
+  it("fails on a stale Library cache, and tells the log's token nothing", async () => {
+    const { a } = await setup();
+    writeState({ missingScripts: 4021 });
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toBe(
+      `stale Unity Library cache in ${a.path}: 4021 missing-script lines. Run the unity-repair-library action, then Retry.`,
+    );
+    // The editor log echoes the command line, which carries an access token: only the count leaves it.
+    expect(run.error).not.toContain("SECRET-TOKEN");
+    expect(await logOf(run.id)).not.toContain("SECRET-TOKEN");
+    // The report of the run is still kept, whatever the exit code.
+    expect(await (await report(a, run.id)).text()).toContain('passed="3"');
+  });
+
+  it("leaves a project with a few missing scripts alone", async () => {
+    const { a } = await setup();
+    writeState({ missingScripts: 5 });
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.exitCode).toBe(2);
+    expect(run.error ?? "").not.toContain("stale");
+  });
+
+  it("ignores an editor log this run did not write", async () => {
+    const { a } = await setup();
+    // An old log from a broken run sits there; this run is clean, so the gate passes (ADR 0177).
+    mkdirSync(join(a.path, "Logs"), { recursive: true });
+    writeFileSync(
+      join(a.path, "Logs", "Editor.log"),
+      `${"The referenced script (Unknown) on this Behaviour is missing!\n".repeat(4021)}`,
+    );
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("succeeded");
+    expect(run.error).toBeUndefined();
   });
 
   it("waits while an agent holds the editor, then runs without closing anything", async () => {

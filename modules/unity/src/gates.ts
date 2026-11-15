@@ -1,4 +1,4 @@
-import { readFile, rm } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import type { Actions, ProvidedAction } from "@pi-spore/mod-actions/server";
 import type { Agents } from "@pi-spore/mod-agents/server";
@@ -19,6 +19,40 @@ const TEST_TIMEOUT_SECONDS = 30 * 60;
 const POLL_MS = 5_000;
 /** The process-side deadline: the CLI timeout plus a minute. */
 export const TEST_DEADLINE_MS = (TEST_TIMEOUT_SECONDS + 60) * 1_000;
+
+/**
+ * A Unity Library copied with its `Library/Bee` keeps the source checkout's paths, so Unity binds no scripts and
+ * every test type is missing (ADR 0177). A broken copy logs thousands of these lines and a good one logs none, so
+ * 100 leaves room for a project with a few genuinely missing scripts while still catching a bad copy.
+ */
+const STALE_LIBRARY_LINES = 100;
+const MISSING_SCRIPT_LINE = "The referenced script (Unknown) on this Behaviour is missing!";
+const editorLog = (workspace: Workspace) => join(resolve(workspace.path), "Logs", "Editor.log");
+
+/**
+ * The missing-script lines of the workspace's editor log, or undefined when this run did not write it: a log from an
+ * earlier run must not fail a new one. Only the count, never the text: the log echoes the command line, access
+ * token and all, so any quote of it could leak that token (ADR 0177).
+ */
+async function countMissingScripts(
+  workspace: Workspace,
+  mtimeBefore: number | undefined,
+): Promise<number | undefined> {
+  const editorLogPath = editorLog(workspace);
+  let written: number;
+  try {
+    written = (await stat(editorLogPath)).mtimeMs;
+  } catch {
+    return undefined;
+  }
+  if (written === mtimeBefore) return undefined;
+  // A log that went or could not be read leaves the exit code as the whole answer.
+  const text = await readFile(editorLogPath, "utf8").catch(() => undefined);
+  if (text === undefined) return undefined;
+  const isMissingScript = (line: string) =>
+    (line.endsWith("\r") ? line.slice(0, -1) : line) === MISSING_SCRIPT_LINE;
+  return text.split("\n").filter(isMissingScript).length;
+}
 
 const CLOSE_KIND = "unity-close-editor";
 const CloseSubject = Type.Object(
@@ -159,6 +193,11 @@ export function registerGates(deps: GateDeps): (workspace: Workspace) => Promise
         await waitForFreeEditor(workspace, provided.name, log, signal);
         // Unity writes the report here; `after` moves it into the workspace's artifacts.
         const output = join(deps.reportDir, `pi-spore-unity-report-${runId}.xml`);
+        // When the editor log was written last, so `after` can tell this run's log from an old one (ADR 0177).
+        const logMtime = await stat(editorLog(workspace)).then(
+          (info) => info.mtimeMs,
+          () => undefined,
+        );
         return {
           argv: [
             deps.unity.command,
@@ -176,21 +215,31 @@ export function registerGates(deps: GateDeps): (workspace: Workspace) => Promise
           ],
           // The CLI stops Unity at its own --timeout; this is a margin for a CLI that hangs itself.
           timeoutMs: deps.testDeadlineMs,
-          after: async (_exitCode, stopped) => {
+          after: async (exitCode, stopped) => {
             try {
               // A cancelled or timed-out run has no report worth keeping.
               if (stopped) return;
-              let xml: string;
+              let xml: string | undefined;
               try {
                 xml = await readFile(output, "utf8");
               } catch {
-                throw new Error(`unity test wrote no report to ${output}`);
+                xml = undefined;
               }
-              await artifacts.write(
-                { scope: "workspace", id: workspace.id },
-                reportPath(runId),
-                xml,
-              );
+              // The report goes into the artifacts whatever the exit code: it lists the failures to fix.
+              if (xml !== undefined)
+                await artifacts.write(
+                  { scope: "workspace", id: workspace.id },
+                  reportPath(runId),
+                  xml,
+                );
+              // A stale Library cache is the fault to name, so it outranks a missing report (ADR 0177).
+              const missing = await countMissingScripts(workspace, logMtime);
+              if (missing !== undefined && missing >= STALE_LIBRARY_LINES)
+                throw new Error(
+                  `stale Unity Library cache in ${resolve(workspace.path)}: ${missing} missing-script lines. Run the unity-repair-library action, then Retry.`,
+                );
+              if (exitCode === 0 && xml === undefined)
+                throw new Error(`unity test wrote no report to ${output}`);
             } finally {
               await rm(output, { force: true });
             }
