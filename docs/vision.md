@@ -153,7 +153,8 @@ not built in v1.
 
 - R10.1 A project is detected as Unity when `ProjectSettings/ProjectVersion.txt` exists.
 - R10.2 Unity projects copy `Library/`, `*.csproj`, and `*.sln` into new worktrees by default (R2.6), with a
-  warning when Unity has the main checkout open (`Temp/UnityLockfile`).
+  warning when Unity has the main checkout open (`Temp/UnityLockfile`). The copy drops `Library/Bee`, the script
+  build graph, which holds the main checkout's path (ADR 0177).
 - R10.3 "Open in Unity" on any workspace starts the right editor version for that worktree.
 - R10.4 One Unity editor per project at a time. pi-spore holds an editor lease that names the owner: the user or an
   agent's workspace.

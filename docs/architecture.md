@@ -1478,7 +1478,10 @@ See [ADR 0011](decisions/0011-unity-support.md).
 
 - Detection: `ProjectSettings/ProjectVersion.txt`. Adds traits `unity` and the editor version.
 - Worktree copy defaults: `Library/`, `*.csproj`, `*.sln`, with `cp --reflink=auto`. Warns when
-  `Temp/UnityLockfile` exists in the main checkout.
+  `Temp/UnityLockfile` exists in the main checkout. After the copy, the trait's `afterCopy` hook deletes
+  `<worktree>/Library/Bee`: a copied script build graph holds the main checkout's path and makes Unity build DLLs
+  whose scripts do not bind ([ADR 0177](decisions/0177-unity-worktree-library-drops-bee.md)). Lane workspaces and the
+  run's merge checkout both get it, through `workspaces.create`.
 - Editor control through the `unity` CLI (run with `host.exec`, plus `--no-banner --non-interactive`):
   - `unity open <path>` to open (it returns at once);
   - `unity status --json` to see open editors, their project paths, and pids;
@@ -1518,6 +1521,13 @@ See [ADR 0011](decisions/0011-unity-support.md).
      gate shows the log tail to the pipeline (R6.5).
   3. Stores the report (NUnit XML) as the workspace artifact `unity-tests/<run id>.xml`. Exit code 0 with no report
      fails the run.
+  4. Counts the lines `The referenced script (Unknown) on this Behaviour is missing!` in
+     `<worktree>/Logs/Editor.log`, if this run wrote that file. At 100 or more, the run fails with
+     `stale Unity Library cache in <worktree>: <n> missing-script lines. Run the unity-repair-library action, then Retry.`
+     Only the count leaves the log (it holds an access token). ADR 0177.
+- `unity-repair-library`, a provided action for Unity projects: deletes `<worktree>/Library/Bee` so Unity rebuilds
+  its scripts on the next open. It refuses the main checkout (an `in-place` workspace) and a folder that an editor
+  has open, and logs only the path. Run it from the Actions panel or with `run_action`.
 - API under `/api/unity`: `GET /workspaces/:id` (Unity or not, the editor version, open editors, stale lock
   files, the lease, and `tests`: the last 5 gate runs with mode, status, and the report path), `POST /workspaces/:id/open`, `POST /editors/close` `{ projectId, path, confirm: true }`. The
   workspace view has a Unity panel for Unity projects.
