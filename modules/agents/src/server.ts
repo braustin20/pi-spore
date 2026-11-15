@@ -455,6 +455,7 @@ export function createAgentsModule(
           );
         },
         roleDefaults: (role) => agents.roleDefaults(role),
+        availableModels: (callerAgentId) => agents.availableModels(callerAgentId),
         modelsUsed: (agentId) => agents.modelsUsed(agentId),
         turnError: (agentId) => agents.turnError(agentId),
         // The pending row covers the idle of a process that starts before its prompt is sent; the manager's

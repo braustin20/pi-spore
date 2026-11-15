@@ -122,8 +122,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   after side chats. A busy, starting, or waiting stage agent sets the workspace's status line (section 13).
   - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
     pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
-    `subagents.agentOverrides.<role>`; `modelsUsed(agentId)` lists the physical models Pi recorded on the agent's
-    assistant messages; `sessionRoles(workspaceId)` lists the session file and role of each agent that has a session,
+    `subagents.agentOverrides.<role>`; `availableModels(callerAgentId?)` lists the models Pi can run (a busy
+    caller's own process answers, so it does not wait for a slot it holds); `modelsUsed(agentId)` lists the physical
+    models Pi recorded on the agent's assistant messages; `sessionRoles(workspaceId)` lists the session file and role of each agent that has a session,
     so the `usage` module can split token use per role.
   - The thinking level comes from the role default. Env adds `PI_SPORE_CHAT_KIND=stage` and `PI_SPORE_STAGE_ROLE`.
   - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,request_human_input,artifacts_list,
@@ -754,7 +755,8 @@ fail_first = "artifact"
   `pipeline cancel <run>`, `pipeline retry <run>`.
 - Other modules use `PipelinesKey`: `start(workspaceId, { pipeline, brief, name?, askingAgentId?, workerModel? })` does what
   the start route does; `workerModel` sets the worker stage's model for that run only (column `worker_model`), so
-  that run never asks about the local implementer.
+  that run never asks about the local implementer. `start` and `requireModel(model)` refuse a model Pi's list lacks
+  (400 `unknown_model`; `spore/auto` always passes); the runs module calls `requireModel` for a lane model.
   `afterRunEnded(listener)` runs for every run that ends, inside the transaction that ends it. The `usage` module
   uses it to record outcomes (section 11a). `onChange(listener)` runs with the workspace id whenever its runs
   change, as the topic does; the runs module uses it to show a lane's `blocked`. `runsOf(workspaceId)` returns the

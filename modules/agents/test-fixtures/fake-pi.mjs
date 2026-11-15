@@ -45,7 +45,8 @@
 // `--fork <file>` copies that session into a new one in `--session-dir`, with `parentSession` in the header, and
 // refuses to be combined with `--session`, as Pi does.
 // Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env, cwd, pid} for assertions;
-// FAKE_PI_MODELS=broken answers get_available_models with a payload that is not a model list.
+// FAKE_PI_MODELS=broken answers get_available_models with a payload that is not a model list;
+// FAKE_PI_MODELS=<provider/id,...> answers it with exactly those models, as Pi lists only models with working auth.
 // FAKE_PI_LAZY_SESSION=1 writes a new session file only at its first assistant message, as Pi does.
 // A `.fake-pi-hold-turn` file in the workspace holds accepted prompts before their first event until removed.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
@@ -631,6 +632,13 @@ const handle = (command) => {
       return respond(id, type);
     case "get_available_models":
       if (process.env.FAKE_PI_MODELS === "broken") return respond(id, type, { models: "none" });
+      if (process.env.FAKE_PI_MODELS) {
+        const models = process.env.FAKE_PI_MODELS.split(",").map((ref) => {
+          const slash = ref.indexOf("/");
+          return { ...model, provider: ref.slice(0, slash), id: ref.slice(slash + 1), name: ref };
+        });
+        return respond(id, type, { models });
+      }
       return respond(id, type, {
         models: [
           model,

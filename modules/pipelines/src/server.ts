@@ -1390,6 +1390,21 @@ export const pipelinesModule: ServerModule = {
       return loadPipelines(userDir, join(project.path, ".pi-spore", "pipelines"));
     };
 
+    const requireModel = async (model: string, callerAgentId?: string): Promise<void> => {
+      if (model === ROUTE_MODEL) return;
+      const available = await agents.availableModels(callerAgentId);
+      if (available.some((found) => `${found.provider}/${found.id}` === model)) return;
+      const id = model.slice(model.indexOf("/") + 1);
+      const same = available
+        .filter((found) => found.id === id)
+        .map((found) => `${found.provider}/${found.id}`);
+      throw new ApiError(
+        400,
+        "unknown_model",
+        `Pi cannot run ${model}: it is not in Pi's model list (no auth or unknown).${same.length > 0 ? ` Available with id ${id}: ${same.join(", ")}.` : ""}`,
+      );
+    };
+
     const start = async (workspaceId: string, request: StartRunRequest): Promise<PipelineRun> => {
       const workspace = workspaces.get(workspaceId);
       if (workspace.state !== "active") {
@@ -1444,6 +1459,8 @@ export const pipelinesModule: ServerModule = {
           `Pipeline "${entry.id}" makes a new worker; previousRunId is only for a pipeline whose worker stage has worker = "reuse"`,
         );
       }
+      if (request.workerModel !== undefined)
+        await requireModel(request.workerModel, request.askingAgentId);
       const askingAgentId = request.askingAgentId ?? (await agents.activeWorker(workspace.id)).id;
       const runId = host.store.transaction(() => {
         requireNoActiveRun(workspace.id);
@@ -1494,6 +1511,7 @@ export const pipelinesModule: ServerModule = {
     const api: Pipelines = {
       report,
       start,
+      requireModel,
       get: (runId) => viewOf(requireRun(runId)),
       runsOf,
       stop,

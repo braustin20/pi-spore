@@ -646,15 +646,39 @@ export class AgentManager {
     return this.othersLive(undefined) + this.probes;
   }
 
-  /** The models Pi offers, with no chat needed. Cached, and one process at a time (ADR 0120). */
-  availableModels(): Promise<AgentModel[]> {
+  /**
+   * The models Pi offers, with no chat needed. Cached, and one process at a time (ADR 0120). An agent that blocks on
+   * this call (a bridge request) passes its id as `callerAgentId`. If its process runs, that process answers: a probe
+   * would wait for a slot that the caller itself holds, and a lent slot would break `maxLive` (ADR 0026).
+   */
+  availableModels(callerAgentId?: string): Promise<AgentModel[]> {
     const cached = this.modelCache;
     if (cached && this.options.now() - cached.at < this.options.modelsCacheMs)
       return Promise.resolve(cached.models);
+    const caller =
+      callerAgentId === undefined ? undefined : this.agents.get(callerAgentId)?.process;
+    if (caller?.alive) return this.readModels(caller);
     this.modelsInFlight ??= this.probeModels().finally(() => {
       this.modelsInFlight = undefined;
     });
     return this.modelsInFlight;
+  }
+
+  /** Asks a Pi process for its model list and caches the answer. */
+  private async readModels(process: PiProcess): Promise<AgentModel[]> {
+    try {
+      const data = await process.request("get_available_models", {}, this.options.startTimeoutMs);
+      const { models } = parse(ModelChoices, data, "Pi model list");
+      this.modelCache = { at: this.options.now(), models };
+      return models;
+    } catch (error) {
+      const tail = process.stderrTail();
+      throw new ApiError(
+        502,
+        "models_unavailable",
+        `Could not list models: ${(error as Error).message}${tail ? `\n${tail}` : ""}`,
+      );
+    }
   }
 
   private async probeModels(): Promise<AgentModel[]> {
@@ -675,17 +699,7 @@ export class AgentManager {
         onExit: () => {},
       });
       try {
-        const data = await process.request("get_available_models", {}, this.options.startTimeoutMs);
-        const { models } = parse(ModelChoices, data, "Pi model list");
-        this.modelCache = { at: this.options.now(), models };
-        return models;
-      } catch (error) {
-        const tail = process.stderrTail();
-        throw new ApiError(
-          502,
-          "models_unavailable",
-          `Could not list models: ${(error as Error).message}${tail ? `\n${tail}` : ""}`,
-        );
+        return await this.readModels(process);
       } finally {
         await process.stop(1_000);
       }

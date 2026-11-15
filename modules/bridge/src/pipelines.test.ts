@@ -2126,7 +2126,10 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
 
   it("runs the worker stage on the workerModel for this run only", async () => {
     const { module, startThrough } = probe();
-    const server = await start({ env: scriptEnv({ worker: [DONE] }), extraModules: [module] });
+    const server = await start({
+      env: { ...scriptEnv({ worker: [DONE] }), FAKE_PI_MODELS: "fake/fake-1,fake/other-1" },
+      extraModules: [module],
+    });
     const { workspaceId } = await workspace(server, "keymodel");
     userPipeline(server.paths.root, "p", IMPLEMENT);
 
@@ -2150,6 +2153,29 @@ describe("the pipelines interface (start, afterRunEnded)", () => {
       "--model",
       "other-1",
     ]);
+  });
+
+  it("refuses a workerModel Pi cannot run, and takes spore/auto, which Pi need not list", async () => {
+    const { module, startThrough, runsOfThrough } = probe();
+    const server = await start({
+      env: { ...scriptEnv({ worker: [DONE] }), FAKE_PI_MODELS: "fake/one" },
+      extraModules: [module],
+    });
+    const { workspaceId } = await workspace(server, "unknownmodel");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const request = { pipeline: "p", brief: "Build the thing" };
+
+    await expect(
+      startThrough(workspaceId, { ...request, workerModel: "other/one" }),
+    ).rejects.toMatchObject({
+      status: 400,
+      code: "unknown_model",
+      message: expect.stringMatching(/other\/one[\s\S]*fake\/one/),
+    });
+    expect(runsOfThrough(workspaceId)).toEqual([]);
+
+    const routed = await startThrough(workspaceId, { ...request, workerModel: "spore/auto" });
+    await untilState(server, routed.id, "passed");
   });
 });
 
