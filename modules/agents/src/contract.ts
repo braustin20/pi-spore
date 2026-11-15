@@ -2,6 +2,7 @@ import { defineInterface } from "@pi-spore/module-api";
 import type {
   Agent,
   AgentDialog,
+  AgentModel,
   AgentRole,
   ChildRun,
   StageRole,
@@ -89,6 +90,12 @@ export interface Agents {
   ): Agent;
   /** The model and thinking level a role gets from the user's pi-subagents settings (ADR 0013). */
   roleDefaults(role: string): Promise<RoleDefaults>;
+  /**
+   * The models Pi can run, as `get_available_models` lists them: only providers with working auth. Cached. Throws the
+   * 502 `models_unavailable` ApiError when Pi's list cannot be read. An agent that blocks on this call (a bridge
+   * request) passes its id as `callerAgentId`; its own process answers when it runs, so no second process starts.
+   */
+  availableModels(callerAgentId?: string): Promise<AgentModel[]>;
   /**
    * The distinct physical models (`provider/id`) Pi recorded on the agent's assistant messages, in the order they
    * first appear. Empty when the agent has no session yet.
