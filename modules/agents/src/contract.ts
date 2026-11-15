@@ -13,7 +13,6 @@ import type { RoleDefaults } from "./launch.js";
  * What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers.
  * `children`: its child run list, a step, a state, or a current tool, so a reader of `liveState` can follow it
  * while `helpers` stays rare for Home. `working`: its `workingFor` label. `activity`: its `activity` text.
- * `model`: its model or thinking level in memory, which `liveState` shows.
  */
 export type AgentChange =
   | "status"
@@ -23,8 +22,7 @@ export type AgentChange =
   | "helpers"
   | "children"
   | "working"
-  | "activity"
-  | "model";
+  | "activity";
 
 /** What an agent's live process shows now, for the agent graph (ADR 0176). Models are `provider/id`. */
 export interface AgentLiveState {

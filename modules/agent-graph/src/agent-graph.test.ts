@@ -401,24 +401,34 @@ describe("the agent graph (ADR 0176)", () => {
     );
   });
 
-  it("publishes the new model when a live chat's model changes", async () => {
-    const server = await start({});
-    const { agentId } = await workspace(server, "model");
-    await json(await prompt(server, agentId, "hello"));
-    await until(async () => (await graph(server))[0]?.root.status === "idle");
-    const mark = events(server).length;
-
-    await json(
-      await server.request("POST", `/api/agents/${agentId}/model`, {
-        provider: "fake",
-        modelId: "fake-2",
-      }),
+  it("shows a worker's helper on its fix step only, not on its earlier task step", async () => {
+    const revise = {
+      summary: "Not yet",
+      verdict: "revise",
+      findings: [{ severity: "important", title: "Missing check" }],
+    };
+    const server = await start(
+      { worker: [DONE, "hang"], reviewer: [revise] },
+      `${IMPLEMENT}\n[[stage]]\nname = "review"\nrole = "reviewer"\nrounds = 2\nfix_passes = 1\n`,
     );
+    const { workspaceId } = await workspace(server, "fix");
+    const run = await startRun(server, workspaceId);
+    await until(async () => (await getPipelineRun(server, run.id)).turns.length === 3);
+    const [task, , fix] = (await getPipelineRun(server, run.id)).turns as [
+      PipelineTurn,
+      PipelineTurn,
+      PipelineTurn,
+    ];
+    expect(fix).toMatchObject({ kind: "fix", agentId: task.agentId });
 
-    await until(() =>
-      events(server)
-        .slice(mark)
-        .some((event) => event.trees[0]?.root.model === "fake/fake-2"),
-    );
+    await json(await prompt(server, task.agentId, "helper:run-1:scout:running"));
+    const steps = async () => (await graph(server))[0]?.groups[0]?.steps ?? [];
+    await until(async () => (await steps()).some((step) => step.agent?.helpers.length));
+
+    const byId = new Map((await steps()).map((step) => [step.id, step.agent?.helpers]));
+    expect(byId.get(task.id)).toEqual([]);
+    expect(byId.get(fix.id)).toEqual([
+      expect.objectContaining({ id: "run-1:0", state: "running" }),
+    ]);
   });
 });

@@ -4,6 +4,7 @@ import type { Runs } from "@pi-spore/mod-runs/server";
 import type { Workspaces } from "@pi-spore/mod-workspaces/server";
 import type {
   Agent,
+  ChildRun,
   GraphAgent,
   GraphGroup,
   GraphHelper,
@@ -21,8 +22,8 @@ export interface GraphSources {
 }
 
 /** The running steps of the agent's running child runs (ADR 0176, "Helpers"). */
-function helpersOf(agents: Agents, agentId: string): GraphHelper[] {
-  return agents.liveState(agentId).children.flatMap((run) =>
+function helpersOf(children: ChildRun[]): GraphHelper[] {
+  return children.flatMap((run) =>
     run.state !== "running"
       ? []
       : run.steps.flatMap((step, index): GraphHelper[] =>
@@ -103,6 +104,13 @@ function groupOf(
   };
 }
 
+/** Every agent node of the trees in tree order: each root, then its groups in order, then their steps in order. */
+export const nodesOf = (trees: GraphTree[]): GraphAgent[] =>
+  trees.flatMap((tree) => [
+    tree.root,
+    ...tree.groups.flatMap((group) => group.steps.flatMap((step) => step.agent ?? [])),
+  ]);
+
 /** Every tree of the agent graph (ADR 0176, "What is in the graph"), with running helpers only. */
 export function buildGraph({ agents, pipelines, runs, workspaces }: GraphSources): GraphTree[] {
   const since = new Map(agents.attention().map((entry) => [entry.agent.id, entry.since]));
@@ -118,9 +126,9 @@ export function buildGraph({ agents, pipelines, runs, workspaces }: GraphSources
       ...(agent.workingFor === undefined ? {} : { workingFor: agent.workingFor }),
       ...(live.model ? { model: live.model } : {}),
       ...(live.routedModel ? { routedModel: live.routedModel } : {}),
-      // A closed chat is not in `attention()`; its status has not changed since it was made.
+      // `attention()` leaves out closed agents, so a closed agent has no status time; its creation time stands in.
       since: since.get(agent.id) ?? agent.createdAt,
-      helpers: helpersOf(agents, agent.id),
+      helpers: helpersOf(live.children),
     };
   };
 
@@ -145,7 +153,7 @@ export function buildGraph({ agents, pipelines, runs, workspaces }: GraphSources
     name: workspace.name,
   });
 
-  return active.flatMap((workspace): GraphTree[] => {
+  const trees = active.flatMap((workspace): GraphTree[] => {
     const run = runs.runOf(workspace.id);
     if (run) {
       const root = node(run.coordinatorAgentId);
@@ -185,4 +193,9 @@ export function buildGraph({ agents, pipelines, runs, workspaces }: GraphSources
       },
     ];
   });
+  // One stage agent can back several steps (a task turn and its fix turns, or a reused worker in two groups).
+  // Its helpers show once, on its last node; each earlier node of it shows none.
+  const last = new Map(nodesOf(trees).map((entry) => [entry.agentId, entry]));
+  for (const entry of nodesOf(trees)) if (last.get(entry.agentId) !== entry) entry.helpers = [];
+  return trees;
 }

@@ -3,23 +3,10 @@ import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
 import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import type { ServerModule } from "@pi-spore/module-api";
-import type {
-  AgentGraph,
-  AgentGraphEvent,
-  ChildRun,
-  GraphAgent,
-  GraphHelper,
-  GraphTree,
-} from "@pi-spore/shared";
-import { buildGraph } from "./graph.js";
+import type { AgentGraph, AgentGraphEvent, ChildRun, GraphHelper } from "@pi-spore/shared";
+import { buildGraph, nodesOf } from "./graph.js";
 
 export const GRAPH_TOPIC = "agent-graph:trees";
-
-const nodesOf = (trees: GraphTree[]): GraphAgent[] =>
-  trees.flatMap((tree) => [
-    tree.root,
-    ...tree.groups.flatMap((group) => group.steps.flatMap((step) => step.agent ?? [])),
-  ]);
 
 /** How a helper that stopped running ended: `failed` for a failed or rejected step or run, else `done`. */
 function endState(children: ChildRun[], helperId: string): "done" | "failed" {
@@ -51,7 +38,8 @@ export const agentGraphModule: ServerModule = {
     let shown = new Map<string, GraphHelper[]>();
     const publish = () => {
       const trees = buildGraph(sources);
-      const nodes = nodesOf(trees);
+      // Each agent once, on the node that carries its helpers: its last one (see buildGraph).
+      const nodes = [...new Map(nodesOf(trees).map((node) => [node.agentId, node])).values()];
       const running = new Map(nodes.map((node) => [node.agentId, node.helpers]));
       let ended = false;
       for (const node of nodes) {
