@@ -22,6 +22,7 @@ const agent = (status: Agent["status"]): Agent => ({
   kind: "worker",
   active: true,
   status,
+  statusSince: 0,
   createdAt: 0,
 });
 
@@ -67,8 +68,9 @@ describe("workspaceStatuses", () => {
     id,
     ...extra,
   });
-  const lines = (agents: Agent[], waits: [string, UserWait][]) =>
-    workspaceStatuses([workspace("active")], agents, new Map(waits)).get("w1")!;
+  const lines = (agents: Agent[], waits: [string, UserWait][], working: [string, string][] = []) =>
+    workspaceStatuses([workspace("active")], agents, new Map(waits), new Map(working)).get("w1")!;
+  const gates: [string, string][] = [["w1", "Pipeline: gates"]];
 
   it("shows that the active worker chat waits for the user, and Idle again once answered", () => {
     expect(lines([chat("a1", "idle")], [["a1", "question"]])).toEqual({
@@ -141,6 +143,44 @@ describe("workspaceStatuses", () => {
     expect(lines([stage("failed")], []).text).toBe("No agent yet");
   });
 
+  it("shows a workspace that works for a pipeline run as working when no stage agent works", () => {
+    const stage = chat("s1", "stopped", { kind: "stage", title: "Implement" });
+    expect(lines([chat("a1", "stopped"), stage], [], gates)).toEqual({
+      text: "Working (Pipeline: gates)",
+      tone: "run",
+    });
+    expect(lines([chat("a1", "idle")], [], gates).text).toBe("Working (Pipeline: gates)");
+    expect(lines([stage], [], gates).text).toBe("Working (Pipeline: gates)");
+    expect(lines([], [], gates).text).toBe("Working (Pipeline: gates)");
+  });
+
+  it("puts a live stage agent, a busy chat, and a wait for the user before the workspace's label", () => {
+    const stage = chat("s1", "busy", { kind: "stage", title: "Implement" });
+    expect(lines([chat("a1", "stopped"), stage], [], gates).text).toBe("Working: Implement");
+    expect(lines([chat("a1", "busy")], [], gates).text).toBe("Working");
+    expect(lines([chat("a1", "stopped")], [["a1", "question"]], gates).text).toBe(
+      "Waiting for your answer",
+    );
+    expect(lines([chat("a1", "failed")], [], gates).text).toBe("Agent failed");
+  });
+
+  it("keeps a chat's own working label over the workspace's", () => {
+    const worker = chat("a1", "stopped", { workingFor: "Pipeline: 2 runs" });
+    expect(lines([worker], [], gates).text).toBe("Working (Pipeline: 2 runs)");
+  });
+
+  it("shows the workspace's label only on that workspace, and not once it is parked", () => {
+    const other = { ...workspace("active"), id: "w2" };
+    const statuses = workspaceStatuses(
+      [workspace("parked"), other],
+      [chat("a1", "stopped"), chat("a2", "stopped", { workspaceId: "w2" })],
+      new Map(),
+      new Map([["w1", "Pipeline: gates"]]),
+    );
+    expect(statuses.get("w1")?.text).toBe("Parked");
+    expect(statuses.get("w2")?.text).toBe("Agent stopped");
+  });
+
   it("keeps each workspace's stage agents to itself", () => {
     const other = { ...workspace("active"), id: "w2" };
     const statuses = workspaceStatuses(
@@ -149,6 +189,7 @@ describe("workspaceStatuses", () => {
         chat("a1", "stopped"),
         chat("s2", "busy", { kind: "stage", workspaceId: "w2", title: "Implement" }),
       ],
+      new Map(),
       new Map(),
     );
     expect(statuses.get("w1")?.text).toBe("Agent stopped");

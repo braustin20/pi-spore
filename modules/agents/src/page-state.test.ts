@@ -9,6 +9,7 @@ const agent: Agent = {
   kind: "worker",
   active: true,
   status: "idle",
+  statusSince: 0,
   createdAt: 1,
 };
 const snapshot = {
@@ -59,6 +60,15 @@ describe("reducePage", () => {
     state = reducePage(state, { type: "status", status: "idle" });
     expect(state.agent?.status).toBe("idle");
     expect(state.agent?.error).toBeUndefined();
+  });
+
+  it("keeps the time of the status change, so the working count survives a reload", () => {
+    const state = reducePage(reducePage(emptyPage(), snapshot), {
+      type: "status",
+      status: "busy",
+      since: 1_234,
+    });
+    expect(state.agent).toMatchObject({ status: "busy", statusSince: 1_234 });
   });
 
   it("opens and closes dialogs, keeps the latest notices, and updates model and stats", () => {

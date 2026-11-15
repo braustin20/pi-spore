@@ -450,6 +450,92 @@ describe("Home inbox", () => {
     expect((await inbox()).running).toEqual([]);
   });
 
+  // A run lane works on its stage chats, so its worker chat sits stopped (R15.1). The workspace itself works for the
+  // run, which is what Home must show, as the list column does.
+  it("shows a stopped worker chat as working for its workspace's pipeline run", async () => {
+    const { agentId, workspaceId } = await makeAgent("gated");
+    await server.events.snapshot(INBOX_TOPIC);
+    const pushed = () => server.events.eventsOf(INBOX_TOPIC) as InboxEvent[];
+    const row = () => pushed().at(-1)?.inbox.running[0];
+
+    agentsApi.setWorkspaceWorkingFor(workspaceId, "Pipeline: gates");
+    // Home rebuilt on the label change alone: no prompt and no chat event.
+    await until(async () => row()?.status === "pipeline");
+    expect(row()).toMatchObject({
+      agentId,
+      chat: { id: agentId, kind: "worker", active: true },
+      status: "pipeline",
+      detail: "Pipeline: gates",
+    });
+    expect((await inbox()).running).toHaveLength(1);
+
+    agentsApi.setWorkspaceWorkingFor(workspaceId, undefined);
+    await until(async () => (await inbox()).running.length === 0);
+  });
+
+  it("shows a lane's stage chat when its workspace works for a run and it has no worker chat", async () => {
+    const folder = join(scratch, "stages");
+    mkdirSync(folder);
+    const { project } = await json<{ project: { id: string } }>(
+      await server.request("POST", "/api/projects", { path: folder }),
+      201,
+    );
+    const { workspace } = await json<{ workspace: { id: string } }>(
+      await server.request("POST", "/api/workspaces", {
+        projectId: project.id,
+        name: "stages",
+        isolation: "in-place",
+      }),
+      201,
+    );
+    // The run has only its stage chat, and that chat is stopped between stages.
+    const stage = server.store.transaction(() =>
+      agentsApi.createStage(workspace.id, { role: "reviewer", title: "Review 1" }),
+    );
+
+    agentsApi.setWorkspaceWorkingFor(workspace.id, "Pipeline: gates");
+    await until(async () => (await inbox()).running[0]?.status === "pipeline");
+    expect((await inbox()).running).toMatchObject([
+      {
+        agentId: stage.id,
+        chat: { id: stage.id, kind: "stage" },
+        status: "pipeline",
+        detail: "Pipeline: gates",
+      },
+    ]);
+  });
+
+  it("keeps a chat's own running item when its workspace also works for a run", async () => {
+    const gated = await makeAgent("gated-lane");
+    const owned = await makeAgent("owned-lane");
+    // The second lane has a side chat that works for another run, so its own label says more than the
+    // workspace's does, and the workspace gets no second row for its worker chat.
+    const { agent: side } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents/chats", {
+        workspaceId: owned.workspaceId,
+        kind: "side",
+      }),
+      201,
+    );
+    agentsApi.setWorkingFor(side.id, "Pipeline: review");
+    agentsApi.setWorkspaceWorkingFor(gated.workspaceId, "Pipeline: gates");
+    agentsApi.setWorkspaceWorkingFor(owned.workspaceId, "Pipeline: gates");
+
+    const rows = new Map((await inbox()).running.map((row) => [row.workspace.name, row]));
+    expect(rows.get("gated-lane")).toMatchObject({
+      agentId: gated.agentId,
+      status: "pipeline",
+      detail: "Pipeline: gates",
+    });
+    expect(rows.get("owned-lane")).toMatchObject({
+      agentId: side.id,
+      status: "pipeline",
+      detail: "Pipeline: review",
+    });
+    expect(rows.get("owned-lane")).not.toHaveProperty("others");
+    expect(rows.size).toBe(2);
+  });
+
   it("carries the router's waiting text on the running item", async () => {
     const { agentId } = await makeAgent("routed");
     await json(await prompt(agentId, "slow:60000"));

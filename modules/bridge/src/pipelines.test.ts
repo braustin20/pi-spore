@@ -2873,6 +2873,9 @@ describe("the run's chat while the run works", () => {
         await server.request("GET", `/api/agents/${agentId}`),
       )
     ).agent.workingFor;
+  const workspaceLabels = (server: TestServer): Record<string, string> =>
+    (server.events.eventsOf("agents:working") as { workspaces?: Record<string, string> }[]).at(-1)
+      ?.workspaces ?? {};
   const finishedFor = async (server: TestServer, agentId: string) =>
     (await inboxOf(server)).items.some(
       (item) => item.kind === "finished" && item.agentId === agentId,
@@ -2890,6 +2893,23 @@ describe("the run's chat while the run works", () => {
       }, 3_000);
     } catch {
       throw new Error(`Expected workingFor ${expected}, last saw ${seen}`);
+    }
+  }
+
+  /** Waits for the workspace row's label, and says which label it last saw when the wait ends. */
+  async function untilWorkspaceLabel(
+    server: TestServer,
+    workspaceId: string,
+    expected: string | undefined,
+  ) {
+    let seen: string | undefined;
+    try {
+      await until(async () => {
+        seen = workspaceLabels(server)[workspaceId];
+        return seen === expected;
+      }, 3_000);
+    } catch {
+      throw new Error(`Expected workspace label ${expected}, last saw ${seen}`);
     }
   }
 
@@ -2939,6 +2959,8 @@ describe("the run's chat while the run works", () => {
 
     expect((await getRun(server, run.id)).state).toBe("running");
     expect(await workingFor(server, agentId)).toBe("Pipeline: gates");
+    // The workspace row says the same, even with no worker chat of its own (R7).
+    await untilWorkspaceLabel(server, workspaceId, "Pipeline: gates");
     expect(await finishedFor(server, agentId)).toBe(false);
   });
 
@@ -2953,12 +2975,14 @@ describe("the run's chat while the run works", () => {
     writeFileSync(hold, "");
     const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
     await untilLabel(server, agentId, "Pipeline: implement");
+    await untilWorkspaceLabel(server, workspaceId, "Pipeline: implement");
     rmSync(hold);
     await until(async () => (await getRun(server, run.id)).state === "passed");
     // `chat` would open the chat, which counts as seeing it; the live events do not.
     await until(() => said(server, agentId).some((message) => message.includes("ended passed")));
 
     await untilLabel(server, agentId, undefined);
+    await untilWorkspaceLabel(server, workspaceId, undefined);
     await untilFinished(server, agentId);
   });
 
@@ -3362,6 +3386,7 @@ describe("a stage agent's question to the asking chat (ADR 0179)", () => {
       id: question.id,
       question: "Which color?",
       askedAgentId: agentId,
+      askedWorkspaceId: workspaceId,
       askedTitle: expect.any(String),
     });
 

@@ -18,6 +18,7 @@ const chat = (id: string, status: Agent["status"]): Agent => ({
   kind: "side",
   active: false,
   status,
+  statusSince: 0,
   title: id,
   createdAt: 0,
 });

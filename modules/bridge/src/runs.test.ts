@@ -29,6 +29,7 @@ import type {
   Approval,
   Lane,
   PipelineRun,
+  PipelineTurn,
   Run,
   RunEvent,
   RunPrSubject,
@@ -272,6 +273,14 @@ async function passLane(server: TestServer, runId: string, laneId: string) {
   await until(async () => (await laneOf(server, runId, laneId)).state === "passed");
 }
 
+/**
+ * The workspace labels the agents module published last on `agents:working`, which the workspace list row shows
+ * while a pipeline run works in that workspace (R7).
+ */
+const workspaceLabels = (server: TestServer): Record<string, string> =>
+  (server.events.eventsOf("agents:working") as { workspaces?: Record<string, string> }[]).at(-1)
+    ?.workspaces ?? {};
+
 const launches = () =>
   readFileSync(join(scratch, "record.jsonl"), "utf8")
     .split("\n")
@@ -468,6 +477,25 @@ describe("a lane", () => {
       await server.request("GET", `/api/pipelines/workspaces/${started.workspaceId}/runs`),
     );
     expect(pipelineRuns.map((entry) => entry.name)).toEqual(["feature"]);
+  });
+
+  it("labels the lane's workspace as working while its run works", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "lanelabel");
+    const { run, coordinator } = await createRun(server, projectId, "lanelabel");
+    const { lane } = await laneWithWorker(server, run, coordinator);
+    const workingFor = async (agentId: string) =>
+      (
+        await json<{ agent: { workingFor?: string } }>(
+          await server.request("GET", `/api/agents/${agentId}`),
+        )
+      ).agent.workingFor;
+    await until(async () => (await workingFor(run.coordinatorAgentId)) === "Pipeline: implement");
+
+    // A lane's workspace has no worker chat of its own, so its row reads the workspace label.
+    expect(workspaceLabels(server)[lane.workspaceId as string]).toBe("Pipeline: implement");
+    // The coordinator keeps its chat label, unchanged by the workspace label (ADR 0030).
+    expect(await workingFor(run.coordinatorAgentId)).toBe("Pipeline: implement");
   });
 
   it("sends the coordinator no pipelines end message for its lane's run (ADR 0162)", async () => {
@@ -1000,6 +1028,55 @@ describe("questions up the chain (R7.5, ADR 0008)", () => {
     await json(await asCoordinator("POST", "questions", { question: "Which hash?" }), 201);
   });
 
+  it("holds the lane's pipeline while its stage question is open, then reminds as before (ADR 0179)", async () => {
+    const server = await start({
+      script: { worker: [{ askCoordinator: "Which hash?" }, "silent", { summary: "Done" }] },
+    });
+    const { projectId } = await project(server, "lane-wait");
+    const { run, coordinator } = await createRun(server, projectId, "lane-wait");
+    const started = await startLane(run, coordinator, "asker");
+    await until(async () => (await laneOf(server, run.id, started.id)).state === "running");
+    const lane = await laneOf(server, run.id, started.id);
+    const worker = await laneWorker(server, lane);
+    const pipelineRun = async () =>
+      (
+        await json<{ runs: PipelineRun[] }>(
+          await server.request("GET", `/api/pipelines/workspaces/${lane.workspaceId}/runs`),
+        )
+      ).runs[0] as PipelineRun;
+    const reminder = `user: You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${worker.turnId}`;
+
+    let question: PipelineTurn["question"];
+    await until(async () => {
+      question = (await pipelineRun()).turns[0]?.question;
+      return question !== undefined;
+    });
+    const [asked] = (await getRun(server, run.id)).questions;
+    expect(question).toEqual({
+      id: asked?.id,
+      question: "Which hash?",
+      askedAgentId: run.coordinatorAgentId,
+      askedWorkspaceId: run.workspaceId,
+      askedTitle: expect.any(String),
+    });
+    await untilDelivered(server, worker.agentId, "assistant: asked:");
+    await json(
+      await asAgent(server, coordinator.agentId, coordinator.workspaceId)(
+        "POST",
+        "coordinator/answers",
+        { questionId: asked?.id, answer: "sha256" },
+      ),
+    );
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "passed");
+
+    // The worker ended its turn on the question and got no reminder. After the answer, its silent turn got one.
+    const messages = await chat(server, worker.agentId);
+    expect(messages.filter((message) => message === reminder)).toHaveLength(1);
+    const answered = messages.findIndex((message) => message.includes("Answer: sha256"));
+    expect(answered).toBeGreaterThan(-1);
+    expect(messages.indexOf(reminder)).toBeGreaterThan(answered);
+  });
+
   it("refuses a caller outside a lane with 403 not_in_lane", async () => {
     const server = await start();
     const { projectId } = await project(server, "no-lane");
@@ -1406,6 +1483,21 @@ describe("a new coordinator chat (ADR 0030)", () => {
       );
       return view.agent.workingFor === "Pipeline: implement";
     });
+  });
+
+  it("still shows a lane's running pipeline after the workspace of its run was deleted", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "deleted-run-view");
+    const { run, coordinator } = await createRun(server, projectId, "deleted-run-view");
+    const { lane } = await laneWithWorker(server, run, coordinator);
+    // Retention deletes an archived run workspace while its lane's pipeline still runs.
+    server.store.run("DELETE FROM workspaces_workspaces WHERE id = ?", run.workspaceId);
+
+    const { runs } = await json<{ runs: { state: string }[] }>(
+      await server.request("GET", `/api/pipelines/workspaces/${lane.workspaceId}/runs`),
+    );
+    expect(runs.map((pipelineRun) => pipelineRun.state)).toEqual(["running"]);
+    await json(await server.request("GET", "/api/runs"));
   });
 
   it("lists the diff of a passed lane", async () => {

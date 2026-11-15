@@ -30,6 +30,7 @@ const idle: Agent = {
   kind: "worker",
   active: true,
   status: "idle",
+  statusSince: 0,
   title: "Main work",
   createdAt: 0,
 };

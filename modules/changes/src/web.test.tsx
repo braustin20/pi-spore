@@ -33,6 +33,7 @@ const agent: Agent = {
   kind: "worker",
   active: true,
   status: "waiting",
+  statusSince: 0,
   createdAt: 0,
 };
 

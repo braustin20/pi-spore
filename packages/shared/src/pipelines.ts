@@ -219,12 +219,16 @@ export const PipelineTurn = Type.Object({
   error: Type.Optional(Type.String()),
   /** Why a review turn's agent runs on another model than its role default: the default's plan was full. */
   modelNote: Type.Optional(Type.String()),
-  /** The open question of the run's open turn: the run waits for the chat `askedTitle` to answer it. */
+  /**
+   * The open question of the run's open turn: the run waits for the chat `askedTitle` to answer it. That chat lives in
+   * workspace `askedWorkspaceId`: a lane's coordinator lives in the run workspace, not the lane.
+   */
   question: Type.Optional(
     Type.Object({
       id: Type.String(),
       question: Type.String(),
       askedAgentId: Type.String(),
+      askedWorkspaceId: Type.String(),
       askedTitle: Type.String(),
     }),
   ),

@@ -124,7 +124,7 @@ export type AgentEvent =
   | { type: "pi"; event: unknown }
   /** The agent's pi-subagents helpers changed (ADR 0034). */
   | { type: "children"; children: ChildRun[] }
-  | { type: "status"; status: AgentStatus; error?: string }
+  | { type: "status"; status: AgentStatus; since: number; error?: string }
   /** The chat's title or active flag changed. */
   | { type: "agent"; agent: Agent }
   | { type: "model"; model?: AgentModel; thinkingLevel?: string }
@@ -307,6 +307,7 @@ export class AgentManager {
       ...(record.title === null ? {} : { title: record.title }),
       ...(record.forkedFrom === null ? {} : { forkedFrom: record.forkedFrom }),
       status: live.status,
+      statusSince: live.since,
       ...(live.error ? { error: live.error } : {}),
       ...(deliveryError ? { deliveryError } : {}),
       ...(runningCount(live.children) > 0 ? { helpersRunning: runningCount(live.children) } : {}),
@@ -801,11 +802,18 @@ export class AgentManager {
   }
 
   private setStatus(live: Live, status: AgentStatus, error?: string): void {
+    // Pi sends `agent_start` again inside one run when it retries or compacts and continues. The work has not
+    // restarted, so the chat keeps counting from the time it went busy.
+    if (live.status !== status) live.since = this.options.now();
     live.status = status;
-    live.since = this.options.now();
     if (error === undefined) delete live.error;
     else live.error = error;
-    this.publish(live, { type: "status", status, ...(error === undefined ? {} : { error }) });
+    this.publish(live, {
+      type: "status",
+      status,
+      since: live.since,
+      ...(error === undefined ? {} : { error }),
+    });
     this.options.onChange(live.record.id, "status");
   }
 

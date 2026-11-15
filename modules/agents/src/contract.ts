@@ -130,6 +130,17 @@ export interface Agents {
    * touch the wait for the user. Does nothing when the label is unchanged. Throws a 404 ApiError for an unknown id.
    */
   setWorkingFor(agentId: string, label: string | undefined): void;
+  /**
+   * Marks the workspace as working for something, such as a running pipeline run, so its list row shows it as working
+   * even when it has no worker chat, or one that is idle or stopped (R7). `undefined` clears it. The label is in
+   * memory only, like an agent's, and does not touch the wait for the user. Does nothing when unchanged. It does not
+   * check the workspace id.
+   */
+  setWorkspaceWorkingFor(workspaceId: string, label: string | undefined): void;
+  /** The workspace working labels by workspace id, as `setWorkspaceWorkingFor` set them. */
+  workspacesWorkingFor(): ReadonlyMap<string, string>;
+  /** Called after a workspace's working label changes, with that workspace id. */
+  onWorkspaceWorkingFor(listener: (workspaceId: string) => void): void;
   /** True for a chat the user closed (ADR 0110). Throws a 404 ApiError for an unknown id. */
   isClosed(agentId: string): boolean;
   /**

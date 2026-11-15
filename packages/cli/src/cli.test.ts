@@ -527,6 +527,7 @@ const chatOf = (id: string, extra: Record<string, unknown>) => ({
   kind: "worker",
   active: true,
   status: "idle",
+  statusSince: 1,
   createdAt: 1,
   ...extra,
 });

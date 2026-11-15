@@ -242,7 +242,7 @@ function TurnBody({ turn, workspaceId }: { turn: PipelineTurn; workspaceId: stri
           <p className="m-0 text-muted">
             Waiting for an answer from{" "}
             <a
-              href={`#/workspaces/${workspaceId}/chats/${turn.question.askedAgentId}`}
+              href={`#/workspaces/${turn.question.askedWorkspaceId}/chats/${turn.question.askedAgentId}`}
               className="text-accent-strong"
             >
               {turn.question.askedTitle}
