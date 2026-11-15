@@ -30,24 +30,32 @@ const MISSING_SCRIPT_LINE = "The referenced script (Unknown) on this Behaviour i
 const editorLog = (workspace: Workspace) => join(resolve(workspace.path), "Logs", "Editor.log");
 
 /**
- * The missing-script lines of the workspace's editor log, or undefined when this run did not write it: a log from an
- * earlier run must not fail a new one. Only the count, never the text: the log echoes the command line, access
- * token and all, so any quote of it could leak that token (ADR 0177).
+ * Only a file that is not there may be passed over. Any other failure, such as EACCES or EIO, goes on to fail the
+ * run: a health check that quietly did nothing would let a broken Library pass (AGENTS.md: no silent fallbacks).
+ */
+const isMissing = (error: unknown) => (error as NodeJS.ErrnoException).code === "ENOENT";
+
+/**
+ * The missing-script lines of the workspace's editor log, or undefined when there is no log to count: an absent one,
+ * or one this run did not write, since a log from an earlier run must not fail a new one. Only the count, never the
+ * text: the log echoes the command line, access token and all, so any quote of it could leak that token. A read
+ * failure keeps Node's own error, which names the path and the code and none of the contents (ADR 0177).
  */
 async function countMissingScripts(
   workspace: Workspace,
   mtimeBefore: number | undefined,
 ): Promise<number | undefined> {
   const editorLogPath = editorLog(workspace);
-  let written: number;
-  try {
-    written = (await stat(editorLogPath)).mtimeMs;
-  } catch {
-    return undefined;
-  }
-  if (written === mtimeBefore) return undefined;
-  // A log that went or could not be read leaves the exit code as the whole answer.
-  const text = await readFile(editorLogPath, "utf8").catch(() => undefined);
+  const info = await stat(editorLogPath).catch((error: unknown) => {
+    if (isMissing(error)) return undefined;
+    throw error;
+  });
+  if (info === undefined || info.mtimeMs === mtimeBefore) return undefined;
+  // The log may go, or lose its read permission, between Unity's exit and here; only a vanished one is passed over.
+  const text = await readFile(editorLogPath, "utf8").catch((error: unknown) => {
+    if (isMissing(error)) return undefined;
+    throw error;
+  });
   if (text === undefined) return undefined;
   const isMissingScript = (line: string) =>
     (line.endsWith("\r") ? line.slice(0, -1) : line) === MISSING_SCRIPT_LINE;
@@ -193,10 +201,14 @@ export function registerGates(deps: GateDeps): (workspace: Workspace) => Promise
         await waitForFreeEditor(workspace, provided.name, log, signal);
         // Unity writes the report here; `after` moves it into the workspace's artifacts.
         const output = join(deps.reportDir, `pi-spore-unity-report-${runId}.xml`);
-        // When the editor log was written last, so `after` can tell this run's log from an old one (ADR 0177).
+        // When the editor log was written last, so `after` can tell this run's log from an old one (ADR 0177). No
+        // log is normal; one that cannot be read fails the run before Unity starts.
         const logMtime = await stat(editorLog(workspace)).then(
           (info) => info.mtimeMs,
-          () => undefined,
+          (error: unknown) => {
+            if (isMissing(error)) return undefined;
+            throw error;
+          },
         );
         return {
           argv: [

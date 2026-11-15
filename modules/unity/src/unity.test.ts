@@ -6,6 +6,7 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -560,6 +561,18 @@ describe("Unity test gates (R10.6)", () => {
 
     expect(run.status).toBe("succeeded");
     expect(run.error).toBeUndefined();
+  });
+
+  it("fails loudly when the editor log cannot be read at all", async () => {
+    const { a } = await setup();
+    // A link to itself is not a missing file, so the gate may not treat it as no log and call the run clean.
+    mkdirSync(join(a.path, "Logs"), { recursive: true });
+    symlinkSync(join(a.path, "Logs", "Editor.log"), join(a.path, "Logs", "Editor.log"));
+    const run = await ended((await startGate(a)).id);
+
+    expect(run.status).toBe("failed");
+    expect(run.error).toContain("ELOOP");
+    expect(testCalls()).toHaveLength(0);
   });
 
   it("waits while an agent holds the editor, then runs without closing anything", async () => {
