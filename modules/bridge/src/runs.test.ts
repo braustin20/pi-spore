@@ -16,7 +16,7 @@ import { createAgentsModule } from "@pi-spore/mod-agents/server";
 import { type Artifacts, ArtifactsKey, artifactsModule } from "@pi-spore/mod-artifacts/server";
 import { attentionModule } from "@pi-spore/mod-attention/server";
 import { createGithubPrModule } from "@pi-spore/mod-github-pr/server";
-import { kanbanModule } from "@pi-spore/mod-kanban/server";
+import { type Cards, CardsKey, kanbanModule } from "@pi-spore/mod-kanban/server";
 import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { COORDINATOR_TOOLS, type Runs, RunsKey, runsModule } from "@pi-spore/mod-runs/server";
@@ -51,6 +51,7 @@ let scratch: string;
 let servers: { server: TestServer; agents: ReturnType<typeof createAgentsModule> }[];
 let runs: Runs;
 let artifacts: Artifacts;
+let cards: Cards;
 
 beforeEach(() => {
   scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-runs-")));
@@ -70,11 +71,12 @@ afterEach(async () => {
 /** A module that hands the tests the interfaces the bridge will call in slice 4. */
 const probe: ServerModule = {
   id: "runs-probe",
-  requires: ["runs", "artifacts"],
+  requires: ["runs", "artifacts", "kanban"],
   core: false,
   setup(host) {
     runs = host.use(RunsKey);
     artifacts = host.use(ArtifactsKey);
+    cards = host.use(CardsKey);
   },
 };
 
@@ -1904,6 +1906,148 @@ describe("cards from a run's coordinator (ADR 0154)", () => {
       expect(await response.json()).toMatchObject({ error: { code: "run_coordinator" } });
     }
     expect(await openApprovals(server)).toEqual([]);
+  });
+});
+
+describe("lanes that name their card (ADR 0180)", () => {
+  interface BoardCard {
+    id: string;
+    column: string;
+    workspaceId?: string;
+  }
+  const addCard = async (server: TestServer, projectId: string, title: string, column = "ready") =>
+    (
+      await json<{ card: BoardCard }>(
+        await server.request("POST", "/api/kanban/cards", { title, projectId, column }),
+        201,
+      )
+    ).card;
+  const getCard = async (server: TestServer, id: string) =>
+    json<{ card: BoardCard; history: { from?: string; to: string; reason: string }[] }>(
+      await server.request("GET", `/api/kanban/cards/${id}`),
+    );
+
+  it("moves the lane's card to In progress, linked to the run workspace, and shows it on the lane", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "card-lane");
+    const { run, coordinator } = await createRun(server, projectId, "card-lane");
+    const card = await addCard(server, projectId, "Day and night");
+
+    const lane = await startLane(run, coordinator, "day", { cardId: card.id });
+
+    expect(lane.cardId).toBe(card.id);
+    expect((await laneOf(server, run.id, lane.id)).cardId).toBe(card.id);
+    const { card: after, history } = await getCard(server, card.id);
+    expect(after).toMatchObject({ column: "in-progress", workspaceId: run.workspaceId });
+    expect(history.at(-1)).toMatchObject({
+      from: "ready",
+      to: "in-progress",
+      reason: "lane-started",
+    });
+  });
+
+  it("starts the lane through the bridge route with a cardId", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "card-route");
+    const { run, coordinator } = await createRun(server, projectId, "card-route");
+    const card = await addCard(server, projectId, "Route card");
+    await artifacts.write({ scope: "workspace", id: run.workspaceId }, "briefs/r.md", "Build r");
+
+    const started = await json<{ lane: Lane }>(
+      await asAgent(server, coordinator.agentId, run.workspaceId)("POST", "lanes", {
+        name: "r",
+        brief: "briefs/r.md",
+        wave: 1,
+        pipeline: "p",
+        cardId: card.id,
+      }),
+      201,
+    );
+
+    expect(started.lane.cardId).toBe(card.id);
+    expect((await getCard(server, card.id)).card.column).toBe("in-progress");
+  });
+
+  it("moves the lane's card to Review on the run's PR and to Done when the run workspace is archived", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "card-follow");
+    const { run, coordinator } = await createRun(server, projectId, "card-follow");
+    const card = await addCard(server, projectId, "Follow the run");
+    await startLane(run, coordinator, "follow", { cardId: card.id });
+
+    cards.workChanged(run.workspaceId, "review", "pr-opened");
+    expect((await getCard(server, card.id)).card.column).toBe("review");
+
+    await json(await server.request("POST", `/api/workspaces/${run.workspaceId}/archive`));
+    expect((await getCard(server, card.id)).card.column).toBe("done");
+  });
+
+  it("refuses an unknown card, another project's card, a done card, and a card linked elsewhere, and adds no lane", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "card-refuse");
+    const other = await project(server, "card-other");
+    const { run, coordinator } = await createRun(server, projectId, "card-refuse");
+    const foreign = await addCard(server, other.projectId, "Not yours");
+    const done = await addCard(server, projectId, "Shipped", "done");
+    const taken = await addCard(server, projectId, "Taken elsewhere");
+    await json(
+      await server.request("POST", `/api/kanban/cards/${taken.id}/start`, {
+        isolation: "in-place",
+      }),
+      201,
+    );
+
+    await expect(startLane(run, coordinator, "a", { cardId: "nope" })).rejects.toMatchObject({
+      status: 404,
+      code: "card_not_found",
+    });
+    await expect(startLane(run, coordinator, "b", { cardId: foreign.id })).rejects.toMatchObject({
+      status: 404,
+      code: "card_not_found",
+    });
+    await expect(startLane(run, coordinator, "c", { cardId: done.id })).rejects.toMatchObject({
+      status: 409,
+      code: "card_done",
+    });
+    await expect(startLane(run, coordinator, "d", { cardId: taken.id })).rejects.toMatchObject({
+      status: 409,
+      code: "card_has_workspace",
+      message: expect.stringContaining("Taken elsewhere"),
+    });
+
+    expect((await getRun(server, run.id)).lanes).toEqual([]);
+    expect((await getCard(server, foreign.id)).card.column).toBe("ready");
+    expect((await getCard(server, done.id)).card.column).toBe("done");
+    expect((await getCard(server, taken.id)).card.workspaceId).not.toBe(run.workspaceId);
+  });
+
+  it("refuses a card another lane of the run names with 409 card_in_lane", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "card-twice");
+    const { run, coordinator } = await createRun(server, projectId, "card-twice");
+    const card = await addCard(server, projectId, "Only once");
+    const first = await startLane(run, coordinator, "first", { cardId: card.id });
+
+    await expect(startLane(run, coordinator, "second", { cardId: card.id })).rejects.toMatchObject({
+      status: 409,
+      code: "card_in_lane",
+      message: expect.stringContaining("first"),
+    });
+    expect((await getRun(server, run.id)).lanes.map((lane) => lane.id)).toEqual([first.id]);
+  });
+
+  it("leaves the cards alone for a lane with no cardId", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "card-none");
+    const { run, coordinator } = await createRun(server, projectId, "card-none");
+    const card = await addCard(server, projectId, "Untouched");
+
+    const lane = await startLane(run, coordinator, "plain");
+
+    expect(lane.cardId).toBeUndefined();
+    expect(lane.state).toBe("waiting");
+    expect((await getCard(server, card.id)).card).toMatchObject({ column: "ready" });
+    expect((await getCard(server, card.id)).card.workspaceId).toBeUndefined();
   });
 });
 
