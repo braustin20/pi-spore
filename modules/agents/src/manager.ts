@@ -95,6 +95,8 @@ export interface ManagerOptions {
   saveTitle(agentId: string, title: string): void;
   /** Called after a status, dialog, or waiting change, for Home and deliveries. */
   onChange(agentId: string, change: AgentChange): void;
+  /** The error of the agent's oldest pending delivery, if any (see `Agent.deliveryError`). */
+  deliveryError(agentId: string): string | undefined;
   maxLive: number;
   idleStopMs: number;
   startTimeoutMs: number;
@@ -292,6 +294,7 @@ export class AgentManager {
   view(id: string): Agent {
     const live = this.get(id);
     const { record } = live;
+    const deliveryError = this.options.deliveryError(id);
     return {
       id: record.id,
       workspaceId: record.workspaceId,
@@ -302,6 +305,7 @@ export class AgentManager {
       ...(record.forkedFrom === null ? {} : { forkedFrom: record.forkedFrom }),
       status: live.status,
       ...(live.error ? { error: live.error } : {}),
+      ...(deliveryError ? { deliveryError } : {}),
       ...(runningCount(live.children) > 0 ? { helpersRunning: runningCount(live.children) } : {}),
       ...(live.workingFor ? { workingFor: live.workingFor } : {}),
       ...(live.routerStatus ? { routerStatus: live.routerStatus } : {}),
@@ -329,6 +333,12 @@ export class AgentManager {
     // An open chat page follows `agent:<id>`, not `agents:list`.
     this.publish(live, { type: "agent", agent: this.view(id) });
     this.options.onChange(id, "working");
+  }
+
+  /** The error of the agent's pending delivery was set or cleared. */
+  deliveryChanged(id: string): void {
+    this.publish(this.get(id), { type: "agent", agent: this.view(id) });
+    this.options.onChange(id, "delivery");
   }
 
   /** The chats of a workspace. */
@@ -519,6 +529,8 @@ export class AgentManager {
     const { status, error, record } = this.get(id);
     if (status === "failed") return error;
     if (status === "busy" || status === "starting" || status === "waiting") return undefined;
+    const refused = this.options.deliveryError(id);
+    if (refused !== undefined) return refused;
     const last = (await writtenMessages(record.sessionFile)).findLast(
       (message) => message.role === "assistant",
     );

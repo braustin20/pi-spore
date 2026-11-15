@@ -467,6 +467,17 @@ function ChatView({
               <pre className="m-0 [overflow-wrap:anywhere] whitespace-pre-wrap">{agent.error}</pre>
             </Notice>
           )}
+          {agent?.deliveryError && (
+            <Notice tone="fail">
+              <p className="m-0 mb-2">
+                A message did not reach the agent. It stays queued and is sent again with the next
+                message.
+              </p>
+              <pre className="m-0 [overflow-wrap:anywhere] whitespace-pre-wrap">
+                {agent.deliveryError}
+              </pre>
+            </Notice>
+          )}
           {[
             { text: error, dismiss: () => setError(undefined) },
             { text: outerError, dismiss: onDismissOuterError },
@@ -484,7 +495,7 @@ function ChatView({
               ),
           )}
 
-          {active && chat.messages.length === 0 && !chat.streaming && (
+          {active && chat.messages.length === 0 && !chat.streaming && !agent?.deliveryError && (
             <EmptyState icon={MessageSquare} title="No messages yet">
               The agent starts with your first message.
             </EmptyState>

@@ -24,6 +24,7 @@ interface Row {
   agent_id: string;
   message: string;
   options: string | null;
+  error: string | null;
 }
 
 /** What a delivery keeps of the prompt that made it. Without options a delivery is a follow-up with no images. */
@@ -44,6 +45,8 @@ export interface DeliveriesOptions {
   canRun(agentId: string): boolean;
   /** Sends the message to the agent, starting it first if needed. Resolves when Pi accepts it. */
   send(agentId: string, message: string, options?: DeliveryOptions): Promise<void>;
+  /** The error of an agent's pending delivery was set or cleared. Called inside the step's commit. */
+  changed(agentId: string): void;
 }
 
 /**
@@ -83,6 +86,14 @@ export class Deliveries {
     return this.pendingRows(agentId).length > 0;
   }
 
+  /** The error of the agent's oldest pending delivery that has one: why a message did not get in. */
+  failure(agentId: string): string | undefined {
+    return this.options.store.get<{ error: string }>(
+      "SELECT error FROM agents_deliveries WHERE agent_id = ? AND state = 'pending' AND error IS NOT NULL ORDER BY created_at, id LIMIT 1",
+      agentId,
+    )?.error;
+  }
+
   /** Cancels the jobs of the agent's rows. Call it before the rows are deleted. */
   cancelJobs(agentId: string): void {
     const rows = this.options.store.all<{ job_id: string }>(
@@ -95,11 +106,13 @@ export class Deliveries {
   /** Deletes the agent's pending rows and cancels their jobs. */
   drop(agentId: string): void {
     this.options.store.transaction(() => {
-      for (const row of this.pendingRows(agentId)) this.options.jobs.cancel(row.job_id);
+      const rows = this.pendingRows(agentId);
+      for (const row of rows) this.options.jobs.cancel(row.job_id);
       this.options.store.run(
         "DELETE FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
         agentId,
       );
+      if (rows.some((row) => row.error !== null)) this.options.changed(agentId);
     });
   }
 
@@ -109,7 +122,8 @@ export class Deliveries {
    */
   move(fromAgentId: string, toAgentId: string): void {
     this.options.store.transaction(() => {
-      for (const row of this.pendingRows(fromAgentId)) {
+      const rows = this.pendingRows(fromAgentId);
+      for (const row of rows) {
         this.options.jobs.cancel(row.job_id);
         this.options.store.run(
           "UPDATE agents_deliveries SET agent_id = ? WHERE id = ?",
@@ -119,12 +133,17 @@ export class Deliveries {
         this.startJob(row.id, toAgentId);
       }
       this.options.jobs.wake(DELIVERY_JOB, toAgentId);
+      // A moved error leaves one agent and may reach the other.
+      if (rows.some((row) => row.error !== null)) {
+        this.options.changed(fromAgentId);
+        this.options.changed(toAgentId);
+      }
     });
   }
 
-  private pendingRows(agentId: string): { id: string; job_id: string }[] {
-    return this.options.store.all<{ id: string; job_id: string }>(
-      "SELECT id, job_id FROM agents_deliveries WHERE agent_id = ? AND state = 'pending' AND job_id IS NOT NULL ORDER BY created_at, id",
+  private pendingRows(agentId: string): { id: string; job_id: string; error: string | null }[] {
+    return this.options.store.all<{ id: string; job_id: string; error: string | null }>(
+      "SELECT id, job_id, error FROM agents_deliveries WHERE agent_id = ? AND state = 'pending' AND job_id IS NOT NULL ORDER BY created_at, id",
       agentId,
     );
   }
@@ -151,7 +170,7 @@ export class Deliveries {
   private async send(deliveryId: string): Promise<StepOutcome<never>> {
     const { store, log } = this.options;
     const row = store.get<Row>(
-      "SELECT id, agent_id, message, options FROM agents_deliveries WHERE id = ? AND state = 'pending'",
+      "SELECT id, agent_id, message, options, error FROM agents_deliveries WHERE id = ? AND state = 'pending'",
       deliveryId,
     );
     // Retention deleted it.
@@ -180,6 +199,8 @@ export class Deliveries {
             message,
             row.id,
           );
+          // A new error, or a different one, changes what the agent shows.
+          if (row.error !== message) this.options.changed(row.agent_id);
         },
       };
     }
@@ -191,6 +212,7 @@ export class Deliveries {
           this.options.now(),
           row.id,
         );
+        if (row.error !== null) this.options.changed(row.agent_id);
       },
     };
   }
