@@ -206,6 +206,7 @@ export const workspacesModule: ServerModule = {
         });
         line = location.line;
         base = location.base ?? request.base;
+        warnings.push(...(location.warnings ?? []));
         try {
           copied = await copyIgnoredFiles(host.exec, project.path, path, config.worktreeCopy.value);
         } catch (error) {

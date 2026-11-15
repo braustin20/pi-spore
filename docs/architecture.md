@@ -471,7 +471,11 @@ interface ChangeOps {
 - Nothing outside a provider branches on `kind`.
 - Providers run `git` and `gh` with `execFile`, never through a shell.
 - New worktrees run the copy list (R2.6) and then the `setup` action. A new branch records its base: the branch
-  asked for, else the main checkout's branch, else its commit.
+  asked for, else the main checkout's branch, else its commit. The git provider starts the branch from the base's
+  upstream when the base tracks a remote: it runs `git fetch <remote>` (a failure is a warning; a remote whose
+  `remote.<name>.fetch` writes outside `refs/remotes/` is not fetched, so a fetch never moves a local branch), and if
+  the local base is behind its upstream, local upstreams (`.`) included, the branch starts at the upstream commit.
+  The local base branch never moves.
 - Git changes (`modules/vcs-git/src/changes.ts`):
   - Scopes map to two endpoints of `git diff`: `uncommitted` is HEAD against the working tree plus untracked files
     (`git ls-files --others --exclude-standard`, each diffed with `--no-index` against `/dev/null`); `staged` is
