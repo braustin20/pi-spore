@@ -87,6 +87,8 @@ export interface WorkspaceView {
    * Only one module may set it.
    */
   setMain(component: ComponentType<{ workspace: Workspace; chatId?: string }>): void;
+  /** Sets the landing page: `/workspaces` and `/workspaces/in/<project>` with no workspace open. Only one module may set it. */
+  setLanding(component: ComponentType<{ projectId?: string | undefined }>): void;
   /** Sets where the list gets its status lines and row chats. Only one module may set it. */
   setStatus(useStatus: UseWorkspaceStatus): void;
   /** The form the workspace view shows to start a workspace. */

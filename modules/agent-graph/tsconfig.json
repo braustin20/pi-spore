@@ -13,6 +13,9 @@
       "path": "../../packages/module-api"
     },
     {
+      "path": "../../packages/ui"
+    },
+    {
       "path": "../../packages/shared"
     },
     {

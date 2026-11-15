@@ -1469,8 +1469,26 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
   `failed` or `rejected`) or `done`, so the canvas can pop it in the right color; one more event drops it. `GET` and
   the snapshot show running helpers only. Foreground helpers are the parent's `subagent` tool call and are not
   nodes.
-- Web: the module is registered with no page yet. The canvas (`@xyflow/react`) on the workspaces landing page comes
-  next (ADR 0176).
+- Web: the module fills the workspaces landing page (`#/workspaces`, and `#/workspaces/in/<project>` with only that
+  project's trees) through `WorkspaceView.setLanding`. `canvas.tsx` draws the graph with `@xyflow/react`; it
+  subscribes to `agent-graph:trees` and redraws from each event, so an archived workspace's tree leaves at once.
+  - Layout: `layoutGraph` in `layout.ts`, a fixed tree layout with no library. Desktop: trees side by side, oldest
+    first; in a tree, the root on top and its groups side by side; steps top-down. Phone: trees and groups stack,
+    the root thread down the left. Each pod reserves one row per helper under it.
+  - Nodes: a tree box (the root pod is its drag handle, so dragging the root moves the tree), a group panel, and a
+    step pod. Every pod with an agent links to `#/workspaces/<workspace>/chats/<agent>`. A drag lasts until a
+    reload (positions are saved later, card 4). Fit fits the graph; zoom, pan, and pinch are React Flow's.
+  - Look (the approved mockup): roots `--accent` (coordinator) or `--accent-strong` (chat); a step pod takes its
+    look from the step's own `state`, never its agent's status, since a task step and its fix steps share one
+    worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A fix
+    step reads `fix r<round>`. In a live group, the threads from the root to the running step take the root's
+    color and carry SVG drops. Reduced motion: no drops, no breathing.
+  - Helpers (`helpers.tsx`): small spores inside their parent pod, so they move with it and a click opens the
+    parent's chat. Hover shows the current tool; a touch screen shows it inline. `useHelpers` keeps their life on
+    the client: a helper new after the first snapshot buds (600 ms), an ended one or one that left the list pops
+    (about 400 ms; a failed one flashes `--fail` first), then leaves state on `animationend`. Reduced motion: a
+    fade.
+  - No trees: "No agents work now." and a link to the New workspace page.
 
 ## 11. Unity module
 
@@ -1829,8 +1847,10 @@ workspace as `POST /api/workspaces` does, for modules that start work, such as k
 
 The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
 and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
-panels. Routes: `#/workspaces` (list and the create form), `#/workspaces/in/<project>` (filtered to a project),
-`#/workspaces/<id>` (one workspace). One component serves all three, so the list keeps its state. The list
+panels. Routes: `#/workspaces` and `#/workspaces/in/<project>` (filtered to a project) show the landing page, and
+`#/workspaces/new` and `#/workspaces/new/in/<project>` show the create form. `#/workspaces/<id>` shows one workspace.
+One component serves them all, so the list keeps its state. The router takes the first page that matches, so the new
+workspace pages are added before `#/workspaces/<id>`: `new` is never a workspace id. The list
 follows the topic `workspaces:list`: a snapshot of every workspace on subscribe and after a reconnect, then one
 `workspace` event for each create, rename, park, resume, and archive, wherever it came from. An active or parked
 row shows an archive button on hover or keyboard focus. It asks first, as the Details archive does. With more than
@@ -1848,6 +1868,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   mounts only while the tab is open.
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
   passes `chatId`; without it the pane shows the active orchestrator chat.
+- `setLanding` sets the landing page: what `#/workspaces` and `#/workspaces/in/<project>` show with no workspace
+  open (ADR 0176). Without it those routes show the create form.
 - `setStatus` sets a React hook that returns one status line per workspace, with the row's open chats in `chats`
   (label, hint, icon, and whether it works). The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection

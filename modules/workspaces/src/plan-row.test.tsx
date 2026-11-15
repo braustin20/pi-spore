@@ -95,7 +95,8 @@ describe("the Plan entry", () => {
     container?.remove();
 
     const { list } = await render([workspace("w1"), workspace("plan", true)]);
-    const rows = [...list.querySelectorAll("a[href^='#/workspaces/']")];
+    // Rows only: the "New workspace" button links under the same prefix now (ADR 0176).
+    const rows = [...list.querySelectorAll("a[href^='#/workspaces/']:not([aria-label])")];
     expect(rows[0]?.getAttribute("href")).toBe("#/workspaces/plan");
     expect(list.textContent).not.toContain("Work plan");
   });
