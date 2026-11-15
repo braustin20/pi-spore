@@ -97,6 +97,8 @@ export const Agent = Type.Object({
   status: AgentStatus,
   /** Why the last start or run failed, with the tail of the process's stderr. */
   error: Type.Optional(Type.String()),
+  /** Why a message to the agent did not get in: the error of its oldest pending delivery. Missing when none. */
+  deliveryError: Type.Optional(Type.String()),
   /** How many background helper runs are running. Missing when none. */
   helpersRunning: Type.Optional(Type.Integer()),
   /** What the agent waits on while it is idle, such as a pipeline run. Set by another module; in memory only. */

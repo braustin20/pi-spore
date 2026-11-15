@@ -187,7 +187,7 @@ function TurnHead({ turn, running, now }: { turn: PipelineTurn; running: boolean
         </Chip>
       )}
       <Counts turn={turn} />
-      {turn.routing?.model && <Chip mono>{turn.routing.model}</Chip>}
+      {turn.model && <Chip mono>{turn.model}</Chip>}
       {duration && <span className="text-xs text-muted">{duration}</span>}
       {turn.error && <Chip tone="fail">Failed</Chip>}
     </>

@@ -2,6 +2,7 @@ import { defineInterface } from "@pi-spore/module-api";
 import type {
   Agent,
   AgentDialog,
+  AgentModel,
   AgentRole,
   ChildRun,
   StageRole,
@@ -13,6 +14,7 @@ import type { RoleDefaults } from "./launch.js";
  * What changed about an agent. `chat`: its title or active flag. `helpers`: the number of running helpers.
  * `children`: its child run list, a step, a state, or a current tool, so a reader of `liveState` can follow it
  * while `helpers` stays rare for Home. `working`: its `workingFor` label. `activity`: its `activity` text.
+ * `delivery`: the error of its pending delivery was set or cleared.
  */
 export type AgentChange =
   | "status"
@@ -22,7 +24,8 @@ export type AgentChange =
   | "helpers"
   | "children"
   | "working"
-  | "activity";
+  | "activity"
+  | "delivery";
 
 /** What an agent's live process shows now, for the agent graph (ADR 0176). Models are `provider/id`. */
 export interface AgentLiveState {
@@ -90,6 +93,12 @@ export interface Agents {
   /** The model and thinking level a role gets from the user's pi-subagents settings (ADR 0013). */
   roleDefaults(role: string): Promise<RoleDefaults>;
   /**
+   * The models Pi can run, as `get_available_models` lists them: only providers with working auth. Cached. Throws the
+   * 502 `models_unavailable` ApiError when Pi's list cannot be read. An agent that blocks on this call (a bridge
+   * request) passes its id as `callerAgentId`; its own process answers when it runs, so no second process starts.
+   */
+  availableModels(callerAgentId?: string): Promise<AgentModel[]>;
+  /**
    * The distinct physical models (`provider/id`) Pi recorded on the agent's assistant messages, in the order they
    * first appear. Empty when the agent has no session yet.
    */
@@ -98,7 +107,8 @@ export interface Agents {
    * Why the agent's last run failed. For a `failed` agent it is the status error. While the run is not over (`busy`,
    * `starting`, `waiting`) it is undefined. Otherwise it is the `errorMessage` of the last assistant message in the
    * session file when Pi ended that turn with `stopReason: "error"` (a provider that refused), or a fixed text when
-   * the message has none. Undefined without a session. Throws a 404 ApiError for an unknown id.
+   * the message has none. Before the session file, it returns the error of a pending delivery Pi refused. Undefined
+   * without a session. Throws a 404 ApiError for an unknown id.
    */
   turnError(agentId: string): Promise<string | undefined>;
   /**

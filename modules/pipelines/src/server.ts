@@ -110,6 +110,9 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_turns ADD COLUMN fix_for TEXT",
   // The turn got the "ended without a report" reminder (ADR 0169), so a second end blocks; it survives a restart.
   "ALTER TABLE pipelines_turns ADD COLUMN reminded INTEGER NOT NULL DEFAULT 0",
+  // The model a turn's agent reported on. A reused worker serves the later fix turns too, so a reported turn keeps
+  // its own model instead of reading the agent's newest one.
+  "ALTER TABLE pipelines_turns ADD COLUMN model TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -174,6 +177,7 @@ interface TurnRow {
   model_note: string | null;
   fix_for: string | null;
   reminded: number;
+  model: string | null;
   created_at: number;
   reported_at: number | null;
 }
@@ -224,27 +228,41 @@ function gateFailureMessage(name: string, error: string | undefined, log: string
   ].join("\n");
 }
 
-const turnToView = (row: TurnRow): PipelineTurn => ({
-  id: row.id,
-  runId: row.run_id,
-  stageIndex: row.stage_index,
-  stage: row.stage,
-  round: row.round,
-  kind: row.kind,
-  role: row.role,
-  agentId: row.agent_id,
-  ...(row.report ? { report: JSON.parse(row.report) as StageReport } : {}),
-  ...(row.routing
-    ? { routing: JSON.parse(row.routing) as NonNullable<PipelineTurn["routing"]> }
-    : {}),
-  createdAt: row.created_at,
-  ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
-  ...(row.error === null ? {} : { error: row.error }),
-  ...(row.model_note === null ? {} : { modelNote: row.model_note }),
-  ...(row.fix_for === null ? {} : { fixFor: JSON.parse(row.fix_for) as string[] }),
-});
+/** `liveModel` is what the turn's agent answers on now, for a turn that has not reported; see `runToView`. */
+const turnToView = (row: TurnRow, liveModel?: string): PipelineTurn => {
+  const model = row.model ?? liveModel;
+  return {
+    id: row.id,
+    runId: row.run_id,
+    stageIndex: row.stage_index,
+    stage: row.stage,
+    round: row.round,
+    kind: row.kind,
+    role: row.role,
+    agentId: row.agent_id,
+    ...(row.report ? { report: JSON.parse(row.report) as StageReport } : {}),
+    ...(row.routing
+      ? { routing: JSON.parse(row.routing) as NonNullable<PipelineTurn["routing"]> }
+      : {}),
+    ...(model === undefined ? {} : { model }),
+    createdAt: row.created_at,
+    ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
+    ...(row.error === null ? {} : { error: row.error }),
+    ...(row.model_note === null ? {} : { modelNote: row.model_note }),
+    ...(row.fix_for === null ? {} : { fixFor: JSON.parse(row.fix_for) as string[] }),
+  };
+};
 
-const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): PipelineRun => ({
+/**
+ * `liveModel` reads the physical model an agent's newest answer ran on. Only a running run uses it, and only for a
+ * turn that has not reported and has no error, so its open turn follows its agent while the agent works.
+ */
+const runToView = (
+  row: RunRow,
+  turns: readonly TurnRow[],
+  blocked?: string,
+  liveModel?: (agentId: string) => string | undefined,
+): PipelineRun => ({
   id: row.id,
   workspaceId: row.workspace_id,
   pipelineId: row.pipeline_id,
@@ -261,7 +279,14 @@ const runToView = (row: RunRow, turns: readonly TurnRow[], blocked?: string): Pi
   ...(row.message === null ? {} : { message: row.message }),
   ...(blocked === undefined ? {} : { blocked }),
   tests: JSON.parse(row.tests) as TestProof[],
-  turns: turns.map(turnToView),
+  turns: turns.map((turn) =>
+    turnToView(
+      turn,
+      liveModel && turn.report === null && turn.error === null
+        ? liveModel(turn.agent_id)
+        : undefined,
+    ),
+  ),
   createdAt: row.created_at,
   ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
 });
@@ -452,7 +477,14 @@ export const pipelinesModule: ServerModule = {
             .list({ kind: STAGE_JOB, key: row.workspace_id, states: NOT_ENDED })
             .find((job) => (job.subject as StageSubject).runId === row.id && job.error !== null)
             ?.error ?? undefined);
-    const viewOf = (row: RunRow) => runToView(row, turnRows(row.id), blockedOf(row));
+    const viewOf = (row: RunRow) =>
+      runToView(
+        row,
+        turnRows(row.id),
+        blockedOf(row),
+        // An ended run is a record: only a running run's open turn follows its agent's model.
+        row.state === "running" ? liveModelOf : undefined,
+      );
     const runsOf = (workspaceId: string): PipelineRun[] =>
       host.store
         .all<RunRow>(
@@ -473,6 +505,14 @@ export const pipelinesModule: ServerModule = {
         if (error instanceof ApiError && error.status === 404) return undefined;
         throw error;
       }
+    };
+    /**
+     * The physical model an agent's newest answer ran on, else the model its stage started it on. The agents module
+     * keeps both in memory, so a running turn's model costs no session file read.
+     */
+    const liveModelOf = (agentId: string): string | undefined => {
+      const live = unlessGone(() => agents.liveState(agentId));
+      return live?.routedModel ?? live?.model;
     };
     /**
      * Marks the chat of each running run as working, so Home does not show it as done while its run works. A
@@ -530,15 +570,20 @@ export const pipelinesModule: ServerModule = {
       publish(job.key);
       tellBlocked((job.subject as StageSubject).runId);
     });
-    // A failed or refused turn never reports, so the agent's status change wakes `await` to see it.
+    // A failed or refused turn never reports, so the agent's status change wakes `await` to see it. So does a refused
+    // delivery: Pi never takes the message, so the status does not change. A stage agent's newest answer carries the
+    // model it ran on, so its activity refreshes the tab's runs event (no polling).
     agents.onChange((agentId, change) => {
-      if (change !== "status" || agents.get(agentId).kind !== "stage") return;
+      if (change !== "status" && change !== "delivery" && change !== "activity") return;
+      if (agents.get(agentId).kind !== "stage") return;
       const open = host.store.get<{ workspace_id: string }>(
         `SELECT r.workspace_id FROM pipelines_turns t JOIN pipelines_runs r ON r.id = t.run_id
          WHERE t.agent_id = ? AND t.report IS NULL AND t.error IS NULL AND r.state = 'running'`,
         agentId,
       );
-      if (open) host.jobs.wake(STAGE_JOB, open.workspace_id);
+      if (!open) return;
+      if (change === "activity") publish(open.workspace_id);
+      else host.jobs.wake(STAGE_JOB, open.workspace_id);
     });
 
     const requireNoActiveRun = (workspaceId: string) => {
@@ -1263,8 +1308,11 @@ export const pipelinesModule: ServerModule = {
     };
 
     // The failed agent stays, renamed.
-    const renameFailed = (turn: TurnRow) =>
+    const renameFailed = (turn: TurnRow) => {
       agents.rename(turn.agent_id, `${agents.get(turn.agent_id).title} (failed)`);
+      // The old agent must not get its refused task later, for example when the workspace resumes.
+      agents.dropDeliveries(turn.agent_id);
+    };
 
     /** Retry marked a fix turn failed: a fresh worker takes it over, with the same members' findings. */
     const replaceFailed = (
@@ -1476,6 +1524,9 @@ export const pipelinesModule: ServerModule = {
     ): Promise<{ turn: PipelineTurn }> => {
       // The transaction is synchronous, so the router's records are read before it.
       let routing: string | null = null;
+      // The model of the answer that produced this report stays on the turn: a reused worker answers later fix turns
+      // too, and may do so on another model.
+      const model = liveModelOf(caller.agentId) ?? null;
       const open = host.store.get<TurnRow>(
         "SELECT * FROM pipelines_turns WHERE id = ?",
         request.turn,
@@ -1526,10 +1577,11 @@ export const pipelinesModule: ServerModule = {
           throw new ApiError(400, "bad_report", "A reviewer report has no tests");
         const reportedAt = host.now();
         host.store.run(
-          "UPDATE pipelines_turns SET report = ?, reported_at = ?, routing = ? WHERE id = ?",
+          "UPDATE pipelines_turns SET report = ?, reported_at = ?, routing = ?, model = ? WHERE id = ?",
           JSON.stringify(request),
           reportedAt,
           routing,
+          model,
           row.id,
         );
         if (request.tests) {
@@ -1540,7 +1592,13 @@ export const pipelinesModule: ServerModule = {
           );
         }
         host.jobs.wake(STAGE_JOB, run.workspace_id);
-        return { ...row, report: JSON.stringify(request), routing, reported_at: reportedAt };
+        return {
+          ...row,
+          report: JSON.stringify(request),
+          routing,
+          model,
+          reported_at: reportedAt,
+        };
       });
       publish(requireRun(turn.run_id).workspace_id);
       return { turn: turnToView(turn) };
@@ -1613,6 +1671,21 @@ export const pipelinesModule: ServerModule = {
       return loadPipelines(userDir, join(project.path, ".pi-spore", "pipelines"));
     };
 
+    const requireModel = async (model: string, callerAgentId?: string): Promise<void> => {
+      if (model === ROUTE_MODEL) return;
+      const available = await agents.availableModels(callerAgentId);
+      if (available.some((found) => `${found.provider}/${found.id}` === model)) return;
+      const id = model.slice(model.indexOf("/") + 1);
+      const same = available
+        .filter((found) => found.id === id)
+        .map((found) => `${found.provider}/${found.id}`);
+      throw new ApiError(
+        400,
+        "unknown_model",
+        `Pi cannot run ${model}: it is not in Pi's model list (no auth or unknown).${same.length > 0 ? ` Available with id ${id}: ${same.join(", ")}.` : ""}`,
+      );
+    };
+
     const start = async (workspaceId: string, request: StartRunRequest): Promise<PipelineRun> => {
       const workspace = workspaces.get(workspaceId);
       if (workspace.state !== "active") {
@@ -1667,6 +1740,8 @@ export const pipelinesModule: ServerModule = {
           `Pipeline "${entry.id}" makes a new worker; previousRunId is only for a pipeline whose worker stage has worker = "reuse"`,
         );
       }
+      if (request.workerModel !== undefined)
+        await requireModel(request.workerModel, request.askingAgentId);
       const askingAgentId = request.askingAgentId ?? (await agents.activeWorker(workspace.id)).id;
       const runId = host.store.transaction(() => {
         requireNoActiveRun(workspace.id);
@@ -1717,6 +1792,7 @@ export const pipelinesModule: ServerModule = {
     const api: Pipelines = {
       report,
       start,
+      requireModel,
       get: (runId) => viewOf(requireRun(runId)),
       runsOf,
       stop,

@@ -217,6 +217,14 @@ describe("Timeline", () => {
     expect(root.textContent).toContain("Waiting for the report.");
   });
 
+  it("shows the turn's model on a running turn with no route", async () => {
+    const running = turn({ id: "t-run", createdAt: 100_000, model: "strata/qwen" });
+    const root = await mount(
+      <Timeline run={run({ turns: [running] })} workspaceId="w1" now={100_000 + 3 * MIN} />,
+    );
+    expect(rows(root)[0]?.textContent).toContain("strata/qwen");
+  });
+
   it("does not call a turn of a stopped run running", async () => {
     const left = turn({ id: "t-left", createdAt: 100_000 });
     const root = await mount(

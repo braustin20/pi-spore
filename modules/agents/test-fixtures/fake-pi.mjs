@@ -45,8 +45,11 @@
 // `--fork <file>` copies that session into a new one in `--session-dir`, with `parentSession` in the header, and
 // refuses to be combined with `--session`, as Pi does.
 // Environment: FAKE_PI_HANG=1 never answers; FAKE_PI_RECORD=<file> appends {argv, env, cwd, pid} for assertions;
-// FAKE_PI_MODELS=broken answers get_available_models with a payload that is not a model list.
+// FAKE_PI_MODELS=broken answers get_available_models with a payload that is not a model list;
+// FAKE_PI_MODELS=<provider/id,...> answers it with exactly those models, as Pi lists only models with working auth.
 // FAKE_PI_LAZY_SESSION=1 writes a new session file only at its first assistant message, as Pi does.
+// FAKE_PI_REFUSE_FILE=<file>: while the file exists, every prompt fails with the file's text, as Pi refuses a prompt
+// for a provider with no API key. The process stays up and idle.
 // A `.fake-pi-hold-turn` file in the workspace holds accepted prompts before their first event until removed.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -562,6 +565,8 @@ const handle = (command) => {
         messageCount: entryCount,
       });
     case "prompt":
+      if (process.env.FAKE_PI_REFUSE_FILE && existsSync(process.env.FAKE_PI_REFUSE_FILE))
+        return fail(id, type, readFileSync(process.env.FAKE_PI_REFUSE_FILE, "utf8"));
       if (command.message === "crash") {
         process.stderr.write("boom: the fake agent crashed\n");
         process.exit(3);
@@ -632,6 +637,13 @@ const handle = (command) => {
       return respond(id, type);
     case "get_available_models":
       if (process.env.FAKE_PI_MODELS === "broken") return respond(id, type, { models: "none" });
+      if (process.env.FAKE_PI_MODELS) {
+        const models = process.env.FAKE_PI_MODELS.split(",").map((ref) => {
+          const slash = ref.indexOf("/");
+          return { ...model, provider: ref.slice(0, slash), id: ref.slice(slash + 1), name: ref };
+        });
+        return respond(id, type, { models });
+      }
       return respond(id, type, {
         models: [
           model,

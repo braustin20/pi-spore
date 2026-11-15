@@ -524,6 +524,7 @@ export const runsModule: ServerModule = {
       if (stranger) {
         throw new ApiError(400, "bad_depends_on", `${stranger} is not a lane of run ${run.id}`);
       }
+      if (request.model) await pipelines.requireModel(request.model, caller.agentId);
       const higher = request.model ? await aboveWorkerTier(request.model) : undefined;
       const laneId = host.store.transaction(() => {
         const id = host.newId();

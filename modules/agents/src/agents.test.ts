@@ -595,6 +595,33 @@ describe("agents", () => {
     });
   });
 
+  describe("a model list asked for by an agent that holds the last live slot", () => {
+    it("asks the caller's own process, so a busy chat with a queued chat behind it gets the list and no process starts", async () => {
+      const probe = agentsProbe();
+      await setup({ maxLive: 1 }, {}, {}, [probe.module]);
+      const caller = await makeAgent("caller");
+      const queued = await makeAgent("queued");
+      await json(await prompt(caller.agentId, "slow:60000"));
+      await until(() => status(caller.agentId) === "busy");
+      void prompt(queued.agentId, "next");
+      await until(() => status(queued.agentId) === "waiting");
+
+      let models: { id: string }[] | undefined;
+      void probe
+        .agents()
+        .availableModels(caller.agentId)
+        .then((found) => {
+          models = found;
+        });
+
+      await until(() => models !== undefined);
+      expect(models?.map((model) => model.id)).toEqual(["fake-1", "fake-2"]);
+      expect(launches()).toHaveLength(1);
+      expect(status(caller.agentId)).toBe("busy");
+      expect(status(queued.agentId)).toBe("waiting");
+    });
+  });
+
   describe("model tiers from settings.json", () => {
     type Listed = { models: { id: string; tier?: string }[]; tierError?: string };
     const writeSettings = (text: string) =>
@@ -2204,6 +2231,28 @@ describe("stage agents (R6)", () => {
       // The first idle is the start-up one, so wait for the turn's own end.
       await until(async () => (await api.turnError(stage.id)) !== undefined);
       expect(await api.turnError(stage.id)).toBe("usage limit reached");
+    });
+
+    it("returns the error of a message Pi refused, shows it on the agent, and clears it once a message gets in", async () => {
+      const NO_KEY = "No API key found for anthropic.";
+      const refuse = join(scratch, "refuse");
+      writeFileSync(refuse, NO_KEY);
+      await setup({}, { FAKE_PI_REFUSE_FILE: refuse }, {}, [probe]);
+      const { workspaceId } = await makeAgent();
+      const stage = start(workspaceId, { role: "worker", title: "Implement" }, "go");
+
+      await until(async () => (await api.turnError(stage.id)) !== undefined);
+      expect(await api.turnError(stage.id)).toBe(NO_KEY);
+      expect(status(stage.id)).toBe("idle");
+      expect(api.get(stage.id).deliveryError).toBe(NO_KEY);
+      const { agent } = await json<{ agent: Agent }>(
+        await server.request("GET", `/api/agents/${stage.id}`),
+      );
+      expect(agent.deliveryError).toBe(NO_KEY);
+
+      rmSync(refuse);
+      api.deliver(stage.id, "again");
+      await until(() => api.get(stage.id).deliveryError === undefined);
     });
 
     it("returns the status error after a crash", async () => {
