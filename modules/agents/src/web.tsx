@@ -343,7 +343,17 @@ function ChatView({
 
   const controls = (
     <>
-      {agent?.kind !== "stage" && (
+      {agent?.kind === "stage" ? (
+        // A stage's model is fixed, so it is a label, not a choice (R4.4).
+        <span
+          role="status"
+          aria-label="Model"
+          title={currentLabel}
+          className="min-w-0 flex-1 truncate text-sm text-muted"
+        >
+          {currentLabel}
+        </span>
+      ) : (
         <ModelPicker
           value={currentModel}
           label={currentLabel}
