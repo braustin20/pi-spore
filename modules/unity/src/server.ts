@@ -1,4 +1,4 @@
-import { lstat, readFile, rm, stat } from "node:fs/promises";
+import { readFile, rm, stat } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { ActionsKey } from "@pi-spore/mod-actions/server";
@@ -23,6 +23,7 @@ import {
   type UnityCommand,
 } from "./editors.js";
 import { pause, registerGates, TEST_DEADLINE_MS } from "./gates.js";
+import { libraryBee } from "./repair.js";
 
 export * from "./contract.js";
 
@@ -56,17 +57,7 @@ export const unityTrait: TraitDefinition = {
   // ADR 0177: the copied Library's build graph holds the main checkout's path, so Unity binds no scripts from the
   // new one. Drop it in the copy only; Unity rebuilds it on the first open.
   async afterCopy(copyPath) {
-    const library = join(copyPath, "Library");
-    // `cp -a` keeps a symlinked Library as the same link, and a removal follows links inside a path, so deleting
-    // through it would cut into the folder the main checkout points at. Refuse instead (R2.6, R10.2).
-    if ((await lstat(library).catch(() => undefined))?.isSymbolicLink()) {
-      throw new ApiError(
-        409,
-        "symlinked_library",
-        `${library} is a symlink, so pi-spore will not remove Library/Bee from this copy. Replace the project's Library symlink with a real folder, then create the workspace again.`,
-      );
-    }
-    await rm(join(library, "Bee"), { recursive: true, force: true });
+    await rm(await libraryBee(copyPath), { recursive: true, force: true });
   },
 };
 
