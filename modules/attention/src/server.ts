@@ -341,18 +341,20 @@ export const attentionModule: ServerModule = {
           });
       }
       const running: RunningItem[] = [];
-      for (const { agent, since, dialogs, waitingSince } of all) {
+      for (const { agent, since, dialogs, waitingSince, activity } of all) {
         const workspace = places.get(agent.workspaceId);
         if (!workspace) continue;
         const base = { agentId: agent.id, workspace, chat: chatOf(agent) };
+        // A running row also says what its chat did last (R15). Nothing shows before the chat has done anything.
+        const row = activity === undefined ? base : { ...base, activity };
         for (const { dialog, openedAt } of dialogs)
           items.push({ kind: "dialog", at: openedAt, ...base, dialog });
         if (agent.status === "failed")
           items.push({ kind: "failed", at: since, ...base, error: agent.error ?? "Agent failed" });
         else if (agent.status === "idle" && agent.helpersRunning)
-          running.push({ ...base, status: "helpers", since });
+          running.push({ ...row, status: "helpers", since });
         else if ((agent.status === "idle" || agent.status === "stopped") && agent.workingFor)
-          running.push({ ...base, status: "pipeline", detail: agent.workingFor, since });
+          running.push({ ...row, status: "pipeline", detail: agent.workingFor, since });
         else if (
           waitingSince !== undefined &&
           // A pipeline stage agent reports to its pipeline, which moves on by itself (R6).
@@ -363,7 +365,7 @@ export const attentionModule: ServerModule = {
           items.push({ kind: "finished", at: waitingSince, ...base });
         if (agent.status === "busy" || agent.status === "starting" || agent.status === "waiting")
           running.push({
-            ...base,
+            ...row,
             status: agent.status,
             ...(agent.routerStatus ? { detail: agent.routerStatus } : {}),
             since,
