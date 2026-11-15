@@ -608,8 +608,10 @@ export const pipelinesModule: ServerModule = {
         )
         .map(viewOf);
 
-    // Chats that carry a "working" label for a running run. The label is in memory only, so boot sets it again.
+    // Chats and workspaces that carry a "working" label for a running run. The label is in memory only, so boot sets
+    // it again.
     const labelled = new Set<string>();
+    const labelledWorkspaces = new Set<string>();
     agents.beforeDeleteChat((agentId) => labelled.delete(agentId));
     /**
      * The physical model an agent's newest answer ran on, else the model its stage started it on. The agents module
@@ -619,16 +621,29 @@ export const pipelinesModule: ServerModule = {
       const live = unlessGone(() => agents.liveState(agentId));
       return live?.routedModel ?? live?.model;
     };
+    /** What one chat or workspace works for: the run's stage and round, or the run count when it has several. */
+    const workingLabel = (runs: RunRow[]): string => {
+      const [run] = runs as [RunRow];
+      if (runs.length > 1) return `Pipeline: ${runs.length} runs`;
+      const group = groupOf(run, run.stage_index);
+      // The review round, not the group's: a fix keeps the round of the reviews it answers.
+      const round = reviewRound(groupTurns(run, group));
+      const names = group.map((index) => stageOf(run, index).name).join(", ");
+      return `Pipeline: ${names}${round >= 2 ? `, round ${round}` : ""}`;
+    };
     /**
-     * Marks the chat of each running run as working, so Home does not show it as done while its run works. A
-     * waiting_user run gives no label (its approval is the Home item), and neither does an ended one (the chat
-     * has the end message). A lane's run belongs to the run's coordinator, as in `tellBlocked`.
+     * Marks the chat and the workspace of each running run as working, so Home and the workspace list do not show them
+     * as done while the run works. A waiting_user run gives no label (its approval is the Home item), and neither does
+     * an ended one (the chat has the end message). A lane's run belongs to the run's coordinator, as in `tellBlocked`,
+     * and to the lane's own workspace, whose row has no worker chat of its own to read (R7).
      */
     const syncWorking = () => {
       const byAgent = new Map<string, RunRow[]>();
+      const byWorkspace = new Map<string, RunRow[]>();
       for (const run of host.store.all<RunRow>(
         "SELECT * FROM pipelines_runs WHERE state = 'running' ORDER BY created_at, id",
       )) {
+        byWorkspace.set(run.workspace_id, [...(byWorkspace.get(run.workspace_id) ?? []), run]);
         const agentId = unlessGone(
           () => laneLookup?.(run.workspace_id)?.coordinatorAgentId ?? run.asking_agent_id,
         );
@@ -637,22 +652,22 @@ export const pipelinesModule: ServerModule = {
         }
       }
       for (const [agentId, runs] of byAgent) {
-        const [run] = runs as [RunRow];
-        let label = `Pipeline: ${runs.length} runs`;
-        if (runs.length === 1) {
-          const group = groupOf(run, run.stage_index);
-          // The review round, not the group's: a fix keeps the round of the reviews it answers.
-          const round = reviewRound(groupTurns(run, group));
-          const names = group.map((index) => stageOf(run, index).name).join(", ");
-          label = `Pipeline: ${names}${round >= 2 ? `, round ${round}` : ""}`;
-        }
-        agents.setWorkingFor(agentId, label);
+        agents.setWorkingFor(agentId, workingLabel(runs));
         labelled.add(agentId);
       }
       for (const agentId of labelled) {
         if (byAgent.has(agentId)) continue;
         labelled.delete(agentId);
         unlessGone(() => agents.setWorkingFor(agentId, undefined));
+      }
+      for (const [workspaceId, runs] of byWorkspace) {
+        agents.setWorkspaceWorkingFor(workspaceId, workingLabel(runs));
+        labelledWorkspaces.add(workspaceId);
+      }
+      for (const workspaceId of labelledWorkspaces) {
+        if (byWorkspace.has(workspaceId)) continue;
+        labelledWorkspaces.delete(workspaceId);
+        agents.setWorkspaceWorkingFor(workspaceId, undefined);
       }
     };
 

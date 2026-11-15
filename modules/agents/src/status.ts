@@ -16,6 +16,21 @@ export function reduceAgentList(agents: Agent[], raw: unknown): Agent[] {
   return [...agents.filter((agent) => agent.id !== event.agent.id), event.agent];
 }
 
+const WorkingEvent = Type.Object({
+  type: Type.Literal("working"),
+  /** Every workspace that works for something, by workspace id. */
+  workspaces: Type.Record(Type.String(), Type.String()),
+});
+
+/**
+ * The workspace working labels from an `agents:working` event. Every event carries the whole map, so a reconnecting
+ * page only needs the last one.
+ */
+export function parseWorkspaceWorking(raw: unknown): ReadonlyMap<string, string> {
+  const event = parse(WorkingEvent, raw, "workspace working event");
+  return new Map(Object.entries(event.workspaces));
+}
+
 export interface StatusText {
   text: string;
   tone: Tone;
@@ -31,25 +46,32 @@ const BY_STATUS: Record<Agent["status"], StatusText> = {
 };
 
 /**
- * The list column's status line for a workspace, from its worker agent if it has one. A chat that waits for the
- * user says so once it is idle or stopped.
+ * The list column's status line for a workspace, from its worker agent if it has one. A chat that waits for the user
+ * says so once it is idle or stopped. `workspaceLabel` is what the workspace itself works for, such as a running
+ * pipeline run: it shows as working where the chat would only read Idle, Agent stopped, or No agent yet, and a busy
+ * chat, a helper, a wait for the user, or the chat's own label all beat it.
  */
 export function workspaceStatus(
   workspace: Workspace,
   agent: Agent | undefined,
   wait?: UserWait,
+  workspaceLabel?: string,
 ): StatusText {
   if (workspace.state === "parked") return { text: "Parked", tone: "neutral" };
   if (workspace.state === "archived") return { text: "Archived", tone: "neutral" };
-  if (!agent) return { text: "No agent yet", tone: "neutral" };
+  if (!agent)
+    return workspaceLabel
+      ? { text: `Working (${workspaceLabel})`, tone: "run" }
+      : { text: "No agent yet", tone: "neutral" };
   if (wait && (agent.status === "idle" || agent.status === "stopped")) {
     return { text: "Waiting for your answer", tone: "warn" };
   }
   if (agent.status === "idle" && agent.helpersRunning) {
     return { text: "Working (helper running)", tone: "run" };
   }
-  if ((agent.status === "idle" || agent.status === "stopped") && agent.workingFor) {
-    return { text: `Working (${agent.workingFor})`, tone: "run" };
+  const workingFor = agent.workingFor ?? workspaceLabel;
+  if ((agent.status === "idle" || agent.status === "stopped") && workingFor) {
+    return { text: `Working (${workingFor})`, tone: "run" };
   }
   if (agent.status === "busy" && agent.routerStatus) {
     return { text: agent.routerStatus, tone: "warn" };
@@ -69,12 +91,14 @@ function stageStatus(workspace: Workspace, stage: Agent): StatusText {
 
 /**
  * Status lines for all workspaces. A busy, starting, or waiting stage agent wins, since in a pipeline or a run lane
- * the worker chat sits stopped while stages work. Otherwise the line follows the active worker chat (ADR 0030).
+ * the worker chat sits stopped while stages work. Otherwise the line follows the active worker chat (ADR 0030), and
+ * the workspace's own label, such as a running pipeline run, shows where that chat is only idle or stopped (R7).
  */
 export function workspaceStatuses(
   workspaces: readonly Workspace[],
   agents: readonly Agent[],
   waits: ReadonlyMap<string, UserWait>,
+  working: ReadonlyMap<string, string>,
 ): Map<string, StatusText> {
   const workers = new Map(
     agents
@@ -94,7 +118,15 @@ export function workspaceStatuses(
       if (stage && workspace.state === "active")
         return [workspace.id, stageStatus(workspace, stage)];
       const worker = workers.get(workspace.id);
-      return [workspace.id, workspaceStatus(workspace, worker, worker && waits.get(worker.id))];
+      return [
+        workspace.id,
+        workspaceStatus(
+          workspace,
+          worker,
+          worker && waits.get(worker.id),
+          working.get(workspace.id),
+        ),
+      ];
     }),
   );
 }

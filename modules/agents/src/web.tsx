@@ -38,7 +38,7 @@ import { Helpers } from "./helpers.js";
 import { MessageList, setFileLink } from "./messages.js";
 import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 import { PhoneChatRow } from "./phone-row.js";
-import { reduceAgentList, workspaceStatuses } from "./status.js";
+import { parseWorkspaceWorking, reduceAgentList, workspaceStatuses } from "./status.js";
 import { type AgentsWeb, AgentsWebKey, type UserWait, type UseUserWaits } from "./web-contract.js";
 import { WorkingIndicator } from "./working-indicator.js";
 
@@ -584,6 +584,7 @@ function ChatView({
 }
 
 const NO_WAITS: ReadonlyMap<string, UserWait> = new Map();
+const NO_WORKING: ReadonlyMap<string, string> = new Map();
 
 /** Tells which chats wait for the user. The attention module replaces it. */
 let useUserWaits: UseUserWaits = () => NO_WAITS;
@@ -592,6 +593,7 @@ let useUserWaits: UseUserWaits = () => NO_WAITS;
 function useAgentStatus(workspaces: readonly Workspace[]) {
   const api = useApi();
   const [agents, setAgents] = useState<Agent[]>([]);
+  const [working, setWorking] = useState<ReadonlyMap<string, string>>(NO_WORKING);
   useEffect(
     () =>
       api.subscribe("agents:list", (event) => {
@@ -599,17 +601,25 @@ function useAgentStatus(workspaces: readonly Workspace[]) {
       }),
     [api],
   );
+  // Every `agents:working` event is the whole map, so a reconnecting tab only needs the last one.
+  useEffect(
+    () =>
+      api.subscribe("agents:working", (event) => {
+        setWorking(parseWorkspaceWorking(event));
+      }),
+    [api],
+  );
 
   const waits = useUserWaits();
   return useMemo(() => {
-    const statuses = workspaceStatuses(workspaces, agents, waits);
+    const statuses = workspaceStatuses(workspaces, agents, waits, working);
     return new Map(
       [...statuses].map(([id, status]) => [
         id,
         { ...status, chats: rowChats(agents.filter((agent) => agent.workspaceId === id)) },
       ]),
     );
-  }, [agents, workspaces, waits]);
+  }, [agents, workspaces, waits, working]);
 }
 
 export const agentsWeb: WebModule = {

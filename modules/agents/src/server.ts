@@ -193,8 +193,29 @@ export function createAgentsModule(
       const listeners: ((agentId: string, change: AgentChange) => void)[] = [];
       const chatDeleteListeners: ((agentId: string) => void)[] = [];
       const workerChangeListeners: ((agent: Agent) => void)[] = [];
+      const workspaceWorkingListeners: ((workspaceId: string) => void)[] = [];
       const launchHooks: LaunchHook[] = [];
       const promptHooks: ((agent: Agent) => string | undefined)[] = [];
+      /** What each workspace works for, such as a running pipeline run (R7). In memory only, like a chat's. */
+      const workspaceWorking = new Map<string, string>();
+      /**
+       * Labels a workspace as working, then tells the pages once with the whole map, so one that missed an event
+       * still shows the truth. Does nothing when the label is unchanged.
+       */
+      const setWorkspaceWorking = (workspaceId: string, label: string | undefined): void => {
+        if (label === undefined) {
+          if (!workspaceWorking.delete(workspaceId)) return;
+        } else if (workspaceWorking.get(workspaceId) === label) {
+          return;
+        } else {
+          workspaceWorking.set(workspaceId, label);
+        }
+        host.events.publish("agents:working", {
+          type: "working",
+          workspaces: Object.fromEntries(workspaceWorking),
+        });
+        for (const listener of workspaceWorkingListeners) listener(workspaceId);
+      };
 
       const resourceArgs =
         options.resourceArgs ??
@@ -338,6 +359,9 @@ export function createAgentsModule(
             .map((row) => agents.view(row.id)),
         },
       ]);
+      host.events.onSubscribe("agents:working", () => [
+        { type: "working", workspaces: Object.fromEntries(workspaceWorking) },
+      ]);
 
       /** Chat changes of one workspace run one at a time, so it never has two active worker chats. */
       const serial = new Map<string, Promise<unknown>>();
@@ -469,6 +493,11 @@ export function createAgentsModule(
         get: (agentId) => agents.view(agentId),
         liveState: (agentId) => agents.liveState(agentId),
         setWorkingFor: (agentId, label) => agents.setWorkingFor(agentId, label),
+        setWorkspaceWorkingFor: setWorkspaceWorking,
+        workspacesWorkingFor: () => new Map(workspaceWorking),
+        onWorkspaceWorkingFor: (listener) => {
+          workspaceWorkingListeners.push(listener);
+        },
         isClosed: (agentId) => agents.isClosed(agentId),
         inWorkspace: (workspaceId) =>
           host.store
@@ -543,6 +572,7 @@ export function createAgentsModule(
       });
 
       workspaces.beforeDeleteWorkspace(async (workspace) => {
+        setWorkspaceWorking(workspace.id, undefined);
         const rows = host.store.all<Row>(
           "SELECT * FROM agents_agents WHERE workspace_id = ?",
           workspace.id,

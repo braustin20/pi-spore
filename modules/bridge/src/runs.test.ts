@@ -273,6 +273,14 @@ async function passLane(server: TestServer, runId: string, laneId: string) {
   await until(async () => (await laneOf(server, runId, laneId)).state === "passed");
 }
 
+/**
+ * The workspace labels the agents module published last on `agents:working`, which the workspace list row shows
+ * while a pipeline run works in that workspace (R7).
+ */
+const workspaceLabels = (server: TestServer): Record<string, string> =>
+  (server.events.eventsOf("agents:working") as { workspaces?: Record<string, string> }[]).at(-1)
+    ?.workspaces ?? {};
+
 const launches = () =>
   readFileSync(join(scratch, "record.jsonl"), "utf8")
     .split("\n")
@@ -469,6 +477,25 @@ describe("a lane", () => {
       await server.request("GET", `/api/pipelines/workspaces/${started.workspaceId}/runs`),
     );
     expect(pipelineRuns.map((entry) => entry.name)).toEqual(["feature"]);
+  });
+
+  it("labels the lane's workspace as working while its run works", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "lanelabel");
+    const { run, coordinator } = await createRun(server, projectId, "lanelabel");
+    const { lane } = await laneWithWorker(server, run, coordinator);
+    const workingFor = async (agentId: string) =>
+      (
+        await json<{ agent: { workingFor?: string } }>(
+          await server.request("GET", `/api/agents/${agentId}`),
+        )
+      ).agent.workingFor;
+    await until(async () => (await workingFor(run.coordinatorAgentId)) === "Pipeline: implement");
+
+    // A lane's workspace has no worker chat of its own, so its row reads the workspace label.
+    expect(workspaceLabels(server)[lane.workspaceId as string]).toBe("Pipeline: implement");
+    // The coordinator keeps its chat label, unchanged by the workspace label (ADR 0030).
+    expect(await workingFor(run.coordinatorAgentId)).toBe("Pipeline: implement");
   });
 
   it("sends the coordinator no pipelines end message for its lane's run (ADR 0162)", async () => {
