@@ -747,6 +747,63 @@ describe("a review stage", () => {
   });
 });
 
+describe("each turn's model", () => {
+  it("shows a running turn's model as the model its agent's newest answer ran on", async () => {
+    // A worker report with a verdict is refused, so the turn stays open and the run keeps running.
+    const server = await start({
+      env: scriptEnv({ worker: [{ ...DONE, model: "strata/qwen", verdict: "approve" }, "hang"] }),
+    });
+    const { workspaceId } = await workspace(server, "live-model");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId, workerId } = await startAndWork(server, workspaceId);
+
+    const running = await getRun(server, runId);
+
+    expect(running.state).toBe("running");
+    expect(running.turns[0]).toMatchObject({ agentId: workerId, model: "strata/qwen" });
+    expect(running.turns[0]?.report).toBeUndefined();
+    // The agent still runs on the stage's model: the turn shows the physical model of its answer.
+    expect(modelOf(workerId)).toBe("spore/auto");
+  });
+
+  it("keeps the model each turn reported on when the reused worker fixes on another model", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [
+          { ...DONE, model: "strata/qwen" },
+          { ...FIX, model: "fake/strong" },
+        ],
+        reviewer: [
+          { summary: "Not yet", verdict: "revise", findings: [FINDING] },
+          { summary: "Good", verdict: "approve" },
+        ],
+      }),
+    });
+
+    const { run } = await runUntil(server, "kept-model", withReview("rounds = 2"), "passed");
+
+    const [task, , fix] = run.turns as [PipelineTurn, PipelineTurn, PipelineTurn];
+    expect(fix.agentId).toBe(task.agentId);
+    expect(task.model).toBe("strata/qwen");
+    expect(fix.model).toBe("fake/strong");
+  });
+
+  it("shows the stage's model on a review turn whose agent has not reported", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE], reviewer: ["hang"] }) });
+    const { workspaceId } = await workspace(server, "stage-model");
+    userPipeline(server.paths.root, "p", withReview('model = "fake/strong"'));
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).turns.length > 1);
+
+    const running = await getRun(server, run.id);
+    const review = running.turns[1] as PipelineTurn;
+
+    expect(running.state).toBe("running");
+    expect(review.model).toBe("fake/strong");
+    expect(review.report).toBeUndefined();
+  });
+});
+
 const REVISE = { summary: "Still wrong", verdict: "revise", findings: [FINDING] };
 
 describe("the round limit", () => {
@@ -1173,7 +1230,10 @@ describe("a stage agent whose turn failed", () => {
 
     const after = await getRun(second, run.id);
     expect(after.blocked).toBe(run.blocked);
-    expect(after.turns).toEqual(run.turns);
+    // An open turn's model is its agent's live one, and the new server has no process for the stage agent that
+    // already ended. Every stored field of the turns is the same.
+    const stored = (turns: PipelineTurn[]) => turns.map((turn) => ({ ...turn, model: undefined }));
+    expect(stored(after.turns)).toEqual(stored(run.turns));
     expect(launches().filter((launch) => launch.env.PI_SPORE_CHAT_KIND === "stage")).toHaveLength(
       2,
     );
