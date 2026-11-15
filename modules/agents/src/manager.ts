@@ -805,6 +805,7 @@ export class AgentManager {
       ...(live.model ? { model: live.model } : {}),
       ...(live.thinkingLevel ? { thinkingLevel: live.thinkingLevel } : {}),
     });
+    this.options.onChange(live.record.id, "model");
   }
 
   /**

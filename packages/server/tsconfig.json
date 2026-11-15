@@ -66,6 +66,9 @@
     },
     {
       "path": "../../modules/runs"
+    },
+    {
+      "path": "../../modules/agent-graph"
     }
   ]
 }

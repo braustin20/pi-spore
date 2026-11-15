@@ -1490,6 +1490,28 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
     expect(changes).toEqual(["children", "children"]);
   });
 
+  it("calls onChange with model when a live chat's model changes", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "hello"));
+    await until(() => status(agentId) === "idle");
+    const changes: AgentChange[] = [];
+    probe.agents().onChange((id, change) => {
+      if (id === agentId && change === "model") changes.push(change);
+    });
+
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/model`, {
+        provider: "fake",
+        modelId: "fake-2",
+      }),
+    );
+
+    expect(changes).toEqual(["model"]);
+    expect(probe.agents().liveState(agentId).model).toBe("fake/fake-2");
+  });
+
   it("gives the live model, the routed model of the newest answer, and the child runs", async () => {
     const probe = agentsProbe();
     await setup({}, {}, {}, [probe.module]);

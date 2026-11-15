@@ -1,4 +1,5 @@
 import { actionsWeb } from "@pi-spore/mod-actions/web";
+import { agentGraphWeb } from "@pi-spore/mod-agent-graph/web";
 import { agentsWeb } from "@pi-spore/mod-agents/web";
 import { artifactsWeb } from "@pi-spore/mod-artifacts/web";
 import { attentionWeb } from "@pi-spore/mod-attention/web";
@@ -30,4 +31,5 @@ export const webModules: readonly WebModule[] = [
   githubPrWeb,
   pipelinesWeb,
   runsWeb,
+  agentGraphWeb,
 ];

@@ -1,0 +1,58 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "src",
+    "outDir": "dist",
+    "types": ["node"],
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "jsx": "react-jsx"
+  },
+  "include": ["src"],
+  "references": [
+    {
+      "path": "../../packages/module-api"
+    },
+    {
+      "path": "../../packages/shared"
+    },
+    {
+      "path": "../workspaces"
+    },
+    {
+      "path": "../agents"
+    },
+    {
+      "path": "../pipelines"
+    },
+    {
+      "path": "../runs"
+    },
+    {
+      "path": "../projects"
+    },
+    {
+      "path": "../actions"
+    },
+    {
+      "path": "../artifacts"
+    },
+    {
+      "path": "../attention"
+    },
+    {
+      "path": "../kanban"
+    },
+    {
+      "path": "../bridge"
+    },
+    {
+      "path": "../vcs-git"
+    },
+    {
+      "path": "../vcs-folder"
+    },
+    {
+      "path": "../../packages/server-core"
+    }
+  ]
+}

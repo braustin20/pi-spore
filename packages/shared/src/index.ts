@@ -9,6 +9,15 @@ export {
   StartActionRequest,
 } from "./actions.js";
 export {
+  AgentGraph,
+  AgentGraphEvent,
+  GraphAgent,
+  GraphGroup,
+  GraphHelper,
+  GraphStep,
+  GraphTree,
+} from "./agent-graph.js";
+export {
   Agent,
   AgentDialog,
   AgentList,
