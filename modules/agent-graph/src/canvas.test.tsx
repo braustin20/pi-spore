@@ -93,15 +93,18 @@ function landing(): ComponentType<{ projectId?: string | undefined }> {
 
 let container: HTMLElement | undefined;
 let root: Root | undefined;
-afterEach(() => {
+function unmount() {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
   container = undefined;
-});
+}
+afterEach(unmount);
 
 /** Renders the landing with a fake api; `send` pushes a topic event, as the server does. */
 async function render(trees: GraphTree[], projectId?: string) {
+  // One landing at a time, as the workspaces view shows it.
+  unmount();
   const Landing = landing();
   let push: ((event: unknown) => void) | undefined;
   const topics: string[] = [];
@@ -234,6 +237,8 @@ describe("the agent graph canvas", () => {
     expect(node()?.style.transform).toBe(moved);
 
     // The workspaces view unmounts the landing while a chat is open, and mounts it again on the way back.
+    unmount();
+    expect(document.querySelector(".react-flow")).toBeNull();
     await render([runTree]);
     expect(node()?.style.transform).toBe(moved);
   });
