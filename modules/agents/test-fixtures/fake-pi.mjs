@@ -19,6 +19,8 @@
 //                  argument, and waits there until the `bash-done` prompt; then it ends the tool, writes its result,
 //                  and gives the normal echo reply. Use it to watch a running tool. "bash-done" runs as a command,
 //                  even while streaming
+//   "agent-start-again"  writes a second `agent_start` in the open run, as Pi does when it retries or compacts and
+//                  continues before `agent_settled`. Runs as a command, even while streaming
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
@@ -31,6 +33,11 @@
 //   "crash"   after Pi accepted the prompt, writes to stderr and exits with code 3, as the "crash" prompt does
 //   { "error": "<text>" }  ends the turn as Pi does when the provider refused it: the last assistant message has
 //             stopReason "error", errorMessage <text>, and no text. No report is sent.
+//   { "ask": "<text>" }  asks the run's asking chat, as ask_orchestrator does: the fake POSTs { question } to
+//             /api/bridge/stage-questions with its token and a receipt, replies with the server's answer, and ends
+//             the turn with stopReason "stop". No report is sent.
+//   { "askCoordinator": "<text>" }  asks the lane's coordinator, as ask_coordinator does: the same, but it POSTs to
+//             /api/bridge/coordinator/questions.
 //   {...}     a report: the fake first writes an assistant message with a tool call, as Pi does before a tool runs, so
 //             the session already records the model. An entry field `model: "<provider>/<id>"` switches the model
 //             first, as `set_model` does; the field is not sent. A field `routing: { route, model, reasons }` is not
@@ -121,7 +128,8 @@ if (forkSource) {
 } else if (!argv.includes("--no-session")) {
   const dir = arg("--session-dir");
   mkdirSync(dir, { recursive: true });
-  sessionFile = join(dir, `${Date.now()}_fake.jsonl`);
+  // The pid keeps two agents that start in the same millisecond (a parallel review group) apart, as Pi's uuid does.
+  sessionFile = join(dir, `${Date.now()}_${process.pid}_fake.jsonl`);
   const header = `${JSON.stringify({ type: "session", version: 3, id: "s", cwd: process.cwd() })}\n`;
   if (process.env.FAKE_PI_LAZY_SESSION === "1") unwritten = header;
   else writeFileSync(sessionFile, header);
@@ -354,6 +362,27 @@ async function ask(question, toolCallId) {
   }
 }
 
+/** What spore-bridge's ask_orchestrator and ask_coordinator send: the agent token, and the tool call id as the receipt. */
+async function askStage(route, question, receipt) {
+  try {
+    const response = await fetch(`${process.env.PI_SPORE_URL}/api/bridge/${route}`, {
+      method: "POST",
+      headers: {
+        authorization: `Bearer ${process.env.PI_SPORE_TOKEN}`,
+        "content-type": "application/json",
+        "idempotency-key": receipt,
+      },
+      body: JSON.stringify({ question }),
+    });
+    const body = await response.json();
+    return response.ok
+      ? `asked: ${body.question.id}`
+      : `ask failed: ${response.status} ${body.error?.code}`;
+  } catch (error) {
+    return `ask failed: ${error.message}`;
+  }
+}
+
 /** The next scripted answer for this stage agent's role; see the header. */
 async function scripted(text) {
   const file = process.env.FAKE_PI_SCRIPT;
@@ -383,6 +412,18 @@ async function scripted(text) {
     process.exit(3);
   }
   if (entry.error !== undefined) return { error: entry.error };
+  if (entry.ask !== undefined || entry.askCoordinator !== undefined) {
+    const lane = entry.askCoordinator !== undefined;
+    const question = lane ? entry.askCoordinator : entry.ask;
+    const receipt = `ask_${role}_${position}`;
+    toolCallMessage({
+      type: "toolCall",
+      id: receipt,
+      name: lane ? "ask_coordinator" : "ask_orchestrator",
+      arguments: { question },
+    });
+    return askStage(lane ? "coordinator/questions" : "stage-questions", question, receipt);
+  }
   const turn = /^Turn: (\S+)$/m.exec(text)?.[1];
   if (!turn) return "no turn id in the prompt";
   const { model: switchTo, routing, ...fields } = entry;
@@ -579,6 +620,10 @@ const handle = (command) => {
         if (state === "gone") helpers.delete(runId);
         else helpers.set(runId, { agent, state, tool });
         publishHelpers();
+        return respond(id, type, { disposition: "handled" });
+      }
+      if (command.message === "agent-start-again") {
+        write({ type: "agent_start" });
         return respond(id, type, { disposition: "handled" });
       }
       if (command.message === "bash-done") {

@@ -37,6 +37,7 @@ import {
   type RoleDefaults,
   SIDE_CHAT_TOOLS,
   STAGE_REVIEWER_TOOLS,
+  STAGE_WORKER_TOOLS,
   withModel,
 } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
@@ -123,7 +124,7 @@ export type AgentEvent =
   | { type: "pi"; event: unknown }
   /** The agent's pi-subagents helpers changed (ADR 0034). */
   | { type: "children"; children: ChildRun[] }
-  | { type: "status"; status: AgentStatus; error?: string }
+  | { type: "status"; status: AgentStatus; since: number; error?: string }
   /** The chat's title or active flag changed. */
   | { type: "agent"; agent: Agent }
   | { type: "model"; model?: AgentModel; thinkingLevel?: string }
@@ -178,8 +179,9 @@ const isReadOnly = ({ kind, role }: AgentRecord): boolean =>
   kind === "side" || role === "planner" || (kind === "stage" && role !== "worker");
 
 /**
- * The tool arguments of an agent: a stage worker and a workspace chat get Pi's normal tools. A launch hook's tools
- * replace them, except for a planner chat, which is read-only whatever a hook says.
+ * The tool arguments of an agent: a workspace chat gets Pi's normal tools, and a stage worker gets those less
+ * `contact_supervisor` (ADR 0179). A launch hook's tools replace them, except for a planner chat, which is read-only
+ * whatever a hook says.
  */
 const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly string[] => {
   if (record.role === "planner") {
@@ -188,7 +190,8 @@ const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly stri
   }
   if (tools) return ["--tools", tools.join(","), "--exclude-tools", "mcp__*"];
   if (record.kind === "side") return SIDE_CHAT_TOOLS;
-  if (record.kind === "stage" && record.role !== "worker") return STAGE_REVIEWER_TOOLS;
+  if (record.kind === "stage")
+    return record.role === "worker" ? STAGE_WORKER_TOOLS : STAGE_REVIEWER_TOOLS;
   return [];
 };
 
@@ -304,6 +307,7 @@ export class AgentManager {
       ...(record.title === null ? {} : { title: record.title }),
       ...(record.forkedFrom === null ? {} : { forkedFrom: record.forkedFrom }),
       status: live.status,
+      statusSince: live.since,
       ...(live.error ? { error: live.error } : {}),
       ...(deliveryError ? { deliveryError } : {}),
       ...(runningCount(live.children) > 0 ? { helpersRunning: runningCount(live.children) } : {}),
@@ -798,11 +802,18 @@ export class AgentManager {
   }
 
   private setStatus(live: Live, status: AgentStatus, error?: string): void {
+    // Pi sends `agent_start` again inside one run when it retries or compacts and continues. The work has not
+    // restarted, so the chat keeps counting from the time it went busy.
+    if (live.status !== status) live.since = this.options.now();
     live.status = status;
-    live.since = this.options.now();
     if (error === undefined) delete live.error;
     else live.error = error;
-    this.publish(live, { type: "status", status, ...(error === undefined ? {} : { error }) });
+    this.publish(live, {
+      type: "status",
+      status,
+      since: live.since,
+      ...(error === undefined ? {} : { error }),
+    });
     this.options.onChange(live.record.id, "status");
   }
 

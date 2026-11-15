@@ -1,4 +1,4 @@
-import { type PipelineRun, type PipelineTurn, stripAnsi } from "@pi-spore/shared";
+import { type PipelineRun, type PipelineTurn, stageGroups, stripAnsi } from "@pi-spore/shared";
 import { Chip, CollapsibleSection, Spinner } from "@pi-spore/ui";
 import { Check, ChevronRight, Circle, Hourglass, Square, TriangleAlert, X } from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
@@ -17,9 +17,24 @@ const STEP_ICONS: Record<StepState, ReactNode> = {
   "not started": <Circle aria-hidden="true" className="size-3.5 text-muted" />,
 };
 
+/** The position of the group that holds a stage (ADR 0178): members of one group share it. */
+const groupAt = (groups: number[][], index: number) =>
+  groups.findIndex((group) => group.includes(index));
+
 function stepState(run: PipelineRun, index: number): StepState {
-  if (run.state === "passed" || index < run.stageIndex) return "done";
-  if (index > run.stageIndex) return "not started";
+  if (run.state === "passed") return "done";
+  // A group runs as one stage, and `run.stageIndex` is its first member, so compare groups.
+  const groups = stageGroups(run.stages);
+  const current = groupAt(groups, run.stageIndex);
+  const own = groupAt(groups, index);
+  if (own < current) return "done";
+  if (own > current) return "not started";
+  // A member that reported while the rest of its group still works is done. A stage alone keeps today's state.
+  const live = run.turns.filter(
+    (turn) => turn.stageIndex === index && turn.kind === "review" && !turn.error,
+  );
+  const reported = live.length > 0 && live.every((turn) => turn.reportedAt !== undefined);
+  if ((groups[own]?.length ?? 0) > 1 && isActive(run) && reported) return "done";
   if (run.state === "failed") return "failed";
   if (run.state === "stopped") return "stopped";
   if (run.blocked) return "blocked";
@@ -45,7 +60,8 @@ function stepCount(run: PipelineRun, index: number): string | undefined {
   return rounds >= 2 ? `${rounds} rounds` : undefined;
 }
 
-/** One button per stage with its state, and arrows between them. */
+/** One step per group, with arrows between them. A parallel group's members sit side by side in one box
+ * (ADR 0178 rule 27). */
 export function StepBar({
   run,
   onStep,
@@ -53,26 +69,43 @@ export function StepBar({
   run: PipelineRun;
   onStep: (stageIndex: number) => void;
 }) {
+  const step = (index: number, shape: string) => {
+    // SAFETY: a group lists indexes of the run's own stages.
+    const stage = run.stages[index] as PipelineRun["stages"][number];
+    const state = stepState(run, index);
+    const count = stepCount(run, index);
+    return (
+      <button
+        key={stage.name}
+        type="button"
+        aria-label={`${stage.name}: ${state}`}
+        onClick={() => onStep(index)}
+        className={`flex cursor-pointer items-center gap-1.5 ${shape} px-2 py-1 text-xs hover:bg-raised`}
+      >
+        {STEP_ICONS[state]}
+        {count ? `${stage.name} · ${count}` : stage.name}
+      </button>
+    );
+  };
   return (
     <div className="flex flex-wrap items-center gap-1">
-      {run.stages.map((stage, index) => {
-        const state = stepState(run, index);
-        const count = stepCount(run, index);
-        return (
-          <Fragment key={stage.name}>
-            {index > 0 && <ChevronRight aria-hidden="true" className="size-3.5 text-muted" />}
-            <button
-              type="button"
-              aria-label={`${stage.name}: ${state}`}
-              onClick={() => onStep(index)}
-              className="flex cursor-pointer items-center gap-1.5 rounded-md border border-line px-2 py-1 text-xs hover:bg-raised"
+      {stageGroups(run.stages).map((group, position) => (
+        <Fragment key={group[0]}>
+          {position > 0 && <ChevronRight aria-hidden="true" className="size-3.5 text-muted" />}
+          {group.length === 1 ? (
+            step(group[0] as number, "rounded-md border border-line")
+          ) : (
+            // biome-ignore lint/a11y/useSemanticElements: a fieldset's border and min-width stop the wrap on a phone
+            <div
+              role="group"
+              aria-label={`parallel: ${group.map((index) => run.stages[index]?.name).join(", ")}`}
+              className="flex flex-wrap items-center gap-1 rounded-md border border-line p-0.5"
             >
-              {STEP_ICONS[state]}
-              {count ? `${stage.name} · ${count}` : stage.name}
-            </button>
-          </Fragment>
-        );
-      })}
+              {group.map((index) => step(index, "rounded"))}
+            </div>
+          )}
+        </Fragment>
+      ))}
     </div>
   );
 }
@@ -127,7 +160,7 @@ const kindLabel = (turn: PipelineTurn) =>
     ? "Task"
     : turn.kind === "review"
       ? `Review, round ${turn.round}`
-      : `Fix for ${turn.stage} round ${turn.round}`;
+      : `Fix for ${(turn.fixFor ?? [turn.stage]).join(", ")} round ${turn.round}`;
 
 function Counts({ turn }: { turn: PipelineTurn }) {
   const text = SEVERITIES.flatMap(({ severity }) => {
@@ -201,7 +234,24 @@ function TurnBody({ turn, workspaceId }: { turn: PipelineTurn; workspaceId: stri
       {report?.earlyStop && <EarlyStopLine earlyStop={report.earlyStop} />}
       {turn.modelNote && <p className="m-0 whitespace-pre-wrap text-muted">{turn.modelNote}</p>}
       {turn.error && <p className="m-0 whitespace-pre-wrap text-muted">{turn.error}</p>}
-      {!report && !turn.error && <p className="m-0 text-muted">Waiting for the report.</p>}
+      {!report && !turn.error && turn.question && (
+        <>
+          <p className="m-0 text-muted">
+            Waiting for an answer from{" "}
+            <a
+              href={`#/workspaces/${turn.question.askedWorkspaceId}/chats/${turn.question.askedAgentId}`}
+              className="text-accent-strong"
+            >
+              {turn.question.askedTitle}
+            </a>
+            .
+          </p>
+          <p className="m-0 whitespace-pre-wrap">{turn.question.question}</p>
+        </>
+      )}
+      {!report && !turn.error && !turn.question && (
+        <p className="m-0 text-muted">Waiting for the report.</p>
+      )}
       <a
         href={`#/workspaces/${workspaceId}/chats/${turn.agentId}`}
         className="text-xs text-accent-strong"

@@ -217,6 +217,28 @@ describe("Timeline", () => {
     expect(root.textContent).toContain("Waiting for the report.");
   });
 
+  it("shows an open stage question in place of the report wait, linked to the asked chat's workspace", async () => {
+    const asking = turn({
+      id: "t-ask",
+      createdAt: 100_000,
+      question: {
+        id: "q1",
+        question: "Which color?",
+        askedAgentId: "chat",
+        askedWorkspaceId: "run-w",
+        askedTitle: "Plan chat",
+      },
+    });
+    const root = await mount(
+      <Timeline run={run({ turns: [asking] })} workspaceId="w1" now={100_000 + MIN} />,
+    );
+    expect(root.textContent).toContain("Waiting for an answer from Plan chat.");
+    expect(root.textContent).toContain("Which color?");
+    expect(root.textContent).not.toContain("Waiting for the report.");
+    const link = [...root.querySelectorAll("a")].find((a) => a.textContent === "Plan chat");
+    expect(link?.getAttribute("href")).toBe("#/workspaces/run-w/chats/chat");
+  });
+
   it("shows the turn's model on a running turn with no route", async () => {
     const running = turn({ id: "t-run", createdAt: 100_000, model: "strata/qwen" });
     const root = await mount(
@@ -266,5 +288,70 @@ describe("StepBar", () => {
     expect(root.textContent).toContain("review · 2 rounds");
     await act(async () => (root.querySelectorAll("button")[1] as HTMLElement).click());
     expect(clicked).toEqual([1]);
+  });
+
+  const GROUPED = [
+    { name: "implement", role: "worker" as const },
+    { name: "review", role: "reviewer" as const, rounds: 2 },
+    { name: "adversarial", role: "reviewer" as const, with_previous: true },
+    { name: "verify", gates: ["check", "test"] },
+  ];
+  const ADVERSARIAL = turn({
+    id: "t-adv",
+    stageIndex: 2,
+    stage: "adversarial",
+    agentId: "a-adv",
+    createdAt: 100_000,
+    reportedAt: 200_000,
+    report: { turn: "t-adv", summary: "Fine", verdict: "approve" },
+  });
+  const OPEN_REVIEW = turn({ id: "t-open", createdAt: 100_000 });
+
+  it("shows a running group as one box with each member's own state (ADR 0178 rule 27)", async () => {
+    const root = await mount(
+      <StepBar
+        run={run({ stages: GROUPED, turns: [TASK, OPEN_REVIEW, ADVERSARIAL] })}
+        onStep={() => {}}
+      />,
+    );
+    expect(labels(root)).toEqual([
+      "implement: done",
+      "review: running",
+      "adversarial: done",
+      "verify: not started",
+    ]);
+    const groups = root.querySelectorAll('[role="group"]');
+    expect(groups).toHaveLength(1);
+    expect(groups[0]?.getAttribute("aria-label")).toBe("parallel: review, adversarial");
+    expect(labels(groups[0] as HTMLElement)).toEqual(["review: running", "adversarial: done"]);
+  });
+
+  it("reports the clicked member of a group", async () => {
+    const clicked: number[] = [];
+    const root = await mount(
+      <StepBar
+        run={run({ stages: GROUPED, turns: [TASK, OPEN_REVIEW, ADVERSARIAL] })}
+        onStep={(index) => clicked.push(index)}
+      />,
+    );
+    const member = root.querySelector('[aria-label="adversarial: done"]') as HTMLElement;
+    await act(async () => member.click());
+    expect(clicked).toEqual([2]);
+  });
+
+  it("renders one button per stage and no group box for a pipeline without groups", async () => {
+    const root = await mount(<StepBar run={run({ stageIndex: 1 })} onStep={() => {}} />);
+    expect(root.querySelectorAll("button")).toHaveLength(3);
+    expect(root.querySelector('[role="group"]')).toBeNull();
+  });
+});
+
+describe("Timeline of a parallel group", () => {
+  it("names every stage a fix answers", async () => {
+    const fix = turn({ ...FIX, fixFor: ["review", "adversarial"] });
+    const root = await mount(
+      <Timeline run={run({ turns: [TASK, fix] })} workspaceId="w1" now={600_000} />,
+    );
+    expect(rows(root)[1]?.textContent).toContain("Fix for review, adversarial round 1");
   });
 });

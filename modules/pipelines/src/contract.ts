@@ -1,5 +1,12 @@
 import { type BridgeCaller, defineInterface } from "@pi-spore/module-api";
-import type { PipelineRun, PipelineTurn, StageReport } from "@pi-spore/shared";
+import type {
+  AnswerStageRequest,
+  AskStageRequest,
+  PipelineRun,
+  PipelineTurn,
+  StageQuestion,
+  StageReport,
+} from "@pi-spore/shared";
 
 export interface StartRunRequest {
   pipeline: string;
@@ -58,18 +65,45 @@ export interface Pipelines {
    */
   report(caller: BridgeCaller, report: StageReport): Promise<{ turn: PipelineTurn }>;
   /**
+   * A stage agent outside a lane asks the chat that started its run (ADR 0179), and the pipeline's `await` step waits
+   * for the answer. Read-only callers may ask. Throws 403 `not_a_stage` when the caller is not a stage agent; 403
+   * `in_lane` for a stage agent of a lane (it asks with `ask_coordinator`); 409 `turn_closed` when the caller is not the
+   * agent of its run's open turn. The question goes to the run's asking chat, or to the workspace's active worker chat
+   * when the asking chat is closed; that chat then becomes the run's asking chat.
+   */
+  askStage(caller: BridgeCaller, request: AskStageRequest): Promise<StageQuestion>;
+  /**
+   * The asked chat answers a stage question, and the answer goes to the stage agent. Throws 404 `question_not_found`;
+   * 403 `not_asked` when the caller is not the chat that was asked; 409 `question_answered`; 409 `turn_closed` when the
+   * question's turn is no longer the run's open turn.
+   */
+  answerStage(caller: BridgeCaller, request: AnswerStageRequest): StageQuestion;
+  /**
    * Marks the chat of each running run as working again. The runs module calls it after a run's coordinator changed,
    * because a lane's run belongs to its coordinator and nothing in the pipelines module changed.
    */
   refreshWorking(): void;
+  /** The runs module calls it after a lane question is asked or answered, so the lane's runs publish again. */
+  laneQuestionChanged(workspaceId: string): void;
   /**
-   * Sets how a run's approvals name a lane workspace, and which chat hears that a lane's run is blocked. The runs
-   * module sets it, because runs requires pipelines. At most one.
+   * Sets how a run's approvals name a lane workspace, which chat hears that a lane's run is blocked, and which open
+   * lane question holds a turn's `await` step (ADR 0179). `openQuestion` gives the oldest open question the agent
+   * asked since `since`, the turn's start, so a reused agent's old question never holds a later turn. The runs module
+   * sets it, because runs requires pipelines. At most one.
    */
   setLaneLookup(
-    lookup: (
-      workspaceId: string,
-    ) => { run: string; laneId: string; lane: string; coordinatorAgentId: string } | undefined,
+    lookup: (workspaceId: string) =>
+      | {
+          laneId: string;
+          lane: string;
+          coordinatorAgentId: string;
+          runWorkspaceId: string;
+          openQuestion(
+            agentId: string,
+            since: number,
+          ): { id: string; question: string } | undefined;
+        }
+      | undefined,
   ): void;
 }
 

@@ -560,7 +560,7 @@ function ChatView({
         <div className="shrink-0 px-4 pb-4 xl:px-6">
           {active &&
             [...chatPanels].map(([id, ChatPanel]) => <ChatPanel key={id} chatId={agentId} />)}
-          <WorkingIndicator label={activity(state)} />
+          {agent && <WorkingIndicator label={activity(state)} since={agent.statusSince} />}
           <Composer
             chatId={agentId}
             busy={busy}

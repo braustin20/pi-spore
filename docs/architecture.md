@@ -127,9 +127,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     models Pi recorded on the agent's assistant messages; `sessionRoles(workspaceId)` lists the session file and role of each agent that has a session,
     so the `usage` module can split token use per role.
   - The thinking level comes from the role default. Env adds `PI_SPORE_CHAT_KIND=stage` and `PI_SPORE_STAGE_ROLE`.
-  - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,request_human_input,artifacts_list,
-    artifacts_read,report,ask_coordinator` (spore-bridge registers `ask_coordinator` only in a lane),
-    `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has Pi's normal tools.
+  - Reviewer roles are read-only like side chats: `--tools read,grep,find,ls,artifacts_list,artifacts_read,report,
+    ask_coordinator,ask_orchestrator` (spore-bridge registers `ask_coordinator` only in a lane and
+    `ask_orchestrator` only outside one), `--exclude-tools 'mcp__*'`, and a read-only token. A stage `worker` has
+    Pi's normal tools less `contact_supervisor` (`--exclude-tools contact_supervisor`): that pi-subagents tool works
+    only in a child pi-subagents started, so it always fails in a stage agent (ADR 0179).
   - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
     picker and shows the model read-only, with the routed model after `→`), because the pipeline judges a reviewer
     by the model it ran on (R4.4). A stage whose agent failed gets a fresh agent on Retry instead (section 8,
@@ -199,6 +201,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     assistant message one by one, in order, so an `artifacts_write` of the brief earlier in the same message is done
     first. The rules also say to call them in the next step after the write's result, in the same turn, and never
     to end a turn to wait for the user without `request_human_input`.
+  - Stage questions (ADR 0179). A stage agent outside a lane gets `ask_orchestrator` `{ question }` in place of
+    `request_human_input`. It posts `POST /api/bridge/stage-questions` with the tool call id as receipt and ends the
+    turn with `terminate: true`. The orchestrator chat (the chats that get `start_pipeline`) gets `answer_stage`
+    `{ questionId, answer }`, which posts `POST /api/bridge/stage-answers`. Both stage rule sets say: when the brief
+    leaves a decision open, ask with `ask_orchestrator` (in a lane: `ask_coordinator`); never use
+    `contact_supervisor`; do not guess. Section 8 has the server side.
   - `report` `{ turn, summary, verdict?, findings?, tests? }`, only in stage agents (R6.7): ends a pipeline turn with
     `terminate: true` through `POST /api/bridge/reports` (open to read-only reviewers). Reviewers give a verdict
     (`approve`, `revise`) and findings (`blocking`, `important`, `minor`); the worker lists each new test with the
@@ -555,6 +563,7 @@ min_strength_over = "implement"   # a cloud worker may be reviewed by its own ti
 [[stage]]
 name = "adversarial"
 role = "adversarial-reviewer"
+with_previous = true      # runs next to review; its findings join the same fix
 rounds = 1
 fix_passes = 1            # a REVISE on the last round gets one fix, with no review after it
 
@@ -620,12 +629,10 @@ fail_first = "artifact"
   project files (R17.3). `worker = "reuse"` is allowed only on the worker stage, and not with `model` or `tier`.
   `rounds` defaults to 1, `fix_passes` (0 or 1) to 0. A per-stage thinking level is not
   built (R6.1); it comes from the role default.
-- **Parallel groups** (ADR 0178, proposed, not built yet). A reviewer or gate stage with `with_previous = true` will
-  join the group of the stage before it, and a group's members will run each round together, with one fix for all
-  their findings and red gates. The key on the worker stage or the stage right after it will be 422 `bad_pipeline`.
-  `default` will group `review`, `adversarial`, and `gates`; `light` and `revise` will group `review` and `gates`.
-  Until the cards "Parallel stages 2" and "Parallel stages 3" land, the files above are the built ones and the key
-  is refused as unknown.
+- **Parallel groups** (ADR 0178). A reviewer stage with `with_previous = true` joins the group of the stage before
+  it; `stageGroups` in `@pi-spore/shared` lists the groups. The key on the worker stage or the stage right after it
+  is 422 `bad_pipeline`. A group with a gate stage is 422 too, until card "Parallel stages 3" builds gate members.
+  `default` groups `review` and `adversarial`. How a group runs is under "Parallel review rounds".
 - `GET /api/pipelines/workspaces/:id` lists the pipelines a workspace can start; a bad file shows its error and
   never falls back to the built-in one.
 - **Runs** (`pipelines_runs`, `pipelines_turns`). `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }`
@@ -650,20 +657,42 @@ fail_first = "artifact"
   previous run's last review, and are told to check that the brief's asks are met and nothing broke, with the same
   REVISE rule as round 2. Runs never stop their agents, and a delivery starts a stopped one. `PipelinesKey.get`
   returns a run's view, with `workerAgentId`.
-- **Stage jobs.** Each stage is a `pipelines.stage` job keyed by the workspace. Steps: `advance` (start the next
-  turn), `await` (wait for its report), `decide` (apply the verdict), `gate`, and `finish` (start the next stage's
-  job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
+- **Stage jobs.** Each group is a `pipelines.stage` job keyed by the workspace; a stage alone is a group of one. The
+  job's `stageIndex`, and the run's `stage_index` while it runs, is the group's first stage. Steps: `advance` (start
+  the next turns), `await` (wait for every open turn of the group), `decide` (apply the verdicts), `gate`, and
+  `finish` (start the next group's job in the same commit, or end the run `passed`). A turn's row, its stage agent, and the prompt's delivery commit
   together. Prompts name the turn on a `Turn: <id>` line, and the brief is the workspace artifact
   `pipelines/<run>/brief.md`. A worker's task prompt also holds the brief's full text under `## Brief`, so
   `spore/auto` scores the real task on a new worker's first message (ADR 0144).
 - **Reports.** The bridge passes `report` calls to `PipelinesKey.report`. Only the turn's agent may report (403
-  `not_your_turn`), once per turn (a repeat returns the stored turn; an older turn is 409 `turn_closed`). Reviewers
+  `not_your_turn`), once per turn (a repeat returns the stored turn; an older turn is 409 `turn_closed`; the other reviews of the same group
+  round do not close a turn). Reviewers
   must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
   later report never drops a test.
 - **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
-  one and tells the agent once to continue and call `report`. If the agent ends its turn without a report, the step
-  reminds it once per turn (`reminded` in the checkpoint, also across a restart); a second such end blocks the stage
+  one and tells each agent of an open turn once to continue and call `report`. Turns that reported do not run again.
+  If an agent ends its turn without a report, the step reminds it once per turn (column `reminded` on the turn, also
+  across a restart); a second such end blocks the stage
   (ADR 0169). There are no other automatic reminders.
+- **Stage questions** (ADR 0179, `pipelines_questions`). `ask_orchestrator` reaches `PipelinesKey.askStage`. It
+  refuses a caller that is not a stage agent (403 `not_a_stage`), a stage agent of a lane (403 `in_lane`), and a
+  caller that is not the agent of an open turn (409 `turn_closed`). An open turn is a turn of a `running` run with no
+  report and no error; a parallel review group has several (ADR 0178). The question goes to the run's asking chat.
+  When the user closed that chat (or retention deleted it), it goes to the workspace's active worker chat
+  (`agents.activeWorker`), and that chat becomes the run's asking chat, so it also gets the end message. The row and
+  the delivery of the question commit together. The message names the run, the stage, the agent, and the question id,
+  and says to answer from the plan with `answer_stage`, or to ask the user with `request_human_input` first.
+  `answer_stage` reaches `PipelinesKey.answerStage`: 404 `question_not_found`, 403 `not_asked` for any chat but the
+  asked one, 409 `question_answered`, and 409 `turn_closed` when the question's turn is no longer open. The answer and
+  its delivery to the stage agent (with the `Turn:` line) commit together; the delivery starts the agent's next run.
+  An open turn with an open question gets no reminder, no block, and no restart reminder; the `await` step waits for
+  it. It checks again after it reads the agent's session, because the agent may ask during that read. A failed agent
+  still blocks the stage. The run view sets `question` on each open turn with an open question, and the Pipeline tab
+  shows "Waiting for an answer from <chat>." with a link to that chat (in `askedWorkspaceId`) and the question.
+  In a lane, the open question is the agent's `ask_coordinator` question since the turn started. The pipelines module
+  reads it through the lane lookup the runs module sets (`setLaneLookup`, ADR 0003), and the asked chat is the
+  coordinator in the run workspace. `askCoordinator` and `answerLane` call `laneQuestionChanged`, so the Pipeline tab
+  updates.
 - **Stage chat titles.** A run with a slice name (`name`) titles its stage agents `<slice name> - <stage title>`, such
   as `push_line tool - Review 1`. Without a name the titles stay `implement`, `Review 1`, ... A reused worker (`worker =
   "reuse"`) is renamed to the new run's slice name when the run has one, in the same commit that gives it the task, so
@@ -697,8 +726,15 @@ fail_first = "artifact"
   severity. The subject is `{ runId, stage, action }`, filed with `action: "fix"`. Its `decided` hook, in the
   decision's transaction, acts on the choice: `fix` starts one last fix turn with no review after it, then the stage
   ends; `accept` ends the stage without a fix; decline stops the run. Home shows the three as buttons, fix first.
+- **Parallel review rounds** (ADR 0178). A group runs in rounds. Round r starts every open member in one commit; all
+  of them read one diff, rendered once and written as each member's `<stage>-<r>.diff`. Round 1 opens every member.
+  Round r + 1 opens each member that said REVISE in round r, has rounds left, and was not stopped by Jev. When every
+  review of the round reported, one fix turn holds every REVISE, each under its stage name. The fix row has the
+  group's first stage index and `fix_for`, the member names (view `fixFor`). The round rules above apply per member.
+  One round-limit approval lists every member at its limit; accept drops their findings from the fix.
 - **Working label.** While a run is `running`, the pipelines module marks its chat with `Agents.setWorkingFor`, and
-  its workspace with `Agents.setWorkspaceWorkingFor`, so Home and the workspace list do not show them as done: `Pipeline: <stage>`, with `, round <n>` from round 2 of a review stage, or
+  its workspace with `Agents.setWorkspaceWorkingFor`, so Home and the workspace list do not show them as done:
+  `Pipeline: <stages of the group, joined with ", ">`, with `, round <n>` from round 2 of a review stage, or
   `Pipeline: <n> runs` for a coordinator with lanes. The chat is the lane's coordinator, else the asking chat. A
   `waiting_user` or ended run gives no label. The module syncs it at every `publish`, at boot, and when the runs
   module calls `Pipelines.refreshWorking` after a new coordinator took over. A target that retention deleted (the
@@ -757,10 +793,11 @@ fail_first = "artifact"
 - Web: a Pipeline tab (after PR) with a start form (pipeline, optional name, brief) when no run is active, and the
   runs, newest first. Only the newest run is open; an older run shows its header and step bar until clicked. A run
   shows a header line (the name, then the pipeline id as a chip, or the pipeline id alone; source, state, elapsed
-  time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage), the notices
+  time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage; a parallel group is one box with its
+  members side by side, each with its own state), the notices
   (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
   and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
-  block, ANSI codes removed. A fix row belongs to the worker stage. Each row is one line (kind and
+  block, ANSI codes removed. A fix row belongs to the worker stage and names the stages it fixes. Each row is one line (kind and
   round, verdict, finding counts, `model`, duration) and opens to the summary, findings by severity (minor closed),
   tests with proofs, the route, Jev's answer, and a link to the agent's chat. Only the newest or running row is open
   at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its
@@ -1140,9 +1177,10 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   built from its live chat by `chatActivity` in `packages/shared/src/chat.ts`: a tool that runs now ("Running bash:
   npm test"), else the newest assistant message's last tool call ("Ran read: <path>") or the first line of its text
   ("Replied: ..."), and "Asked a question" while a dialog is open. Only bash's command and the path of read, edit,
-  and write show; never a tool's result. The chat page's working indicator uses the same `toolActivity` text. The
-  agents module fires `onChange(id, "activity")` only when a tool starts or a message ends, never per streamed
-  token, and that change does not republish `agents:list`.
+  and write show; never a tool's result. The chat page's working indicator uses the same `toolActivity` text and counts
+  from `statusSince` on the agent view, when the chat reached its status; a second `agent_start` in one run (a retry or
+  a compaction) does not restart the count. The agents module fires `onChange(id, "activity")` only when a tool
+  starts or a message ends, never per streamed token, and that change does not republish `agents:list`.
 - The Home page (`#/`, attention web module) shows the items as cards: a question one step at a time (`QuestionCard`
   in `question-card.tsx`): "Step 2 of 4", Back, Next, and Send answer on the last step, which sends every answer in
   one request. Nothing is sent before that. Answers are kept while the user moves, and in `sessionStorage`

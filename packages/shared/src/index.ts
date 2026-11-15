@@ -152,6 +152,8 @@ export {
   UpdateCardRequest,
 } from "./kanban.js";
 export {
+  AnswerStageRequest,
+  AskStageRequest,
   BridgeStartPipelineRequest,
   GATE_LOG_HEADING,
   PIPELINE_ID_PATTERN,
@@ -166,8 +168,10 @@ export {
   PipelineTurn,
   PipelineTurnKind,
   PipelineView,
+  StageQuestion,
   StageReport,
   StartPipelineRequest,
+  stageGroups,
   TestProof,
 } from "./pipelines.js";
 export {

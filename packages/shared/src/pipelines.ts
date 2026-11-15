@@ -28,10 +28,24 @@ export const PipelineStage = Type.Object(
     min_strength_over: Type.Optional(PipelineName),
     gates: Type.Optional(Type.Array(Type.String({ minLength: 1 }), { minItems: 1 })),
     fail_first: Type.Optional(Type.Literal("artifact")),
+    /** The stage joins the parallel group of the stage before it (ADR 0178). */
+    with_previous: Type.Optional(Type.Boolean()),
   },
   { additionalProperties: false },
 );
 export type PipelineStage = Static<typeof PipelineStage>;
+
+/** The parallel groups of a pipeline's stages (ADR 0178): each group lists its stage indexes in order. A stage
+ * without `with_previous = true` starts a new group. */
+export function stageGroups(stages: readonly PipelineStage[]): number[][] {
+  const groups: number[][] = [];
+  stages.forEach((stage, index) => {
+    const last = groups.at(-1);
+    if (stage.with_previous === true && last) last.push(index);
+    else groups.push([index]);
+  });
+  return groups;
+}
 
 /** A pipeline file (`<id>.toml`) after TOML parsing. */
 export const PipelineFile = Type.Object(
@@ -136,6 +150,40 @@ export const PipelineTurnKind = Type.Union([
 ]);
 export type PipelineTurnKind = Static<typeof PipelineTurnKind>;
 
+/** What a stage agent sends through `ask_orchestrator` (ADR 0179). */
+export const AskStageRequest = Type.Object(
+  { question: Type.String({ minLength: 1, maxLength: 4_000 }) },
+  { additionalProperties: false },
+);
+export type AskStageRequest = Static<typeof AskStageRequest>;
+
+/** What the asking chat sends through `answer_stage`. */
+export const AnswerStageRequest = Type.Object(
+  {
+    questionId: Type.String({ minLength: 1 }),
+    answer: Type.String({ minLength: 1, maxLength: 8_000 }),
+  },
+  { additionalProperties: false },
+);
+export type AnswerStageRequest = Static<typeof AnswerStageRequest>;
+
+/** A stage agent's question to the chat that answers it. */
+export const StageQuestion = Type.Object({
+  id: Type.String(),
+  runId: Type.String(),
+  turnId: Type.String(),
+  /** The stage agent that asked. */
+  agentId: Type.String(),
+  /** The chat that answers. */
+  askedAgentId: Type.String(),
+  question: Type.String(),
+  answer: Type.Optional(Type.String()),
+  state: Type.Union([Type.Literal("open"), Type.Literal("answered")]),
+  createdAt: Type.Integer(),
+  answeredAt: Type.Optional(Type.Integer()),
+});
+export type StageQuestion = Static<typeof StageQuestion>;
+
 /** One prompt to a stage agent and the report that answered it. */
 export const PipelineTurn = Type.Object({
   id: Type.String(),
@@ -171,6 +219,21 @@ export const PipelineTurn = Type.Object({
   error: Type.Optional(Type.String()),
   /** Why a review turn's agent runs on another model than its role default: the default's plan was full. */
   modelNote: Type.Optional(Type.String()),
+  /**
+   * The open question of the run's open turn: the run waits for the chat `askedTitle` to answer it. That chat lives in
+   * workspace `askedWorkspaceId`: a lane's coordinator lives in the run workspace, not the lane.
+   */
+  question: Type.Optional(
+    Type.Object({
+      id: Type.String(),
+      question: Type.String(),
+      askedAgentId: Type.String(),
+      askedWorkspaceId: Type.String(),
+      askedTitle: Type.String(),
+    }),
+  ),
+  /** A fix turn's member stages whose findings it holds (ADR 0178). Absent on fix turns from before parallel groups. */
+  fixFor: Type.Optional(Type.Array(Type.String())),
 });
 export type PipelineTurn = Static<typeof PipelineTurn>;
 

@@ -24,6 +24,8 @@ import {
   tierOf,
 } from "@pi-spore/router";
 import {
+  type AnswerStageRequest,
+  type AskStageRequest,
   GATE_LOG_HEADING,
   logTail,
   type PipelineEvent,
@@ -34,9 +36,11 @@ import {
   type PipelineTurn,
   type PipelineTurnKind,
   parseJsonBody,
+  type StageQuestion,
   type StageReport,
   type StageRole,
   StartPipelineRequest,
+  stageGroups,
   stripAnsi,
   type TestProof,
 } from "@pi-spore/shared";
@@ -105,9 +109,27 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN blocked_sent TEXT",
   // The slice's name, a label only: lets the user tell which run built which slice.
   "ALTER TABLE pipelines_runs ADD COLUMN name TEXT",
+  // The member stage names whose findings a fix turn holds, as JSON (ADR 0178). Null on other turns and older fixes.
+  "ALTER TABLE pipelines_turns ADD COLUMN fix_for TEXT",
+  // The turn got the "ended without a report" reminder (ADR 0169), so a second end blocks; it survives a restart.
+  "ALTER TABLE pipelines_turns ADD COLUMN reminded INTEGER NOT NULL DEFAULT 0",
   // The model a turn's agent reported on. A reused worker serves the later fix turns too, so a reported turn keeps
   // its own model instead of reading the agent's newest one.
   "ALTER TABLE pipelines_turns ADD COLUMN model TEXT",
+  // A stage agent's question to the chat that answers it (ADR 0179). `state` is `open` or `answered`.
+  `CREATE TABLE pipelines_questions (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    turn_id TEXT NOT NULL,
+    agent_id TEXT NOT NULL,
+    asked_agent_id TEXT NOT NULL,
+    question TEXT NOT NULL,
+    answer TEXT,
+    state TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    answered_at INTEGER
+  )`,
+  "CREATE INDEX pipelines_questions_by_turn ON pipelines_questions (turn_id)",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -170,10 +192,38 @@ interface TurnRow {
   routing: string | null;
   error: string | null;
   model_note: string | null;
+  fix_for: string | null;
+  reminded: number;
   model: string | null;
   created_at: number;
   reported_at: number | null;
 }
+
+interface QuestionRow {
+  id: string;
+  run_id: string;
+  turn_id: string;
+  agent_id: string;
+  asked_agent_id: string;
+  question: string;
+  answer: string | null;
+  state: StageQuestion["state"];
+  created_at: number;
+  answered_at: number | null;
+}
+
+const questionToView = (row: QuestionRow): StageQuestion => ({
+  id: row.id,
+  runId: row.run_id,
+  turnId: row.turn_id,
+  agentId: row.agent_id,
+  askedAgentId: row.asked_agent_id,
+  question: row.question,
+  ...(row.answer === null ? {} : { answer: row.answer }),
+  state: row.state,
+  createdAt: row.created_at,
+  ...(row.answered_at === null ? {} : { answeredAt: row.answered_at }),
+});
 
 /** The job kind of a stage: key is the workspace id, so a workspace's stages run in order (ADR 0004). */
 const STAGE_JOB = "pipelines.stage";
@@ -191,8 +241,6 @@ interface StageSubject {
  */
 interface StageCheckpoint {
   boot?: string;
-  /** The turn that got the "ended without a report" reminder, so it is sent once per turn, also across a restart. */
-  reminded?: string;
   gate?: number;
   attempt?: number;
 }
@@ -224,7 +272,11 @@ function gateFailureMessage(name: string, error: string | undefined, log: string
 }
 
 /** `liveModel` is what the turn's agent answers on now, for a turn that has not reported; see `runToView`. */
-const turnToView = (row: TurnRow, liveModel?: string): PipelineTurn => {
+const turnToView = (
+  row: TurnRow,
+  liveModel?: string,
+  question?: PipelineTurn["question"],
+): PipelineTurn => {
   const model = row.model ?? liveModel;
   return {
     id: row.id,
@@ -244,18 +296,22 @@ const turnToView = (row: TurnRow, liveModel?: string): PipelineTurn => {
     ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
     ...(row.error === null ? {} : { error: row.error }),
     ...(row.model_note === null ? {} : { modelNote: row.model_note }),
+    ...(row.fix_for === null ? {} : { fixFor: JSON.parse(row.fix_for) as string[] }),
+    ...(question ? { question } : {}),
   };
 };
 
 /**
  * `liveModel` reads the physical model an agent's newest answer ran on. Only a running run uses it, and only for a
  * turn that has not reported and has no error, so its open turn follows its agent while the agent works.
+ * `questionOf` gives an open turn's open stage question (ADR 0179).
  */
 const runToView = (
   row: RunRow,
   turns: readonly TurnRow[],
   blocked?: string,
   liveModel?: (agentId: string) => string | undefined,
+  questionOf?: (turn: TurnRow) => PipelineTurn["question"],
 ): PipelineRun => ({
   id: row.id,
   workspaceId: row.workspace_id,
@@ -274,12 +330,9 @@ const runToView = (
   ...(blocked === undefined ? {} : { blocked }),
   tests: JSON.parse(row.tests) as TestProof[],
   turns: turns.map((turn) =>
-    turnToView(
-      turn,
-      liveModel && turn.report === null && turn.error === null
-        ? liveModel(turn.agent_id)
-        : undefined,
-    ),
+    turn.report === null && turn.error === null
+      ? turnToView(turn, liveModel?.(turn.agent_id), questionOf?.(turn))
+      : turnToView(turn),
   ),
   createdAt: row.created_at,
   ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
@@ -397,16 +450,28 @@ const findingLines = (report: StageReport) =>
     ];
   });
 
-const fixPrompt = (stage: PipelineStage, review: StageReport, turnId: string, last: boolean) =>
+/** The fix prompt of one group round: the findings of each member that said REVISE, under its stage name. */
+const fixPrompt = (
+  reviews: readonly { name: string; report: StageReport }[],
+  turnId: string,
+  last: boolean,
+) =>
   [
-    `The reviewer of stage "${stage.name}" asked for changes.`,
+    ...(reviews.length === 1
+      ? [`The reviewer of stage "${reviews[0]?.name}" asked for changes.`]
+      : [
+          `The reviewers of stages ${reviews.map((review) => `"${review.name}"`).join(", ")} asked for changes.`,
+        ]),
     "",
     `Turn: ${turnId}`,
     "",
-    `Reviewer summary: ${review.summary}`,
-    "Findings:",
-    ...(findingLines(review).length > 0 ? findingLines(review) : ["(none listed)"]),
-    "",
+    ...reviews.flatMap(({ name, report }) => [
+      ...(reviews.length === 1 ? [] : [`Stage "${name}":`]),
+      `Reviewer summary: ${report.summary}`,
+      "Findings:",
+      ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
+      "",
+    ]),
     "Fix what the findings ask for. Write each new test first and keep its failing run as a workspace artifact, as before.",
     last
       ? "This is the last fix: no review follows it."
@@ -417,6 +482,23 @@ const fixPrompt = (stage: PipelineStage, review: StageReport, turnId: string, la
 
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
+
+const questionMessage = (run: RunRow, turn: TurnRow, title: string, question: QuestionRow) =>
+  [
+    `Stage "${turn.stage}" of pipeline run ${run.id} asks (question ${question.id}). The ${turn.role} agent "${title}" wrote:`,
+    question.question,
+    "Answer it from your plan with answer_stage. If the plan does not say, ask the user with request_human_input first, then call answer_stage. The stage waits for your answer.",
+  ].join("\n");
+
+const answerMessage = (question: QuestionRow, answer: string) =>
+  [
+    `Your orchestrator answered your question ${question.id}.`,
+    `Question: ${question.question}`,
+    `Answer: ${answer}`,
+    "Go on with the turn, then call report with this turn.",
+    "",
+    `Turn: ${question.turn_id}`,
+  ].join("\n");
 
 const endedMessage = (turnId: string) =>
   `You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
@@ -449,11 +531,8 @@ export const pipelinesModule: ServerModule = {
         "SELECT * FROM pipelines_turns WHERE run_id = ? ORDER BY created_at, id",
         runId,
       );
-    const latestTurn = (runId: string) =>
-      host.store.get<TurnRow>(
-        "SELECT * FROM pipelines_turns WHERE run_id = ? ORDER BY created_at DESC, id DESC LIMIT 1",
-        runId,
-      );
+    const turnById = (id: string) =>
+      host.store.get<TurnRow>("SELECT * FROM pipelines_turns WHERE id = ?", id);
     // A stage job that failed a step waits with its error; a running run shows it, so the user can fix and retry.
     const blockedOf = (row: RunRow): string | undefined =>
       row.state !== "running"
@@ -462,13 +541,64 @@ export const pipelinesModule: ServerModule = {
             .list({ kind: STAGE_JOB, key: row.workspace_id, states: NOT_ENDED })
             .find((job) => (job.subject as StageSubject).runId === row.id && job.error !== null)
             ?.error ?? undefined);
+    // Retention can delete a chat, or the run workspace of a lane, while a run still runs. One missing id must not
+    // stop the sync of the others; any other error still throws.
+    const unlessGone = <T>(read: () => T): T | undefined => {
+      try {
+        return read();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    };
+    const loadQuestion = (id: string) =>
+      host.store.get<QuestionRow>("SELECT * FROM pipelines_questions WHERE id = ?", id);
+    // A lane's stage agent asks its coordinator, whose questions the runs module keeps (ADR 0003, ADR 0179).
+    const openQuestionOf = (
+      turn: TurnRow,
+    ):
+      | { id: string; question: string; askedAgentId: string; askedWorkspaceId: string }
+      | undefined => {
+      const workspaceId = requireRun(turn.run_id).workspace_id;
+      const lane = laneLookup?.(workspaceId);
+      if (lane) {
+        const question = lane.openQuestion(turn.agent_id, turn.created_at);
+        return (
+          question && {
+            id: question.id,
+            question: question.question,
+            askedAgentId: lane.coordinatorAgentId,
+            askedWorkspaceId: lane.runWorkspaceId,
+          }
+        );
+      }
+      const row = host.store.get<QuestionRow>(
+        "SELECT * FROM pipelines_questions WHERE turn_id = ? AND state = 'open' ORDER BY created_at, id LIMIT 1",
+        turn.id,
+      );
+      return (
+        row && {
+          id: row.id,
+          question: row.question,
+          askedAgentId: row.asked_agent_id,
+          askedWorkspaceId: workspaceId,
+        }
+      );
+    };
+    // Retention may have deleted the closed chat a question was asked of; the run view then names its id.
+    const titleOf = (agentId: string) => unlessGone(() => agents.get(agentId))?.title ?? agentId;
+    const questionView = (turn: TurnRow): PipelineTurn["question"] => {
+      const question = openQuestionOf(turn);
+      return question && { ...question, askedTitle: titleOf(question.askedAgentId) };
+    };
     const viewOf = (row: RunRow) =>
       runToView(
         row,
         turnRows(row.id),
         blockedOf(row),
-        // An ended run is a record: only a running run's open turn follows its agent's model.
+        // An ended run is a record: only a running run's open turns follow their agents' model and questions.
         row.state === "running" ? liveModelOf : undefined,
+        row.state === "running" ? questionView : undefined,
       );
     const runsOf = (workspaceId: string): PipelineRun[] =>
       host.store
@@ -483,16 +613,6 @@ export const pipelinesModule: ServerModule = {
     const labelled = new Set<string>();
     const labelledWorkspaces = new Set<string>();
     agents.beforeDeleteChat((agentId) => labelled.delete(agentId));
-    // Retention can delete a chat, or the run workspace of a lane, while a run still runs. One missing id must not
-    // stop the sync of the others; any other error still throws.
-    const unlessGone = <T>(read: () => T): T | undefined => {
-      try {
-        return read();
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 404) return undefined;
-        throw error;
-      }
-    };
     /**
      * The physical model an agent's newest answer ran on, else the model its stage started it on. The agents module
      * keeps both in memory, so a running turn's model costs no session file read.
@@ -505,11 +625,11 @@ export const pipelinesModule: ServerModule = {
     const workingLabel = (runs: RunRow[]): string => {
       const [run] = runs as [RunRow];
       if (runs.length > 1) return `Pipeline: ${runs.length} runs`;
-      const stage = stageOf(run, run.stage_index);
-      const round = stageTurns(run, run.stage_index).filter(
-        (turn) => turn.kind === "review",
-      ).length;
-      return `Pipeline: ${stage.name}${round >= 2 ? `, round ${round}` : ""}`;
+      const group = groupOf(run, run.stage_index);
+      // The review round, not the group's: a fix keeps the round of the reviews it answers.
+      const round = reviewRound(groupTurns(run, group));
+      const names = group.map((index) => stageOf(run, index).name).join(", ");
+      return `Pipeline: ${names}${round >= 2 ? `, round ${round}` : ""}`;
     };
     /**
      * Marks the chat and the workspace of each running run as working, so Home and the workspace list do not show them
@@ -627,7 +747,9 @@ export const pipelinesModule: ServerModule = {
     const workspaceLabel = (workspaceId: string) => {
       const name = `workspace "${workspaces.get(workspaceId).name}"`;
       const lane = laneLookup?.(workspaceId);
-      return lane ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${lane.run}"` : name;
+      return lane
+        ? `${name}, lane "${lane.lane}" (${lane.laneId}) of run "${workspaces.get(lane.runWorkspaceId).name}"`
+        : name;
     };
 
     /** What the asking chat reads when its run ends: the state, the stop or failure text, and the last review. */
@@ -673,11 +795,63 @@ export const pipelinesModule: ServerModule = {
         );
       });
 
-    const stageOf = (run: RunRow, stageIndex: number) =>
-      (JSON.parse(run.stages) as PipelineStage[])[stageIndex] as PipelineStage;
-    // A failed turn was replaced by a fresh agent's turn, so rounds and earlier reports count only the others.
-    const stageTurns = (run: RunRow, stageIndex: number) =>
-      turnRows(run.id).filter((turn) => turn.stage_index === stageIndex && turn.error === null);
+    const stagesOf = (run: RunRow) => JSON.parse(run.stages) as PipelineStage[];
+    const stageOf = (run: RunRow, stageIndex: number) => stagesOf(run)[stageIndex] as PipelineStage;
+    /** The stage indexes of the parallel group that holds `stageIndex` (ADR 0178). */
+    const groupOf = (run: RunRow, stageIndex: number) =>
+      stageGroups(stagesOf(run)).find((group) => group.includes(stageIndex)) as number[];
+    // A fix turn holds the group's first index, so it is a group turn too. Failed turns are included.
+    const groupTurns = (run: RunRow, group: readonly number[]) =>
+      turnRows(run.id).filter((turn) => group.includes(turn.stage_index));
+    // A failed turn was replaced by a fresh agent's turn, so rounds and earlier reports count only live turns.
+    const liveTurn = (
+      turns: readonly TurnRow[],
+      kind: PipelineTurnKind,
+      round: number,
+      stageIndex?: number,
+    ) =>
+      turns.find(
+        (turn) =>
+          turn.error === null &&
+          turn.kind === kind &&
+          turn.round === round &&
+          (stageIndex === undefined || turn.stage_index === stageIndex),
+      );
+    /** The highest round of a live review turn, 0 when there is none. */
+    const reviewRound = (turns: readonly TurnRow[]) =>
+      Math.max(
+        0,
+        ...turns
+          .filter((turn) => turn.error === null && turn.kind === "review")
+          .map((turn) => turn.round),
+      );
+    // Round numbers, not turn order: the turns of one commit share `created_at`.
+    const groupRound = (turns: readonly TurnRow[]) => {
+      const round = reviewRound(turns);
+      return round > 0 && liveTurn(turns, "fix", round) ? round + 1 : Math.max(round, 1);
+    };
+    /** The members that run in `round`: all in round 1, then each that said REVISE and has rounds left. */
+    const openMembers = (
+      run: RunRow,
+      group: readonly number[],
+      turns: readonly TurnRow[],
+      round: number,
+    ) =>
+      round === 1
+        ? [...group]
+        : group.filter((index) => {
+            const stage = stageOf(run, index);
+            const review = liveTurn(turns, "review", round - 1, index);
+            return (
+              review !== undefined &&
+              review.report !== null &&
+              reportOf(review).verdict === "revise" &&
+              round - 1 < rounds(stage) &&
+              !stopsEarly(stage, review)
+            );
+          });
+    const isReviewer = (stage: PipelineStage) =>
+      stage.role !== undefined && stage.role !== "worker";
     const modelOf = (stage: PipelineStage) =>
       stage.model ?? (stage.tier === "route" ? ROUTE_MODEL : undefined);
     const rolesTitle = (role: StageRole) => (role === "reviewer" ? "Review" : "Adversarial");
@@ -891,11 +1065,12 @@ export const pipelinesModule: ServerModule = {
       role: StageRole,
       agentId: string,
       modelNote?: string,
+      fixFor?: readonly string[],
     ): string => {
       const turnId = host.newId();
       host.store.run(
-        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, model_note, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, model_note, fix_for, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         turnId,
         run.id,
         stageIndex,
@@ -905,22 +1080,41 @@ export const pipelinesModule: ServerModule = {
         role,
         agentId,
         modelNote ?? null,
+        fixFor === undefined ? null : JSON.stringify(fixFor),
         host.now(),
       );
       return turnId;
     };
 
-    /** Starts the worker's fix turn for a review. `last` tells the worker no review follows. */
+    /**
+     * Starts the worker's one fix turn of a group round, with the round's review of each member in `members` (ADR 0178).
+     * `last` tells the worker no review follows.
+     */
     const startFix = (
       run: RunRow,
-      stageIndex: number,
-      stage: PipelineStage,
-      review: TurnRow,
+      groupStart: number,
+      round: number,
+      members: readonly number[],
       last: boolean,
     ) => {
       const worker = run.worker_agent_id as string;
-      const turnId = insertTurn(run, stageIndex, stage, review.round, "fix", "worker", worker);
-      agents.deliver(worker, fixPrompt(stage, reportOf(review), turnId, last));
+      const turns = turnRows(run.id);
+      const reviews = members.map((index) => ({
+        name: stageOf(run, index).name,
+        report: reportOf(liveTurn(turns, "review", round, index) as TurnRow),
+      }));
+      const turnId = insertTurn(
+        run,
+        groupStart,
+        stageOf(run, groupStart),
+        round,
+        "fix",
+        "worker",
+        worker,
+        undefined,
+        reviews.map((review) => review.name),
+      );
+      agents.deliver(worker, fixPrompt(reviews, turnId, last));
     };
 
     /** The workspace's change operations (none when its project has no version control that shows them). */
@@ -936,86 +1130,138 @@ export const pipelinesModule: ServerModule = {
     };
 
     /**
-     * The diff artifact: commits since the workspace's base, plus uncommitted and untracked files. A fix diff passes the
+     * The diff text: commits since the workspace's base, plus uncommitted and untracked files. A fix diff passes the
      * run's `fix_base` instead; null (no head when the fix started) lists no commits.
      */
-    const writeDiff = async (run: RunRow, path: string, fixBase?: string | null) => {
+    const renderChanges = async (run: RunRow, fixBase?: string | null) => {
       const { workspace, project, ops, location } = await changesOf(run.workspace_id);
       const base =
         fixBase === undefined
           ? (workspace.base ?? (await ops?.defaultBase(project)))
           : (fixBase ?? undefined);
-      const text = ops ? await renderDiff(ops, location, base) : NO_DIFF;
-      await artifacts.write({ scope: "workspace", id: run.workspace_id }, path, text);
+      return ops ? renderDiff(ops, location, base) : NO_DIFF;
     };
+    const writeArtifact = (run: RunRow, path: string, text: string) =>
+      artifacts.write({ scope: "workspace", id: run.workspace_id }, path, text);
 
-    const advanceReviewer = async (
+    /**
+     * Starts the open members of a reviewer group's round at once (ADR 0178). A member whose review of the round is
+     * live already is not started again, so after Retry replaced a failed review only that member starts.
+     */
+    const advanceGroup = async (
       run: RunRow,
-      stage: PipelineStage,
-      stageIndex: number,
+      group: readonly number[],
+      checkpoint: StageCheckpoint | undefined,
     ): Promise<StepOutcome<StageCheckpoint>> => {
-      const role = stage.role as StageRole;
+      const turns = groupTurns(run, group);
+      const round = groupRound(turns);
+      // A Retry after a restart: the members still open lost their process, so they get the restart note here, before
+      // the checkpoint takes this boot (R6.6).
+      const resumed =
+        checkpoint?.boot === bootId
+          ? []
+          : turns.filter((turn) => turn.error === null && turn.report === null);
+      // A replacement after Retry keeps the diff its failed turn had, so every member of a round reads one snapshot.
+      const written = turns.some((turn) => turn.kind === "review" && turn.round === round);
       const settings = await loadSettings(host.home.root);
-      const { model, note } = await reviewerModel(stage, settings);
-      if (stage.min_strength_over) {
-        // Checked before the reviewer exists, so a refused model creates no agent. A throw waits for a settings fix.
-        if (!model) {
-          throw new Error(
-            `stage ${stage.name}: min_strength_over needs the ${role} model, but the stage sets no model and the ${role} role has no default; set "model" in the stage or the ${role} model in the pi-subagents settings`,
-          );
+      const members: { index: number; stage: PipelineStage; model?: string; note?: string }[] = [];
+      for (const index of openMembers(run, group, turns, round)) {
+        if (liveTurn(turns, "review", round, index)) continue;
+        const stage = stageOf(run, index);
+        const role = stage.role as StageRole;
+        const chosen = await reviewerModel(stage, settings);
+        if (stage.min_strength_over) {
+          // Checked before any reviewer exists, so a refused model creates no agent. A throw waits for a settings fix.
+          if (!chosen.model) {
+            throw new Error(
+              `stage ${stage.name}: min_strength_over needs the ${role} model, but the stage sets no model and the ${role} role has no default; set "model" in the stage or the ${role} model in the pi-subagents settings`,
+            );
+          }
+          const problem = notStronger(settings, [chosen.model], await workerModels(run));
+          if (problem) {
+            throw new Error(
+              `stage ${stage.name} (min_strength_over ${stage.min_strength_over}): reviewer model ${problem}; set a reviewer model of a high enough tier in the stage or fix "tiers" in settings.json, then retry`,
+            );
+          }
         }
-        const problem = notStronger(settings, [model], await workerModels(run));
-        if (problem) {
-          throw new Error(
-            `stage ${stage.name} (min_strength_over ${stage.min_strength_over}): reviewer model ${problem}; set a reviewer model of a high enough tier in the stage or fix "tiers" in settings.json, then retry`,
-          );
-        }
+        members.push({ index, stage, ...chosen });
       }
-      const turns = stageTurns(run, stageIndex);
-      const round = turns.filter((turn) => turn.kind === "review").length + 1;
-      // Round 2 and later: the last two turns are the previous review and the worker's fix for it.
-      const earlier =
-        round > 1
-          ? { review: reportOf(turns.at(-2) as TurnRow), fix: reportOf(turns.at(-1) as TurnRow) }
-          : undefined;
-      const paths = {
-        brief: `pipelines/${run.id}/brief.md`,
-        diff: `pipelines/${run.id}/${stage.name}-${round}.diff`,
-      };
-      await writeDiff(run, paths.diff);
-      const fixPass: FixPass | undefined =
+      // Every member of the round reads the same diff, rendered once.
+      const diff = written ? undefined : await renderChanges(run);
+      const fixDiff =
+        written || run.previous_run_id === null
+          ? undefined
+          : await renderChanges(run, run.fix_base);
+      const previousReview =
         run.previous_run_id === null
           ? undefined
-          : {
-              diff: `pipelines/${run.id}/${stage.name}-${round}-fix.diff`,
-              review: turnRows(run.previous_run_id)
-                .filter((turn) => turn.kind === "review" && turn.report !== null)
-                .map(reportOf)
-                .at(-1),
-            };
-      if (fixPass) await writeDiff(run, fixPass.diff, run.fix_base);
+          : turnRows(run.previous_run_id)
+              .filter((turn) => turn.kind === "review" && turn.report !== null)
+              .map(reportOf)
+              .at(-1);
+      const fix = round > 1 ? liveTurn(turns, "fix", round - 1) : undefined;
       const tests = JSON.parse(run.tests) as TestProof[];
+      const starts: { member: (typeof members)[number]; prompt: (turnId: string) => string }[] = [];
+      for (const member of members) {
+        const { stage, index } = member;
+        const paths = {
+          brief: `pipelines/${run.id}/brief.md`,
+          diff: `pipelines/${run.id}/${stage.name}-${round}.diff`,
+        };
+        if (diff !== undefined) await writeArtifact(run, paths.diff, diff);
+        const fixPass: FixPass | undefined =
+          run.previous_run_id === null
+            ? undefined
+            : {
+                diff: `pipelines/${run.id}/${stage.name}-${round}-fix.diff`,
+                review: previousReview,
+              };
+        if (fixPass && fixDiff !== undefined) await writeArtifact(run, fixPass.diff, fixDiff);
+        // Round 2 and later: the member's own previous review and the group's fix for it.
+        const earlier = fix
+          ? {
+              review: reportOf(liveTurn(turns, "review", round - 1, index) as TurnRow),
+              fix: reportOf(fix),
+            }
+          : undefined;
+        starts.push({
+          member,
+          prompt: (turnId) => reviewPrompt(stage, round, turnId, paths, tests, earlier, fixPass),
+        });
+      }
       return {
-        checkpoint: { boot: bootId },
+        checkpoint: { ...checkpoint, boot: bootId },
         commit: () => {
-          const agent = agents.createStage(run.workspace_id, {
-            role,
-            title: stageTitle(run, `${rolesTitle(role)} ${round}`),
-            ...(model ? { model } : {}),
-          });
-          const turnId = insertTurn(run, stageIndex, stage, round, "review", role, agent.id, note);
-          agents.deliver(
-            agent.id,
-            reviewPrompt(stage, round, turnId, paths, tests, earlier, fixPass),
-          );
+          for (const turn of resumed) agents.deliver(turn.agent_id, restartMessage(turn.id));
+          for (const { member, prompt } of starts) {
+            const role = member.stage.role as StageRole;
+            const agent = agents.createStage(run.workspace_id, {
+              role,
+              title: stageTitle(run, `${rolesTitle(role)} ${round}`),
+              ...(member.model ? { model: member.model } : {}),
+            });
+            const turnId = insertTurn(
+              run,
+              member.index,
+              member.stage,
+              round,
+              "review",
+              role,
+              agent.id,
+              member.note,
+            );
+            agents.deliver(agent.id, prompt(turnId));
+          }
         },
       };
     };
 
     const advance = async ({
       subject,
+      checkpoint,
     }: {
       subject: StageSubject;
+      checkpoint: StageCheckpoint | undefined;
     }): Promise<StepOutcome<StageCheckpoint>> => {
       // Retry or a restart runs this step again while the user answers the local-implementer question.
       const waiting = loadRun(subject.runId);
@@ -1026,7 +1272,7 @@ export const pipelinesModule: ServerModule = {
       if (!run) return { next: null };
       const stage = stageOf(run, subject.stageIndex);
       if (stage.role === "worker") return advanceWorker(run, stage, subject.stageIndex);
-      if (stage.role) return advanceReviewer(run, stage, subject.stageIndex);
+      if (stage.role) return advanceGroup(run, groupOf(run, subject.stageIndex), checkpoint);
       return advanceGates(run, stage);
     };
 
@@ -1112,6 +1358,10 @@ export const pipelinesModule: ServerModule = {
       return { next: null, commit: () => endRun(run.id, "failed", message) };
     };
 
+    const failedMessage = (turn: TurnRow, problem: string) =>
+      `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" ${problem}. Retry starts a fresh ${turn.role} agent for this turn.`;
+
+    /** Waits until no turn of the group is open: each open turn reports, or blocks the step with its agent's failure. */
     const awaitReport = async ({
       subject,
       checkpoint,
@@ -1121,59 +1371,92 @@ export const pipelinesModule: ServerModule = {
     }): Promise<StepOutcome<StageCheckpoint>> => {
       const run = runOf(subject);
       if (!run) return { next: null };
-      const turn = latestTurn(run.id) as TurnRow;
-      if (turn.report !== null) return {};
-      if (turn.error !== null) return replaceFailed(run, subject.stageIndex, turn);
-      const failure = await agents.turnError(turn.agent_id);
-      if (failure !== undefined) {
-        throw new Error(
-          `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" failed: ${failure}. Retry starts a fresh ${turn.role} agent for this turn.`,
-        );
+      const group = groupOf(run, subject.stageIndex);
+      const turns = groupTurns(run, group);
+      // Retry marked these failed; a fresh agent of each role takes its turn over.
+      const failed = turns.filter(
+        (turn) =>
+          turn.error !== null &&
+          !turns.some(
+            (other) =>
+              other.error === null &&
+              other.stage_index === turn.stage_index &&
+              other.kind === turn.kind &&
+              other.round === turn.round,
+          ),
+      );
+      const failedFix = failed.find((turn) => turn.kind === "fix");
+      if (failedFix) return replaceFailed(run, group, failedFix);
+      if (failed.length > 0) {
+        return { next: "advance", commit: () => failed.forEach(renameFailed) };
       }
+      const open = turns.filter((turn) => turn.error === null && turn.report === null);
+      if (open.length === 0) return {};
+      for (const turn of open) {
+        const failure = await agents.turnError(turn.agent_id);
+        if (failure !== undefined) throw new Error(failedMessage(turn, `failed: ${failure}`));
+      }
+      // An agent that asked its asking chat waits for the answer, whose delivery starts it again (ADR 0179).
+      const waiting = open.filter((turn) => !openQuestionOf(turn));
       if (checkpoint?.boot !== bootId) {
-        // The server restarted while the agent worked. Its process is gone, so it gets one reminder (R6.6).
+        // The server restarted while the agents worked. Their processes are gone, so each gets one reminder (R6.6).
         return {
           wait: true,
           checkpoint: { ...checkpoint, boot: bootId },
-          commit: () => agents.deliver(turn.agent_id, restartMessage(turn.id)),
+          commit: () => {
+            for (const turn of waiting) agents.deliver(turn.agent_id, restartMessage(turn.id));
+          },
         };
       }
-      if (!(await agents.endedRun(turn.agent_id))) return { wait: true };
-      // The agent may have done the whole turn and reported while the awaits above read its session file.
-      if (latestTurn(run.id)?.report !== null) return {};
-      // The agent ended its turn without a report: one reminder, then the stage blocks (ADR 0169).
-      if (checkpoint.reminded === turn.id) {
-        throw new Error(
-          `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" ended its turn twice without a report. Retry starts a fresh ${turn.role} agent for this turn.`,
-        );
+      // The agent that ends its turn without a report gets one reminder, then the stage blocks (ADR 0169). An agent
+      // that asked its asking chat waits for the answer instead (ADR 0179); it may have asked while endedRun read.
+      const remind: TurnRow[] = [];
+      for (const turn of waiting) {
+        if (!(await agents.endedRun(turn.agent_id))) continue;
+        // The agent may have done the whole turn and reported while the awaits above read its session file.
+        if (turnById(turn.id)?.report !== null || openQuestionOf(turn)) continue;
+        if (turn.reminded === 1) {
+          throw new Error(failedMessage(turn, "ended its turn twice without a report"));
+        }
+        remind.push(turn);
       }
+      if (remind.length === 0) return { wait: true };
       return {
         wait: true,
-        checkpoint: { ...checkpoint, reminded: turn.id },
-        commit: () => agents.deliver(turn.agent_id, endedMessage(turn.id)),
+        commit: () => {
+          for (const turn of remind) {
+            host.store.run("UPDATE pipelines_turns SET reminded = 1 WHERE id = ?", turn.id);
+            agents.deliver(turn.agent_id, endedMessage(turn.id));
+          }
+        },
       };
     };
 
-    /** Retry marked the turn failed: a fresh agent of its role takes it over. The old agent stays, renamed. */
-    const replaceFailed = async (
+    // The failed agent stays, renamed.
+    const renameFailed = (turn: TurnRow) => {
+      agents.rename(turn.agent_id, `${agents.get(turn.agent_id).title} (failed)`);
+      // The old agent must not get its refused task later, for example when the workspace resumes.
+      agents.dropDeliveries(turn.agent_id);
+    };
+
+    /** Retry marked a fix turn failed: a fresh worker takes it over, with the same members' findings. */
+    const replaceFailed = (
       run: RunRow,
-      stageIndex: number,
+      group: readonly number[],
       turn: TurnRow,
-    ): Promise<StepOutcome<StageCheckpoint>> => {
-      const rename = () => {
-        agents.rename(turn.agent_id, `${agents.get(turn.agent_id).title} (failed)`);
-        // The old agent must not get its refused task later, for example when the workspace resumes.
-        agents.dropDeliveries(turn.agent_id);
-      };
-      if (turn.kind !== "fix") return { next: "advance", commit: rename };
-      const stage = stageOf(run, stageIndex);
+    ): StepOutcome<StageCheckpoint> => {
+      const groupStart = group[0] as number;
+      const stage = stageOf(run, groupStart);
       const model = run.worker_model ?? modelOf(stage);
-      const review = stageTurns(run, stageIndex).at(-1) as TurnRow;
+      // A fix row from before parallel groups names its one member in `stage`.
+      const names = turn.fix_for === null ? [turn.stage] : (JSON.parse(turn.fix_for) as string[]);
+      const members = group.filter((index) => names.includes(stageOf(run, index).name));
+      const last = openMembers(run, group, groupTurns(run, group), turn.round + 1).length === 0;
       return {
         wait: true,
         checkpoint: { boot: bootId },
         commit: () => {
-          rename();
+          renameFailed(turn);
           const worker = agents.createStage(run.workspace_id, {
             role: "worker",
             title: stageTitle(run, stage.name),
@@ -1184,13 +1467,7 @@ export const pipelinesModule: ServerModule = {
             worker.id,
             run.id,
           );
-          startFix(
-            { ...run, worker_agent_id: worker.id },
-            stageIndex,
-            stage,
-            review,
-            lastFix(stage, review),
-          );
+          startFix({ ...run, worker_agent_id: worker.id }, groupStart, turn.round, members, last);
         },
       };
     };
@@ -1210,9 +1487,9 @@ export const pipelinesModule: ServerModule = {
       );
     };
 
-    /** The fix after a review is the stage's last when the rounds are used up (`fix_passes`) or Jev stopped it early. */
-    const lastFix = (stage: PipelineStage, review: TurnRow) =>
-      review.round >= rounds(stage) || stopsEarly(stage, review);
+    /** A REVISE on the member's last round, with no fix pass left: the user decides (R6.4). */
+    const atLimit = (stage: PipelineStage, round: number) =>
+      round >= rounds(stage) && stage.fix_passes !== 1;
 
     /** R4.4 on the report: the models the reviewer really ran on must be allowed to review the worker's. */
     const reviewerWeakness = async (
@@ -1228,7 +1505,53 @@ export const pipelinesModule: ServerModule = {
       return notStronger(await loadSettings(host.home.root), used, await workerModels(run));
     };
 
-    /** Reads the latest reported turn and picks what comes next. Its state is the stage's turns, not a checkpoint. */
+    /** Files one round-limit approval for every member in `limited`, the round's reviews at their limit. */
+    const askRoundLimit = (run: RunRow, limited: readonly TurnRow[]) => {
+      const reviews = limited.map((review) => {
+        const stage = stageOf(run, review.stage_index);
+        const message = `Stage ${stage.name} used its ${rounds(stage)} review round(s) and the reviewer still asks for changes`;
+        return { stage, message, report: reportOf(review) };
+      });
+      const names = reviews.map(({ stage }) => `"${stage.name}"`).join(", ");
+      const first = limited[0] as TurnRow;
+      const group = groupOf(run, first.stage_index);
+      const last = openMembers(run, group, groupTurns(run, group), first.round + 1).length === 0;
+      const approval = approvals.file(
+        { agentId: run.asking_agent_id, workspaceId: run.workspace_id },
+        {
+          kind: ROUND_LIMIT,
+          title: `Review round limit in ${workspaceLabel(run.workspace_id)}: ${reviews.length === 1 ? "stage" : "stages"} ${names} of pipeline ${run.pipeline_id}`,
+          reason: [
+            ...reviews.flatMap(({ message, report }, index) => [
+              ...(index > 0 ? [""] : []),
+              `${message}.`,
+              `Reviewer: ${report.summary}`,
+              "Findings:",
+              ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
+            ]),
+            "",
+            last
+              ? "Fix: the worker makes one last fix for these findings, with no review after it, and the run goes on."
+              : "Fix: the worker makes one fix for these findings and the others of this round; the stages with rounds left review it.",
+            "Accept: the run goes on without a fix.",
+            "Decline: the run stops.",
+          ].join("\n"),
+          subject: {
+            runId: run.id,
+            stage: reviews.map(({ stage }) => stage.name).join(", "),
+            action: "fix",
+          },
+        },
+      );
+      host.store.run(
+        "UPDATE pipelines_runs SET state = 'waiting_user', approval_id = ?, message = ? WHERE id = ?",
+        approval.id,
+        reviews.map(({ message }) => message).join("; "),
+        run.id,
+      );
+    };
+
+    /** Picks what comes next from the group's turns, by round, not from a checkpoint. */
     const decide = async ({
       subject,
     }: {
@@ -1239,86 +1562,72 @@ export const pipelinesModule: ServerModule = {
       // Retry or a restart runs this step again while the user decides; it keeps waiting. A decline ends the run.
       if (run.state === "waiting_user") return { wait: true };
       if (run.state !== "running") return { next: null };
-      // The user approved the round limit: the stage ends.
+      // The user accepted the round limit and nothing is left to fix: the group ends.
       if (run.approval_id !== null) return { next: "finish" };
-      const stage = stageOf(run, subject.stageIndex);
-      const turns = stageTurns(run, subject.stageIndex);
-      const last = turns.at(-1) as TurnRow;
-      // The user chose a last fix at the round limit: its turn is open.
-      if (last.report === null) return { next: "await", checkpoint: { boot: bootId } };
-      if (last.kind === "task") return { next: "finish" };
-      if (last.kind === "fix") {
-        const review = turns.at(-2) as TurnRow;
-        return { next: lastFix(stage, review) ? "finish" : "advance" };
-      }
-      const weak = await reviewerWeakness(run, stage, last);
-      if (weak) {
+      // The worker stage ends when its task reported.
+      if (!isReviewer(stageOf(run, subject.stageIndex))) return { next: "finish" };
+      const group = groupOf(run, subject.stageIndex);
+      const turns = groupTurns(run, group);
+      const round = reviewRound(turns);
+      const fix = liveTurn(turns, "fix", round);
+      if (fix) {
+        // The user chose a last fix at the round limit: its turn is open.
+        if (fix.report === null) return { next: "await", checkpoint: { boot: bootId } };
         return {
-          next: null,
-          commit: () =>
-            endRun(run.id, "failed", `R4.4: stage ${stage.name}: reviewer model ${weak}`),
+          next: openMembers(run, group, turns, round + 1).length > 0 ? "advance" : "finish",
         };
       }
-      const report = reportOf(last);
-      if (report.verdict === "approve") return { next: "finish" };
-      if (last.round < rounds(stage) || stage.fix_passes === 1) {
-        return {
-          next: "await",
-          checkpoint: { boot: bootId },
-          commit: () => startFix(run, subject.stageIndex, stage, last, lastFix(stage, last)),
-        };
+      const reviews = group.flatMap((index) => liveTurn(turns, "review", round, index) ?? []);
+      for (const review of reviews) {
+        const stage = stageOf(run, review.stage_index);
+        const weak = await reviewerWeakness(run, stage, review);
+        if (weak) {
+          return {
+            next: null,
+            commit: () =>
+              endRun(run.id, "failed", `R4.4: stage ${stage.name}: reviewer model ${weak}`),
+          };
+        }
       }
+      const revisers = reviews.filter((review) => reportOf(review).verdict === "revise");
+      if (revisers.length === 0) return { next: "finish" };
+      const limited = revisers.filter((review) => atLimit(stageOf(run, review.stage_index), round));
+      if (limited.length > 0) return { wait: true, commit: () => askRoundLimit(run, limited) };
+      const last = openMembers(run, group, turns, round + 1).length === 0;
       return {
-        wait: true,
-        commit: () => {
-          const message = `Stage ${stage.name} used its ${rounds(stage)} review round(s) and the reviewer still asks for changes`;
-          const approval = approvals.file(
-            { agentId: run.asking_agent_id, workspaceId: run.workspace_id },
-            {
-              kind: ROUND_LIMIT,
-              title: `Review round limit in ${workspaceLabel(run.workspace_id)}: stage "${stage.name}" of pipeline ${run.pipeline_id}`,
-              reason: [
-                `${message}.`,
-                `Reviewer: ${report.summary}`,
-                "Findings:",
-                ...(findingLines(report).length > 0 ? findingLines(report) : ["(none listed)"]),
-                "",
-                "Fix: the worker makes one last fix for these findings, with no review after it, and the run goes on.",
-                "Accept: the run goes on without a fix.",
-                "Decline: the run stops.",
-              ].join("\n"),
-              subject: { runId: run.id, stage: stage.name, action: "fix" },
-            },
-          );
-          host.store.run(
-            "UPDATE pipelines_runs SET state = 'waiting_user', approval_id = ?, message = ? WHERE id = ?",
-            approval.id,
-            message,
-            run.id,
-          );
-        },
+        next: "await",
+        checkpoint: { boot: bootId },
+        commit: () =>
+          startFix(
+            run,
+            group[0] as number,
+            round,
+            revisers.map((review) => review.stage_index),
+            last,
+          ),
       };
     };
 
-    /** The last step of every stage: starts the next stage's job, or ends the run. */
+    /** The last step of every group: starts the next group's job, or ends the run. */
     const finish = async ({ subject }: { subject: StageSubject }): Promise<StepOutcome<never>> => {
       const run = runOf(subject);
       if (!run) return { next: null };
+      const next = (groupOf(run, subject.stageIndex).at(-1) as number) + 1;
       return {
         next: null,
         commit: () => {
-          if (subject.stageIndex + 1 >= (JSON.parse(run.stages) as PipelineStage[]).length) {
+          if (next >= stagesOf(run).length) {
             endRun(run.id, "passed");
             return;
           }
           host.store.run(
             "UPDATE pipelines_runs SET stage_index = ?, approval_id = NULL WHERE id = ?",
-            subject.stageIndex + 1,
+            next,
             run.id,
           );
           host.jobs.start(
             STAGE_JOB,
-            { runId: run.id, stageIndex: subject.stageIndex + 1 },
+            { runId: run.id, stageIndex: next },
             { key: run.workspace_id },
           );
         },
@@ -1363,10 +1672,24 @@ export const pipelinesModule: ServerModule = {
         if (!row) throw new ApiError(404, "turn_not_found", `No turn ${request.turn}`);
         if (row.agent_id !== caller.agentId)
           throw new ApiError(403, "not_your_turn", `Turn ${row.id} belongs to another agent`);
-        if ((latestTurn(row.run_id) as TurnRow).id !== row.id)
+        const run = requireRun(row.run_id);
+        // The reviews of one group round run side by side, so only a turn of another kind or round closes a turn.
+        const group = groupOf(run, row.stage_index);
+        const closed =
+          row.error !== null ||
+          turnRows(run.id).some(
+            (other) =>
+              (other.created_at > row.created_at ||
+                (other.created_at === row.created_at && other.id > row.id)) &&
+              !(
+                other.kind === "review" &&
+                other.round === row.round &&
+                group.includes(other.stage_index)
+              ),
+          );
+        if (closed)
           throw new ApiError(409, "turn_closed", `Turn ${row.id} is closed; a later turn is open`);
         if (row.report !== null) return row;
-        const run = requireRun(row.run_id);
         if (run.state !== "running")
           throw new ApiError(409, "run_ended", `The run is ${run.state}; it takes no more reports`);
         if (row.role === "worker" && request.verdict !== undefined)
@@ -1405,6 +1728,101 @@ export const pipelinesModule: ServerModule = {
       publish(requireRun(turn.run_id).workspace_id);
       return { turn: turnToView(turn) };
     };
+
+    /**
+     * The caller's open turn and its run, or 409 `turn_closed` when the caller has no open turn. An open turn is a turn
+     * of a running run with no report and no error; a review group has several (ADR 0178). Answering and the run view
+     * use the same rule (ADR 0179).
+     */
+    const requireOpenTurn = (caller: BridgeCaller) => {
+      const turn = host.store.get<TurnRow>(
+        `SELECT t.* FROM pipelines_turns t JOIN pipelines_runs r ON r.id = t.run_id
+         WHERE t.agent_id = ? AND t.report IS NULL AND t.error IS NULL AND r.state = 'running'`,
+        caller.agentId,
+      );
+      if (!turn)
+        throw new ApiError(
+          409,
+          "turn_closed",
+          "Your turn is closed; no open turn of a run is yours",
+        );
+      return { run: requireRun(turn.run_id), turn };
+    };
+
+    const askStage = async (
+      caller: BridgeCaller,
+      request: AskStageRequest,
+    ): Promise<StageQuestion> => {
+      if (agents.get(caller.agentId).kind !== "stage")
+        throw new ApiError(403, "not_a_stage", "Only a pipeline stage agent asks the asking chat");
+      if (laneLookup?.(caller.workspaceId))
+        throw new ApiError(
+          403,
+          "in_lane",
+          "A stage agent in a lane asks its coordinator; use ask_coordinator",
+        );
+      const { run: first } = requireOpenTurn(caller);
+      // Retention deletes only closed chats, so a gone asking chat counts as closed.
+      const closed = unlessGone(() => agents.isClosed(first.asking_agent_id)) ?? true;
+      const worker = closed ? await agents.activeWorker(caller.workspaceId) : undefined;
+      const asked = host.store.transaction(() => {
+        // The awaits above may have let the turn close.
+        const { run, turn } = requireOpenTurn(caller);
+        const askedId = worker?.id ?? run.asking_agent_id;
+        if (worker) {
+          host.store.run(
+            "UPDATE pipelines_runs SET asking_agent_id = ? WHERE id = ?",
+            worker.id,
+            run.id,
+          );
+        }
+        const id = host.newId();
+        host.store.run(
+          `INSERT INTO pipelines_questions
+             (id, run_id, turn_id, agent_id, asked_agent_id, question, state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, 'open', ?)`,
+          id,
+          run.id,
+          turn.id,
+          caller.agentId,
+          askedId,
+          request.question,
+          host.now(),
+        );
+        const row = loadQuestion(id) as QuestionRow;
+        agents.deliver(askedId, questionMessage(run, turn, titleOf(caller.agentId), row));
+        return questionToView(row);
+      });
+      publish(caller.workspaceId);
+      return asked;
+    };
+
+    const answerStage = (caller: BridgeCaller, request: AnswerStageRequest): StageQuestion => {
+      const question = loadQuestion(request.questionId);
+      if (!question)
+        throw new ApiError(404, "question_not_found", `No stage question ${request.questionId}`);
+      if (question.asked_agent_id !== caller.agentId)
+        throw new ApiError(403, "not_asked", `Question ${question.id} was asked of another chat`);
+      if (question.state !== "open")
+        throw new ApiError(409, "question_answered", `Question ${question.id} has an answer`);
+      const run = requireRun(question.run_id);
+      const turn = turnById(question.turn_id) as TurnRow;
+      if (run.state !== "running" || turn.report !== null || turn.error !== null)
+        throw new ApiError(409, "turn_closed", `The turn of question ${question.id} is closed`);
+      const answered = host.store.transaction(() => {
+        host.store.run(
+          "UPDATE pipelines_questions SET answer = ?, state = 'answered', answered_at = ? WHERE id = ?",
+          request.answer,
+          host.now(),
+          question.id,
+        );
+        agents.deliver(question.agent_id, answerMessage(question, request.answer));
+        return questionToView(loadQuestion(question.id) as QuestionRow);
+      });
+      publish(run.workspace_id);
+      return answered;
+    };
+
     approvals.register({
       kind: ROUND_LIMIT,
       subject: RoundLimitSubject,
@@ -1417,18 +1835,28 @@ export const pipelinesModule: ServerModule = {
         const run = loadRun(subject.runId);
         // A run that was stopped or moved on ignores the decision.
         if (run?.state !== "waiting_user" || run.approval_id !== approval.id) return;
-        if (approved && subject.action === "fix") {
-          // The fix turn is open when the job wakes; `decide` sends it to `await`, and the fix report ends the stage.
-          const stage = stageOf(run, run.stage_index);
-          const review = stageTurns(run, run.stage_index).at(-1) as TurnRow;
-          startFix(run, run.stage_index, stage, review, true);
+        if (approved) {
+          // Fix keeps every REVISE of the round; accept drops the members at their limit.
+          const group = groupOf(run, run.stage_index);
+          const turns = groupTurns(run, group);
+          const round = reviewRound(turns);
+          const members = group.filter((index) => {
+            const review = liveTurn(turns, "review", round, index);
+            return (
+              review !== undefined &&
+              reportOf(review).verdict === "revise" &&
+              (subject.action === "fix" || !atLimit(stageOf(run, index), round))
+            );
+          });
+          // The fix turn is open when the job wakes; `decide` sends it to `await`. With nothing to fix, the kept
+          // approval id makes `decide` end the group.
+          if (members.length > 0) {
+            const last = openMembers(run, group, turns, round + 1).length === 0;
+            startFix(run, group[0] as number, round, members, last);
+          }
           host.store.run(
-            "UPDATE pipelines_runs SET state = 'running', message = NULL, approval_id = NULL WHERE id = ?",
-            run.id,
-          );
-        } else if (approved) {
-          host.store.run(
-            "UPDATE pipelines_runs SET state = 'running', message = NULL WHERE id = ?",
+            "UPDATE pipelines_runs SET state = 'running', message = NULL, approval_id = ? WHERE id = ?",
+            members.length > 0 ? null : run.approval_id,
             run.id,
           );
         } else {
@@ -1583,6 +2011,8 @@ export const pipelinesModule: ServerModule = {
 
     const api: Pipelines = {
       report,
+      askStage,
+      answerStage,
       start,
       requireModel,
       get: (runId) => viewOf(requireRun(runId)),
@@ -1595,6 +2025,7 @@ export const pipelinesModule: ServerModule = {
         changeListeners.push(listener);
       },
       refreshWorking: syncWorking,
+      laneQuestionChanged: publish,
       setLaneLookup: (lookup) => {
         if (laneLookup) throw new Error("The pipelines module already has a lane lookup");
         laneLookup = lookup;
@@ -1619,7 +2050,7 @@ export const pipelinesModule: ServerModule = {
 
     // Runs the waiting stage job's step now: the way to continue after the user fixed what blocked it. A stray wake may
     // be running a blocked job's step again, with its error kept; the run shows `blocked` then too, so Retry takes it.
-    host.routes.post("/runs/:id/retry", (c) => {
+    host.routes.post("/runs/:id/retry", async (c) => {
       const run = requireRun(c.req.param("id"));
       const job = host.jobs
         .list({ kind: STAGE_JOB, key: run.workspace_id, states: ["running", "waiting"] })
@@ -1630,10 +2061,27 @@ export const pipelinesModule: ServerModule = {
         );
       if (!job) throw new ApiError(409, "run_not_waiting", "The run has no waiting job to retry");
       // A restart or a stray wake re-runs `await` without this mark, so the turn only blocks again. Only Retry starts
-      // a fresh agent.
-      const open = latestTurn(run.id);
-      if (job.step === "await" && job.error !== null && open?.report === null) {
-        host.store.run("UPDATE pipelines_turns SET error = ? WHERE id = ?", job.error, open.id);
+      // a fresh agent. It marks the open turns `await` blocks on: a failed agent, or one reminded that ended again.
+      if (job.step === "await" && job.error !== null) {
+        const failed: string[] = [];
+        for (const turn of turnRows(run.id)) {
+          if (turn.error !== null || turn.report !== null) continue;
+          if (
+            (await agents.turnError(turn.agent_id)) !== undefined ||
+            (turn.reminded === 1 && (await agents.endedRun(turn.agent_id)))
+          ) {
+            failed.push(turn.id);
+          }
+        }
+        host.store.transaction(() => {
+          for (const id of failed) {
+            host.store.run(
+              "UPDATE pipelines_turns SET error = ? WHERE id = ? AND report IS NULL",
+              job.error,
+              id,
+            );
+          }
+        });
       }
       // A wake during a running step applies when it settles, so a step that read the turn before the mark runs again.
       if (job.state === "waiting") host.jobs.retry(job.id);

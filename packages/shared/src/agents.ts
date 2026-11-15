@@ -95,6 +95,8 @@ export const Agent = Type.Object({
   /** The worker chat whose context a side chat started from. */
   forkedFrom: Type.Optional(Type.String()),
   status: AgentStatus,
+  /** When the agent reached its current status, epoch ms. A second `agent_start` in one run keeps it. */
+  statusSince: Type.Integer(),
   /** Why the last start or run failed, with the tail of the process's stderr. */
   error: Type.Optional(Type.String()),
   /** Why a message to the agent did not get in: the error of its oldest pending delivery. Missing when none. */

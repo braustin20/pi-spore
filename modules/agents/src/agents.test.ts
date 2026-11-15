@@ -927,6 +927,35 @@ describe("each agent's last activity (R15)", () => {
     );
   });
 
+  it("keeps the time the agent went busy for the whole run, so the chat counts from it", async () => {
+    await setup();
+    const { agentId } = await makeAgent();
+    const since = () => agentsModule.manager().view(agentId).statusSince;
+    const idleSince = since();
+    await json(await prompt(agentId, "bash:npm test"));
+    await until(async () => (await activity(agentId)) === "Running bash: npm test");
+    const busySince = since();
+    expect(busySince).toBeGreaterThan(idleSince);
+    const busyEvent = events(agentId).find((e) => e.type === "status" && e.status === "busy");
+    expect(busyEvent).toMatchObject({ since: busySince });
+
+    // A retry or compaction starts the run again before it settles. It is still the same work.
+    await json(await prompt(agentId, "agent-start-again"));
+    await until(() => statuses(agentId).filter((s) => s === "busy").length >= 2);
+    expect(since()).toBe(busySince);
+    expect(
+      events(agentId)
+        .filter((e) => e.type === "status")
+        .at(-1),
+    ).toMatchObject({
+      since: busySince,
+    });
+
+    await json(await prompt(agentId, "bash-done"));
+    await until(() => status(agentId) === "idle");
+    expect(since()).toBeGreaterThan(busySince);
+  });
+
   it("says the agent asked a question while its dialog is open", async () => {
     await setup();
     const { agentId } = await makeAgent();
@@ -2132,7 +2161,7 @@ describe("stage agents (R6)", () => {
       "--thinking",
       "low",
       "--tools",
-      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,report,ask_coordinator",
+      "read,grep,find,ls,artifacts_list,artifacts_read,report,ask_coordinator,ask_orchestrator",
       "--exclude-tools",
       "mcp__*",
     ]);
@@ -2148,7 +2177,7 @@ describe("stage agents (R6)", () => {
     expect(agentsModule.manager().liveCount()).toBe(2);
   });
 
-  it("gives a stage worker Pi's normal tools and a writable token, with its role's thinking level", async () => {
+  it("gives a stage worker no contact_supervisor, and a writable token, with its role's thinking level", async () => {
     await setupStages();
     const { workspaceId } = await makeAgent();
     const stage = start(workspaceId, { role: "worker", title: "Implement" });
@@ -2156,7 +2185,8 @@ describe("stage agents (R6)", () => {
 
     const launch = launches()[0];
     expect(launch?.argv).not.toContain("--tools");
-    expect(launch?.argv).not.toContain("--exclude-tools");
+    // pi-subagents' contact_supervisor works only in a child it started, so a stage agent must not have it.
+    expect(launch?.argv).toEqual(expect.arrayContaining(["--exclude-tools", "contact_supervisor"]));
     expect(launch?.argv).toEqual(expect.arrayContaining(["--thinking", "high"]));
     expect(launch?.env).toMatchObject({
       PI_SPORE_CHAT_KIND: "stage",

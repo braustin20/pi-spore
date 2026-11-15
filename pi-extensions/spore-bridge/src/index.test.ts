@@ -672,6 +672,20 @@ describe("spore-bridge", () => {
     );
   });
 
+  // A stage agent that guesses made a wrong turn on 2026-11-14; the plan's chat answers instead (ADR 0179).
+  it.each([
+    ["worker", STAGE_WORKER_RULES],
+    ["reviewer", STAGE_REVIEWER_RULES],
+  ])(
+    "tells the %s stage rules to ask with ask_orchestrator and never with contact_supervisor",
+    (_role, rules) => {
+      expect(rules).toContain("ask_orchestrator");
+      expect(rules).toContain("`ask_coordinator`");
+      expect(rules).toContain("Never use `contact_supervisor`");
+      expect(rules).toContain("Do not guess.");
+    },
+  );
+
   it.each([
     ["missing", undefined],
     ["unknown", "orchestrator"],
@@ -1260,6 +1274,99 @@ describe("spore-bridge run tools", () => {
     expect(first.content[0]?.text).toContain("do not poll");
     expect(first.details).toEqual({ runId: "pr1" });
     expect(first.terminate).toBe(true);
+  });
+
+  it.each(["worker", "reviewer", "adversarial-reviewer"])(
+    "gives a %s stage agent outside a lane ask_orchestrator, not request_human_input",
+    (role) => {
+      vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+      vi.stubEnv("PI_SPORE_STAGE_ROLE", role);
+      const pi = fakePi();
+
+      expect(pi.tools.has("ask_orchestrator")).toBe(true);
+      expect(pi.tools.has("request_human_input")).toBe(false);
+    },
+  );
+
+  it("keeps ask_orchestrator from lane stage agents and from every chat outside a stage", () => {
+    const without = (env: Record<string, string>) => {
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      expect(fakePi().tools.has("ask_orchestrator")).toBe(false);
+      for (const key of Object.keys(env)) vi.stubEnv(key, undefined);
+    };
+    without({
+      PI_SPORE_CHAT_KIND: "stage",
+      PI_SPORE_STAGE_ROLE: "worker",
+      PI_SPORE_RUN_ROLE: "lane",
+      PI_SPORE_RUN_ID: "U1",
+    });
+    without({ PI_SPORE_CHAT_KIND: "worker" });
+    without({ PI_SPORE_RUN_ROLE: "coordinator", PI_SPORE_RUN_ID: "U1" });
+    without({ PI_SPORE_CHAT_KIND: "side" });
+    without({ PI_SPORE_CHAT_KIND: "planner" });
+  });
+
+  it("posts ask_orchestrator to stage-questions with the tool call id as receipt and ends the turn", async () => {
+    vi.stubEnv("PI_SPORE_CHAT_KIND", "stage");
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    reply("POST /api/bridge/stage-questions", { status: 201, body: { question: { id: "q3" } } });
+    const pi = fakePi();
+
+    expect(pi.tool("ask_orchestrator").parameters?.properties).toHaveProperty("question");
+    const result = await pi.tool("ask_orchestrator").execute("t1", { question: "Which hash?" });
+
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/stage-questions",
+        auth: "Bearer agent-token",
+        receipt: "t1",
+        body: { question: "Which hash?" },
+      },
+    ]);
+    expect(result.terminate).toBe(true);
+    expect(result.content[0]?.text).toContain("question q3");
+    expect(result.content[0]?.text).toContain("Stop now");
+  });
+
+  it("gives answer_stage to the orchestrator chat only", () => {
+    expect(fakePi().tools.has("answer_stage")).toBe(true);
+
+    const without = (env: Record<string, string>) => {
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      expect(fakePi().tools.has("answer_stage")).toBe(false);
+      for (const key of Object.keys(env)) vi.stubEnv(key, undefined);
+    };
+    without({ PI_SPORE_CHAT_KIND: "stage", PI_SPORE_STAGE_ROLE: "worker" });
+    without({
+      PI_SPORE_CHAT_KIND: "stage",
+      PI_SPORE_STAGE_ROLE: "worker",
+      PI_SPORE_RUN_ROLE: "lane",
+      PI_SPORE_RUN_ID: "U1",
+    });
+    without({ PI_SPORE_RUN_ROLE: "coordinator", PI_SPORE_RUN_ID: "U1" });
+    without({ PI_SPORE_CHAT_KIND: "side" });
+    without({ PI_SPORE_CHAT_KIND: "planner" });
+  });
+
+  it("posts answer_stage to stage-answers with the receipt and says the stage agent goes on", async () => {
+    reply("POST /api/bridge/stage-answers", { body: { question: { id: "q3" } } });
+
+    const result = await fakePi()
+      .tool("answer_stage")
+      .execute("t2", { questionId: "q3", answer: "Blue" });
+
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/stage-answers",
+        auth: "Bearer agent-token",
+        receipt: "t2",
+        body: { questionId: "q3", answer: "Blue" },
+      },
+    ]);
+    expect(result.content[0]?.text).toContain("question q3");
+    expect(result.content[0]?.text).toContain("goes on");
   });
 
   it("gives a plain worker neither the run tools nor ask_coordinator", async () => {

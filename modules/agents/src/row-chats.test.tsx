@@ -32,6 +32,7 @@ const chat = (id: string, workspaceId: string, extra: Partial<Agent>): Agent => 
   kind: "worker",
   active: false,
   status: "idle",
+  statusSince: 0,
   title: `Chat ${id}`,
   createdAt: 0,
   ...extra,

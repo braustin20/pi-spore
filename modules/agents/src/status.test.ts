@@ -22,6 +22,7 @@ const agent = (status: Agent["status"]): Agent => ({
   kind: "worker",
   active: true,
   status,
+  statusSince: 0,
   createdAt: 0,
 });
 

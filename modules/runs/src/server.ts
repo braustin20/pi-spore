@@ -638,6 +638,7 @@ export const runsModule: ServerModule = {
         return questionToView(row);
       });
       publish();
+      pipelines.laneQuestionChanged(caller.workspaceId);
       return asked;
     };
 
@@ -665,6 +666,8 @@ export const runsModule: ServerModule = {
         return questionToView(loadQuestion(question.id) as QuestionRow);
       });
       publish();
+      const laneWorkspaceId = loadLane(question.lane_id)?.workspace_id;
+      if (laneWorkspaceId) pipelines.laneQuestionChanged(laneWorkspaceId);
       return answered;
     };
 
@@ -1294,14 +1297,21 @@ export const runsModule: ServerModule = {
     host.provide(RunsKey, api);
     pipelines.setLaneLookup((workspaceId) => {
       const lane = laneByWorkspace(workspaceId);
-      return lane
-        ? {
-            run: workspaces.get(requireRun(lane.run_id).workspace_id).name,
-            laneId: lane.id,
-            lane: lane.name,
-            coordinatorAgentId: coordinatorOf(lane.run_id),
-          }
-        : undefined;
+      if (!lane) return undefined;
+      return {
+        laneId: lane.id,
+        lane: lane.name,
+        coordinatorAgentId: coordinatorOf(lane.run_id),
+        runWorkspaceId: requireRun(lane.run_id).workspace_id,
+        openQuestion: (agentId, since) =>
+          host.store.get<QuestionRow>(
+            `SELECT * FROM runs_questions WHERE lane_id = ? AND agent_id = ? AND state = 'open' AND created_at >= ?
+             ORDER BY created_at, id LIMIT 1`,
+            lane.id,
+            agentId,
+            since,
+          ),
+      };
     });
 
     host.routes.get("/", (c) => {
