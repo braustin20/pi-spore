@@ -33,6 +33,7 @@ const stage = (deliveryError?: string): Agent => ({
   active: true,
   title: "implement",
   status: "idle",
+  statusSince: 0,
   ...(deliveryError ? { deliveryError } : {}),
   createdAt: 0,
 });

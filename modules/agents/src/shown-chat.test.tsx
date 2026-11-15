@@ -31,6 +31,7 @@ const chat = (id: string, active: boolean): Agent => ({
   kind: "worker",
   active,
   status: "idle",
+  statusSince: 0,
   createdAt: 0,
 });
 

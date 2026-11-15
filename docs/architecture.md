@@ -1135,9 +1135,10 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   built from its live chat by `chatActivity` in `packages/shared/src/chat.ts`: a tool that runs now ("Running bash:
   npm test"), else the newest assistant message's last tool call ("Ran read: <path>") or the first line of its text
   ("Replied: ..."), and "Asked a question" while a dialog is open. Only bash's command and the path of read, edit,
-  and write show; never a tool's result. The chat page's working indicator uses the same `toolActivity` text. The
-  agents module fires `onChange(id, "activity")` only when a tool starts or a message ends, never per streamed
-  token, and that change does not republish `agents:list`.
+  and write show; never a tool's result. The chat page's working indicator uses the same `toolActivity` text and counts
+  from `statusSince` on the agent view, when the chat reached its status; a second `agent_start` in one run (a retry or
+  a compaction) does not restart the count. The agents module fires `onChange(id, "activity")` only when a tool
+  starts or a message ends, never per streamed token, and that change does not republish `agents:list`.
 - The Home page (`#/`, attention web module) shows the items as cards: a question one step at a time (`QuestionCard`
   in `question-card.tsx`): "Step 2 of 4", Back, Next, and Send answer on the last step, which sends every answer in
   one request. Nothing is sent before that. Answers are kept while the user moves, and in `sessionStorage`
