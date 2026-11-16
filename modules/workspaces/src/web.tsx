@@ -505,16 +505,22 @@ function WorkspaceListColumn({
         <SectionLabel className="flex-1">Workspaces</SectionLabel>
         {landing && (
           // No closePane on a phone: it calls history.back(), which would undo this link's hash. The new hash has
-          // no ?pane=list, so the list closes by itself.
+          // no ?pane=list, so the list closes by itself. The lit classes go through Button: its cn lets them beat the
+          // ghost defaults, while Slot only joins the child's classes.
           <Tooltip label={landing.label} side="bottom">
-            <Button variant="ghost" size="icon-sm" aria-label={landing.label} asChild>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={landing.label}
+              className={cn(
+                landingOpen &&
+                  "relative bg-raised text-accent-strong hover:text-accent-strong before:absolute before:inset-x-2 before:bottom-0 before:h-0.5 before:rounded-full before:bg-accent",
+              )}
+              asChild
+            >
               <a
                 href={projectId ? `#/workspaces/in/${projectId}` : "#/workspaces"}
                 aria-current={landingOpen ? "page" : undefined}
-                className={cn(
-                  landingOpen &&
-                    "relative bg-raised text-accent-strong hover:text-accent-strong before:absolute before:inset-x-2 before:bottom-0 before:h-0.5 before:rounded-full before:bg-accent",
-                )}
               >
                 <landing.icon />
               </a>
