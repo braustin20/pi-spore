@@ -540,7 +540,7 @@ interface ChangeOps {
 See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
 [ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md),
 [ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md), [ADR 0162](decisions/0162-orchestrator-starts-pipeline-runs.md),
-and [ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md). Requirements R6, R4.4,
+[ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md), and [ADR 0187](decisions/0187-pause-and-resume-a-pipeline-run.md). Requirements R6, R4.4,
 R4.9.
 
 The `pipelines` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`,
@@ -690,6 +690,13 @@ fail_first = "artifact"
   If an agent ends its turn without a report, the step reminds it once per turn (column `reminded` on the turn, also
   across a restart); a second such end blocks the stage
   (ADR 0169). There are no other automatic reminders.
+- **Pause** (ADR 0187). `paused_at` on the run pauses it; the run stays `running` and its view has `paused: true`.
+  The open turn is not cut off, and its report is kept. `advance`, `decide`, and `finish` wait while the run is
+  paused, and a step that ends on a paused run takes no effect. `await` reminds no one and blocks nothing while
+  paused, and it checks again after each session read. The first `await` after Resume sends each open turn's agent
+  that is not busy and has no open question one message ("The user resumed the pipeline. Finish the work, then call
+  report with this turn."), sets its `reminded` back to 0, and covers the restart reminder. A paused run survives a
+  restart, holds the workspace, and can be cancelled. Agents have no pause tool.
 - **Stage questions** (ADR 0179, `pipelines_questions`). `ask_orchestrator` reaches `PipelinesKey.askStage`. It
   refuses a caller that is not a stage agent (403 `not_a_stage`), a stage agent of a lane (403 `in_lane`), and a
   caller that is not the agent of an open turn (409 `turn_closed`). An open turn is a turn of a `running` run with no
@@ -752,8 +759,8 @@ fail_first = "artifact"
 - **Working label.** While a run is `running`, the pipelines module marks its chat with `Agents.setWorkingFor`, and
   its workspace with `Agents.setWorkspaceWorkingFor`, so Home and the workspace list do not show them as done:
   `Pipeline: <stages of the group, joined with ", ">`, with `, round <n>` from round 2 of a review stage, or
-  `Pipeline: <n> runs` for a coordinator with lanes. The chat is the lane's coordinator, else the asking chat. A
-  `waiting_user` or ended run gives no label. The module syncs it at every `publish`, at boot, and when the runs
+  `Pipeline: <n> runs` for a coordinator with lanes, or `Pipeline paused` for one paused run. The chat is the lane's
+  coordinator, else the asking chat. A `waiting_user` or ended run gives no label. The module syncs it at every `publish`, at boot, and when the runs
   module calls `Pipelines.refreshWorking` after a new coordinator took over. A target that retention deleted (the
   chat, or the run workspace of a lane) is skipped.
 - **min_strength_over** (R4.4, ADR 0023, 0152). Before a reviewer starts, its model (stage `model`, `spore/auto`
@@ -820,13 +827,15 @@ fail_first = "artifact"
 | `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
 | `GET /api/pipelines/runs/:id` | `{ run }` |
 | `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed gets a fresh agent. |
+| `POST /api/pipelines/runs/:id/pause` | Pauses a `running` run (409 `run_not_running`). A repeat does nothing. |
+| `POST /api/pipelines/runs/:id/resume` | Clears the pause and wakes the stage job (409 `run_not_paused`). |
 | `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
 
 - Topic `pipelines:<workspace id>` sends `{ type: "runs", runs }` on subscribe and after every change.
 - Web: a Pipeline tab (after PR) with a start form (pipeline, optional name, brief) when no run is active, and the
   runs, newest first. Only the newest run is open; an older run shows its header and step bar until clicked. A run
   shows a header line (the name, then the pipeline id as a chip, or the pipeline id alone; source, state, elapsed
-  time, Cancel), a step bar with each stage's state and counts (a click scrolls to the stage; a parallel group is one box with its
+  time, Pause or Resume on a `running` run, Cancel; a paused run's chip says `Paused`), a step bar with each stage's state and counts (a click scrolls to the stage; a parallel group is one box with its
   members side by side, each with its own state), the notices
   (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
   and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
@@ -834,7 +843,9 @@ fail_first = "artifact"
   round, verdict, finding counts, `model`, duration) and opens to the summary, findings by severity (minor closed),
   tests with proofs, the route, Jev's answer, and a link to the agent's chat. Only the newest or running row is open
   at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its
-  open findings.
+  open findings. The current stage of a paused run shows a pause icon, not a spinner. A chat panel shows, above a
+  stage chat's composer while its turn is open on a running run that is not paused: "The pipeline goes on after this
+  turn. To stop it, use Pause on the Pipeline tab."
 - CLI: `pi-spore pipeline list <workspace>`, `pipeline start <workspace> <pipeline> (--brief <text> | --brief-file
   <path>) [--name <text>]`, `pipeline runs <workspace>`, `pipeline show <run>` (both print the name when set),
   `pipeline cancel <run>`, `pipeline retry <run>`.
