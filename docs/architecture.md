@@ -787,6 +787,8 @@ fail_first = "artifact"
   (`gate_reds`: round, stage, message, log path), because the round-limit answer and Retry build a fix outside the
   job. The message is `gate <action> failed`, the action error, the failed vitest tests (up to 10), and the last 4 KiB
   of the log, with no color codes.
+  `gate_runs` (the run view's `gateRuns`) holds each member's state per gate round: `running` from when the round
+  opens until its gates end, then `passed` or `failed`.
   - In a group with a reviewer, a red gate does not stop the reviews. When the round ends, every REVISE and every
     red gate go into one fix turn: each red gate gives its headline and `Log: <path>`. After every fix the gates run
     again, with the next review round, or alone when no reviewer is open (the final gate run). A red final gate run

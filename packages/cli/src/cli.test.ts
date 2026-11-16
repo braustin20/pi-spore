@@ -1596,6 +1596,7 @@ describe("pi-spore pipeline", () => {
     blocked: "stage review: reviewer model is not stronger",
     tests: [],
     turns,
+    gateRuns: [],
     createdAt: 1,
   };
 

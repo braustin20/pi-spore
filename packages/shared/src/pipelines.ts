@@ -246,6 +246,14 @@ export const PipelineRunState = Type.Union([
 ]);
 export type PipelineRunState = Static<typeof PipelineRunState>;
 
+/** One gate round of one gate member (ADR 0178): `running` from when its round opens until its gates end. */
+export const PipelineGateRun = Type.Object({
+  stage: Type.String(),
+  round: Type.Integer(),
+  state: Type.Union([Type.Literal("running"), Type.Literal("passed"), Type.Literal("failed")]),
+});
+export type PipelineGateRun = Static<typeof PipelineGateRun>;
+
 /** One execution of a pipeline on a workspace. `stages` and `hash` are those of the file when the run started. */
 export const PipelineRun = Type.Object({
   id: Type.String(),
@@ -270,6 +278,11 @@ export const PipelineRun = Type.Object({
   /** Every test a worker reported, with its proof path. */
   tests: Type.Array(TestProof),
   turns: Type.Array(PipelineTurn),
+  /**
+   * One entry per gate member and gate round that started, in start order. A run that ended while a round ran keeps
+   * that entry `running`.
+   */
+  gateRuns: Type.Array(PipelineGateRun),
   createdAt: Type.Integer(),
   endedAt: Type.Optional(Type.Integer()),
 });

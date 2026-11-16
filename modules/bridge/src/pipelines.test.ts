@@ -12,6 +12,7 @@ import {
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { isDeepStrictEqual } from "node:util";
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import {
   type AgentEvent,
@@ -2164,6 +2165,22 @@ describe("gates in a parallel group (ADR 0178)", () => {
     const review = (await getRun(server, runId)).turns.find((turn) => turn.kind === "review");
     expect(review).toBeDefined();
     expect(review?.report).toBeUndefined();
+    const passed = [{ stage: "gates", round: 1, state: "passed" }];
+    await until(async () => isDeepStrictEqual((await getRun(server, runId)).gateRuns, passed));
+  });
+
+  it("shows a gate round as running while a gate action runs", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE], reviewer: ["hang"] }) });
+
+    const { runId } = await startGates(server, "gaterunning", gated(), {
+      check: "pass",
+      test: "hang-first",
+    });
+    await until(() => ran().length === 2);
+
+    expect((await getRun(server, runId)).gateRuns).toEqual([
+      { stage: "gates", round: 1, state: "running" },
+    ]);
   });
 
   it("passes when the reviewer approves and the gates are green, with one gate run", async () => {
@@ -2189,8 +2206,13 @@ describe("gates in a parallel group (ADR 0178)", () => {
     );
     await untilState(server, runId, "passed");
 
-    expect(kinds(await getRun(server, runId))).toEqual(["task1", "review1", "fix1", "review2"]);
+    const run = await getRun(server, runId);
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1", "review2"]);
     expect(ran()).toEqual(["check", "test", "check", "test"]);
+    expect(run.gateRuns).toEqual([
+      { stage: "gates", round: 1, state: "passed" },
+      { stage: "gates", round: 2, state: "passed" },
+    ]);
   });
 
   it("runs the gates once more, alone, after the last fix", async () => {
@@ -2204,8 +2226,13 @@ describe("gates in a parallel group (ADR 0178)", () => {
     );
     await untilState(server, runId, "passed");
 
-    expect(kinds(await getRun(server, runId))).toEqual(["task1", "review1", "fix1"]);
+    const run = await getRun(server, runId);
+    expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
     expect(ran()).toEqual(["check", "test", "check", "test"]);
+    expect(run.gateRuns).toEqual([
+      { stage: "gates", round: 1, state: "passed" },
+      { stage: "gates", round: 2, state: "passed" },
+    ]);
   });
 
   it("resumes a gate run that a restart cut off, with one new attempt", async () => {
@@ -2252,7 +2279,12 @@ describe("gates in a parallel group (ADR 0178)", () => {
     await untilState(server, runId, "failed");
 
     expect([...ran()].sort()).toEqual(["check", "test"]);
-    expect((await getRun(server, runId)).message).toMatch(/^gate check failed\n/);
+    const run = await getRun(server, runId);
+    expect(run.message).toMatch(/^gate check failed\n/);
+    expect(run.gateRuns).toEqual([
+      { stage: "a", round: 1, state: "failed" },
+      { stage: "b", round: 1, state: "passed" },
+    ]);
   });
 
   /** The run's one fix turn and the prompt its worker got. */
@@ -2292,6 +2324,10 @@ describe("gates in a parallel group (ADR 0178)", () => {
       "This is the last fix: no review follows it. The gates run once more after it.",
     );
     expect(ran()).toEqual(["check", "check", "test"]);
+    expect(run.gateRuns).toEqual([
+      { stage: "gates", round: 1, state: "failed" },
+      { stage: "gates", round: 2, state: "passed" },
+    ]);
   });
 
   it("gives a REVISE and a red gate of one round one fix with both", async () => {
@@ -2347,6 +2383,10 @@ describe("gates in a parallel group (ADR 0178)", () => {
     expect(prompt).toContain("missing fail-first proof for adds (proofs/adds.md)");
     expect(run.message).toBe("missing fail-first proof for adds (proofs/adds.md)");
     expect(ran()).toEqual([]);
+    expect(run.gateRuns).toEqual([
+      { stage: "gates", round: 1, state: "failed" },
+      { stage: "gates", round: 2, state: "failed" },
+    ]);
   });
 
   it("keeps the red gate in the fix when the user accepts the round limit", async () => {

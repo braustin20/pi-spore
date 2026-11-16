@@ -39,6 +39,7 @@ const run = (more: Partial<PipelineRun>): PipelineRun => ({
   stageIndex: 1,
   tests: [],
   turns: [],
+  gateRuns: [],
   createdAt: 0,
   ...more,
 });

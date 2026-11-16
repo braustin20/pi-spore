@@ -163,6 +163,7 @@ export {
   PIPELINE_ID_PATTERN,
   PipelineEvent,
   PipelineFile,
+  PipelineGateRun,
   PipelineList,
   PipelineRun,
   PipelineRunList,
