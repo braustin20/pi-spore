@@ -664,6 +664,16 @@ export const runsModule: ServerModule = {
       return laneView(loadLane(lane.id) as LaneRow);
     };
 
+    /** The ADR 0181 refusals: a cancelled run first, then a lane in a state that is not declinable. */
+    const declineRefusal = (run: RunRow, lane: LaneRow) =>
+      run.state === "cancelled"
+        ? new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`)
+        : new ApiError(
+            409,
+            "lane_not_declinable",
+            `Lane ${lane.id} is ${lane.state}; only a waiting, passed, or failed lane can be declined`,
+          );
+
     /**
      * Drops a lane that will not merge (ADR 0181). It merges and deletes nothing: the lane's workspace and branch
      * stay, and only its own waiting lane job is cancelled, so it never gets one. Lanes that waited on it wake. The
@@ -674,22 +684,20 @@ export const runsModule: ServerModule = {
       if (lane?.run_id !== run.id) {
         throw new ApiError(404, "lane_not_found", `No lane ${laneId} in run ${run.id}`);
       }
-      if (run.state === "cancelled") {
-        throw new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`);
-      }
-      if (!DECLINABLE.includes(lane.state)) {
-        throw new ApiError(
-          409,
-          "lane_not_declinable",
-          `Lane ${lane.id} is ${lane.state}; only a waiting, passed, or failed lane can be declined`,
-        );
-      }
       host.store.transaction(() => {
-        host.store.run(
-          "UPDATE runs_lanes SET state = 'declined', message = ? WHERE id = ?",
+        // The compare-and-set holds the rule, and it is what settles the race with the lane job: only a step
+        // that has not taken the lane for building yet can be declined here, and one that has is refused with
+        // the state it has now, so a decline never overtakes a workspace build that is already under way.
+        const { changes } = host.store.run(
+          `UPDATE runs_lanes SET state = 'declined', message = ?
+           WHERE id = ? AND state IN (${DECLINABLE.map(() => "?").join(", ")})`,
           reason,
           lane.id,
+          ...DECLINABLE,
         );
+        if (changes === 0) {
+          throw declineRefusal(requireRun(run.id), loadLane(lane.id) as LaneRow);
+        }
         cancelJobs(LANE_JOB, lane.id);
         wakeWaiting(run.id);
         const lanes = lanesOf(run.id);
@@ -905,10 +913,23 @@ export const runsModule: ServerModule = {
 
     const ready = async ({ subject }: { subject: LaneSubject }): Promise<StepOutcome<never>> => {
       const lane = loadLane(subject.laneId);
-      if (lane?.state === "starting") return {};
-      if (lane?.state !== "waiting") return { next: null };
+      // A revise keeps the lane's workspace; a build a restart cut short has none, so it builds one again.
+      if (lane?.state === "starting" && lane.workspace_id !== null) return {};
+      if (lane?.state !== "waiting" && lane?.state !== "starting") return { next: null };
       if (waitsFor(lane)) return { wait: true };
       const run = requireRun(lane.run_id);
+      // Take the lane for building before the build starts (ADR 0181): the build is the step's async work, so
+      // a decline cannot be undone once it is under way, and a declined lane must never get a workspace. From
+      // here a decline answers 409 `lane_not_declinable`, as it does for a lane that is already running. A
+      // decline or a cancel that got here first wins the same compare-and-set, and the step stops.
+      const taken = host.store.transaction(
+        () =>
+          host.store.run(
+            "UPDATE runs_lanes SET state = 'starting' WHERE id = ? AND state IN ('waiting', 'starting')",
+            lane.id,
+          ).changes > 0,
+      );
+      if (!taken) return { next: null };
       const { workspace } = await workspaces.create(
         {
           projectId: run.project_id,
@@ -922,7 +943,7 @@ export const runsModule: ServerModule = {
       return {
         commit: () =>
           host.store.run(
-            "UPDATE runs_lanes SET workspace_id = ?, state = 'starting' WHERE id = ?",
+            "UPDATE runs_lanes SET workspace_id = ? WHERE id = ? AND state = 'starting'",
             workspace.id,
             lane.id,
           ),

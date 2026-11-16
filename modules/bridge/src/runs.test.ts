@@ -1099,6 +1099,41 @@ describe("decline_lane (ADR 0181)", () => {
     expect(settled.workspaceId).toBeUndefined();
     expect(laneJob(server, later.id).state).toBe("cancelled");
   });
+
+  it("refuses a decline while the lane's workspace build is under way, and builds it once the cause is fixed", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "decline-building");
+    const { run, coordinator } = await createRun(server, projectId, "decline-building");
+    // A lane's `ready` step builds its workspace, which needs the project config. Break it, so the build
+    // stops with the lane taken for building: the state a decline must not accept, since a decline that
+    // landed during a build would leave a workspace on a lane that has none (ADR 0181).
+    writeFileSync(join(folder, ".pi-spore", "config.toml"), "[actions\n");
+
+    const lane = await startLane(run, coordinator, "builder");
+
+    await until(() => {
+      const job = laneJob(server, lane.id);
+      return job.state === "waiting" && job.error !== null && job.step === "ready";
+    });
+
+    expect(() => runs.declineLane(coordinator, { laneId: lane.id, reason: "give up" })).toThrow(
+      expect.objectContaining({
+        status: 409,
+        code: "lane_not_declinable",
+        message: expect.stringContaining("is starting"),
+      }),
+    );
+    const stuck = await laneOf(server, run.id, lane.id);
+    expect(stuck.state).toBe("starting");
+    expect(stuck.workspaceId).toBeUndefined();
+
+    // The lane is not wedged: fix the cause, retry the job, and the build finishes.
+    writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+    server.services.jobs.retry(laneJob(server, lane.id).id);
+
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    expect((await laneOf(server, run.id, lane.id)).workspaceId).toBeDefined();
+  });
 });
 
 describe("a restart", () => {
