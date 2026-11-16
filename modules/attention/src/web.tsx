@@ -1,12 +1,15 @@
 import { type AgentsWeb, AgentsWebKey } from "@pi-spore/mod-agents/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
-import type {
-  Approval,
-  InboxChat,
-  InboxItem,
-  InboxWorkspace,
-  Job,
-  RunningItem,
+import {
+  type Approval,
+  type InboxChat,
+  type InboxItem,
+  type InboxWorkspace,
+  itemHref,
+  itemKey,
+  type Job,
+  notification,
+  type RunningItem,
 } from "@pi-spore/shared";
 import {
   Button,
@@ -23,14 +26,7 @@ import {
 } from "@pi-spore/ui";
 import { Bell, CheckCheck, House } from "lucide-react";
 import { type ComponentType, type ReactNode, useMemo, useState, useSyncExternalStore } from "react";
-import {
-  chatAsks,
-  chatWaits,
-  createInboxStore,
-  type InboxStore,
-  itemKey,
-  notification,
-} from "./inbox-store.js";
+import { chatAsks, chatWaits, createInboxStore, type InboxStore } from "./inbox-store.js";
 import { QuestionCard } from "./question-card.js";
 import { type ApprovalViewProps, AttentionWebKey } from "./web-contract.js";
 
@@ -79,10 +75,6 @@ const chatHref = (workspace: InboxWorkspace, chat: InboxChat) =>
   `#/workspaces/${workspace.id}/chats/${chat.id}`;
 
 const DESKTOP_QUERY = "(hover: hover) and (pointer: fine)";
-
-/** Where an item leads: the link of a notice, else its chat. */
-const itemHref = (item: InboxItem) =>
-  item.kind === "notice" ? item.href : chatHref(item.workspace, item.chat);
 
 const TONES = {
   question: "warn",
