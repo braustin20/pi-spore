@@ -940,6 +940,134 @@ describe("merging a lane (ADR 0150)", () => {
     expect(git(folder, "rev-parse", "main")).toBe(main);
   });
 
+  describe("working label while a lane merges", () => {
+    const workingFor = async (server: TestServer, agentId: string) =>
+      (
+        await json<{ agent: { workingFor?: string } }>(
+          await server.request("GET", `/api/agents/${agentId}`),
+        )
+      ).agent.workingFor;
+    /** Ends the hung gate: the gate run is cancelled, so the merge ends as a failed gate. */
+    const cancelGate = async (server: TestServer, run: Run) => {
+      // The gate publishes its step before its action starts; the counter file shows the action runs.
+      await until(() => existsSync(join(scratch, "counter.txt")));
+      const { runs: gateRuns } = await json<{ runs: { id: string; action: string }[] }>(
+        await server.request("GET", `/api/actions/workspaces/${run.workspaceId}/runs`),
+      );
+      const gate = gateRuns.find((entry) => entry.action === "check") as { id: string };
+      await server.request("POST", `/api/actions/runs/${gate.id}/cancel`);
+    };
+
+    it("names the lane and the gate on the coordinator and the lane while the gate runs, and clears both when the gate fails", async () => {
+      const server = await start();
+      const { projectId } = await project(server, "merge-label", {
+        check: "hang-first",
+        test: "pass",
+      });
+      const { run, coordinator } = await createRun(server, projectId, "merge-label");
+      const lane = await startLane(run, coordinator, "work");
+      await laneChanges(server, run, lane.id, "feature.txt", "x\n");
+
+      await runs.mergeLane(coordinator, { laneId: lane.id });
+
+      await until(
+        async () =>
+          (await workingFor(server, run.coordinatorAgentId)) === 'Merging lane "work": gate check',
+      );
+      expect((await laneOf(server, run.id, lane.id)).mergeStep).toBe("gate check");
+
+      await cancelGate(server, run);
+
+      await until(async () => (await laneOf(server, run.id, lane.id)).state === "passed");
+      expect(await workingFor(server, run.coordinatorAgentId)).toBeUndefined();
+      expect((await laneOf(server, run.id, lane.id)).mergeStep).toBeUndefined();
+    });
+
+    it("labels the merge the job works on, not a lane queued behind it, and clears the label when the queued lane is merged", async () => {
+      const server = await start();
+      const { projectId } = await project(server, "merge-label-queue", {
+        check: "hang-first",
+        test: "pass",
+      });
+      const { run, coordinator } = await createRun(server, projectId, "merge-label-queue");
+      const first = await startLane(run, coordinator, "first");
+      const second = await startLane(run, coordinator, "second");
+      await laneChanges(server, run, first.id, "one.txt", "1\n");
+      await laneChanges(server, run, second.id, "two.txt", "2\n");
+
+      await runs.mergeLane(coordinator, { laneId: first.id });
+      await until(
+        async () =>
+          (await workingFor(server, run.coordinatorAgentId)) === 'Merging lane "first": gate check',
+      );
+      await runs.mergeLane(coordinator, { laneId: second.id });
+
+      // The second lane is `merging` too, but it waits for the first one's job.
+      expect((await laneOf(server, run.id, second.id)).state).toBe("merging");
+      expect((await laneOf(server, run.id, second.id)).mergeStep).toBeUndefined();
+      expect(await workingFor(server, run.coordinatorAgentId)).toBe(
+        'Merging lane "first": gate check',
+      );
+
+      await cancelGate(server, run);
+
+      await until(async () => (await laneOf(server, run.id, second.id)).state === "merged");
+      expect((await laneOf(server, run.id, first.id)).state).toBe("passed");
+      expect(await workingFor(server, run.coordinatorAgentId)).toBeUndefined();
+      expect((await laneOf(server, run.id, second.id)).mergeStep).toBeUndefined();
+    });
+
+    it("clears the label and the step when the run is cancelled during the gate", async () => {
+      const server = await start();
+      const { projectId } = await project(server, "merge-label-cancel", {
+        check: "hang-first",
+        test: "pass",
+      });
+      const { run, coordinator } = await createRun(server, projectId, "merge-label-cancel");
+      const lane = await startLane(run, coordinator, "work");
+      await laneChanges(server, run, lane.id, "feature.txt", "x\n");
+      await runs.mergeLane(coordinator, { laneId: lane.id });
+      await until(
+        async () =>
+          (await workingFor(server, run.coordinatorAgentId)) === 'Merging lane "work": gate check',
+      );
+
+      await json(await server.request("POST", `/api/runs/${run.id}/cancel`));
+
+      expect(await workingFor(server, run.coordinatorAgentId)).toBeUndefined();
+      expect((await laneOf(server, run.id, lane.id)).mergeStep).toBeUndefined();
+    });
+
+    it("joins the merge label with the pipeline label of a lane that runs at the same time", async () => {
+      const server = await start();
+      const { projectId } = await project(server, "merge-label-both", {
+        check: "hang-first",
+        test: "pass",
+      });
+      const { run, coordinator } = await createRun(server, projectId, "merge-label-both");
+      const first = await startLane(run, coordinator, "work");
+      await laneChanges(server, run, first.id, "feature.txt", "x\n");
+      await startLane(run, coordinator, "other");
+      await until(
+        async () => (await workingFor(server, run.coordinatorAgentId)) === "Pipeline: implement",
+      );
+
+      await runs.mergeLane(coordinator, { laneId: first.id });
+
+      await until(
+        async () =>
+          (await workingFor(server, run.coordinatorAgentId)) ===
+          'Pipeline: implement; Merging lane "work": gate check',
+      );
+
+      await cancelGate(server, run);
+
+      await until(
+        async () => (await workingFor(server, run.coordinatorAgentId)) === "Pipeline: implement",
+      );
+    });
+  });
+
   it("refuses a lane that is not passed with 409 lane_not_mergeable, and a stranger lane with 404", async () => {
     const server = await start();
     const { projectId } = await project(server, "refuse-merge", GREEN);

@@ -277,7 +277,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     the label as its detail, and no `finished` item, unless the pipeline's stage chat takes that workspace's row
     (section 11b); the workspace line is `Working (<label>)`, and the chat header `working (<label>)`. A wait for
     the user and a failed agent still win. The pipelines module sets the label
-    under source `pipelines` for the chat of each `running` run.
+    under source `pipelines` for the chat of each `running` run. The runs module sets source `runs` on a run's
+    coordinator while a lane merges: `Merging lane "<name>": <step>` (section 9).
   - A workspace can carry a working label too: `Agents.setWorkspaceWorkingFor(workspaceId, label)`, in memory only.
     `undefined` clears it; a deleted workspace loses it. Topic `agents:working` sends `{ type: "working",
     workspaces }`, the whole map, on subscription and after each change. `workspacesWorkingFor()` reads the map and
@@ -915,6 +916,10 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `finished` run, `finish` pushes the run line after the commit with the VCS `publish` push, never forced, so the
   open PR shows the merge (ADR 0165). The message says so and never names `open_run_pr`. A failed push leaves the
   lane `merged`, and the message gives the error and says the PR does not show the merge.
+  Each step keeps its name in memory, as the lane's `mergeStep`: `merging`, `gate <action>`, `committing`, `pushing`.
+  The Runs panel chip reads `Merging: <step>`. `publish` also sets the coordinator's working label under source `runs`,
+  `Merging lane "<name>": <step>` (no step yet after a restart), and clears it, and the step, in the publish that ends
+  the merge (merged, conflict, red gate, cancel). A handover clears the old coordinator's label.
 - **Run states.** `running`, `cancelled`, or `finished` (its PR opened).
 - **Cancel.** `POST /api/runs/:id/cancel` (user token) ends a run. In one transaction the run becomes `cancelled`,
   every lane not `merged` becomes `cancelled`, the `runs.lane` and `runs.merge` jobs are cancelled, each lane's
