@@ -3,11 +3,11 @@ import { AgentsWebKey } from "@pi-spore/mod-agents/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { type ApiClient, ApiContext, type WebHost } from "@pi-spore/module-api";
 import type { Agent, DiffComment, Workspace } from "@pi-spore/shared";
-import { TooltipProvider } from "@pi-spore/ui";
+import { PHONE_QUERY, TooltipProvider } from "@pi-spore/ui";
 import type { ComponentType } from "react";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { createRoot, type Root } from "react-dom/client";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { changesWeb } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -38,7 +38,14 @@ const agent: Agent = {
 };
 
 let container: HTMLElement | undefined;
-afterEach(() => container?.remove());
+let root: Root | undefined;
+afterEach(() => {
+  // Unmount first, so a dialog's portal under `document.body` does not leak into the next test.
+  act(() => root?.unmount());
+  root = undefined;
+  container?.remove();
+  vi.unstubAllGlobals();
+});
 
 /**
  * Renders a component of the module against an API whose event socket never replays a snapshot, so the comments on
@@ -51,6 +58,7 @@ async function renderPanel(
 ) {
   const listeners: ((event: unknown) => void)[] = [];
   const asked: string[] = [];
+  const subscriptions = new Map<string, number>();
   let chatPanel: ComponentType<{ chatId: string }> | undefined;
   let tab: ComponentType<{ workspace: Workspace }> | undefined;
   changesWeb.setup({
@@ -70,9 +78,10 @@ async function renderPanel(
       if (path === "changes/workspaces/W1/comments") return loadComments();
       throw new Error(`unexpected GET ${path}`);
     },
-    subscribe: (_topic: string, listener: (event: unknown) => void) => {
+    subscribe: (topic: string, listener: (event: unknown) => void) => {
       listeners.push(listener);
-      return () => {};
+      subscriptions.set(topic, (subscriptions.get(topic) ?? 0) + 1);
+      return () => subscriptions.set(topic, (subscriptions.get(topic) ?? 0) - 1);
     },
   } as unknown as ApiClient;
   container = document.body.appendChild(document.createElement("div"));
@@ -81,7 +90,8 @@ async function renderPanel(
       | ComponentType<{ chatId: string; workspace: Workspace }>
       | undefined;
     if (!Component) throw new Error("the changes module did not add its component");
-    createRoot(container as HTMLElement).render(
+    root = createRoot(container as HTMLElement);
+    root.render(
       <ApiContext value={api}>
         <TooltipProvider>
           <Component chatId="A1" workspace={workspace} />
@@ -92,6 +102,7 @@ async function renderPanel(
   return {
     root: container,
     asked,
+    subscriptions,
     emit: (event: unknown) => act(async () => listeners.map((l) => l(event))),
   };
 }
@@ -172,5 +183,158 @@ describe("the Changes tab's first scope", () => {
     const select = root.querySelector<HTMLSelectElement>('select[aria-label="Which changes"]');
     expect(select?.value).toBe("uncommitted");
     expect(filesAsked(asked)[0]).toBe("changes/workspaces/W1/files?scope=uncommitted");
+  });
+});
+
+describe("the Changes tab's large view", () => {
+  const file = (path: string) => ({
+    path,
+    status: "modified",
+    additions: 1,
+    deletions: 0,
+    binary: false,
+  });
+  const answer = (path: string) =>
+    path === "changes/workspaces/W1"
+      ? { scopes: ["uncommitted"], records: [], initialScope: "uncommitted" }
+      : path.startsWith("changes/workspaces/W1/files?")
+        ? { files: [file("src/a.ts"), file("src/b.ts")], truncated: false }
+        : path.startsWith("changes/workspaces/W1/diff?")
+          ? {
+              diffs: [
+                {
+                  file: file(new URLSearchParams(path.split("?")[1]).get("path") ?? ""),
+                  hunks: [
+                    {
+                      oldStart: 1,
+                      newStart: 1,
+                      section: "",
+                      lines: [{ kind: "add", newLine: 1, text: "x" }],
+                    },
+                  ],
+                },
+              ],
+              truncated: false,
+            }
+          : undefined;
+  const dialog = () => document.body.querySelector<HTMLElement>('[role="dialog"]');
+  const click = (element: Element | null | undefined) =>
+    act(async () => {
+      if (!element) throw new Error("nothing to click");
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+  const largeButton = (root: HTMLElement) => root.querySelector('button[aria-label="Large view"]');
+
+  it("moves the whole view into a dialog and leaves a note in the tab", async () => {
+    const { root } = await renderPanel("tab", undefined, answer);
+    await click(largeButton(root));
+    expect(dialog()?.querySelector('ul[aria-label="Changed files"]')).not.toBeNull();
+    expect(dialog()?.querySelector('select[aria-label="Which changes"]')).not.toBeNull();
+    expect(root.querySelector('ul[aria-label="Changed files"]')).toBeNull();
+    expect(root.querySelector('select[aria-label="Which changes"]')).toBeNull();
+    expect(root.textContent).toContain("Open in the large view");
+  });
+
+  it("keeps the selected file after Escape closes the dialog", async () => {
+    const { root } = await renderPanel("tab", undefined, answer);
+    await click(root.querySelector('button[title="src/b.ts"]'));
+    await click(largeButton(root));
+    expect(dialog()).not.toBeNull();
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(dialog()).toBeNull();
+    expect(root.querySelector('button[title="src/b.ts"]')?.getAttribute("aria-current")).toBe(
+      "true",
+    );
+  });
+
+  it("keeps one changes subscription while the dialog is open", async () => {
+    const { root, subscriptions } = await renderPanel("tab", undefined, answer);
+    await click(largeButton(root));
+    expect(dialog()).not.toBeNull();
+    expect(subscriptions.get("changes:W1")).toBe(1);
+  });
+
+  const pointerDown = (element: Element | null | undefined) =>
+    act(async () => {
+      if (!element) throw new Error("nothing to press");
+      element.dispatchEvent(new PointerEvent("pointerdown", { bubbles: true }));
+    });
+
+  it("closes on a click on the dialog's inset", async () => {
+    const { root } = await renderPanel("tab", undefined, answer);
+    await click(largeButton(root));
+    await pointerDown(dialog());
+    await click(dialog());
+    expect(dialog()).toBeNull();
+    expect(root.querySelector('ul[aria-label="Changed files"]')).not.toBeNull();
+  });
+
+  it("has no large view button on a phone", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === PHONE_QUERY,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    const { root } = await renderPanel("tab", undefined, answer);
+    expect(root.querySelector('ul[aria-label="Changed files"]')).not.toBeNull();
+    expect(largeButton(root)).toBeNull();
+  });
+
+  it("stays open when a press that starts in the panel ends on the inset", async () => {
+    // A drag that selects diff text and lets go past the panel's edge sends its click to the inset.
+    const { root } = await renderPanel("tab", undefined, answer);
+    await click(largeButton(root));
+    await pointerDown(dialog()?.querySelector('ul[aria-label="Changed files"]'));
+    await click(dialog());
+    expect(dialog()).not.toBeNull();
+  });
+
+  it("lets Escape in a comment form cancel the form, not close the dialog", async () => {
+    const { root } = await renderPanel("tab", undefined, answer);
+    await click(largeButton(root));
+    await click(dialog()?.querySelector('button[aria-label="Comment on line 1"]'));
+    const textarea = dialog()?.querySelector('textarea[aria-label="Comment"]');
+    expect(textarea).not.toBeNull();
+    await act(async () => {
+      textarea?.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }),
+      );
+    });
+    expect(dialog()).not.toBeNull();
+    expect(dialog()?.querySelector('textarea[aria-label="Comment"]')).toBeNull();
+  });
+
+  it("gives focus back to the Large view button when the dialog closes", async () => {
+    const { root } = await renderPanel("tab", undefined, answer);
+    await click(largeButton(root));
+    await act(async () => {
+      document.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+    expect(dialog()).toBeNull();
+    expect(document.activeElement).toBe(largeButton(root));
+  });
+
+  it("does not open again by itself after the screen was a phone for a while", async () => {
+    let phone = false;
+    const changes = new Set<() => void>();
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === PHONE_QUERY && phone,
+      addEventListener: (_type: string, listener: () => void) => changes.add(listener),
+      removeEventListener: (_type: string, listener: () => void) => changes.delete(listener),
+    }));
+    const resize = (next: boolean) =>
+      act(async () => {
+        phone = next;
+        for (const listener of changes) listener();
+      });
+    const { root } = await renderPanel("tab", undefined, answer);
+    await click(largeButton(root));
+    await resize(true);
+    expect(dialog()).toBeNull();
+    await resize(false);
+    expect(dialog()).toBeNull();
+    expect(largeButton(root)).not.toBeNull();
   });
 });
