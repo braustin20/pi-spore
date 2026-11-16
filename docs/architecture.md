@@ -1418,7 +1418,9 @@ counts, then its hunks in unified form.
   browser choice). Code colors come from lowlight (highlight.js grammars, `common` set), mapped to role tokens, so
   they follow the theme; each side of a hunk is colored as one block. A changed image shows its picture: the new
   side when added, the old side when deleted, else both sides with their sizes, side by side or stacked when narrow.
-  SVG keeps its text diff. Other binary files and large files show a note.
+  SVG keeps its text diff. Other binary files and large files show a note. A Markdown file (`.md`, `.markdown`) can
+  be shown rendered instead of as a diff, read from the content route; the choice is a browser flag
+  (`pi-spore.changes.rendered`) and comments stay on the diff.
 - Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
   bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
   `stale` event. The tab opens on the summary's `initialScope`, once per open: a refresh, a `stale` event, or the

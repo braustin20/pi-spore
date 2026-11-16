@@ -44,6 +44,8 @@ afterEach(() => {
   act(() => root?.unmount());
   root = undefined;
   container?.remove();
+  // The tab's view choices live in local storage, so one test must not hand its choice to the next.
+  localStorage.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
 });
@@ -56,6 +58,7 @@ async function renderPanel(
   pick: "chat" | "tab",
   loadComments: () => Promise<unknown> = async () => ({ comments: [comment] }),
   answer: (path: string) => unknown = () => undefined,
+  blob: (path: string) => string = (path) => (path.endsWith("side=old") ? "old" : "newer"),
 ) {
   const listeners: ((event: unknown) => void)[] = [];
   const asked: string[] = [];
@@ -82,7 +85,7 @@ async function renderPanel(
     },
     getBlob: async (path: string) => {
       blobs.push(path);
-      return new Blob([path.endsWith("side=old") ? "old" : "newer"]);
+      return new Blob([blob(path)]);
     },
     subscribe: (topic: string, listener: (event: unknown) => void) => {
       listeners.push(listener);
@@ -398,5 +401,95 @@ describe("the Changes tab's image diff", () => {
     expect(root.textContent).toContain("Binary file. Its contents are not shown.");
     expect(root.querySelector("img")).toBeNull();
     expect(blobs).toEqual([]);
+  });
+});
+
+describe("the Changes tab's rendered Markdown", () => {
+  const answer =
+    (path: string, status = "modified") =>
+    (asked: string): unknown => {
+      const file = { path, status, additions: 1, deletions: 0, binary: false };
+      return asked === "changes/workspaces/W1"
+        ? { scopes: ["uncommitted"], records: [], initialScope: "uncommitted" }
+        : asked.startsWith("changes/workspaces/W1/files?")
+          ? { files: [file], truncated: false }
+          : asked.startsWith("changes/workspaces/W1/diff?")
+            ? {
+                diffs: [
+                  {
+                    file,
+                    hunks: [
+                      {
+                        oldStart: 1,
+                        newStart: 1,
+                        section: "",
+                        lines: [{ kind: "add", newLine: 1, text: "x" }],
+                      },
+                    ],
+                  },
+                ],
+                truncated: false,
+              }
+            : undefined;
+    };
+  const markdown = () => "# Title\n\nBody";
+  const content = (path: string, side: string) =>
+    `changes/workspaces/W1/content?scope=uncommitted&path=${path}&side=${side}`;
+  /** The header's view toggle, named for what a click shows. */
+  const toggle = (root: HTMLElement) =>
+    Array.from(root.querySelectorAll("button")).find((button) =>
+      ["Rendered", "Diff"].includes(button.textContent ?? ""),
+    );
+  const click = (element: Element | undefined) =>
+    act(async () => {
+      if (!element) throw new Error("nothing to click");
+      element.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+
+  it.each(["README.md", "notes.MARKDOWN"])("offers a rendered view of %s", async (path) => {
+    const { root } = await renderPanel("tab", undefined, answer(path), markdown);
+    expect(toggle(root)?.textContent).toBe("Rendered");
+  });
+
+  it("offers no rendered view for another file", async () => {
+    const { root, blobs } = await renderPanel("tab", undefined, answer("src/a.ts"), markdown);
+    expect(toggle(root)).toBeUndefined();
+    expect(blobs).toEqual([]);
+  });
+
+  it("shows the file rendered, read from its new side", async () => {
+    const { root, blobs } = await renderPanel("tab", undefined, answer("README.md"), markdown);
+    await click(toggle(root));
+    expect(blobs).toEqual([content("README.md", "new")]);
+    expect(root.querySelector("h1")?.textContent).toBe("Title");
+    expect(root.textContent).toContain("Body");
+    expect(toggle(root)?.textContent).toBe("Diff");
+  });
+
+  it("reads the old side of a deleted file", async () => {
+    const { root, blobs } = await renderPanel(
+      "tab",
+      undefined,
+      answer("README.md", "deleted"),
+      markdown,
+    );
+    await click(toggle(root));
+    expect(blobs).toEqual([content("README.md", "old")]);
+  });
+
+  it("keeps the choice when the tab opens again", async () => {
+    const first = await renderPanel("tab", undefined, answer("README.md"), markdown);
+    await click(toggle(first.root));
+    act(() => root?.unmount());
+    first.root.remove();
+    const { root: again, blobs } = await renderPanel(
+      "tab",
+      undefined,
+      answer("README.md"),
+      markdown,
+    );
+    expect(again.querySelector("h1")?.textContent).toBe("Title");
+    expect(toggle(again)?.textContent).toBe("Diff");
+    expect(blobs).toEqual([content("README.md", "new")]);
   });
 });
