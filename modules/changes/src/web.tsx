@@ -862,7 +862,9 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">
                   {current.oldPath ? `${current.oldPath} → ${current.path}` : current.path}
                 </span>
-                <DiffCount added={current.additions} deleted={current.deletions} />
+                {!current.binary && (
+                  <DiffCount added={current.additions} deleted={current.deletions} />
+                )}
               </div>
             )}
             {diff ? (
