@@ -339,6 +339,81 @@ describe("StepBar", () => {
     expect(clicked).toEqual([2]);
   });
 
+  // A fix turn carries the review stage's index, but its work is the worker's.
+  const { report: _fixReport, reportedAt: _fixAt, ...FIXING } = FIX;
+
+  it("shows the worker running and the review waiting while a fix runs", async () => {
+    const root = await mount(
+      <StepBar run={run({ turns: [TASK, REVIEW1, FIXING] })} onStep={() => {}} />,
+    );
+    expect(labels(root)).toEqual([
+      "implement: running",
+      "review: waiting for the fix",
+      "verify: not started",
+    ]);
+    expect(root.textContent).toContain("implement · fixing");
+    expect(root.textContent).not.toContain("1 fix");
+  });
+
+  it("numbers the second running fix and counts only reported fixes", async () => {
+    const stages = [
+      { name: "implement", role: "worker" as const },
+      { name: "review", role: "reviewer" as const, rounds: 3 },
+      { name: "verify", gates: ["check", "test"] },
+    ];
+    const revise2 = turn({
+      ...REVIEW2,
+      report: { turn: "t-r2", summary: "Still off", verdict: "revise" },
+    });
+    const fixing2 = turn({ ...FIXING, id: "t-fix2", round: 2, createdAt: 600_000 });
+    const root = await mount(
+      <StepBar
+        run={run({ stages, turns: [TASK, REVIEW1, FIX, revise2, fixing2] })}
+        onStep={() => {}}
+      />,
+    );
+    expect(labels(root)[0]).toBe("implement: running");
+    expect(root.textContent).toContain("implement · fix 2");
+    expect(root.textContent).not.toContain("fixes");
+  });
+
+  it("shows the worker done with its fix once the next review round runs", async () => {
+    const { report: _report, reportedAt: _at, ...open2 } = REVIEW2;
+    const root = await mount(
+      <StepBar run={run({ turns: [TASK, REVIEW1, FIX, open2] })} onStep={() => {}} />,
+    );
+    expect(labels(root)).toEqual(["implement: done", "review: running", "verify: not started"]);
+    expect(root.textContent).toContain("implement · 1 fix");
+  });
+
+  it("keeps the blocked look of a run blocked during a fix", async () => {
+    const root = await mount(
+      <StepBar
+        run={run({ blocked: "agent crashed", turns: [TASK, REVIEW1, FIXING] })}
+        onStep={() => {}}
+      />,
+    );
+    expect(labels(root)).toEqual(["implement: done", "review: blocked", "verify: not started"]);
+    expect(root.textContent).not.toContain("1 fix");
+  });
+
+  it("shows every member of a group waiting while the fix for them runs", async () => {
+    const reviewed = turn({ ...REVIEW1, id: "t-rev" });
+    const fixing = turn({ ...FIXING, fixFor: ["review", "adversarial"] });
+    const root = await mount(
+      <StepBar
+        run={run({ stages: GROUPED, turns: [TASK, reviewed, ADVERSARIAL, fixing] })}
+        onStep={() => {}}
+      />,
+    );
+    expect(labels(root)).toEqual([
+      "implement: running",
+      "review: waiting for the fix",
+      "adversarial: waiting for the fix",
+      "verify: not started",
+    ]);
+  });
+
   it("renders one button per stage and no group box for a pipeline without groups", async () => {
     const root = await mount(<StepBar run={run({ stageIndex: 1 })} onStep={() => {}} />);
     expect(root.querySelectorAll("button")).toHaveLength(3);
