@@ -122,6 +122,8 @@ async function start(
     record?: boolean;
     withoutGithubPr?: boolean;
     script?: Record<string, unknown[]>;
+    /** A Pi agent dir whose settings.json gives the role models, in place of one fixed model for every role. */
+    agentDir?: string;
   } = {},
 ) {
   const script = join(scratch, "script.json");
@@ -135,7 +137,9 @@ async function start(
   const agents = createAgentsModule({
     pi: { command: process.execPath, args: [wrapper] },
     resourceArgs: async () => ["--no-extensions"],
-    roleDefaults: async () => ({ provider: "fake", modelId: "mid" }),
+    ...(options.agentDir
+      ? { agentDir: options.agentDir }
+      : { roleDefaults: async () => ({ provider: "fake", modelId: "mid" }) }),
     baseEnv: {
       PATH: process.env.PATH,
       FAKE_PI_SCRIPT: script,
@@ -429,6 +433,93 @@ describe("launch context", () => {
       PI_SPORE_RUN_ROLE: "lane",
     });
     expect(launchOf(worker.agentId)?.argv).not.toContain("--tools");
+  });
+});
+
+describe("coordinator role (ADR 0181)", () => {
+  const withSettings = (overrides: Record<string, unknown>) => {
+    const agentDir = join(scratch, "pi-agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ subagents: { agentOverrides: overrides } }),
+    );
+    return agentDir;
+  };
+  /** The value after each model flag in an agent's first launch. */
+  const modelFlags = async (server: TestServer, agentId: string) => {
+    await json(await server.request("POST", `/api/agents/${agentId}/prompt`, { message: "hi" }));
+    await until(() => launchOf(agentId) !== undefined);
+    const argv = launchOf(agentId)?.argv ?? [];
+    const flag = (name: string) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
+    return { provider: flag("--provider"), model: flag("--model"), thinking: flag("--thinking") };
+  };
+
+  it("starts the coordinator on the model set with PUT /api/agents/role-models/coordinator", async () => {
+    const server = await start({
+      agentDir: withSettings({ orchestrator: { model: "fake/weak" } }),
+    });
+    await json(
+      await server.request("PUT", "/api/agents/role-models/coordinator", { model: "fake/strong" }),
+    );
+    const { projectId } = await project(server, "put");
+    const { run } = await createRun(server, projectId, "put");
+
+    expect(await modelFlags(server, run.coordinatorAgentId)).toMatchObject({
+      provider: "fake",
+      model: "strong",
+    });
+  });
+
+  it("gives the coordinator its own model and thinking, and a lane's worker chat the orchestrator's", async () => {
+    const server = await start({
+      agentDir: withSettings({
+        orchestrator: { model: "fake/weak", thinking: "low" },
+        coordinator: { model: "fake/strong", thinking: "high" },
+      }),
+    });
+    const { projectId } = await project(server, "own");
+    const { run, coordinator } = await createRun(server, projectId, "own");
+    const [shown] = (await server.events.snapshot(`agent:${run.coordinatorAgentId}`)) as {
+      model?: unknown;
+      thinkingLevel?: string;
+    }[];
+    expect(shown).toMatchObject({
+      model: { provider: "fake", id: "strong" },
+      thinkingLevel: "high",
+    });
+    expect(await modelFlags(server, run.coordinatorAgentId)).toEqual({
+      provider: "fake",
+      model: "strong",
+      thinking: "high",
+    });
+
+    const lane = await startLane(run, coordinator, "one");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const { workspaceId } = await laneOf(server, run.id, lane.id);
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId }),
+      201,
+    );
+    expect(await modelFlags(server, agent.id)).toEqual({
+      provider: "fake",
+      model: "weak",
+      thinking: "low",
+    });
+  });
+
+  it("starts the coordinator on the orchestrator model and thinking when it has no entry", async () => {
+    const server = await start({
+      agentDir: withSettings({ orchestrator: { model: "fake/one", thinking: "medium" } }),
+    });
+    const { projectId } = await project(server, "fallback");
+    const { run } = await createRun(server, projectId, "fallback");
+
+    expect(await modelFlags(server, run.coordinatorAgentId)).toEqual({
+      provider: "fake",
+      model: "one",
+      thinking: "medium",
+    });
   });
 });
 

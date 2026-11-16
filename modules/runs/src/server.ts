@@ -1176,6 +1176,8 @@ export const runsModule: ServerModule = {
           ? {
               env: { PI_SPORE_RUN_ID: run.id, PI_SPORE_RUN_ROLE: "coordinator" },
               tools: COORDINATOR_TOOLS,
+              // The coordinator runs on its own role model, else the orchestrator's (ADR 0181).
+              role: "coordinator",
             }
           : undefined;
       }

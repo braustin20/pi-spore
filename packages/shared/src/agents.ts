@@ -79,6 +79,30 @@ export type ChatKind = Static<typeof ChatKind>;
 export const ModelRef = Type.String({ pattern: "^[^\\s/]+/\\S+$" });
 export type ModelRef = Static<typeof ModelRef>;
 
+/**
+ * A name that can have a default model in Pi's `subagents.agentOverrides` (ADR 0181). `role`: a pi-spore role, even
+ * when pi-subagents has an agent of the same name. `subagent`: any other name.
+ */
+export const RoleModel = Type.Object({
+  name: Type.String(),
+  kind: Type.Union([Type.Literal("role"), Type.Literal("subagent")]),
+  /** The raw `model` of the override. Missing when none is set. */
+  model: Type.Optional(Type.String()),
+  /** The role whose model this one runs on when it has none (ADR 0175, ADR 0181). */
+  fallback: Type.Optional(Type.Literal("orchestrator")),
+});
+export type RoleModel = Static<typeof RoleModel>;
+
+export const RoleModelsResponse = Type.Object({ roles: Type.Array(RoleModel) });
+export type RoleModelsResponse = Static<typeof RoleModelsResponse>;
+
+/** Set a role's default model, or remove it. The model is checked against the model list by the server. */
+export const SetRoleModelRequest = Type.Union([
+  Type.Object({ model: Type.String() }, { additionalProperties: false }),
+  Type.Object({ unset: Type.Literal(true) }, { additionalProperties: false }),
+]);
+export type SetRoleModelRequest = Static<typeof SetRoleModelRequest>;
+
 /** One Pi conversation of a workspace: a chat. */
 export const Agent = Type.Object({
   id: Type.String(),
