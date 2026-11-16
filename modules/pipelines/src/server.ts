@@ -1200,12 +1200,21 @@ export const pipelinesModule: ServerModule = {
       };
     };
 
-    /** The workspace's changed and untracked file paths, gitignored files left out. None without a VCS that shows them. */
+    /**
+     * The workspace's changed, staged, and untracked file paths, gitignored files left out. None without a VCS that
+     * shows them. The uncommitted scope compares the working copy with the last record, so a staged change that the
+     * working copy undid shows in the staged scope only.
+     */
     const uncommittedFiles = async (workspaceId: string): Promise<string[]> => {
       const { ops, location } = await changesOf(workspaceId);
       if (!ops) return [];
-      const { files } = await ops.files(location, { kind: "uncommitted" }, UNCOMMITTED_LIMIT);
-      return files.map((file) => file.path);
+      const [uncommitted, staged] = await Promise.all([
+        ops.files(location, { kind: "uncommitted" }, UNCOMMITTED_LIMIT),
+        ops.scopes.includes("staged")
+          ? ops.files(location, { kind: "staged" }, UNCOMMITTED_LIMIT)
+          : { files: [] },
+      ]);
+      return [...new Set([...uncommitted.files, ...staged.files].map((file) => file.path))].sort();
     };
 
     /**

@@ -1426,8 +1426,8 @@ describe("uncommitted work (card 01M7G34F)", () => {
   const blockedFor = (name: string, files: string) =>
     `uncommitted changes in workspace "${name}": 1 file (${files}). Commit them, then Retry.`;
   const refusals = async (server: TestServer, agentId: string) =>
-    (await chat(server, agentId)).filter(
-      (message) => message === "assistant: report failed: 409 uncommitted_changes",
+    (await chat(server, agentId)).filter((message) =>
+      message.startsWith("assistant: report failed: 409 uncommitted_changes"),
     );
 
   /** A git workspace with an untracked `extra.txt`, and a run of IMPLEMENT whose worker reports twice. */
@@ -1472,7 +1472,25 @@ describe("uncommitted work (card 01M7G34F)", () => {
     expect(run.blocked).toBe(blockedFor("dirty", "extra.txt"));
     expect(run.turns).toHaveLength(1);
     expect(run.turns[0]?.report?.summary).toBe("Done");
-    expect(await refusals(server, run.workerAgentId as string)).toHaveLength(1);
+    expect(await refusals(server, run.workerAgentId as string)).toEqual([
+      `assistant: report failed: 409 uncommitted_changes: The workspace has uncommitted files: extra.txt. Commit them, then call report again with turn ${run.turns[0]?.id}.`,
+    ]);
+  });
+
+  it("blocks the run for a staged change that the working copy undid", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, DONE] }) });
+    const { workspaceId, folder } = await workspace(server, "staged", { git: true });
+    writeFileSync(join(folder, "a.txt"), "one\nstaged line\n");
+    execFileSync("git", ["add", "a.txt"], { cwd: folder });
+    writeFileSync(join(folder, "a.txt"), "one\n");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    const blocked = await getRun(server, run.id);
+    expect(blocked.blocked).toBe(blockedFor("staged", "a.txt"));
+    expect(await refusals(server, blocked.workerAgentId as string)).toHaveLength(1);
   });
 
   it("passes on Retry after the file is committed", async () => {
