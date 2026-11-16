@@ -1,6 +1,6 @@
 /**
- * Run tools (R7, ADR 0150): the coordinator of a run starts, revises, and merges lanes and answers their questions;
- * an agent in a lane asks its coordinator. The server checks who may call each route.
+ * Run tools (R7, ADR 0150, ADR 0181): the coordinator of a run starts, revises, merges, and declines lanes and
+ * answers their questions; an agent in a lane asks its coordinator. The server checks who may call each route.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import Type, { type Static } from "typebox";
@@ -223,6 +223,37 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
         content: text(`${summary} The result arrives later as a message.`),
         details: { laneId: lane.id },
       };
+    },
+  });
+
+  pi.registerTool({
+    name: "decline_lane",
+    label: "Decline lane",
+    description:
+      "Drop a waiting, passed, or failed lane that will not be merged: its work was replaced by another lane or is no " +
+      "longer needed. Nothing is merged or deleted: the lane's workspace and branch stay. The user reads the lane and " +
+      "your reason on the run PR approval, so open_run_pr works afterwards.",
+    promptSnippet: "Drop a lane that will not be merged, with the reason",
+    promptGuidelines: [
+      "Use decline_lane for lane work you replaced elsewhere or no longer need, and give the reason: the user sees it before the run's PR opens.",
+    ],
+    parameters: Type.Object({
+      laneId: Type.String({ minLength: 1 }),
+      reason: Type.String({
+        minLength: 1,
+        maxLength: 2_000,
+        description: "Why the lane will not merge",
+      }),
+    }),
+    async execute(toolCallId, params, signal) {
+      const { summary, lane } = await laneCall(
+        "lanes/decline",
+        params,
+        toolCallId,
+        signal,
+        "is declined",
+      );
+      return { content: text(summary), details: { laneId: lane.id } };
     },
   });
 

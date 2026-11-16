@@ -188,6 +188,8 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
   restart. Do not poll.
 - Never end a turn to wait for the user without request_human_input. A turn that ends with plain text puts nothing
   on Home.
+- Decline a lane whose work is replaced or not needed with decline_lane and a reason, before open_run_pr. The user
+  sees each declined lane and its reason in the run PR approval.
 - When every lane is merged or declined, call open_run_pr with a title and a body that sums up the run. The user
   approves it on Home. You never merge to the base line. The user merges the PR, by hand or with the Merge button
   in the PR tab (ADR 0142).`;

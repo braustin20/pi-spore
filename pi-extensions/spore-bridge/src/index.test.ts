@@ -985,7 +985,14 @@ describe("spore-bridge report tool", () => {
 });
 
 describe("spore-bridge run tools", () => {
-  const RUN_TOOLS = ["start_lane", "revise_lane", "merge_lane", "answer_lane", "open_run_pr"];
+  const RUN_TOOLS = [
+    "start_lane",
+    "revise_lane",
+    "merge_lane",
+    "decline_lane",
+    "answer_lane",
+    "open_run_pr",
+  ];
   const rulesOf = async (pi: ReturnType<typeof fakePi>) => {
     const options = { contextFiles: [], sections: {} as Record<string, string> };
     await pi.handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
@@ -1068,6 +1075,25 @@ describe("spore-bridge run tools", () => {
     expect(merge.content[0]?.text).toContain("The result arrives later as a message.");
     expect(answer.content[0]?.text).toContain("question q1");
     for (const result of [start, revise, merge, answer]) expect(result.terminate).toBeUndefined();
+  });
+
+  it("posts decline_lane to lanes/decline with the reason, and ends no turn", async () => {
+    vi.stubEnv("PI_SPORE_RUN_ROLE", "coordinator");
+    vi.stubEnv("PI_SPORE_RUN_ID", "U1");
+    reply("POST /api/bridge/lanes/decline", {
+      body: { lane: { id: "l1", name: "api", state: "declined" } },
+    });
+
+    const result = await fakePi()
+      .tool("decline_lane")
+      .execute("t6", { laneId: "l1", reason: "replaced by the api lane" });
+
+    expect(seen.map((entry) => [entry.path, entry.receipt, entry.body])).toEqual([
+      ["/api/bridge/lanes/decline", "t6", { laneId: "l1", reason: "replaced by the api lane" }],
+    ]);
+    expect(result.content[0]?.text).toContain("is declined; it is declined");
+    expect(result.details).toEqual({ laneId: "l1" });
+    expect(result.terminate).toBeUndefined();
   });
 
   it("posts open_run_pr to coordinator/pr with the receipt and ends the turn", async () => {
