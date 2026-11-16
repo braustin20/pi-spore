@@ -288,11 +288,11 @@ const gateFailedMessage = (
     "You can call revise_lane with a new brief to fix it.",
   ].join("\n");
 
-/** What the coordinator of a `running` run is told once every lane is merged or declined (ADR 0150, ADR 0181). */
+/** What the coordinator of a `running` run is told once every lane is merged or declined (ADR 0150, ADR 0182). */
 const OPEN_PR_MESSAGE =
   "All lanes of the run are merged or declined. Call open_run_pr with a title and a body to ask the user to open the run's one PR. pi-spore never merges to the base line.";
 
-/** The user's decline of a lane, as the coordinator hears it (ADR 0181). */
+/** The user's decline of a lane, as the coordinator hears it (ADR 0182). */
 const userDeclineMessage = (lane: LaneRow, reason: string) =>
   `The user declined lane "${lane.name}" (${lane.id}): ${reason}`;
 
@@ -301,7 +301,7 @@ const laneDiffPath = (runId: string, laneId: string) => `runs/${runId}/lanes/${l
 
 const HAS_LANE_DIFF: readonly LaneState[] = ["passed", "merging", "merged"];
 
-/** The states a lane can be declined from (ADR 0181). The others are asked about, at work, merging, or over. */
+/** The states a lane can be declined from (ADR 0182). The others are asked about, at work, merging, or over. */
 const DECLINABLE: readonly LaneState[] = ["waiting", "passed", "failed"];
 
 /** The states a lane can be revised from: a revise sends a lane that finished its run back for one more turn. */
@@ -674,7 +674,7 @@ export const runsModule: ServerModule = {
       return laneView(loadLane(lane.id) as LaneRow);
     };
 
-    /** A lane that is not in a state a decline accepts, named as it is now (ADR 0181). */
+    /** A lane that is not in a state a decline accepts, named as it is now (ADR 0182). */
     const notDeclinable = (lane: LaneRow) =>
       new ApiError(
         409,
@@ -683,7 +683,7 @@ export const runsModule: ServerModule = {
       );
 
     /**
-     * Drops a lane that will not merge (ADR 0181). It merges and deletes nothing: the lane's workspace and branch
+     * Drops a lane that will not merge (ADR 0182). It merges and deletes nothing: the lane's workspace and branch
      * stay, and only its own waiting lane job is cancelled, so it never gets one. Lanes that waited on it wake. The
      * coordinator hears of a user decline, and of a decline that leaves the run with nothing to do but ask for its PR.
      */
@@ -813,7 +813,7 @@ export const runsModule: ServerModule = {
         const filed = approvals.file(caller, {
           kind: RUN_PR,
           title: `Open the PR of run "${workspaces.get(run.workspace_id).name}"`,
-          // ADR 0181: the user reads each declined lane and its reason here, before the PR opens.
+          // ADR 0182: the user reads each declined lane and its reason here, before the PR opens.
           reason: [
             "Opening a PR sends the run's branch and this text to GitHub. pi-spore never merges it; a human does (ADR 0130).",
             ...lanes
@@ -928,7 +928,7 @@ export const runsModule: ServerModule = {
       if (waitsFor(lane)) {
         // A build that failed, or that a restart cut short, holds the lane as `starting`, and only a
         // `waiting` lane is woken: give it back the state that a merged or declined lane can release, so a
-        // lane that arrives later in that wave cannot strand it (ADR 0181).
+        // lane that arrives later in that wave cannot strand it (ADR 0182).
         host.store.run(
           "UPDATE runs_lanes SET state = 'waiting' WHERE id = ? AND state = 'starting' AND workspace_id IS NULL",
           lane.id,
@@ -936,7 +936,7 @@ export const runsModule: ServerModule = {
         return { wait: true };
       }
       const run = requireRun(lane.run_id);
-      // Take the lane for building before the build starts (ADR 0181): the build is the step's async work, so
+      // Take the lane for building before the build starts (ADR 0182): the build is the step's async work, so
       // a decline cannot be undone once it is under way, and a declined lane must never get a workspace. From
       // here a decline answers 409 `lane_not_declinable`, as it does for a lane that is already running. A
       // decline or a cancel that got here first wins the same compare-and-set, and the step stops.
@@ -1284,6 +1284,8 @@ export const runsModule: ServerModule = {
           ? {
               env: { PI_SPORE_RUN_ID: run.id, PI_SPORE_RUN_ROLE: "coordinator" },
               tools: COORDINATOR_TOOLS,
+              // The coordinator runs on its own role model, else the orchestrator's (ADR 0181).
+              role: "coordinator",
             }
           : undefined;
       }
@@ -1479,7 +1481,7 @@ export const runsModule: ServerModule = {
       c.json({ run: await cancelRun(c.req.param("id")) }),
     );
 
-    // The user's Decline button on the Runs page (ADR 0181).
+    // The user's Decline button on the Runs page (ADR 0182).
     host.routes.post("/:id/lanes/:laneId/decline", async (c) => {
       const body = parseJsonBody(DeclineLaneBody, await c.req.text(), "lane decline");
       const run = requireRun(c.req.param("id"));

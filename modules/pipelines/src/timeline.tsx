@@ -5,13 +5,23 @@ import { Fragment, type ReactNode, useState } from "react";
 import { GateLog, splitRunMessage } from "./gate-log.js";
 import { EarlyStopLine, FindingItems, routeText, SEVERITIES, TestList } from "./turns.js";
 
-type StepState = "done" | "running" | "blocked" | "waiting" | "failed" | "stopped" | "not started";
+type StepState =
+  | "done"
+  | "running"
+  | "blocked"
+  | "waiting"
+  | "waiting for the fix"
+  | "failed"
+  | "stopped"
+  | "not started";
 
 const STEP_ICONS: Record<StepState, ReactNode> = {
   done: <Check aria-hidden="true" className="size-3.5 text-ok" />,
   running: <Spinner />,
   blocked: <TriangleAlert aria-hidden="true" className="size-3.5 text-warn" />,
   waiting: <Hourglass aria-hidden="true" className="size-3.5 text-warn" />,
+  // Muted, not warn: the user has nothing to do while the worker fixes.
+  "waiting for the fix": <Hourglass aria-hidden="true" className="size-3.5 text-muted" />,
   failed: <X aria-hidden="true" className="size-3.5 text-fail" />,
   stopped: <Square aria-hidden="true" className="size-3.5 text-muted" />,
   "not started": <Circle aria-hidden="true" className="size-3.5 text-muted" />,
@@ -21,12 +31,29 @@ const STEP_ICONS: Record<StepState, ReactNode> = {
 const groupAt = (groups: number[][], index: number) =>
   groups.findIndex((group) => group.includes(index));
 
+/** The stage a turn's work belongs to: a fix turn carries the review stage's index, but its work is the
+ * worker's. */
+function stageOf(run: PipelineRun, turn: PipelineTurn): number {
+  const workerStage = run.stages.findIndex((stage) => stage.role === "worker");
+  return turn.kind === "fix" && workerStage >= 0 ? workerStage : turn.stageIndex;
+}
+
+/** The fix turn that runs now, if any. A blocked or waiting run keeps its own look. */
+const runningFix = (run: PipelineRun) =>
+  run.state === "running" && !run.blocked
+    ? run.turns.find((turn) => turn.kind === "fix" && isRunning(run, turn))
+    : undefined;
+
 function stepState(run: PipelineRun, index: number): StepState {
   if (run.state === "passed") return "done";
   // A group runs as one stage, and `run.stageIndex` is its first member, so compare groups.
   const groups = stageGroups(run.stages);
   const current = groupAt(groups, run.stageIndex);
   const own = groupAt(groups, index);
+  // During a fix the worker runs, and the reviewers of the current group wait for it (R6, ADR 0158).
+  const fix = runningFix(run);
+  if (fix && index === stageOf(run, fix)) return "running";
+  if (fix && own === current) return "waiting for the fix";
   if (own < current) return "done";
   if (own > current) return "not started";
   // A member that reported while the rest of its group still works is done. A stage alone keeps today's state.
@@ -47,8 +74,11 @@ const plural = (count: number, one: string, many: string) => `${count} ${count =
 function stepCount(run: PipelineRun, index: number): string | undefined {
   const stage = run.stages[index];
   if (stage?.role === "worker") {
-    // Fix turns carry the review stage's index, so they are counted by kind.
-    const fixes = run.turns.filter((turn) => turn.kind === "fix").length;
+    // Fix turns carry the review stage's index, so they are counted by kind. A running fix is not done yet.
+    const fixes = run.turns.filter(
+      (turn) => turn.kind === "fix" && turn.reportedAt !== undefined,
+    ).length;
+    if (runningFix(run)) return fixes === 0 ? "fixing" : `fix ${fixes + 1}`;
     return fixes > 0 ? plural(fixes, "fix", "fixes") : undefined;
   }
   const rounds = Math.max(
@@ -116,7 +146,6 @@ type Entry =
 
 /** All turns by time, with a Gates entry where each started gate stage comes in the run. */
 function entriesOf(run: PipelineRun): Entry[] {
-  const workerStage = run.stages.findIndex((stage) => stage.role === "worker");
   // A gate member starts with its group, and `run.stageIndex` is the group's first stage (ADR 0178 rule 22).
   const groups = stageGroups(run.stages);
   const started = (index: number) =>
@@ -134,9 +163,7 @@ function entriesOf(run: PipelineRun): Entry[] {
   // `toSorted` is stable and leaves the run's own array alone.
   for (const turn of run.turns.toSorted((a, b) => a.createdAt - b.createdAt)) {
     flush(turn.stageIndex);
-    // A fix turn carries the review stage's index; its work is the worker's.
-    const stageIndex = turn.kind === "fix" && workerStage >= 0 ? workerStage : turn.stageIndex;
-    entries.push({ key: turn.id, stageIndex, turn });
+    entries.push({ key: turn.id, stageIndex: stageOf(run, turn), turn });
   }
   flush(Number.POSITIVE_INFINITY);
   return entries;

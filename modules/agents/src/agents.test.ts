@@ -849,6 +849,252 @@ describe("agents", () => {
     });
   });
 
+  describe("role models (ADR 0181)", () => {
+    type Listed = { roles: { name: string; kind: string; model?: string; fallback?: string }[] };
+    const agentDir = () => join(scratch, "pi-agent");
+    const settingsFile = () => join(agentDir(), "settings.json");
+    const builtinDir = () => join(scratch, "builtin-agents");
+    const put = (role: string, body: unknown) =>
+      server.request("PUT", `/api/agents/role-models/${role}`, body);
+    const get = () => server.request("GET", "/api/agents/role-models");
+    const agentFile = (dir: string, file: string, frontmatter: string) => {
+      mkdirSync(join(dir, file, ".."), { recursive: true });
+      writeFileSync(join(dir, file), `---\n${frontmatter}\n---\nBody\n`);
+    };
+    const start = async (text: string | undefined) => {
+      mkdirSync(agentDir(), { recursive: true });
+      if (text !== undefined) writeFileSync(settingsFile(), text);
+      await setup({ agentDir: agentDir(), builtinAgentsDir: builtinDir() });
+    };
+    const original = {
+      theme: "dark",
+      subagents: {
+        projectRootResolution: "git-root",
+        agentOverrides: {
+          orchestrator: { model: "fake/fake-1", thinking: "xhigh" },
+          oracle: { model: "fake/fake-2" },
+          worker: { thinking: "low" },
+        },
+        agentOverridesByProvider: { fake: { worker: { model: "fake/fake-2" } } },
+      },
+    };
+    const readSettings = () => JSON.parse(readFileSync(settingsFile(), "utf8"));
+
+    it("lists the roles, built-in agents, user agents, and names in agentOverrides", async () => {
+      agentFile(builtinDir(), "scout.md", "name: scout\ndescription: x");
+      agentFile(builtinDir(), "nameless.md", "description: no name");
+      agentFile(builtinDir(), "deep/ignored.md", "name: ignored");
+      agentFile(agentDir(), "agents/sub/helper.md", "name: helper\ndescription: x");
+      agentFile(agentDir(), "agents/pkg.md", 'name: "tool"\npackage: acme');
+      agentFile(agentDir(), "agents/flow.chain.md", "name: flow");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      expect(roles).toEqual([
+        { name: "orchestrator", kind: "role", model: "fake/fake-1" },
+        { name: "planner", kind: "role", fallback: "orchestrator" },
+        { name: "coordinator", kind: "role", fallback: "orchestrator" },
+        { name: "worker", kind: "role" },
+        { name: "reviewer", kind: "role" },
+        { name: "adversarial-reviewer", kind: "role" },
+        { name: "acme.tool", kind: "subagent" },
+        { name: "helper", kind: "subagent" },
+        { name: "oracle", kind: "subagent", model: "fake/fake-2" },
+        { name: "scout", kind: "subagent" },
+      ]);
+    });
+
+    it("lists the roles when the settings file does not exist", async () => {
+      await start(undefined);
+      const { roles } = await json<Listed>(await get());
+      expect(roles.map((role) => role.name)).toEqual([
+        "orchestrator",
+        "planner",
+        "coordinator",
+        "worker",
+        "reviewer",
+        "adversarial-reviewer",
+      ]);
+    });
+
+    it("sets only that role's model and leaves every other key", async () => {
+      await start(JSON.stringify(original));
+      const body = await json<Listed>(await put("oracle", { model: "fake/fake-1" }));
+      const expected = structuredClone(original);
+      expected.subagents.agentOverrides.oracle.model = "fake/fake-1";
+      expect(readSettings()).toEqual(expected);
+      expect(readFileSync(settingsFile(), "utf8")).toBe(`${JSON.stringify(expected, null, 2)}\n`);
+      expect(body).toEqual(await json<Listed>(await get()));
+      expect(body.roles.find((role) => role.name === "oracle")?.model).toBe("fake/fake-1");
+    });
+
+    it("creates the file, subagents, agentOverrides, and the role object when missing", async () => {
+      await start(undefined);
+      await json(await put("planner", { model: "fake/fake-2" }));
+      expect(readSettings()).toEqual({
+        subagents: { agentOverrides: { planner: { model: "fake/fake-2" } } },
+      });
+      expect(existsSync(`${settingsFile()}.tmp`)).toBe(false);
+    });
+
+    it("answers 422 for a model that is not in the model list, and leaves the file bytes", async () => {
+      await start(JSON.stringify(original, null, 1));
+      const before = readFileSync(settingsFile(), "utf8");
+      const body = await json<{ error: { code: string; message: string } }>(
+        await put("worker", { model: "fake/nope" }),
+        422,
+      );
+      expect(body.error.code).toBe("unknown_model");
+      expect(body.error.message).toContain("fake/nope");
+      expect(readFileSync(settingsFile(), "utf8")).toBe(before);
+    });
+
+    it("answers 404 for a role that is not in the list", async () => {
+      await start(JSON.stringify(original, null, 1));
+      const before = readFileSync(settingsFile(), "utf8");
+      const body = await json<{ error: { code: string; message: string } }>(
+        await put("nobody", { model: "fake/fake-1" }),
+        404,
+      );
+      expect(body.error.code).toBe("unknown_role");
+      expect(body.error.message).toContain("nobody");
+      expect(readFileSync(settingsFile(), "utf8")).toBe(before);
+    });
+
+    it("answers 400 for a body that is neither a model nor an unset", async () => {
+      await start(JSON.stringify(original));
+      await json(await put("worker", { unset: false }), 400);
+      await json(await put("worker", {}), 400);
+    });
+
+    it("unsets the model, and removes a role object that is left empty", async () => {
+      await start(JSON.stringify(original));
+      await json(await put("orchestrator", { unset: true }));
+      expect(readSettings().subagents.agentOverrides.orchestrator).toEqual({ thinking: "xhigh" });
+      await json(await put("oracle", { unset: true }));
+      const settings = readSettings();
+      expect(settings.subagents.agentOverrides).not.toHaveProperty("oracle");
+      expect(settings.subagents.agentOverrides.worker).toEqual({ thinking: "low" });
+      expect(settings.subagents.agentOverridesByProvider).toEqual(
+        original.subagents.agentOverridesByProvider,
+      );
+    });
+
+    it("keeps an empty agentOverrides and subagents, and treats an unset without a model as a no-op", async () => {
+      await start(
+        JSON.stringify({ subagents: { agentOverrides: { oracle: { model: "fake/fake-1" } } } }),
+      );
+      await json(await put("oracle", { unset: true }));
+      expect(readSettings()).toEqual({ subagents: { agentOverrides: {} } });
+      const before = readFileSync(settingsFile(), "utf8");
+      await json(await put("planner", { unset: true }));
+      await json(await put("worker", { unset: true }));
+      expect(readFileSync(settingsFile(), "utf8")).toBe(before);
+    });
+
+    it("answers 409 on GET and PUT for a file with a comment, and does not write", async () => {
+      const text = '{\n  // my choice\n  "theme": "dark"\n}\n';
+      await start(text);
+      for (const response of [await get(), await put("worker", { model: "fake/fake-1" })]) {
+        const body = await json<{ error: { code: string; message: string } }>(response, 409);
+        expect(body.error.code).toBe("pi_settings_not_json");
+        expect(body.error.message).toContain(settingsFile());
+      }
+      expect(readFileSync(settingsFile(), "utf8")).toBe(text);
+    });
+
+    it("answers 409 and does not write when subagents is not an object", async () => {
+      const text = JSON.stringify({ subagents: "yes" });
+      await start(text);
+      const body = await json<{ error: { code: string } }>(
+        await put("worker", { model: "fake/fake-1" }),
+        409,
+      );
+      expect(body.error.code).toBe("pi_settings_shape");
+      expect(readFileSync(settingsFile(), "utf8")).toBe(text);
+    });
+
+    it("keeps both changes when two writes run at once", async () => {
+      await start(JSON.stringify(original));
+      const answers = await Promise.all([
+        put("planner", { model: "fake/fake-1" }),
+        put("reviewer", { model: "fake/fake-2" }),
+        put("coordinator", { model: "fake/fake-2" }),
+      ]);
+      for (const answer of answers) await json(answer);
+      const overrides = readSettings().subagents.agentOverrides;
+      expect(overrides.planner.model).toBe("fake/fake-1");
+      expect(overrides.reviewer.model).toBe("fake/fake-2");
+      expect(overrides.coordinator.model).toBe("fake/fake-2");
+    });
+
+    it("answers 409 for a file that is null, and does not write", async () => {
+      await start("null\n");
+      const bad = [await get(), await put("worker", { model: "fake/fake-1" })];
+      for (const response of bad) {
+        const body = await json<{ error: { code: string; message: string } }>(response, 409);
+        expect(body.error.code).toBe("pi_settings_shape");
+        expect(body.error.message).toContain(settingsFile());
+      }
+      expect(readFileSync(settingsFile(), "utf8")).toBe("null\n");
+    });
+
+    it.each([
+      ["subagents is a string", { subagents: "yes" }],
+      ["subagents is null", { subagents: null }],
+      ["agentOverrides is a list", { subagents: { agentOverrides: [] } }],
+      ["agentOverrides is null", { subagents: { agentOverrides: null } }],
+    ])("answers 409 on GET, set, and unset when %s, and does not write", async (_name, content) => {
+      const text = JSON.stringify(content);
+      await start(text);
+      const bad = [
+        await get(),
+        await put("worker", { model: "fake/fake-1" }),
+        await put("worker", { unset: true }),
+      ];
+      for (const response of bad) {
+        const body = await json<{ error: { code: string } }>(response, 409);
+        expect(body.error.code).toBe("pi_settings_shape");
+      }
+      expect(readFileSync(settingsFile(), "utf8")).toBe(text);
+    });
+
+    it("answers 400 for a body with both a model and an unset, and does not write", async () => {
+      const text = JSON.stringify(original);
+      await start(text);
+      await json(await put("worker", { model: "fake/fake-1", unset: true }), 400);
+      await json(await put("worker", { model: 7, unset: true }), 400);
+      await json(await put("worker", { model: "fake/fake-1", extra: 1 }), 400);
+      expect(readFileSync(settingsFile(), "utf8")).toBe(text);
+    });
+
+    it("does not list an agent file whose frontmatter has no closing delimiter", async () => {
+      mkdirSync(join(agentDir(), "agents"), { recursive: true });
+      writeFileSync(join(agentDir(), "agents/open.md"), "---\nname: open\nBody text\n");
+      agentFile(agentDir(), "agents/closed.md", "name: closed");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const names = roles.map((role) => role.name);
+      expect(names).toContain("closed");
+      expect(names).not.toContain("open");
+    });
+
+    it("starts a chat created after a PUT on the new orchestrator model", async () => {
+      await start(JSON.stringify(original));
+      await json(await put("orchestrator", { model: "fake/fake-2" }));
+      const { agentId } = await makeAgent();
+      await json(await prompt(agentId, "one"));
+      // The first launch lists the models for the PUT; the chat's is the second.
+      await until(() => existsSync(record) && launches().length === 2);
+      const argv = launches()[1]?.argv ?? [];
+      expect(argv.slice(argv.indexOf("--provider"), argv.indexOf("--provider") + 4)).toEqual([
+        "--provider",
+        "fake",
+        "--model",
+        "fake-2",
+      ]);
+    });
+  });
+
   it("gives each workspace one worker", async () => {
     await setup();
     const { agentId, workspaceId } = await makeAgent();

@@ -105,24 +105,43 @@ export interface RoleDefaults {
   thinking?: string;
 }
 
+/** Pi's `settings.json` is not plain JSON. Pi cannot read it either (it parses with `JSON.parse`). */
+export class PiSettingsNotJsonError extends Error {
+  constructor(readonly path: string) {
+    super(`${path} is not valid JSON`);
+  }
+}
+
+/** The path of Pi's settings file in an agent folder. */
+export const piSettingsPath = (agentDir: string): string => join(agentDir, "settings.json");
+
+/**
+ * Pi's `<agentDir>/settings.json` as parsed JSON, or undefined when the file does not exist. Throws
+ * `PiSettingsNotJsonError` when it does not parse. Like Pi, it ignores a leading BOM.
+ */
+export async function readPiSettings(agentDir: string): Promise<unknown | undefined> {
+  const path = piSettingsPath(agentDir);
+  let text: string;
+  try {
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  try {
+    return JSON.parse(text.replace(/^\uFEFF/, ""));
+  } catch {
+    throw new PiSettingsNotJsonError(path);
+  }
+}
+
 /**
  * The model and thinking level of a role from the user's pi-subagents settings (ADR 0013):
  * `subagents.agentOverrides.<role>.model` as `provider/id`, and `.thinking`. Missing settings mean Pi's own defaults.
  */
 export async function readRoleDefaults(agentDir: string, role: string): Promise<RoleDefaults> {
-  let text: string;
-  try {
-    text = await readFile(join(agentDir, "settings.json"), "utf8");
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === "ENOENT") return {};
-    throw error;
-  }
-  let settings: unknown;
-  try {
-    settings = JSON.parse(text);
-  } catch {
-    throw new Error(`${join(agentDir, "settings.json")} is not valid JSON`);
-  }
+  const settings = await readPiSettings(agentDir);
+  if (settings === undefined) return {};
   const override = (settings as { subagents?: { agentOverrides?: Record<string, unknown> } } | null)
     ?.subagents?.agentOverrides?.[role];
   if (typeof override !== "object" || override === null) return {};
@@ -176,4 +195,22 @@ export function agentEnv(
     if (value !== undefined && !/^(ORCA|HERDR)_/.test(key)) env[key] = value;
   }
   return { ...env, ...extra };
+}
+
+/**
+ * The folder of the installed pi-subagents package, found the way `resolveResourceArgs` finds the user's packages
+ * (ADR 0181). Undefined when the package is not installed.
+ */
+export async function findSubagentsRoot(agentDir: string): Promise<string | undefined> {
+  const manager = new DefaultPackageManager({
+    cwd: agentDir,
+    agentDir,
+    settingsManager: SettingsManager.create(agentDir, agentDir),
+    builtinExtensions: BUILTIN_EXTENSIONS,
+  });
+  const resolved = await manager.resolve(async () => "skip");
+  const found = [...resolved.extensions, ...resolved.skills, ...resolved.prompts].find(
+    ({ metadata }) => /^npm:pi-subagents(@|$)/.test(metadata.source) && metadata.packageRoot,
+  );
+  return found?.metadata.packageRoot;
 }

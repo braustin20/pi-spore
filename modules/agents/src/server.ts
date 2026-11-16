@@ -18,10 +18,17 @@ import {
   parseJsonBody,
   RenameChatRequest,
   SetModelRequest,
+  SetRoleModelRequest,
   SetThinkingRequest,
   type Workspace,
 } from "@pi-spore/shared";
-import { type AgentChange, type Agents, AgentsKey, type LaunchHook } from "./contract.js";
+import {
+  type AgentChange,
+  type Agents,
+  AgentsKey,
+  type LaunchContext,
+  type LaunchHook,
+} from "./contract.js";
 import {
   DELIVERIES_JOB_MIGRATION,
   DELIVERIES_MIGRATION,
@@ -30,8 +37,15 @@ import {
   Deliveries,
 } from "./deliveries.js";
 import { checkPromptImages, imageHeaders, readLinkedImage, servableType } from "./images.js";
-import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
+import {
+  agentEnv,
+  findSubagentsRoot,
+  readRoleDefaults,
+  resolveResourceArgs,
+  SPORE_EXTENSIONS,
+} from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
+import { FALLBACK_ROLES, listRoleModels, writeRoleModel } from "./role-models.js";
 import type { PiCommand } from "./rpc.js";
 import { declareAgentSettings } from "./settings.js";
 
@@ -121,6 +135,8 @@ export interface AgentsModuleOptions {
   pi?: PiCommand;
   /** Pi's agent folder, `~/.pi/agent` unless `PI_CODING_AGENT_DIR` says otherwise. */
   agentDir?: string;
+  /** pi-subagents' built-in agent files. Found in the installed package unless set; tests set it (ADR 0181). */
+  builtinAgentsDir?: string;
   /** Package sources agents do not load (ADR 0025). */
   excludeExtensions?: readonly string[];
   maxLive?: number;
@@ -230,10 +246,10 @@ export function createAgentsModule(
         log: host.log,
         sessionsDir: host.home.sessions,
         resourceArgs,
-        // A planner without its own override runs on the orchestrator's model (ADR 0175).
+        // A planner or run coordinator without its own override runs on the orchestrator's model (ADR 0175, 0181).
         roleDefaults: async (role) => {
           const own = await baseRoleDefaults(role);
-          return role === "planner" && Object.keys(own).length === 0
+          return FALLBACK_ROLES.has(role) && Object.keys(own).length === 0
             ? baseRoleDefaults("orchestrator")
             : own;
         },
@@ -254,15 +270,20 @@ export function createAgentsModule(
           return agentEnv(options.baseEnv ?? process.env, extra);
         },
         launchContext: (agent, workspace) => {
-          const merged: { env: Record<string, string>; tools?: readonly string[] } = { env: {} };
+          const merged: LaunchContext & { env: Record<string, string> } = { env: {} };
           for (const hook of launchHooks) {
             const context = hook(agent, workspace);
             Object.assign(merged.env, context?.env);
-            if (!context?.tools) continue;
-            if (merged.tools) {
-              throw new Error(`Two launch hooks give tools for agent ${agent.id}`);
+            if (context?.tools) {
+              if (merged.tools)
+                throw new Error(`Two launch hooks give tools for agent ${agent.id}`);
+              merged.tools = context.tools;
             }
-            merged.tools = context.tools;
+            if (context?.role) {
+              if (merged.role)
+                throw new Error(`Two launch hooks give a role for agent ${agent.id}`);
+              merged.role = context.role;
+            }
           }
           return merged;
         },
@@ -750,6 +771,29 @@ export function createAgentsModule(
       host.routes.get("/models", async (c) =>
         c.json(await withTiers(host.home.root, await agents.availableModels())),
       );
+
+      // Default models of the roles and subagent types, in Pi's own settings file (ADR 0181). Before "/:id" too.
+      const roleModels = async () => ({
+        roles: await listRoleModels(
+          agentDir,
+          options.builtinAgentsDir ??
+            (await findSubagentsRoot(agentDir).then((root) => root && join(root, "agents"))),
+        ),
+      });
+      host.routes.get("/role-models", async (c) => c.json(await roleModels()));
+      host.routes.put("/role-models/:role", async (c) => {
+        const request = parseJsonBody(SetRoleModelRequest, await c.req.text(), "role model");
+        const role = c.req.param("role");
+        if (!(await roleModels()).roles.some((entry) => entry.name === role))
+          throw new ApiError(404, "unknown_role", `Unknown role: ${role}`);
+        if ("model" in request) {
+          const models = await agents.availableModels();
+          const listed = models.some((model) => `${model.provider}/${model.id}` === request.model);
+          if (!listed) throw new ApiError(422, "unknown_model", `Unknown model: ${request.model}`);
+        }
+        await writeRoleModel(agentDir, role, "model" in request ? request.model : undefined);
+        return c.json(await roleModels());
+      });
 
       host.routes.get("/:id", (c) => c.json({ agent: agents.view(c.req.param("id")) }));
 

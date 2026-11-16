@@ -122,6 +122,8 @@ async function start(
     record?: boolean;
     withoutGithubPr?: boolean;
     script?: Record<string, unknown[]>;
+    /** A Pi agent dir whose settings.json gives the role models, in place of one fixed model for every role. */
+    agentDir?: string;
   } = {},
 ) {
   const script = join(scratch, "script.json");
@@ -135,7 +137,9 @@ async function start(
   const agents = createAgentsModule({
     pi: { command: process.execPath, args: [wrapper] },
     resourceArgs: async () => ["--no-extensions"],
-    roleDefaults: async () => ({ provider: "fake", modelId: "mid" }),
+    ...(options.agentDir
+      ? { agentDir: options.agentDir }
+      : { roleDefaults: async () => ({ provider: "fake", modelId: "mid" }) }),
     baseEnv: {
       PATH: process.env.PATH,
       FAKE_PI_SCRIPT: script,
@@ -429,6 +433,93 @@ describe("launch context", () => {
       PI_SPORE_RUN_ROLE: "lane",
     });
     expect(launchOf(worker.agentId)?.argv).not.toContain("--tools");
+  });
+});
+
+describe("coordinator role (ADR 0181)", () => {
+  const withSettings = (overrides: Record<string, unknown>) => {
+    const agentDir = join(scratch, "pi-agent");
+    mkdirSync(agentDir, { recursive: true });
+    writeFileSync(
+      join(agentDir, "settings.json"),
+      JSON.stringify({ subagents: { agentOverrides: overrides } }),
+    );
+    return agentDir;
+  };
+  /** The value after each model flag in an agent's first launch. */
+  const modelFlags = async (server: TestServer, agentId: string) => {
+    await json(await server.request("POST", `/api/agents/${agentId}/prompt`, { message: "hi" }));
+    await until(() => launchOf(agentId) !== undefined);
+    const argv = launchOf(agentId)?.argv ?? [];
+    const flag = (name: string) => (argv.includes(name) ? argv[argv.indexOf(name) + 1] : undefined);
+    return { provider: flag("--provider"), model: flag("--model"), thinking: flag("--thinking") };
+  };
+
+  it("starts the coordinator on the model set with PUT /api/agents/role-models/coordinator", async () => {
+    const server = await start({
+      agentDir: withSettings({ orchestrator: { model: "fake/weak" } }),
+    });
+    await json(
+      await server.request("PUT", "/api/agents/role-models/coordinator", { model: "fake/strong" }),
+    );
+    const { projectId } = await project(server, "put");
+    const { run } = await createRun(server, projectId, "put");
+
+    expect(await modelFlags(server, run.coordinatorAgentId)).toMatchObject({
+      provider: "fake",
+      model: "strong",
+    });
+  });
+
+  it("gives the coordinator its own model and thinking, and a lane's worker chat the orchestrator's", async () => {
+    const server = await start({
+      agentDir: withSettings({
+        orchestrator: { model: "fake/weak", thinking: "low" },
+        coordinator: { model: "fake/strong", thinking: "high" },
+      }),
+    });
+    const { projectId } = await project(server, "own");
+    const { run, coordinator } = await createRun(server, projectId, "own");
+    const [shown] = (await server.events.snapshot(`agent:${run.coordinatorAgentId}`)) as {
+      model?: unknown;
+      thinkingLevel?: string;
+    }[];
+    expect(shown).toMatchObject({
+      model: { provider: "fake", id: "strong" },
+      thinkingLevel: "high",
+    });
+    expect(await modelFlags(server, run.coordinatorAgentId)).toEqual({
+      provider: "fake",
+      model: "strong",
+      thinking: "high",
+    });
+
+    const lane = await startLane(run, coordinator, "one");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const { workspaceId } = await laneOf(server, run.id, lane.id);
+    const { agent } = await json<{ agent: { id: string } }>(
+      await server.request("POST", "/api/agents", { workspaceId }),
+      201,
+    );
+    expect(await modelFlags(server, agent.id)).toEqual({
+      provider: "fake",
+      model: "weak",
+      thinking: "low",
+    });
+  });
+
+  it("starts the coordinator on the orchestrator model and thinking when it has no entry", async () => {
+    const server = await start({
+      agentDir: withSettings({ orchestrator: { model: "fake/one", thinking: "medium" } }),
+    });
+    const { projectId } = await project(server, "fallback");
+    const { run } = await createRun(server, projectId, "fallback");
+
+    expect(await modelFlags(server, run.coordinatorAgentId)).toEqual({
+      provider: "fake",
+      model: "one",
+      thinking: "medium",
+    });
   });
 });
 
@@ -869,7 +960,7 @@ describe("merging a lane (ADR 0150)", () => {
   });
 });
 
-describe("decline_lane (ADR 0181)", () => {
+describe("decline_lane (ADR 0182)", () => {
   const GREEN = { check: "pass", test: "pass" };
   /** The `lint` gate fails, so a lane on the `lint` pipeline ends `failed`. */
   const RED_LINT = { ...GREEN, lint: "fail" };
@@ -1013,7 +1104,7 @@ describe("decline_lane (ADR 0181)", () => {
     );
     expect(await laneOf(server, run.id, first.id)).toMatchObject({ state: "running" });
 
-    // A cancelled run refuses a decline from anyone (ADR 0181).
+    // A cancelled run refuses a decline from anyone (ADR 0182).
     await json(await server.request("POST", `/api/runs/${run.id}/cancel`));
     const refused = await server.request("POST", `/api/runs/${run.id}/lanes/${first.id}/decline`, {
       reason: "too late",
@@ -1108,7 +1199,7 @@ describe("decline_lane (ADR 0181)", () => {
     const later = await startLane(run, coordinator, "later", { wave: 2 });
     await until(() => laneJob(server, later.id).state === "waiting");
     // `startLane` checks the run before it reads the brief, so a start still in flight when the user cancels
-    // lands a lane that the cancel never saw: `waiting`, in a cancelled run (ADR 0181). The cancel knows only
+    // lands a lane that the cancel never saw: `waiting`, in a cancelled run (ADR 0182). The cancel knows only
     // the lanes it read, so the row is put back by hand rather than raced.
     await json(await server.request("POST", `/api/runs/${run.id}/cancel`));
     server.store.run(
@@ -1143,7 +1234,7 @@ describe("decline_lane (ADR 0181)", () => {
     await laneChanges(server, run, lane.id, "feature.txt", "x\n");
     await artifacts.write({ scope: "workspace", id: run.workspaceId }, "briefs/fix.md", "Fix it");
 
-    // A revise reads the brief first, so a decline can land in that read (ADR 0181). The decline is the
+    // A revise reads the brief first, so a decline can land in that read (ADR 0182). The decline is the
     // later word on the lane, and the revise must lose.
     const revising = runs.reviseLane(coordinator, { laneId: lane.id, brief: "briefs/fix.md" });
     const declined = runs.declineLane(coordinator, {
@@ -1189,7 +1280,7 @@ describe("decline_lane (ADR 0181)", () => {
       return job.state === "waiting" && job.error === null;
     });
 
-    // The wave-1 lane's work is then dropped, and that wake must reach the build that yielded (ADR 0181).
+    // The wave-1 lane's work is then dropped, and that wake must reach the build that yielded (ADR 0182).
     await laneChanges(server, run, first.id, "feature.txt", "x\n");
     runs.declineLane(coordinator, { laneId: first.id, reason: "not needed" });
 
@@ -1203,7 +1294,7 @@ describe("decline_lane (ADR 0181)", () => {
     const { run, coordinator } = await createRun(server, projectId, "decline-building");
     // A lane's `ready` step builds its workspace, which needs the project config. Break it, so the build
     // stops with the lane taken for building: the state a decline must not accept, since a decline that
-    // landed during a build would leave a workspace on a lane that has none (ADR 0181).
+    // landed during a build would leave a workspace on a lane that has none (ADR 0182).
     writeFileSync(join(folder, ".pi-spore", "config.toml"), "[actions\n");
 
     const lane = await startLane(run, coordinator, "builder");

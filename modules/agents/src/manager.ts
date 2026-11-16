@@ -874,10 +874,10 @@ export class AgentManager {
       }
     }
     if (!live.model || !live.thinkingLevel) {
-      const defaults = withModel(
-        await this.options.roleDefaults(live.record.role),
-        live.record.model,
-        live.record.thinking,
+      const workspace = this.options.workspace(live.record.workspaceId);
+      const defaults = await this.newSessionDefaults(
+        live,
+        this.options.launchContext(this.view(live.record.id), workspace),
       );
       if (!live.model && defaults.provider && defaults.modelId) {
         live.model = { provider: defaults.provider, id: defaults.modelId };
@@ -963,13 +963,14 @@ export class AgentManager {
       );
     }
     this.setStatus(live, "starting");
-    await this.loadHistory(live);
 
     let sessionArgs: string[];
     let context: LaunchContext;
     try {
+      // Inside the try: the launch hooks it reads can throw, and the slot must be freed then.
+      await this.loadHistory(live);
       context = this.options.launchContext(this.view(record.id), workspace);
-      sessionArgs = await this.sessionArgs(live, workspace, context.tools);
+      sessionArgs = await this.sessionArgs(live, workspace, context);
     } catch (error) {
       this.releaseSlot();
       this.setStatus(live, "failed", (error as Error).message);
@@ -1051,12 +1052,19 @@ export class AgentManager {
   private async sessionArgs(
     live: Live,
     workspace: Workspace,
-    tools?: readonly string[],
+    context: LaunchContext,
   ): Promise<string[]> {
-    return [...(await this.sessionFileArgs(live, workspace)), ...toolArgs(live.record, tools)];
+    return [
+      ...(await this.sessionFileArgs(live, workspace, context)),
+      ...toolArgs(live.record, context.tools),
+    ];
   }
 
-  private async sessionFileArgs(live: Live, workspace: Workspace): Promise<string[]> {
+  private async sessionFileArgs(
+    live: Live,
+    workspace: Workspace,
+    context: LaunchContext,
+  ): Promise<string[]> {
     const file = live.record.sessionFile;
     const dir = join(this.options.sessionsDir, workspace.id);
     if (file && (await hasSessionFile(file))) {
@@ -1082,14 +1090,20 @@ export class AgentManager {
       }
       return ["--fork", source, "--session-dir", dir];
     }
-    const role = modelArgs(
-      withModel(
-        await this.options.roleDefaults(live.record.role),
-        live.record.model,
-        live.record.thinking,
-      ),
-    );
+    const role = modelArgs(await this.newSessionDefaults(live, context));
     return ["--session-dir", dir, ...role];
+  }
+
+  /**
+   * The model and thinking a new session starts on: the chat's own pick, else the defaults of the role a launch hook
+   * gives it (a run coordinator, ADR 0181), else of its own role.
+   */
+  private async newSessionDefaults(live: Live, context: LaunchContext): Promise<RoleDefaults> {
+    return withModel(
+      await this.options.roleDefaults(context.role ?? live.record.role),
+      live.record.model,
+      live.record.thinking,
+    );
   }
 
   private onEvent(live: Live, raw: Record<string, unknown>): void {

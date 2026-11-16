@@ -63,6 +63,11 @@ export interface LaunchContext {
    * may give it for one agent.
    */
   tools?: readonly string[];
+  /**
+   * The role whose model and thinking defaults this agent uses in place of its own, such as `coordinator` for a run's
+   * coordinator chat (ADR 0181). At most one hook may give it for one agent.
+   */
+  role?: string;
 }
 
 export type LaunchHook = (agent: Agent, workspace: Workspace) => LaunchContext | undefined;
@@ -185,9 +190,10 @@ export interface Agents {
    */
   beforeDeleteChat(listener: (agentId: string) => void): void;
   /**
-   * Runs at each launch of an agent's process, so a module can add environment variables and replace the tools. It
-   * must be synchronous. The bridge token's read-only flag does not change. Throws when two hooks give `tools` for one
-   * agent.
+   * Runs at each launch of an agent's process, so a module can add environment variables, replace the tools, and name
+   * the role whose defaults it uses. It also runs when a chat's history first loads, to show that role's model. It
+   * must be synchronous and cheap. The bridge token's read-only flag does not change. Throws when two hooks give
+   * `tools`, or two give `role`, for one agent.
    */
   addLaunchContext(hook: LaunchHook): void;
   /**

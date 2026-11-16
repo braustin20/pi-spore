@@ -1,5 +1,5 @@
 /**
- * Run tools (R7, ADR 0150, ADR 0181): the coordinator of a run starts, revises, merges, and declines lanes and
+ * Run tools (R7, ADR 0150, ADR 0182): the coordinator of a run starts, revises, merges, and declines lanes and
  * answers their questions; an agent in a lane asks its coordinator. The server checks who may call each route.
  */
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";

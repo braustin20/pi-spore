@@ -42,7 +42,7 @@ export interface Runs {
    */
   mergeLane(caller: BridgeCaller, request: MergeLaneRequest): Promise<Lane>;
   /**
-   * Drops a lane of the caller's run that will not be merged, with the reason as its message (ADR 0181). Only a
+   * Drops a lane of the caller's run that will not be merged, with the reason as its message (ADR 0182). Only a
    * `waiting`, `passed`, or `failed` lane: anything else answers 409 `lane_not_declinable` naming the state. A
    * `waiting` lane's lane job is cancelled, and lanes that waited on the declined lane wake. It merges and deletes
    * nothing: the lane's workspace and branch stay. 404 `lane_not_found` for a lane outside the run; 409
