@@ -1607,7 +1607,8 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
   the snapshot show running helpers only. Foreground helpers are the parent's `subagent` tool call and are not
   nodes.
 - Web: the module fills the workspaces landing page (`#/workspaces`, and `#/workspaces/in/<project>` with only that
-  project's trees) through `WorkspaceView.setLanding`. `canvas.tsx` draws the graph with `@xyflow/react`; it
+  project's trees) through `WorkspaceView.setLanding`, with the label "Agent graph" and the `SporeLogo` icon (the graph's own heading)
+  for the list header's link. `canvas.tsx` draws the graph with `@xyflow/react`; it
   subscribes to `agent-graph:trees` and redraws from each event, so an archived workspace's tree leaves at once.
   - Layout: `layoutGraph` in `layout.ts`, a fixed tree layout with no library. Desktop: trees side by side, oldest
     first; in a tree, the root on top and its groups side by side; steps top-down. Phone: trees and groups stack,
@@ -2049,7 +2050,9 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`
   passes `chatId`; without it the pane shows the active orchestrator chat.
 - `setLanding` sets the landing page: what `#/workspaces` and `#/workspaces/in/<project>` show with no workspace
-  open (ADR 0176). Without it those routes show the create form.
+  open (ADR 0176). It also takes the label and icon of the list header's link to that page, before the New workspace
+  button. The link keeps the list's project and is lit while the landing page shows. Without a landing those routes
+  show the create form, and the header has no such link.
 - `setStatus` sets a React hook that returns one status line per workspace, with the row's open chats in `chats`
   (label, hint, icon, and whether it works). The agents module subscribes to
   `agents:list`, which sends a snapshot on subscription and updates as chats are created or change. Reconnection
