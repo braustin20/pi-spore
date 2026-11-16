@@ -44,7 +44,7 @@
 //             sent either: the fake appends it as a router record (kind "initial", its own PI_SPORE_AGENT_ID) to
 //             `<FAKE_PI_HOME>/usage/routing.jsonl` first. A list appends its records in order; a record may set
 //             `agentId` to play another agent. The fake reads the turn id from the prompt line `Turn: <id>`, POSTs { ...entry, turn } to /api/bridge/reports with its token and a receipt, and ends
-//             the turn. The reply says the server's answer.
+//             the turn. The reply says the server's answer: on a refusal, its status, error code, and message.
 // A script with no entry left writes an error to stderr and replies with text.
 // A prompt sent while streaming with streamingBehavior "followUp" runs after the current run ends, as in Pi.
 // Images given with a prompt go into the user message after its text, as Pi does; the reply counts them. A queued
@@ -464,7 +464,7 @@ async function scripted(text) {
     const body = await response.json();
     return response.ok
       ? `reported: ${turn}`
-      : `report failed: ${response.status} ${body.error?.code}`;
+      : `report failed: ${response.status} ${body.error?.code}: ${body.error?.message}`;
   } catch (error) {
     return `report failed: ${error.message}`;
   }

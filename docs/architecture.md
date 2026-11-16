@@ -675,6 +675,13 @@ fail_first = "artifact"
   round do not close a turn). Reviewers
   must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
   later report never drops a test.
+- **Uncommitted work** (ADR 0186). A worker's report is checked against the workspace's uncommitted, staged, and
+  untracked files, read through `ChangeOps.files` (gitignored files do not count; a project without `ChangeOps` skips
+  the check). The first report of a turn with such files is refused with 409 `uncommitted_changes`, which names the
+  paths and says to commit, then report again. Column `commit_reminded` on the turn records it, also across a
+  restart. A later report is taken. `decide` checks the workspace each time it runs, so after every report, review
+  round, and gate round, and before `passed`. Files there block the stage with
+  `uncommitted changes in <workspace>: <n> files (<first paths>). Commit them, then Retry.` Retry runs `decide` again.
 - **Restarts** (R6.6). The `await` step keeps the server's boot id in its checkpoint. After a restart it sees another
   one and tells each agent of an open turn once to continue and call `report`. Turns that reported do not run again.
   If an agent ends its turn without a report, the step reminds it once per turn (column `reminded` on the turn, also
@@ -906,7 +913,11 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
     `cancelled`.
 - **Merge** (ADR 0150). `merge_lane` takes a `passed` lane (409 `lane_not_mergeable`), makes it `merging`, and
   starts job `runs.merge`, keyed by the run, so merges go one at a time. `merge` aborts any merge a restart left,
-  then merges the lane line into the run worktree without a commit. A conflict aborts, puts the lane back to
+  then merges the lane line into the run worktree without a commit. A lane line that adds nothing to the run line
+  (an empty `integrate.diff`) is not merged: the lane goes back to `passed` with the message
+  `empty lane: its branch adds no commits`, and the coordinator is told that its worker may have left work
+  uncommitted (ADR 0186). `finish` still skips the commit when the diff is empty, because then a restart already made
+  it. A conflict aborts, puts the lane back to
   `passed`, and sends the files to the coordinator. `gate` runs each run gate on the merged tree through
   `ActionsKey.start` with a key per merge job and attempt. `finish` commits when all passed (`merged`, wakes waiting
   lanes); on a red gate it writes the diff to `runs/<run>/lanes/<lane>-gates.diff`, aborts, puts the lane back to
