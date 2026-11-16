@@ -45,6 +45,8 @@ export const Lane = Type.Object({
   pipelineRunId: Type.Optional(Type.String()),
   /** Why the lane's pipeline run does not move: its error, until the user fixes the cause and presses Retry. */
   blocked: Type.Optional(Type.String()),
+  /** The merge job's current step while the lane is `merging`: `merging`, `gate <action>`, `committing`, `pushing`. */
+  mergeStep: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
 });
 export type Lane = Static<typeof Lane>;

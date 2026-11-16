@@ -157,9 +157,15 @@ function TreeBox({ id, data, width }: NodeProps<TreeNode>) {
 }
 
 function GroupPanel({ data }: NodeProps<GroupNode>) {
+  const { merging } = data.group;
   return (
-    <div className={cn("ag-group", data.group.live && "live")}>
+    <div className={cn("ag-group", (data.group.live || merging !== undefined) && "live")}>
       <div className="ag-group-name">{data.group.name}</div>
+      {merging !== undefined && (
+        <div className="ag-group-merging">
+          {merging === "merging" ? merging : `merging: ${merging}`}
+        </div>
+      )}
     </div>
   );
 }

@@ -268,14 +268,17 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     `agents:list` and Home ignore it; the agent graph follows it (section 11g, ADR 0176). An idle chat with a running helper shows
     as working: "Working (helper running)" in the workspace list and on Home, `working (helper running)` in the chat
     header. It is not done; its process gets the helper's result.
-  - Another module can mark an agent as working for something with `Agents.setWorkingFor(agentId, label)`, for
-    example a chat that waits on a pipeline run. The label is `workingFor` on the agent view, in memory only, and a
-    change of it is an `AgentChange` of kind `working`. `undefined` clears it. It never touches `waitingSince`.
+  - Another module can mark an agent as working for something with `Agents.setWorkingFor(agentId, source, label)`,
+    for example a chat that waits on a pipeline run. `source` is the caller's module id. A label is per source, in memory
+    only, so two modules do not overwrite each other. The view's `workingFor` joins the labels in source name order with
+    `"; "`. A change of it is an `AgentChange` of kind `working`. `undefined` clears that source's label. It never touches
+    `waitingSince`.
     An idle or stopped chat with `workingFor` shows as working: Home has a running item with status `pipeline` and
     the label as its detail, and no `finished` item, unless the pipeline's stage chat takes that workspace's row
     (section 11b); the workspace line is `Working (<label>)`, and the chat header `working (<label>)`. A wait for
     the user and a failed agent still win. The pipelines module sets the label
-    for the chat of each `running` run.
+    under source `pipelines` for the chat of each `running` run. The runs module sets source `runs` on a run's
+    coordinator while a lane merges: `Merging lane "<name>": <step>` (section 9).
   - A workspace can carry a working label too: `Agents.setWorkspaceWorkingFor(workspaceId, label)`, in memory only.
     `undefined` clears it; a deleted workspace loses it. Topic `agents:working` sends `{ type: "working",
     workspaces }`, the whole map, on subscription and after each change. `workspacesWorkingFor()` reads the map and
@@ -926,6 +929,10 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `finished` run, `finish` pushes the run line after the commit with the VCS `publish` push, never forced, so the
   open PR shows the merge (ADR 0165). The message says so and never names `open_run_pr`. A failed push leaves the
   lane `merged`, and the message gives the error and says the PR does not show the merge.
+  Each step keeps its name in memory, as the lane's `mergeStep`: `merging`, `gate <action>`, `committing`, `pushing`.
+  The Runs panel chip reads `Merging: <step>`. `publish` also sets the coordinator's working label under source `runs`,
+  `Merging lane "<name>": <step>` (no step yet after a restart), and clears it, and the step, in the publish that ends
+  the merge (merged, conflict, red gate, cancel). A handover clears the old coordinator's label.
 - **Run states.** `running`, `cancelled`, or `finished` (its PR opened).
 - **Cancel.** `POST /api/runs/:id/cancel` (user token) ends a run. In one transaction the run becomes `cancelled`,
   every lane not `merged` becomes `cancelled`, the `runs.lane` and `runs.merge` jobs are cancelled, each lane's
@@ -1431,7 +1438,9 @@ counts, then its hunks in unified form.
   browser choice). Code colors come from lowlight (highlight.js grammars, `common` set), mapped to role tokens, so
   they follow the theme; each side of a hunk is colored as one block. A changed image shows its picture: the new
   side when added, the old side when deleted, else both sides with their sizes, side by side or stacked when narrow.
-  SVG keeps its text diff. Other binary files and large files show a note.
+  SVG keeps its text diff. Other binary files and large files show a note. A Markdown file (`.md`, `.markdown`) can
+  be shown rendered instead of as a diff, read from the content route; the choice is a browser flag
+  (`pi-spore.changes.rendered`) and comments stay on the diff.
 - Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
   bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
   `stale` event. The tab opens on the summary's `initialScope`, once per open: a refresh, a `stale` event, or the
@@ -1609,7 +1618,8 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     group per pipeline run that is `running` or `waiting_user`, plus the newest run when it ended.
   - Side chats and planner chats are not in the graph.
 - A group (`GraphGroup`) has the pipeline run id, workspace, lane id for a lane, a name (slice name, lane name, or
-  pipeline id), the run state, the current stage and round, `live` (state `running`), and its steps in pipeline
+  pipeline id), the run state, the current stage and round, `live` (state `running`), `merging` while the run
+  merges that lane (the lane's `mergeStep`, such as `gate test`, else `merging`; ADR 0150), and its steps in pipeline
   order. A started agent stage gives one step per turn (`task`, `review`, or `fix`, with its round and agent). A
   gate stage gives one `gates` step with the gate names per gate run (`PipelineRun.gateRuns`), with id
   `<pipeline run id>:<stage index>:<round>`; its state comes from the gate run, and a gate round that waits for an
@@ -1660,7 +1670,9 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A root, or
     a running step, whose chat waits for the user (`waitShows`, read through `AgentsWebKey.useUserWaits`) is
     `--warn` with a steady glow and reads "waiting for your answer". A fix step reads `fix r<round>`. In a live
-    group, the threads from the root to the running step take the root's color and carry SVG drops. Reduced motion:
+    group, the threads from the root to the running step take the root's color and carry SVG drops. A group with
+    `merging` is live too: a `merging: <step>` line in `--run` under its name (its steps move down one line for it),
+    and a live thread from the root to its first step; its steps keep their own looks. Reduced motion:
     no drops, no breathing.
   - Helpers (`helpers.tsx`): small spores inside their parent pod, so they move with it and a click opens the
     parent's chat. Hover shows the current tool; a touch screen shows it inline. `useHelpers` keeps their life on

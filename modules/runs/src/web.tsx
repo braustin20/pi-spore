@@ -92,6 +92,7 @@ function LaneRow({ runId, runState, lane }: { runId: string; runState: RunState;
   const [declining, setDeclining] = useState(false);
   const [reason, setReason] = useState("");
   const shown = STATES[lane.state];
+  const chipText = lane.mergeStep ? `${shown.text}: ${lane.mergeStep}` : shown.text;
   const declineable = canDecline(runState, lane.state);
   const retry = async () => {
     setBusy(true);
@@ -125,7 +126,7 @@ function LaneRow({ runId, runState, lane }: { runId: string; runState: RunState;
         ) : (
           <span className="font-medium">{lane.name}</span>
         )}
-        <Chip tone={shown.tone}>{shown.text}</Chip>
+        <Chip tone={shown.tone}>{chipText}</Chip>
         {lane.blocked && <Chip tone="warn">Blocked</Chip>}
         {lane.model && <Chip mono>{lane.model}</Chip>}
         {declineable && !declining && (

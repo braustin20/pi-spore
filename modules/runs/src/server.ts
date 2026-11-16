@@ -392,7 +392,15 @@ export const runsModule: ServerModule = {
       );
     const blockedOf = (lane: LaneRow) =>
       lane.pipeline_run_id === null ? undefined : pipelines.get(lane.pipeline_run_id).blocked;
-    const laneView = (lane: LaneRow) => laneToView(lane, blockedOf(lane));
+    // The merge job's current step for each merging lane. In memory only: a restart repeats the steps.
+    const mergeSteps = new Map<string, string>();
+    const laneView = (lane: LaneRow) => {
+      const step = lane.state === "merging" ? mergeSteps.get(lane.id) : undefined;
+      return {
+        ...laneToView(lane, blockedOf(lane)),
+        ...(step === undefined ? {} : { mergeStep: step }),
+      };
+    };
     const viewOf = (row: RunRow): Run =>
       runToView(row, lanesOf(row.id).map(laneView), openQuestionsOf(row.id));
     const allRuns = (): Run[] =>
@@ -400,8 +408,56 @@ export const runsModule: ServerModule = {
         .all<RunRow>("SELECT * FROM runs_runs ORDER BY created_at DESC, id DESC")
         .map(viewOf);
 
+    // Retention can delete a chat while its run still merges. One missing id must not stop the sync of the others;
+    // any other error still throws.
+    const unlessGone = <T>(read: () => T): T | undefined => {
+      try {
+        return read();
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) return undefined;
+        throw error;
+      }
+    };
+    // Coordinators that carry a "merging" working label. In memory only, so boot sets it again.
+    const labelled = new Set<string>();
+    agents.beforeDeleteChat((agentId) => labelled.delete(agentId));
+    /**
+     * Marks the coordinator of each run that merges a lane as working (ADR 0150), so Home does not show it as done.
+     * A run merges one lane at a time; the lane with a step is the active one. Every label that no longer has a merging lane is cleared, with the lane's step.
+     */
+    const syncMerging = () => {
+      const merging = new Map<string, string>();
+      for (const lane of host.store.all<LaneRow>(
+        "SELECT * FROM runs_lanes WHERE state = 'merging' ORDER BY created_at, id",
+      )) {
+        const run = requireRun(lane.run_id);
+        const step = mergeSteps.get(lane.id);
+        const label = `Merging lane "${lane.name}"${step === undefined ? "" : `: ${step}`}`;
+        // `mergeLane` marks every requested lane `merging` at once, while the job takes one at a time. The lane
+        // with a step is the one the job works on; a lane queued behind it must not take its label.
+        if (
+          (step !== undefined || !merging.has(run.coordinator_agent_id)) &&
+          unlessGone(() => !agents.isClosed(run.coordinator_agent_id))
+        ) {
+          merging.set(run.coordinator_agent_id, label);
+        }
+      }
+      for (const laneId of mergeSteps.keys()) {
+        if (loadLane(laneId)?.state !== "merging") mergeSteps.delete(laneId);
+      }
+      for (const [agentId, label] of merging) {
+        agents.setWorkingFor(agentId, "runs", label);
+        labelled.add(agentId);
+      }
+      for (const agentId of labelled) {
+        if (merging.has(agentId)) continue;
+        labelled.delete(agentId);
+        unlessGone(() => agents.setWorkingFor(agentId, "runs", undefined));
+      }
+    };
     const changeListeners: (() => void)[] = [];
     const publish = () => {
+      syncMerging();
       const event: RunEvent = { type: "runs", runs: allRuns() };
       host.events.publish(RUNS_TOPIC, event);
       // One broken listener must not keep the others from the change.
@@ -413,6 +469,12 @@ export const runsModule: ServerModule = {
         }
       }
     };
+    /** Sets a merge step and tells the browser and the coordinator. */
+    const setMergeStep = (laneId: string, step: string) => {
+      mergeSteps.set(laneId, step);
+      publish();
+    };
+
     // A change made inside someone else's transaction publishes after it ends: the transaction is synchronous, so
     // the microtask runs after the commit.
     const publishAfterCommit = () => queueMicrotask(publish);
@@ -1156,6 +1218,7 @@ export const runsModule: ServerModule = {
     const merge = async ({ subject }: { subject: LaneSubject }): Promise<StepOutcome<never>> => {
       const lane = mergingLane(subject);
       if (!lane) return { next: null };
+      setMergeStep(lane.id, "merging");
       const run = requireRun(lane.run_id);
       const { integrate, location, laneLine } = await mergeSite(run, lane);
       // A restart may have left an earlier try of this merge in progress.
@@ -1218,6 +1281,7 @@ export const runsModule: ServerModule = {
       const index = checkpoint?.gate ?? 0;
       const attempt = checkpoint?.attempt ?? 0;
       const action = gates[index] as string;
+      setMergeStep(lane.id, `gate ${action}`);
       const started = await actions.start(run.workspace_id, action, "pipeline", {
         key: `${run.id}:${lane.id}:${id}:${action}:${attempt}`,
       });
@@ -1278,6 +1342,7 @@ export const runsModule: ServerModule = {
       }
       // After a restart the commit may already be made. Then the lane adds nothing to the run line, and a second
       // commit would fail on an empty merge.
+      setMergeStep(lane.id, "committing");
       if ((await integrate.diff(location, laneLine)) !== "") {
         await integrate.commit(location, `Merge lane ${lane.name} (${lane.id})`);
       }
@@ -1285,6 +1350,7 @@ export const runsModule: ServerModule = {
       // push leaves the lane merged and goes into the message.
       let pushError: string | undefined;
       if (run.state === "finished") {
+        setMergeStep(lane.id, "pushing");
         try {
           const publish = projects.vcsFor(project).publish;
           if (!publish) {
@@ -1331,6 +1397,7 @@ export const runsModule: ServerModule = {
       };
     };
 
+    host.onStarted(syncMerging);
     host.jobs.define(MERGE_JOB, [
       { name: "merge", run: merge },
       { name: "gate", run: gate },

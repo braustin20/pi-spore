@@ -514,7 +514,7 @@ export function createAgentsModule(
           (await ensureWorker(workspaceId, options?.model)).agent,
         get: (agentId) => agents.view(agentId),
         liveState: (agentId) => agents.liveState(agentId),
-        setWorkingFor: (agentId, label) => agents.setWorkingFor(agentId, label),
+        setWorkingFor: (agentId, source, label) => agents.setWorkingFor(agentId, source, label),
         setWorkspaceWorkingFor: setWorkspaceWorking,
         workspacesWorkingFor: () => new Map(workspaceWorking),
         onWorkspaceWorkingFor: (listener) => {

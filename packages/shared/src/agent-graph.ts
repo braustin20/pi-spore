@@ -70,6 +70,8 @@ export const GraphGroup = Type.Object({
   round: Type.Optional(Type.Integer()),
   /** True while the run is `running`. */
   live: Type.Boolean(),
+  /** While the run merges this lane (ADR 0150): the merge step, such as `gate test`, else `merging`. */
+  merging: Type.Optional(Type.String()),
   steps: Type.Array(GraphStep),
 });
 export type GraphGroup = Static<typeof GraphGroup>;

@@ -46,6 +46,8 @@ const STEP = 72;
 export const HELPER_ROW = 26;
 const PAD = 18;
 const HEADER = 44;
+/** The `merging: <step>` line under a merging group's name: its steps move down by this, so it covers none. */
+const MERGING_ROW = 18;
 const TREE_GAP = 22;
 /** A step node's box: the pod's center sits at (STAGE_R, STEP_CY), the text to its right. */
 const STEP_W = GROUP_W - 26;
@@ -159,7 +161,7 @@ function layoutTree(
     // Each pod's place in its group, then the row's height from the tallest group.
     const placed = tree.groups.slice(row, row + perRow).map((group) => {
       const rounds = toRounds(group.steps);
-      let podY = 56;
+      let podY = 56 + (group.merging === undefined ? 0 : MERGING_ROW);
       const lines = rounds.map((round) => {
         const wide = !phone && round.length > 1;
         const line = round.map((step, column) => {
@@ -195,6 +197,8 @@ function layoutTree(
       );
       const onRoute = (step: GraphStep, round: number, column: number) =>
         round <= end && (step.state === "running" || (round < end && column === 0));
+      // A merging lane's run has ended, but the coordinator works on it: its first thread is live.
+      const merging = group.merging !== undefined;
       let sources = [{ id, handle: "root", onRoute: true }];
       lines.forEach(({ line, stepW }, round) => {
         for (const [column, { step, x, y }] of line.entries()) {
@@ -211,7 +215,7 @@ function layoutTree(
           const target = onRoute(step, round, column);
           for (const source of sources) {
             const route = source.onRoute && target;
-            const live = route && group.live;
+            const live = (route && group.live) || (round === 0 && merging);
             edges.push({
               id: sources.length === 1 ? `thread:${stepId}` : `thread:${source.id}:${stepId}`,
               type: "thread",
@@ -220,9 +224,9 @@ function layoutTree(
               target: stepId,
               targetHandle: "in",
               data: {
-                tone: route || round === 0 ? tone : "muted",
+                tone: live || route || round === 0 ? tone : "muted",
                 live,
-                dim: round === 0 ? !group.live : step.state === "waiting",
+                dim: round === 0 ? !group.live && !merging : step.state === "waiting",
                 stacked: round === 0 && stacked,
               },
             });
@@ -253,7 +257,7 @@ function layoutTree(
       root: { x: rx, y: ry, r: rootR },
       live:
         rootState(tree.root, waits.get(tree.root.agentId)) === "work" ||
-        tree.groups.some((group) => group.live),
+        tree.groups.some((group) => group.live || group.merging !== undefined),
     },
     handles: rootHandles({ x: rx, y: ry, r: rootR }),
     ...sized(width, height),
