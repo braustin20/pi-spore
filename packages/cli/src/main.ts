@@ -54,6 +54,24 @@ const system: CliDeps["system"] = {
         done(code ?? 1);
       });
     }),
+  // The opener's output stays out of the terminal: desktop openers log noise that looks like our own errors.
+  capture: (file, args) =>
+    new Promise((done, fail) => {
+      const child = spawn(file, args, { stdio: ["ignore", "pipe", "pipe"] });
+      let output = "";
+      child.stdout?.on("data", (chunk: Buffer) => {
+        output += chunk;
+      });
+      child.stderr?.on("data", (chunk: Buffer) => {
+        output += chunk;
+      });
+      child.on("error", (error: NodeJS.ErrnoException) => {
+        fail(error.code === "ENOENT" ? new Error(`${file} not found`) : error);
+      });
+      child.on("close", (code) => {
+        done({ code: code ?? 1, output });
+      });
+    }),
   readFile: readIfExists,
   writeFile: (path, text) => {
     mkdirSync(dirname(path), { recursive: true });

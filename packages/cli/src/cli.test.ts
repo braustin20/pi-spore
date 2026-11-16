@@ -327,17 +327,42 @@ describe("pi-spore service commands", () => {
       "journalctl --user -u pi-spore",
     ]);
 
+    // The opener's output is captured, not inherited: KDE's opener logs noise such as "kf.iconthemes …".
     const calls: string[] = [];
-    const run_ = async (file: string, args: readonly string[]) => {
+    const capture = async (file: string, args: readonly string[]) => {
       calls.push([file, ...args].join(" "));
-      return 0;
+      return { code: 0, output: "kf.iconthemes: Icon theme not found.\n" };
     };
     const second = fakeDeps(noServer, {
-      system: fakeSystem({ run: run_ }),
+      system: fakeSystem({ capture }),
       env: { PI_SPORE_PORT: "7421" },
     });
     expect(await run(["open"], second.deps)).toBe(0);
     expect(calls).toEqual(["xdg-open http://127.0.0.1:7421"]);
+    expect(second.out).toEqual([]);
+    expect(second.err).toEqual([]);
+  });
+
+  it("open fails with the last lines of the opener's output", async () => {
+    const output = `${Array.from({ length: 20 }, (_, i) => `noise ${i}`).join("\n")}\nboom\n`;
+    const { deps, err } = fakeDeps(noServer, {
+      system: fakeSystem({ capture: async () => ({ code: 3, output }) }),
+    });
+
+    expect(await run(["open"], deps)).toBe(1);
+    expect(err).toHaveLength(1);
+    expect(err[0]).toContain("xdg-open http://127.0.0.1:7420 exited with code 3");
+    expect(err[0]).toContain("boom");
+    expect(err[0]).not.toContain("noise 0\n");
+  });
+
+  it("open fails with a clear error when xdg-open is missing", async () => {
+    const { deps, err } = fakeDeps(noServer, {
+      system: fakeSystem({ capture: () => Promise.reject(new Error("xdg-open not found")) }),
+    });
+
+    expect(await run(["open"], deps)).toBe(1);
+    expect(err).toEqual(["xdg-open not found"]);
   });
 
   it("start --open runs the server with the node path, then opens the UI once health answers", async () => {
@@ -345,15 +370,17 @@ describe("pi-spore service commands", () => {
     let stop: (code: number) => void = () => {};
     let delays = 0;
     const system = fakeSystem({
+      // The server keeps inherited output; only the opener is captured.
       run: (file, args, options) => {
-        calls.push(`${[file, ...args].join(" ")} in ${options?.cwd}`);
-        if (file === "xdg-open") {
-          stop(0);
-          return Promise.resolve(0);
-        }
+        calls.push(`run ${[file, ...args].join(" ")} in ${options?.cwd}`);
         return new Promise((resolve) => {
           stop = resolve;
         });
+      },
+      capture: async (file, args) => {
+        calls.push(`capture ${[file, ...args].join(" ")}`);
+        stop(0);
+        return { code: 0, output: "kf.iconthemes: Icon theme not found.\n" };
       },
       node: { path: NODE, version: "v26.1.0" },
       repoRoot: "/repo",
@@ -362,14 +389,38 @@ describe("pi-spore service commands", () => {
       },
     });
     let polls = 0;
-    const { deps } = fakeDeps(() => (++polls === 1 ? noServer() : healthy()), { system });
+    const { deps, err } = fakeDeps(() => (++polls === 1 ? noServer() : healthy()), { system });
 
     expect(await run(["start", "--open"], deps)).toBe(0);
     expect(calls).toEqual([
-      `${NODE} /repo/packages/server/dist/main.js in /repo`,
-      "xdg-open http://127.0.0.1:7420 in undefined",
+      `run ${NODE} /repo/packages/server/dist/main.js in /repo`,
+      "capture xdg-open http://127.0.0.1:7420",
     ]);
     expect(delays).toBe(1);
+    expect(err).toEqual([]);
+  });
+
+  it("start --open keeps the server running and reports the opener's output when it fails", async () => {
+    let stop: (code: number) => void = () => {};
+    const system = fakeSystem({
+      run: () =>
+        new Promise((resolve) => {
+          stop = resolve;
+        }),
+      capture: async () => {
+        stop(0);
+        return { code: 4, output: "boom\n" };
+      },
+      node: { path: NODE, version: "v26.1.0" },
+      repoRoot: "/repo",
+      delay: async () => {},
+    });
+    const { deps, err } = fakeDeps(healthy, { system });
+
+    expect(await run(["start", "--open"], deps)).toBe(0);
+    expect(err).toHaveLength(1);
+    expect(err[0]).toContain("exited with code 4");
+    expect(err[0]).toContain("boom");
   });
 
   /** A server that ends with `code` during the first health request, which stays pending until `answer`. */
@@ -380,10 +431,13 @@ describe("pi-spore service commands", () => {
     const system = fakeSystem({
       run: (file, args) => {
         calls.push([file, ...args].join(" "));
-        if (file === "xdg-open") return Promise.resolve(0);
         return new Promise((resolve) => {
           stop = resolve;
         });
+      },
+      capture: async (file, args) => {
+        calls.push([file, ...args].join(" "));
+        return { code: 0, output: "" };
       },
       node: { path: NODE, version: "v26.1.0" },
       repoRoot: "/repo",

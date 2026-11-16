@@ -74,6 +74,8 @@ export interface CliDeps {
       args: readonly string[],
       options?: { cwd?: string; env?: Record<string, string | undefined> },
     ) => Promise<number>;
+    /** Runs a program with argv, stdout and stderr captured together. Rejects with "<file> not found" if missing. */
+    capture: (file: string, args: readonly string[]) => Promise<{ code: number; output: string }>;
     /** undefined when the file does not exist. */
     readFile: (path: string) => string | undefined;
     /** Makes the parent folders. */
@@ -388,6 +390,25 @@ async function mustRun(
   if (code !== 0) throw new CliError(`${[file, ...args].join(" ")} exited with code ${code}`, 1);
 }
 
+/**
+ * Opens the UI in the browser. The opener's output is captured, not printed: desktop openers such as KDE's log
+ * noise ("kf.iconthemes: Icon theme ... not found") that reads like a pi-spore failure. Its last lines go in the
+ * error only when the opener fails.
+ */
+async function openBrowser(system: System, base: string): Promise<void> {
+  const result = await system.capture("xdg-open", [base]).catch((error: unknown) => {
+    throw new CliError(error instanceof Error ? error.message : String(error), 1);
+  });
+  if (result.code !== 0) {
+    const lines = result.output
+      .split("\n")
+      .filter((line) => line.trim() !== "")
+      .slice(-5);
+    const tail = lines.length > 0 ? `\n${lines.join("\n")}` : "";
+    throw new CliError(`xdg-open ${base} exited with code ${result.code}${tail}`, 1);
+  }
+}
+
 /** A network error means no server. */
 async function serverAnswers(deps: CliDeps, base: string): Promise<boolean> {
   try {
@@ -424,9 +445,7 @@ async function start(deps: CliDeps, base: string, args: readonly string[]): Prom
       if (up === ENDED) break;
       if (up) {
         // The server keeps running if the browser does not open.
-        await mustRun(system, "xdg-open", [base]).catch((error: CliError) =>
-          deps.err(error.message),
-        );
+        await openBrowser(system, base).catch((error: CliError) => deps.err(error.message));
         break;
       }
       if ((await untilEnd(system.delay(250))) === ENDED) break;
@@ -618,7 +637,7 @@ async function serverCommand(
   if (command === "start") return start(deps, base, args);
   if (command === "open") {
     if (args.length > 0) throw usageError("open takes no arguments");
-    return mustRun(deps.system, "xdg-open", [base]);
+    return openBrowser(deps.system, base);
   }
   // The build works on any platform and without a unit; only its last step needs systemd.
   if (command === "rebuild") return rebuild(deps, base, args);
