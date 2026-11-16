@@ -1,4 +1,6 @@
 // @vitest-environment happy-dom
+
+import type { LandingButton } from "@pi-spore/mod-workspaces/web";
 import { type ApiClient, ApiContext, type WebHost } from "@pi-spore/module-api";
 import type { GraphAgent, GraphGroup, GraphHelper, GraphStep, GraphTree } from "@pi-spore/shared";
 import { TooltipProvider } from "@pi-spore/ui";
@@ -84,7 +86,10 @@ function landing(): ComponentType<{ projectId?: string | undefined }> {
   let component: ComponentType<{ projectId?: string | undefined }> | undefined;
   agentGraphWeb.setup({
     use: () => ({
-      setLanding: (given: ComponentType<{ projectId?: string | undefined }>) => {
+      setLanding: (
+        given: ComponentType<{ projectId?: string | undefined }>,
+        _button: LandingButton,
+      ) => {
         component = given;
       },
     }),

@@ -77,6 +77,12 @@ export interface CreateWorkspaceFormProps {
   children?: ReactNode;
 }
 
+/** The list header's link to the landing page. */
+export interface LandingButton {
+  label: string;
+  icon: ComponentType<{ className?: string }>;
+}
+
 export interface WorkspaceView {
   /** Adds a section to the right column. */
   addPanel(panel: WorkspacePanel): void;
@@ -87,8 +93,15 @@ export interface WorkspaceView {
    * Only one module may set it.
    */
   setMain(component: ComponentType<{ workspace: Workspace; chatId?: string }>): void;
-  /** Sets the landing page: `/workspaces` and `/workspaces/in/<project>` with no workspace open. Only one module may set it. */
-  setLanding(component: ComponentType<{ projectId?: string | undefined }>): void;
+  /**
+   * Sets the landing page: `/workspaces` and `/workspaces/in/<project>` with no workspace open. `button` is the
+   * list header's link to it, so the workspaces module needs no name or icon for it (ADR 0176). Only one module may
+   * set it.
+   */
+  setLanding(
+    component: ComponentType<{ projectId?: string | undefined }>,
+    button: LandingButton,
+  ): void;
   /** Sets where the list gets its status lines and row chats. Only one module may set it. */
   setStatus(useStatus: UseWorkspaceStatus): void;
   /** The form the workspace view shows to start a workspace. */

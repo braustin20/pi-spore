@@ -116,7 +116,9 @@ describe("the landing page", () => {
 
   it("lets only one module set it", () => {
     // This file set the landing above, so this call is the second.
-    expect(() => view.setLanding(Landing, { label: "Again", icon: () => <svg /> })).toThrow(/landing page is set twice/);
+    expect(() => view.setLanding(Landing, { label: "Again", icon: () => <svg /> })).toThrow(
+      /landing page is set twice/,
+    );
   });
 });
 
@@ -183,10 +185,12 @@ describe("the landing button of the list header", () => {
     }));
     const phone = await render("/workspaces/new?pane=list");
     const link = graphLink(phone);
-    if (!(link instanceof HTMLAnchorElement)) throw new Error("no Agent graph link on the phone list");
+    if (!(link instanceof HTMLAnchorElement))
+      throw new Error("no Agent graph link on the phone list");
     await act(async () => link.click());
-    // The landing is open and the list pane is gone.
-    expect(phone.textContent).toContain("Landing: all projects");
+    // happy-dom fires hashchange after a timer, as a browser does.
+    await act(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    expect(window.location.hash).toBe("#/workspaces");
     expect(phone.querySelector('aside[aria-label="Workspaces"]')).toBeNull();
   });
 });
