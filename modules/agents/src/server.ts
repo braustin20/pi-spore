@@ -13,6 +13,7 @@ import {
   CreateAgentRequest,
   CreateChatRequest,
   DialogAnswer,
+  imageHeaders,
   orderChats,
   PromptRequest,
   parseJsonBody,
@@ -36,7 +37,7 @@ import {
   DELIVERY_JOB,
   Deliveries,
 } from "./deliveries.js";
-import { checkPromptImages, imageHeaders, readLinkedImage, servableType } from "./images.js";
+import { checkPromptImages, readLinkedImage, servableType } from "./images.js";
 import {
   agentEnv,
   findSubagentsRoot,

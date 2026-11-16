@@ -1,10 +1,14 @@
 import { execFile } from "node:child_process";
-import type { Exec } from "@pi-spore/module-api";
+import type { Exec, ExecOptions, ExecResult } from "@pi-spore/module-api";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
 
-export const exec: Exec = (command, args, options) =>
-  new Promise((resolve, reject) => {
+function run(
+  command: string,
+  args: readonly string[],
+  options: ExecOptions,
+): Promise<ExecResult<string | Buffer>> {
+  return new Promise((resolve, reject) => {
     execFile(
       command,
       [...args],
@@ -13,7 +17,7 @@ export const exec: Exec = (command, args, options) =>
         timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         env: options.env ? { ...process.env, ...options.env } : process.env,
         maxBuffer: 64 * 1024 * 1024,
-        encoding: "utf8",
+        encoding: options.encoding ?? "utf8",
       },
       (error, stdout, stderr) => {
         if (!error) return resolve({ code: 0, stdout, stderr });
@@ -28,3 +32,7 @@ export const exec: Exec = (command, args, options) =>
       },
     );
   });
+}
+
+// The encoding option picks the output type, which `Exec`'s two call signatures state.
+export const exec = run as Exec;

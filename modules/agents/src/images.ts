@@ -2,31 +2,16 @@ import { createHash } from "node:crypto";
 import { extname, isAbsolute, resolve } from "node:path";
 import { ApiError } from "@pi-spore/module-api";
 import { readFileInside } from "@pi-spore/module-api/node";
-import { IMAGE_TYPES, type ImageRef, type PromptImage } from "@pi-spore/shared";
-
-export type ImageType = (typeof IMAGE_TYPES)[number];
+import {
+  IMAGE_TYPES,
+  type ImageRef,
+  type ImageType,
+  imageTypeOfPath,
+  type PromptImage,
+  sniffImage,
+} from "@pi-spore/shared";
 
 const MIB = 1024 * 1024;
-
-/** The first bytes of each image type, so a file or upload is what its type says. */
-function sniff(bytes: Uint8Array): ImageType | undefined {
-  const starts = (prefix: readonly number[], at = 0) =>
-    prefix.every((byte, index) => bytes[at + index] === byte);
-  const ascii = (text: string) => [...text].map((char) => char.charCodeAt(0));
-  if (starts([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return "image/png";
-  if (starts([0xff, 0xd8, 0xff])) return "image/jpeg";
-  if (starts(ascii("GIF87a")) || starts(ascii("GIF89a"))) return "image/gif";
-  if (starts(ascii("RIFF")) && starts(ascii("WEBP"), 8)) return "image/webp";
-  return undefined;
-}
-
-const TYPE_OF_EXTENSION: Readonly<Record<string, ImageType>> = {
-  ".png": "image/png",
-  ".jpg": "image/jpeg",
-  ".jpeg": "image/jpeg",
-  ".webp": "image/webp",
-  ".gif": "image/gif",
-};
 
 const isImageType = (type: string): type is ImageType =>
   (IMAGE_TYPES as readonly string[]).includes(type);
@@ -58,7 +43,7 @@ export function checkPromptImages(
       );
     }
     const claimed: string = image.mimeType;
-    if (sniff(bytes) !== claimed) {
+    if (sniffImage(bytes) !== claimed) {
       throw new ApiError(
         400,
         "bad_image",
@@ -182,16 +167,6 @@ export class ChatImages {
   }
 }
 
-/** Response headers for image bytes: the declared type only, and nothing in it may run. */
-export function imageHeaders(mimeType: ImageType, cache: string): Record<string, string> {
-  return {
-    "content-type": mimeType,
-    "cache-control": cache,
-    "x-content-type-options": "nosniff",
-    "content-security-policy": "default-src 'none'; sandbox",
-  };
-}
-
 export function servableType(mimeType: string): ImageType {
   if (!isImageType(mimeType))
     throw new ApiError(415, "unsupported_image", `The chat does not show ${mimeType} images`);
@@ -217,11 +192,11 @@ export async function readLinkedImage(
     maxBytes,
     // The real name counts, so `shot.png` linking to `.env` is refused.
     (real) => {
-      if (!TYPE_OF_EXTENSION[extname(real).toLowerCase()]) throw notAnImage();
+      if (!imageTypeOfPath(real)) throw notAnImage();
     },
   );
-  const mimeType = TYPE_OF_EXTENSION[extname(real).toLowerCase()];
-  if (!mimeType || sniff(bytes) !== mimeType)
+  const mimeType = imageTypeOfPath(real);
+  if (!mimeType || sniffImage(bytes) !== mimeType)
     throw new ApiError(
       415,
       "not_an_image",

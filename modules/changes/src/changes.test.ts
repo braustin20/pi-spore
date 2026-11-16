@@ -43,7 +43,7 @@ beforeEach(async () => {
     vcsFolderModule,
     workspacesModule,
     agents,
-    createChangesModule({ maxDiffFiles: 2 }),
+    createChangesModule({ maxDiffFiles: 2, maxContentBytes: 4096 }),
   ]);
 });
 afterEach(async () => {
@@ -554,5 +554,122 @@ describe("staged comments", () => {
     await until(() => said(agent.id).length > 0);
     expect(said(agent.id)).toEqual(["Hi"]);
     expect(await open(workspace.id)).toHaveLength(1);
+  });
+});
+
+describe("file content", () => {
+  /** PNG bytes that a string round trip would change. */
+  const png = (tail: number[]) =>
+    Buffer.concat([
+      Buffer.from(FAKE_PNG, "base64"),
+      Buffer.from([0x80, 0xff, 0x00, 0xc3, ...tail]),
+    ]);
+
+  const content = (workspaceId: string, query: string) =>
+    server.request("GET", `/api/changes/workspaces/${workspaceId}/content?${query}`);
+
+  const bytesOf = async (response: Response, status = 200): Promise<Buffer> => {
+    const bytes = Buffer.from(await response.arrayBuffer());
+    if (response.status !== status)
+      throw new Error(`Expected ${status}, got ${response.status}: ${bytes.toString()}`);
+    return bytes;
+  };
+
+  it("serves the new side of an untracked PNG as exact image bytes", async () => {
+    const workspace = await gitWorkspace();
+    const bytes = png([1]);
+    writeFileSync(join(workspace.path, "shot.png"), bytes);
+
+    const response = await content(workspace.id, "scope=uncommitted&path=shot.png&side=new");
+    expect((await bytesOf(response)).equals(bytes)).toBe(true);
+    expect(response.headers.get("content-type")).toBe("image/png");
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("cache-control")).toBe("no-store");
+    expect(await errorCode(await content(workspace.id, "path=shot.png&side=old"), 404)).toBe(
+      "side_missing",
+    );
+  });
+
+  it("serves both sides of a PNG changed on the line", async () => {
+    const workspace = await gitWorkspace();
+    const before = png([1]);
+    const after = png([2, 0x00, 0xfe]);
+    writeFileSync(join(workspace.path, "shot.png"), before);
+    git(workspace.path, "add", "shot.png");
+    git(workspace.path, "commit", "-q", "-m", "add shot");
+    // The base gets the first PNG, so only the change is on the line.
+    git(
+      join(scratch, "game"),
+      "merge",
+      "-q",
+      "--ff-only",
+      git(workspace.path, "rev-parse", "HEAD").trim(),
+    );
+    writeFileSync(join(workspace.path, "shot.png"), after);
+    git(workspace.path, "commit", "-q", "-am", "change shot");
+
+    const old = await bytesOf(await content(workspace.id, "scope=line&path=shot.png&side=old"));
+    const next = await bytesOf(await content(workspace.id, "scope=line&path=shot.png&side=new"));
+    expect(old.equals(before)).toBe(true);
+    expect(next.equals(after)).toBe(true);
+  });
+
+  it("serves the staged side from the index, not the working tree", async () => {
+    const workspace = await gitWorkspace();
+    writeFileSync(join(workspace.path, "shot.png"), png([1]));
+    git(workspace.path, "add", "shot.png");
+    git(workspace.path, "commit", "-q", "-m", "add shot");
+    const staged = png([2]);
+    writeFileSync(join(workspace.path, "shot.png"), staged);
+    git(workspace.path, "add", "shot.png");
+    writeFileSync(join(workspace.path, "shot.png"), png([3]));
+
+    const bytes = await bytesOf(await content(workspace.id, "scope=staged&path=shot.png&side=new"));
+    expect(bytes.equals(staged)).toBe(true);
+  });
+
+  it("refuses an image path whose bytes are not that image", async () => {
+    const workspace = await gitWorkspace();
+    writeFileSync(join(workspace.path, "x.png"), "not a picture\n");
+    expect(await errorCode(await content(workspace.id, "path=x.png&side=new"), 415)).toBe(
+      "not_an_image",
+    );
+  });
+
+  it("serves a text file as plain text", async () => {
+    const workspace = await gitWorkspace();
+    writeFileSync(join(workspace.path, "notes.md"), "# Notes\n\nHi\n");
+    const response = await content(workspace.id, "path=notes.md&side=new");
+    expect((await bytesOf(response)).toString("utf8")).toBe("# Notes\n\nHi\n");
+    expect(response.headers.get("content-type")).toMatch(/^text\/plain/);
+    expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toBe("default-src 'none'; sandbox");
+  });
+
+  it("refuses other binary files, unchanged paths, and a bad side", async () => {
+    const workspace = await gitWorkspace();
+    writeFileSync(join(workspace.path, "blob.bin"), Buffer.from([0x00, 0x01, 0x00, 0x02]));
+    expect(await errorCode(await content(workspace.id, "path=blob.bin&side=new"), 415)).toBe(
+      "not_supported",
+    );
+    expect(await errorCode(await content(workspace.id, "path=a.txt&side=new"), 404)).toBe(
+      "file_not_changed",
+    );
+    expect(await errorCode(await content(workspace.id, "path=blob.bin&side=mid"), 400)).toBe(
+      "bad_side",
+    );
+  });
+
+  it("refuses a side over the limit, from the working tree and from Git", async () => {
+    const workspace = await gitWorkspace();
+    const big = png(new Array(5000).fill(7));
+    writeFileSync(join(workspace.path, "big.png"), big);
+    expect(await errorCode(await content(workspace.id, "path=big.png&side=new"), 413)).toBe(
+      "file_too_large",
+    );
+    git(workspace.path, "add", "big.png");
+    expect(
+      await errorCode(await content(workspace.id, "scope=staged&path=big.png&side=new"), 413),
+    ).toBe("file_too_large");
   });
 });

@@ -64,6 +64,17 @@ export interface ChangeOps {
     file: ChangedFile,
     limits: DiffLimits,
   ): Promise<FileDiff>;
+  /**
+   * The bytes of one side of a file (ADR 0186); `file` comes from `files` for the same scope. A side that does not
+   * exist is ApiError 404 `side_missing`; a side over `maxBytes` is 413 `file_too_large`.
+   */
+  content?(
+    location: WorkspaceLocation,
+    scope: ChangeScope,
+    file: ChangedFile,
+    side: "old" | "new",
+    maxBytes: number,
+  ): Promise<Buffer>;
 }
 
 /** Sending a line to where others see it (Git: push). Never rewrites what is there (R9.3). */
