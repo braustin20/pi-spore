@@ -494,8 +494,10 @@ export const createAttentionModule = ({
     const chatKeys = (current: Inbox) =>
       new Set(current.items.filter((item) => item.kind !== "notice").map(itemKey));
     host.onStarted(async () => {
-      // What is there at start is not news, as in the web store.
-      seen ??= chatKeys(await inbox());
+      // What is there at start is not news, as in the web store. A newer build may have set `seen` while this one
+      // ran; its keys are newer, so they stay.
+      const keys = chatKeys(await inbox());
+      seen ??= keys;
     });
     const pushTo = async (row: SubscriptionRow, payload: string) => {
       try {

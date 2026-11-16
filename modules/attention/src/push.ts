@@ -33,9 +33,10 @@ export const sendWebPush: PushSender = async (target, payload, vapid) => {
   }
 };
 
+/** base64url with no padding: a P-256 public key is 65 bytes (87 characters), its private key 32 (43). */
 const VapidKeys = Type.Object({
-  publicKey: Type.String({ minLength: 1 }),
-  privateKey: Type.String({ minLength: 1 }),
+  publicKey: Type.String({ pattern: "^[A-Za-z0-9_-]{87}$" }),
+  privateKey: Type.String({ pattern: "^[A-Za-z0-9_-]{43}$" }),
 });
 type VapidKeys = Static<typeof VapidKeys>;
 

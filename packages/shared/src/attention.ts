@@ -303,7 +303,11 @@ const pushKey = Type.String({ minLength: 1, maxLength: 512 });
 
 /** A browser's push subscription (ADR 0187), as `PushSubscription.toJSON()` gives it. */
 export const PushSubscriptionRequest = Type.Object({
-  endpoint: Type.String({ pattern: "^https://", maxLength: 2_048 }),
+  // A whole https URL: a host of letters, digits, dots, and dashes, an optional port, then an optional path.
+  endpoint: Type.String({
+    pattern: "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$",
+    maxLength: 2_048,
+  }),
   keys: Type.Object({ p256dh: pushKey, auth: pushKey }),
 });
 export type PushSubscriptionRequest = Static<typeof PushSubscriptionRequest>;

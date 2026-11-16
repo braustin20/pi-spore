@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync } from "node:fs";
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -45,6 +45,9 @@ let statuses: Map<string, number | Error>;
 let questions: Questions;
 let homeItems: HomeItems;
 let notices: HomeNotice[];
+/** The test source answers its next read with this, once, so a test can hold that read. */
+let held: Promise<HomeNotice[]> | undefined;
+let sourceReads: number;
 
 const sendPush: PushSender = async (target, payload, vapid) => {
   calls.push({ target, payload, vapid });
@@ -61,7 +64,12 @@ const testModule: ServerModule = {
   setup(host) {
     questions = host.use(QuestionsKey);
     homeItems = host.use(HomeItemsKey);
-    homeItems.register("test-source", () => notices);
+    homeItems.register("test-source", () => {
+      sourceReads++;
+      const answer = held ?? notices;
+      held = undefined;
+      return answer;
+    });
   },
 };
 
@@ -73,6 +81,8 @@ beforeEach(() => {
   calls = [];
   statuses = new Map();
   notices = [];
+  held = undefined;
+  sourceReads = 0;
 });
 afterEach(async () => {
   vi.restoreAllMocks();
@@ -300,6 +310,46 @@ describe("phone push", () => {
     );
   });
 
+  it("refuses an https endpoint that is not a whole URL", async () => {
+    await start();
+    for (const endpoint of ["https://", "https://bad host/path", "https:///path"])
+      await ok(
+        await server.request("POST", "/api/attention/push/subscriptions", {
+          endpoint,
+          keys: { p256dh: "p", auth: "a" },
+        }),
+        400,
+      );
+  });
+
+  it("keeps what a newer build saw when the start build ends last", async () => {
+    await start();
+    await subscribe("https://push.example/one");
+    const caller = await makeAgent("asker");
+    await stop();
+
+    // The start build reads the source last of its steps, so its chat items are already fixed when it waits here.
+    let release: (notices: HomeNotice[]) => void = () => {};
+    held = new Promise((resolve) => {
+      release = resolve;
+    });
+    sourceReads = 0;
+    const starting = start(1_000);
+    await until(() => sourceReads === 1);
+    // A newer build sees the question and publishes before the start build ends.
+    questions.file(caller, { question: "While starting?" });
+    await until(() => sourceReads === 2);
+    await new Promise((resolve) => setImmediate(resolve));
+    release([]);
+    await starting;
+
+    const before = server.events.eventsOf(INBOX_TOPIC).length;
+    homeItems.changed();
+    await until(() => server.events.eventsOf(INBOX_TOPIC).length > before);
+    await new Promise((resolve) => setImmediate(resolve));
+    expect(endpoints()).toEqual([]);
+  });
+
   it("sends nothing while a desktop page has focus, and again once it expires or blurs", async () => {
     await start();
     await subscribe("https://push.example/one");
@@ -346,5 +396,12 @@ describe("phone push", () => {
     );
     expect(first.publicKey.length).toBeGreaterThan(40);
     expect(second.publicKey).toBe(first.publicKey);
+  });
+
+  it("refuses to start with a broken VAPID key file, and names it", async () => {
+    writeFileSync(join(home, "vapid.json"), JSON.stringify({ publicKey: "x", privateKey: "x" }));
+    await expect(start()).rejects.toThrow(
+      `The VAPID keys in ${join(home, "vapid.json")} are broken; delete the file to make new ones`,
+    );
   });
 });
