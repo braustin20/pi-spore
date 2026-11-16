@@ -216,7 +216,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     it, and adds `earlyStop: { stop, probability }` (stop at P >= 0.7), or `{ stop: false, error }` when the
     classifier fails (ADR 0140).
   - Run tools (R7, ADR 0150), by `PI_SPORE_RUN_ROLE`. The coordinator gets `start_lane` `{ name, brief, wave,
-    dependsOn?, pipeline?, model? }`, `revise_lane` `{ laneId, brief }`, `merge_lane` `{ laneId }`, and
+    dependsOn?, pipeline?, model? }`, `revise_lane` `{ laneId, brief, model? }`, `merge_lane` `{ laneId }`, and
     `answer_lane` `{ questionId, answer }`, and coordinator rules in place of the orchestrator rules. Of the card
     tools it gets only `kanban_list_cards`, `kanban_read_card`, and `kanban_add_card` (ADR 0154). A lane agent
     gets `ask_coordinator` `{ question }` in place of `request_human_input`; it files the question and ends the turn
@@ -841,8 +841,8 @@ See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-qu
 [ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
 [ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md),
 [ADR 0154](decisions/0154-coordinator-adds-cards.md), [ADR 0157](decisions/0157-finished-run-follows-the-active-chat.md), and
-[ADR 0165](decisions/0165-finished-run-pushes-each-merge.md), and [ADR 0180](decisions/0180-lanes-name-their-card.md).
-Requirements R7, R4.8.
+[ADR 0165](decisions/0165-finished-run-pushes-each-merge.md), [ADR 0180](decisions/0180-lanes-name-their-card.md), and
+[ADR 0182](decisions/0182-revise-lane-moves-a-lane-to-a-new-model.md). Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
@@ -885,6 +885,12 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
     lane's last pipeline run as `previousRunId` (ADR 0158): the lane's worker chat gets the brief, then one
     reviewer and the gates check it. When that worker chat is gone (deleted or closed) or the lane has no earlier
     run, the lane's own pipeline runs from the first stage, and the coordinator is told why.
+  - `revise_lane` with a `model` moves the lane to that model (ADR 0182). The model gets the same checks as a new
+    lane's: 400 `unknown_model` when Pi cannot run it, and a `lane-model` approval for a higher tier, with the lane
+    in `approval` (approve makes it `starting`; decline makes it `failed`, keeps its model, and tells the
+    coordinator). The revise stores the model in `runs_lanes.new_model`. `launch` sees it, skips the reuse, and
+    runs the lane's own pipeline from the first stage with a fresh worker on that model, in the same workspace.
+    The commit that marks the lane `running` moves `new_model` into `model`. The coordinator is told.
   - States: `approval`, `waiting`, `starting`, `running`, `passed`, `failed`, `declined`, `merging`, `merged`,
     `cancelled`.
 - **Merge** (ADR 0150). `merge_lane` takes a `passed` lane (409 `lane_not_mergeable`), makes it `merging`, and

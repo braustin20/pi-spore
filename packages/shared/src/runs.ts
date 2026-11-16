@@ -154,7 +154,11 @@ export const StartLaneRequest = Type.Object(
 export type StartLaneRequest = Static<typeof StartLaneRequest>;
 
 export const ReviseLaneRequest = Type.Object(
-  { laneId: Type.String({ minLength: 1 }), brief: Type.String({ minLength: 1 }) },
+  {
+    laneId: Type.String({ minLength: 1 }),
+    brief: Type.String({ minLength: 1 }),
+    model: Type.Optional(ModelRef),
+  },
   { additionalProperties: false },
 );
 export type ReviseLaneRequest = Static<typeof ReviseLaneRequest>;

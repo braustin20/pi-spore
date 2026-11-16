@@ -178,7 +178,9 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
     description:
       "Send a passed or failed lane back with a new brief (an artifact path). The lane's worker gets the brief as a " +
       "fix turn, then one fresh reviewer and the gates check it. If the worker chat is gone, the lane's full pipeline " +
-      "runs again.",
+      "runs again. With a model (provider/id), the lane moves to it: a fresh worker on that model runs the lane's full " +
+      "pipeline in the same workspace. The model gets the same checks as a lane's model: Pi must run it, and a model " +
+      "above the worker default needs the user's approval.",
     promptSnippet: "Send a lane back with a new brief",
     executionMode: "sequential",
     promptGuidelines: [
@@ -187,6 +189,13 @@ export function registerRunTools(pi: ExtensionAPI, client: BridgeClient, env: Br
     parameters: Type.Object({
       laneId: Type.String({ minLength: 1 }),
       brief: Type.String({ minLength: 1, description: "Artifact path of the new brief" }),
+      model: Type.Optional(
+        Type.String({
+          pattern: "^[^\\s/]+/\\S+$",
+          description:
+            "provider/id; moves the lane to this model with a fresh worker and the full pipeline. A model above the worker default needs the user's approval",
+        }),
+      ),
     }),
     async execute(toolCallId, params, signal) {
       const { summary, lane } = await laneCall(

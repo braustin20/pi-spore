@@ -30,7 +30,8 @@ export interface Runs {
   startLane(caller: BridgeCaller, request: StartLaneRequest): Promise<Lane>;
   /**
    * Sends a `passed` or `failed` lane of the caller's run back with a new brief and starts a new pipeline run in its
-   * workspace. 409 `lane_not_revisable` for a lane in another state.
+   * workspace. With a `model`, the lane runs its own pipeline with a new worker on that model (ADR 0182). 409
+   * `lane_not_revisable` for a lane in another state.
    */
   reviseLane(caller: BridgeCaller, request: ReviseLaneRequest): Promise<Lane>;
   /**

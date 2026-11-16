@@ -2183,27 +2183,49 @@ describe("revising a lane (ADR 0158)", () => {
       ).agents;
     const ofRole = async (role: string) =>
       (await laneAgents()).filter((agent) => agent.role === role).map((agent) => agent.id);
-    const revise = async () => {
-      await artifacts.write(
+    const writeFix = () =>
+      artifacts.write(
         { scope: "workspace", id: run.workspaceId },
         "briefs/fix.md",
         "Fix the null check",
       );
-      await runs.reviseLane(coordinator, { laneId: lane.id, brief: "briefs/fix.md" });
+    /** The revise's pipeline run, once its first stage step gives it a worker. The run row comes first. */
+    const newRun = async () => {
       let revised: PipelineRun | undefined;
-      // The run row comes first; its first stage step gives it a worker and a task turn later.
       await until(async () => {
         revised = (await pipelineRuns()).find((entry) => entry.id !== first.id);
         return revised?.workerAgentId !== undefined;
       });
       return revised as PipelineRun;
     };
+    const revise = async (model?: string) => {
+      await writeFix();
+      await runs.reviseLane(coordinator, {
+        laneId: lane.id,
+        brief: "briefs/fix.md",
+        ...(model === undefined ? {} : { model }),
+      });
+      return newRun();
+    };
     const coordinatorSaid = async (text: string) =>
       // The fake Pi echoes each prompt, so only the user side counts.
       (await chat(server, run.coordinatorAgentId)).filter(
         (message) => message.startsWith("user:") && message.includes(text),
       );
-    return { server, run, lane, first, revise, untilLane, ofRole, pipelineRuns, coordinatorSaid };
+    return {
+      server,
+      run,
+      coordinator,
+      lane,
+      first,
+      writeFix,
+      newRun,
+      revise,
+      untilLane,
+      ofRole,
+      pipelineRuns,
+      coordinatorSaid,
+    };
   }
 
   it("gives the brief to the lane's own worker, with one new reviewer and no new worker", async () => {
@@ -2301,5 +2323,114 @@ describe("revising a lane (ADR 0158)", () => {
     const gone = await deliveredWith(server, run.coordinatorAgentId, "worker chat is gone");
     expect(gone).toContain(`Lane "feature" (${lane.id})`);
     expect(gone).toContain('"rv"');
+  });
+
+  describe("on a new model (ADR 0182)", () => {
+    /** The value after --model in an agent's first launch. */
+    const launchedModel = async (agentId: string) => {
+      await until(() => launchOf(agentId) !== undefined);
+      const argv = launchOf(agentId)?.argv ?? [];
+      return argv.includes("--model") ? argv[argv.indexOf("--model") + 1] : undefined;
+    };
+
+    it("runs the lane's own pipeline with a new worker on that model, in the same workspace", async () => {
+      const { server, run, lane, first, revise, untilLane, coordinatorSaid } = await passedLane(
+        "move",
+        { worker: [DONE, DONE], reviewer: [LOOKS_FINE, APPROVE] },
+      );
+
+      const revised = await revise("fake/weak");
+      await untilLane("passed");
+
+      expect(revised.pipelineId).toBe("rv");
+      expect(revised.workerAgentId).not.toBe(first.workerAgentId);
+      expect(await launchedModel(revised.workerAgentId as string)).toBe("weak");
+      expect(await laneOf(server, run.id, lane.id)).toMatchObject({
+        workspaceId: lane.workspaceId,
+        model: "fake/weak",
+      });
+      const moved = await deliveredWith(server, run.coordinatorAgentId, "fake/weak");
+      expect(moved).toContain(`Lane "feature" (${lane.id})`);
+      expect(moved).toContain('"rv"');
+      expect(await coordinatorSaid("worker chat is gone")).toEqual([]);
+    });
+
+    it("refuses a model Pi cannot run with 400, names it, and leaves the lane alone", async () => {
+      const { server, run, coordinator, lane, writeFix, pipelineRuns } = await passedLane(
+        "unknown",
+        { worker: [DONE], reviewer: [LOOKS_FINE] },
+      );
+      await writeFix();
+
+      const refused = await asAgent(server, coordinator.agentId, run.workspaceId)(
+        "POST",
+        "lanes/revise",
+        { laneId: lane.id, brief: "briefs/fix.md", model: "other/none" },
+      );
+
+      expect(refused.status).toBe(400);
+      const { error } = (await refused.json()) as { error: { code: string; message: string } };
+      expect(error.code).toBe("unknown_model");
+      expect(error.message).toContain("other/none");
+      expect((await laneOf(server, run.id, lane.id)).state).toBe("passed");
+      expect((await pipelineRuns()).length).toBe(1);
+    });
+
+    it("files a lane-model approval for a model above the worker tier and waits; approve runs it", async () => {
+      const { server, run, coordinator, lane, writeFix, newRun, untilLane, pipelineRuns } =
+        await passedLane("tier", { worker: [DONE, DONE], reviewer: [LOOKS_FINE, APPROVE] });
+      await writeFix();
+
+      const sent = await runs.reviseLane(coordinator, {
+        laneId: lane.id,
+        brief: "briefs/fix.md",
+        model: "fake/strong",
+      });
+
+      expect(sent.state).toBe("approval");
+      const [approval] = await openApprovals(server);
+      expect(approval).toMatchObject({ kind: "lane-model", subject: { laneId: lane.id } });
+      expect(approval?.reason).toContain("fake/strong is tier heavy");
+      expect((await pipelineRuns()).length).toBe(1);
+
+      await json(
+        await server.request("POST", `/api/attention/approvals/${approval?.id}/approve`, {}),
+      );
+
+      const revised = await newRun();
+      await untilLane("passed");
+      expect(revised.pipelineId).toBe("rv");
+      expect(await launchedModel(revised.workerAgentId as string)).toBe("strong");
+      expect(await laneOf(server, run.id, lane.id)).toMatchObject({
+        workspaceId: lane.workspaceId,
+        model: "fake/strong",
+      });
+    });
+
+    it("fails the lane on a declined model, keeps its model, and tells the coordinator", async () => {
+      const { server, run, coordinator, lane, writeFix, pipelineRuns } = await passedLane(
+        "declined",
+        { worker: [DONE], reviewer: [LOOKS_FINE] },
+      );
+      await writeFix();
+      await runs.reviseLane(coordinator, {
+        laneId: lane.id,
+        brief: "briefs/fix.md",
+        model: "fake/strong",
+      });
+      const [approval] = await openApprovals(server);
+
+      await json(
+        await server.request("POST", `/api/attention/approvals/${approval?.id}/decline`, {}),
+      );
+
+      const after = await laneOf(server, run.id, lane.id);
+      expect(after.state).toBe("failed");
+      expect(after.model).toBeUndefined();
+      expect(after.message).toContain("fake/strong");
+      const told = await deliveredWith(server, run.coordinatorAgentId, "failed its pipeline");
+      expect(told).toContain("fake/strong");
+      expect((await pipelineRuns()).length).toBe(1);
+    });
   });
 });
