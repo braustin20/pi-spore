@@ -25,6 +25,7 @@ import {
   cn,
   DiffCount,
   EmptyState,
+  Markdown,
   Notice,
   Select,
   Spinner,
@@ -248,6 +249,9 @@ function Extras({
   );
 }
 
+/** A changed file the tab can show rendered instead of as a diff. */
+const isMarkdown = (path: string) => /\.(md|markdown)$/i.test(path);
+
 /** One side of a changed image, with its size (ADR 0186). */
 function ImageSide({ path, side, url }: { path: string; side: CommentSide; url: string }) {
   const loaded = useBlobUrl(url);
@@ -295,6 +299,54 @@ function ImageDiff({
       ))}
     </div>
   );
+}
+
+/** A changed Markdown file, shown as it reads. Comments stay on the diff (R8.3). */
+function RenderedFile({
+  diff,
+  contentPath,
+}: {
+  diff: FileDiff;
+  contentPath: (side: CommentSide) => string;
+}) {
+  const api = useApi();
+  // A deleted file has no new side; every other status has.
+  const side: CommentSide = diff.file.status === "deleted" ? "old" : "new";
+  const source = contentPath(side);
+  const [loaded, setLoaded] = useState<
+    { state: "loading" } | { state: "failed"; error: string } | { state: "ready"; text: string }
+  >({ state: "loading" });
+  useEffect(() => {
+    let current = true;
+    setLoaded({ state: "loading" });
+    api
+      .getBlob(source)
+      .then(async (blob) => {
+        const text = await blob.text();
+        if (current) setLoaded({ state: "ready", text });
+      })
+      .catch((caught: unknown) => {
+        if (current) setLoaded({ state: "failed", error: message(caught) });
+      });
+    return () => {
+      current = false;
+    };
+  }, [api, source]);
+  if (loaded.state === "loading") {
+    return (
+      <div className="flex justify-center p-6">
+        <Spinner />
+      </div>
+    );
+  }
+  if (loaded.state === "failed") {
+    return (
+      <Notice tone="fail" className="m-3">
+        {loaded.error}
+      </Notice>
+    );
+  }
+  return <Markdown text={loaded.text} className="p-4" />;
 }
 
 function DiffView({
@@ -573,6 +625,8 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   const [note, setNote] = useState<string | undefined>();
   const phone = usePhone();
   const [splitSetting, setSplit] = useStoredFlag("pi-spore.changes.split", false);
+  // Whether a Markdown file shows rendered instead of as a diff, kept between opens.
+  const [rendered, setRendered] = useStoredFlag("pi-spore.changes.rendered", false);
   // The split view is too wide for a phone, so it is never used there.
   const split = splitSetting && !phone;
   const [large, setLarge] = useState(false);
@@ -688,6 +742,14 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   }, [open]);
 
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
+
+  /** One side of a changed file, at the content route. The diff's image sides and the rendered view share it. */
+  const contentPath = (path: string) => (side: CommentSide) => {
+    const params = new URLSearchParams(query);
+    params.set("path", path);
+    params.set("side", side);
+    return `${base}/content?${params}`;
+  };
 
   const addComment = async (side: CommentSide, line: number, code: string, body: string) => {
     if (!selected) return;
@@ -862,25 +924,29 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">
                   {current.oldPath ? `${current.oldPath} → ${current.path}` : current.path}
                 </span>
+                {isMarkdown(current.path) && (
+                  <Button size="sm" variant="ghost" onClick={() => setRendered(!rendered)}>
+                    {rendered ? "Diff" : "Rendered"}
+                  </Button>
+                )}
                 {!current.binary && (
                   <DiffCount added={current.additions} deleted={current.deletions} />
                 )}
               </div>
             )}
             {diff ? (
-              <DiffView
-                diff={diff}
-                split={split}
-                comments={fileComments}
-                onComment={addComment}
-                onDelete={deleteComment}
-                contentPath={(side) => {
-                  const params = new URLSearchParams(query);
-                  params.set("path", diff.file.path);
-                  params.set("side", side);
-                  return `${base}/content?${params}`;
-                }}
-              />
+              rendered && isMarkdown(diff.file.path) ? (
+                <RenderedFile diff={diff} contentPath={contentPath(diff.file.path)} />
+              ) : (
+                <DiffView
+                  diff={diff}
+                  split={split}
+                  comments={fileComments}
+                  onComment={addComment}
+                  onDelete={deleteComment}
+                  contentPath={contentPath(diff.file.path)}
+                />
+              )
             ) : (
               selected && (
                 <div className="flex justify-center p-6">
