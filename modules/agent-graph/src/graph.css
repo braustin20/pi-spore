@@ -75,7 +75,12 @@
   height: calc(var(--r) * 2);
   border-radius: 50%;
   background: var(--c);
-  border: 1.5px solid var(--c);
+  /* The ring is an inset shadow, not a border: while `ag-breathe` scales it, Firefox draws a round border in four
+     quarters and leaks their edges as a one-frame "+". The padding keeps the content box a border would leave. */
+  --ring: var(--c);
+  --ring-w: 1.5px;
+  padding: var(--ring-w);
+  box-shadow: inset 0 0 0 var(--ring-w) var(--ring);
 }
 .ag-text > * {
   display: block;
@@ -111,7 +116,7 @@
 .ag-root .ag-shape {
   display: grid;
   place-items: center;
-  border-width: 2px;
+  --ring-w: 2px;
   background: color-mix(in oklab, var(--c) 16%, var(--bg));
   color: var(--c);
 }
@@ -133,14 +138,14 @@
 }
 .ag-step.s-idle .ag-shape {
   background: color-mix(in oklab, var(--text-muted) 75%, var(--raised));
-  border-color: transparent;
+  --ring: transparent;
 }
 .ag-step.s-idle .ag-text {
   opacity: 0.6;
 }
 .ag-step.s-none .ag-shape {
   background: var(--bg);
-  border-color: color-mix(in oklab, var(--c) 60%, transparent);
+  --ring: color-mix(in oklab, var(--c) 60%, transparent);
 }
 .ag-step.s-none .ag-role {
   color: color-mix(in oklab, var(--c) 55%, var(--text-muted));
