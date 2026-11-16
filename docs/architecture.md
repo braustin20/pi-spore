@@ -361,7 +361,9 @@ export interface ServerHost {
   move into the top bar, controls are at least 44 px tall, and fields use 16 px text. A page that shows one pane
   at a time keeps the open pane in the hash, `#/<path>?pane=<name>`; the router ignores the query. `openPane`,
   `switchPane`, and `closePane` change it, and Back closes a pane. The root follows `visualViewport` so the
-  composer stays above the on-screen keyboard. While a text field has focus, rows marked `data-hide-while-typing`
+  composer stays above the on-screen keyboard; its top follows `offsetTop` only while the keyboard is open. The
+  document never scrolls: `html` and `body` hide overflow, and `lockDocumentScroll` cancels a one-finger drag that
+  no inner scroller can use (ADR 0185). While a text field has focus, rows marked `data-hide-while-typing`
   (the top bar and the workspace pane row) are hidden by one CSS `:has()` rule in `packages/ui/src/styles.css`;
   they come back on blur. The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
   and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,

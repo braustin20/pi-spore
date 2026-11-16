@@ -13,6 +13,8 @@ import {
 import { MapPinOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { findPage, railActive, useHashPath } from "./router.js";
+import { lockDocumentScroll } from "./scroll-lock.js";
+import { followVisualViewport } from "./viewport-inset.js";
 
 const HEALTH_EVERY_MS = 30_000;
 
@@ -55,25 +57,9 @@ const noBadge = () => 0;
 /** Follows the visual viewport on phones. See the phone rules in packages/ui/src/styles.css. */
 function useKeyboardInset() {
   const phone = usePhone();
-  useEffect(() => {
-    const viewport = window.visualViewport;
-    if (!phone || !viewport) return;
-    // iOS Safari does not shrink the layout or dvh for the on-screen keyboard, so the composer would sit under it.
-    const root = document.documentElement.style;
-    const update = () => {
-      root.setProperty("--app-height", `${viewport.height}px`);
-      root.setProperty("--app-top", `${viewport.offsetTop}px`);
-    };
-    update();
-    viewport.addEventListener("resize", update);
-    viewport.addEventListener("scroll", update);
-    return () => {
-      viewport.removeEventListener("resize", update);
-      viewport.removeEventListener("scroll", update);
-      root.removeProperty("--app-height");
-      root.removeProperty("--app-top");
-    };
-  }, [phone]);
+  useEffect(() => (phone ? lockDocumentScroll(document) : undefined), [phone]);
+  // iOS Safari does not shrink the layout or dvh for the on-screen keyboard, so the composer would sit under it.
+  useEffect(() => (phone ? followVisualViewport(window) : undefined), [phone]);
 }
 
 /** `inHeader` is the phone row in the top bar: bigger touch targets, and the lit mark sits under the icon. */
