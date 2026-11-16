@@ -14,7 +14,7 @@ const SPORE_ROLES: readonly string[] = [
   "adversarial-reviewer",
 ];
 /** Roles with no model of their own run on the orchestrator's (ADR 0175, ADR 0181). */
-const FALLBACK_ROLES: ReadonlySet<string> = new Set(["planner", "coordinator"]);
+export const FALLBACK_ROLES: ReadonlySet<string> = new Set(["planner", "coordinator"]);
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json =>
