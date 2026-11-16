@@ -1,6 +1,7 @@
 // @vitest-environment happy-dom
 import { type ApiClient, ApiContext, type WebHost } from "@pi-spore/module-api";
 import {
+  type Agent,
   GATE_LOG_HEADING,
   type PipelineRun,
   type PipelineTurn,
@@ -86,17 +87,24 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-async function mount(first: PipelineRun[], startable: unknown[] = []) {
+/** The tab and the chat panel the module adds in `setup`. */
+function setUp() {
   let tab: ComponentType<{ workspace: Workspace }> | undefined;
+  let chatPanel: ComponentType<{ chatId: string }> | undefined;
   const view = {
     addTab: (added: { component: typeof tab }) => (tab = added.component),
     addPanel: () => {},
     addApprovalView: () => {},
+    addChatPanel: (_id: string, panel: typeof chatPanel) => (chatPanel = panel),
     DeclineNote,
   };
   pipelinesWeb.setup({ use: () => view } as unknown as WebHost);
   if (!tab) throw new Error("the pipelines module did not add its tab");
-  const Tab = tab;
+  return { Tab: tab, ChatPanel: chatPanel };
+}
+
+async function mount(first: PipelineRun[], startable: unknown[] = []) {
+  const { Tab } = setUp();
   let listener: ((raw: unknown) => void) | undefined;
   const sent: { method: string; path: string; body?: unknown }[] = [];
   const api = {
@@ -248,5 +256,102 @@ describe("Pipeline tab", () => {
     const more = turn({ id: "t-fix", kind: "fix", stageIndex: 1, createdAt: 13 * MIN });
     await send([{ ...before, turns: [TASK, REVIEW, more] }]);
     expect(expanded(root)).toEqual(["true", "false", "true"]);
+  });
+});
+
+describe("Pause and Resume (ADR 0187)", () => {
+  const buttons = (root: HTMLElement) =>
+    [...header(card(root, "default")).querySelectorAll("button")].map((b) => b.textContent);
+  const click = (root: HTMLElement, text: string) =>
+    act(async () =>
+      (
+        [...root.querySelectorAll("button")].find((b) => b.textContent === text) as HTMLElement
+      ).click(),
+    );
+
+  it("shows Pause on a running run, and a click posts pause", async () => {
+    const { root, sent } = await mount([run({})]);
+    expect(buttons(root)).toEqual(["default", "Pause", "Cancel"]);
+    await click(root, "Pause");
+    expect(sent).toEqual([{ method: "POST", path: "pipelines/runs/r1/pause", body: undefined }]);
+  });
+
+  it("shows Paused and Resume on a paused run, and a click posts resume", async () => {
+    const { root, sent } = await mount([run({ paused: true })]);
+    expect(header(card(root, "default")).textContent).toContain("Paused");
+    expect(header(card(root, "default")).textContent).not.toContain("Running");
+    expect(buttons(root)).toEqual(["default", "Resume", "Cancel"]);
+    await click(root, "Resume");
+    expect(sent).toEqual([{ method: "POST", path: "pipelines/runs/r1/resume", body: undefined }]);
+  });
+
+  it("shows no Pause on a run that waits for the user", async () => {
+    const { root } = await mount([run({ state: "waiting_user" })]);
+    expect(buttons(root)).toEqual(["default", "Cancel"]);
+  });
+});
+
+describe("Stage chat note (ADR 0187)", () => {
+  const NOTE = "The pipeline goes on after this turn. To stop it, use Pause on the Pipeline tab.";
+  const OPEN = turn({ id: "t-open", agentId: "stage" });
+
+  async function mountChat(chatId: string, runs: PipelineRun[]) {
+    const { ChatPanel } = setUp();
+    if (!ChatPanel) throw new Error("the pipelines module did not add its chat panel");
+    const asked: string[] = [];
+    const api = {
+      get: async (path: string) => {
+        asked.push(path);
+        const agent: Agent = {
+          id: chatId,
+          workspaceId: "W1",
+          role: "worker",
+          kind: "stage",
+          active: true,
+          status: "busy",
+          statusSince: 0,
+          createdAt: 0,
+        };
+        return { agent };
+      },
+      subscribe: (topic: string, onEvent: (raw: unknown) => void) => {
+        asked.push(topic);
+        onEvent({ type: "runs", runs });
+        return () => {};
+      },
+    } as unknown as ApiClient;
+    container = document.body.appendChild(document.createElement("div"));
+    const root = container;
+    reactRoot = createRoot(root);
+    await act(async () =>
+      reactRoot?.render(
+        <ApiContext value={api}>
+          <ChatPanel chatId={chatId} />
+        </ApiContext>,
+      ),
+    );
+    return { root, asked };
+  }
+
+  it("shows the note in a stage chat with a live turn on a running run", async () => {
+    const { root, asked } = await mountChat("stage", [run({ turns: [TASK, OPEN] })]);
+    expect(root.textContent).toBe(NOTE);
+    expect(asked).toEqual(["agents/stage", "pipelines:W1"]);
+  });
+
+  it("shows nothing when the run is paused", async () => {
+    const { root } = await mountChat("stage", [run({ paused: true, turns: [TASK, OPEN] })]);
+    expect(root.textContent).toBe("");
+  });
+
+  it("shows nothing for a chat with no open turn", async () => {
+    const reported = { ...OPEN, reportedAt: 5 };
+    const failed = { ...OPEN, error: "lost" };
+    for (const turns of [[reported], [failed], [TASK]]) {
+      const { root } = await mountChat("stage", [run({ turns })]);
+      expect(root.textContent).toBe("");
+      act(() => reactRoot?.unmount());
+      root.remove();
+    }
   });
 });
