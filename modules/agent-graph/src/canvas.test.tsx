@@ -1,4 +1,5 @@
 // @vitest-environment happy-dom
+import type { UserWait } from "@pi-spore/mod-agents/web";
 import type { LandingButton } from "@pi-spore/mod-workspaces/web";
 import { type ApiClient, ApiContext, type WebHost } from "@pi-spore/module-api";
 import type { GraphAgent, GraphGroup, GraphHelper, GraphStep, GraphTree } from "@pi-spore/shared";
@@ -80,18 +81,24 @@ const workspaceTree: GraphTree = {
   positions: {},
 };
 
+/** The chats that wait for the user, as the agents web module tells them; `render` sets them. */
+let userWaits: ReadonlyMap<string, UserWait> = new Map();
+
 /** The landing component the module gives the workspaces view. */
 function landing(): ComponentType<{ projectId?: string | undefined }> {
   let component: ComponentType<{ projectId?: string | undefined }> | undefined;
   agentGraphWeb.setup({
-    use: () => ({
-      setLanding: (
-        given: ComponentType<{ projectId?: string | undefined }>,
-        _button: LandingButton,
-      ) => {
-        component = given;
-      },
-    }),
+    use: (key: { owner: string }) =>
+      key.owner === "agents"
+        ? { useUserWaits: () => userWaits }
+        : {
+            setLanding: (
+              given: ComponentType<{ projectId?: string | undefined }>,
+              _button: LandingButton,
+            ) => {
+              component = given;
+            },
+          },
   } as unknown as WebHost);
   if (!component) throw new Error("the agent graph did not set the workspaces landing page");
   return component;
@@ -108,9 +115,10 @@ function unmount() {
 afterEach(unmount);
 
 /** Renders the landing with a fake api; `send` pushes a topic event, as the server does. */
-async function render(trees: GraphTree[], projectId?: string) {
+async function render(trees: GraphTree[], projectId?: string, waits: [string, UserWait][] = []) {
   // One landing at a time, as the workspaces view shows it.
   unmount();
+  userWaits = new Map(waits);
   const Landing = landing();
   let push: ((event: unknown) => void) | undefined;
   const topics: string[] = [];
@@ -376,6 +384,73 @@ describe("the agent graph canvas", () => {
     expect(pod("T7")?.classList).toContain("s-work");
     expect(pod("T7")?.querySelector(".ag-role")?.textContent).toBe("fix r1");
     expect(pod("T7")?.getAttribute("href")).toBe("#/workspaces/W5/chats/S5");
+  });
+
+  describe("a chat that waits for the user", () => {
+    const rootTree = (status: GraphAgent["status"]): GraphTree => ({
+      ...workspaceTree,
+      root: agent("C2", "W2", {
+        kind: "worker",
+        role: "orchestrator",
+        status,
+        model: "anthropic/claude-opus-5-5",
+      }),
+    });
+    const pod = (scope: Element, href: string) => {
+      const link = scope.querySelector(`a[href="${href}"]`);
+      if (!link) throw new Error(`no pod for ${href}`);
+      return { meta: link.querySelector(".ag-meta")?.textContent, classes: link.classList };
+    };
+    const root = "#/workspaces/W2/chats/C2";
+
+    it("shows a stopped root with an open question as waiting for the user's answer", async () => {
+      const { scope } = await render([rootTree("stopped")], undefined, [["C2", "question"]]);
+      expect(pod(scope, root).meta).toBe("waiting for your answer · opus 5.5");
+      expect(pod(scope, root).classes).toContain("s-wait");
+    });
+
+    it("shows an idle root with an approval as waiting", async () => {
+      const { scope } = await render([rootTree("idle")], undefined, [["C2", "approval"]]);
+      expect(pod(scope, root).classes).toContain("s-wait");
+    });
+
+    it("shows the same root without a wait as stopped, as before", async () => {
+      const { scope } = await render([rootTree("stopped")]);
+      expect(pod(scope, root).meta).toBe("stopped · opus 5.5");
+      expect(pod(scope, root).classes).toContain("s-idle");
+      expect(pod(scope, root).classes).not.toContain("s-wait");
+    });
+
+    it("shows a busy root with an old question as working", async () => {
+      const { scope } = await render([rootTree("busy")], undefined, [["C2", "question"]]);
+      expect(pod(scope, root).meta).toBe("working · opus 5.5");
+      expect(pod(scope, root).classes).toContain("s-work");
+    });
+
+    it("shows a busy root with an open dialog as waiting, since the dialog blocks it", async () => {
+      const { scope } = await render([rootTree("busy")], undefined, [["C2", "dialog"]]);
+      expect(pod(scope, root).meta).toBe("waiting for your answer · opus 5.5");
+      expect(pod(scope, root).classes).toContain("s-wait");
+    });
+
+    it("shows a running stage whose chat has a dialog open as waiting", async () => {
+      const { scope } = await render([runTree], undefined, [["S3", "dialog"]]);
+      const stage = pod(scope, "#/workspaces/L2/chats/S3");
+      expect(stage.meta).toBe("waiting for your answer · sonnet 5.5");
+      expect(stage.classes).toContain("s-wait");
+    });
+
+    it("does not show a wait on a done stage, whose agent may serve a later step", async () => {
+      const { scope } = await render([runTree], undefined, [["S1", "dialog"]]);
+      const stage = pod(scope, "#/workspaces/L1/chats/S1");
+      expect(stage.meta).toBe("idle · sonnet 5.5");
+      expect(stage.classes).not.toContain("s-wait");
+    });
+
+    it("names the wait in the legend", async () => {
+      const { scope } = await render([runTree]);
+      expect(scope.querySelector(".ag-legend")?.textContent).toContain("waits for you");
+    });
   });
 
   it("says when no agent works, with a link to a new workspace", async () => {
