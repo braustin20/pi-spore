@@ -894,6 +894,79 @@ describe("merging a lane (ADR 0150)", () => {
     expect(git(folder, "rev-parse", "main")).toBe(main);
   });
 
+  it("puts a lane with no commits back to passed, tells the coordinator, and leaves the run line alone", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "empty", GREEN);
+    const main = git(folder, "rev-parse", "main");
+    const { run, coordinator } = await createRun(server, projectId, "empty");
+    const lane = await startLane(run, coordinator, "idle");
+    await passLane(server, run.id, lane.id);
+    const laneWorkspace = await workspaceOf(
+      server,
+      (await laneOf(server, run.id, lane.id)).workspaceId as string,
+    );
+    writeFileSync(join(laneWorkspace.path, "left.txt"), "never committed\n");
+    const before = git(folder, "rev-parse", run.line);
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "adds no commits");
+    expect(delivery).toContain(`Lane "idle" (${lane.id}) adds no commits to ${run.line}`);
+    expect(delivery).toContain("revise_lane");
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({
+      state: "passed",
+      message: "empty lane: its branch adds no commits",
+    });
+    expect(git(folder, "rev-parse", run.line)).toBe(before);
+    expect(() => git(folder, "show", `${run.line}:left.txt`)).toThrow();
+    expect(git(folder, "rev-parse", "main")).toBe(main);
+  });
+
+  it("still ends merged when a restart finds the merge commit already made", async () => {
+    const home = join(scratch, "home");
+    const first = await start({ home });
+    const { projectId, folder } = await project(first, "committed", {
+      check: "hang-first",
+      test: "pass",
+    });
+    const { run, coordinator } = await createRun(first, projectId, "committed");
+    const lane = await startLane(run, coordinator, "work");
+    await laneChanges(first, run, lane.id, "feature.txt", "lane change\n");
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+    // The first gate hangs with the merge in the run worktree. The commit lands, and then the server stops.
+    await until(() => existsSync(join(scratch, "counter.txt")));
+    const runWorkspace = await workspaceOf(first, run.workspaceId);
+    git(runWorkspace.path, "commit", "-q", "--no-edit");
+    const entry = servers.pop();
+    entry?.server.services.jobs.stop();
+    // End the hung gate process, so none outlives the first server. A real restart marks the cut-off run
+    // interrupted, so the test sets that by hand once the process is gone.
+    const { runs: gateRuns } = await json<{ runs: { id: string; status: string }[] }>(
+      await first.request("GET", `/api/actions/workspaces/${run.workspaceId}/runs`),
+    );
+    const hung = gateRuns[0] as { id: string };
+    await json(await first.request("POST", `/api/actions/runs/${hung.id}/cancel`));
+    await until(async () => {
+      const { runs: ended } = await json<{ runs: { id: string; status: string }[] }>(
+        await first.request("GET", `/api/actions/workspaces/${run.workspaceId}/runs`),
+      );
+      return ended.find((found) => found.id === hung.id)?.status === "cancelled";
+    });
+    first.store.run("UPDATE actions_runs SET status = 'interrupted' WHERE id = ?", hung.id);
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const restarted = await start({ home, firstId: 1_000 });
+
+    await until(async () => (await laneOf(restarted, run.id, lane.id)).state === "merged");
+    expect(git(folder, "show", `${run.line}:feature.txt`)).toBe("lane change");
+    expect(
+      (await chat(restarted, run.coordinatorAgentId)).some((message) =>
+        message.includes("adds no commits"),
+      ),
+    ).toBe(false);
+  });
+
   it("aborts the merge when a gate fails on the merged tree, and tells the coordinator the diff and the log", async () => {
     const server = await start();
     const { projectId, folder } = await project(server, "red", { check: "pass", test: "fail" });
