@@ -136,6 +136,16 @@
 .ag-pod.s-fail {
   --c: var(--fail);
 }
+/* Waits for the user: fully opaque, with a steady glow and no breathing, so it reads apart from work. */
+.ag-pod.s-wait {
+  --c: var(--warn);
+}
+.ag-pod.s-wait .ag-shape {
+  box-shadow:
+    inset 0 0 0 var(--ring-w) var(--ring),
+    0 0 0 4px color-mix(in oklab, var(--warn) 30%, transparent),
+    0 0 14px color-mix(in oklab, var(--warn) 55%, transparent);
+}
 .ag-step.s-idle .ag-shape {
   background: color-mix(in oklab, var(--text-muted) 75%, var(--raised));
   --ring: transparent;
@@ -459,6 +469,11 @@
 .ag-legend i.st.fail {
   background: var(--fail);
   border-color: var(--fail);
+}
+.ag-legend i.st.wait {
+  background: var(--warn);
+  border-color: var(--warn);
+  box-shadow: 0 0 6px color-mix(in oklab, var(--warn) 60%, transparent);
 }
 .ag-legend .ag-sep {
   width: 1px;

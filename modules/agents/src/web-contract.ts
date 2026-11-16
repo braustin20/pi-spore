@@ -23,6 +23,8 @@ export interface AgentsWeb {
   addChatPanel(id: string, panel: ComponentType<{ chatId: string }>): void;
   /** Sets the hook that tells which chats wait for the user, for the workspace list. The attention module sets it. */
   setUserWaits(hook: UseUserWaits): void;
+  /** A hook that returns which chats wait for the user, from the hook `setUserWaits` set. The agent graph reads it. */
+  useUserWaits: UseUserWaits;
   /** The id of the chat the chat pane shows now, or undefined when no chat pane is on the page. */
   shownChat(): string | undefined;
   /**

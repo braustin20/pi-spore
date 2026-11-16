@@ -1,5 +1,6 @@
 import "@xyflow/react/dist/base.css";
 import "./graph.css";
+import type { UseUserWaits } from "@pi-spore/mod-agents/web";
 import { useApi } from "@pi-spore/module-api";
 import type { AgentGraphEvent, GraphAgent, GraphStep, GraphTree } from "@pi-spore/shared";
 import { Button, cn, EmptyState, Notice, SporeLogo, usePhone } from "@pi-spore/ui";
@@ -17,8 +18,10 @@ import {
 } from "@xyflow/react";
 import {
   type CSSProperties,
+  createContext,
   type ReactNode,
   useCallback,
+  useContext,
   useEffect,
   useMemo,
   useRef,
@@ -40,6 +43,7 @@ import {
   stepState,
   type ThreadEdge,
   type TreeNode,
+  type Waits,
 } from "./layout.js";
 
 const STATE_TEXT: Record<PodState, string> = {
@@ -47,7 +51,11 @@ const STATE_TEXT: Record<PodState, string> = {
   idle: "idle",
   none: "not started",
   fail: "failed",
+  wait: "waiting for your answer",
 };
+
+/** The chats that wait for the user, for the pods React Flow renders. */
+const WaitsContext = createContext<Waits>(new Map());
 
 /** React Flow measures handles in the DOM, so these sit exactly where the layout's `handles` say. */
 function Handles({ handles }: { handles: readonly NodeHandle[] }) {
@@ -117,13 +125,16 @@ function rootRole(tree: GraphTree): string {
 
 function TreeBox({ id, data, width }: NodeProps<TreeNode>) {
   const { tree, tone, root, live } = data;
+  const state = rootState(tree.root, useContext(WaitsContext).get(tree.root.agentId));
+  const status =
+    state === "wait" ? STATE_TEXT.wait : tree.root.status === "busy" ? "working" : tree.root.status;
   return (
     <div className={cn("ag-tree", live && "live")}>
       <div className="ag-tree-name">{tree.name}</div>
       <Pod
         agent={tree.root}
         // `ag-root` is the tree's drag handle.
-        className={cn("ag-root", `t-${tone}`, `s-${rootState(tree.root)}`)}
+        className={cn("ag-root", `t-${tone}`, `s-${state}`)}
         style={
           {
             "--r": `${root.r}px`,
@@ -136,7 +147,7 @@ function TreeBox({ id, data, width }: NodeProps<TreeNode>) {
         shape={<SporeLogo />}
         role={rootRole(tree)}
         title={tree.root.title}
-        meta={`${tree.root.status === "busy" ? "working" : tree.root.status} · ${shortModel(tree.root.routedModel ?? tree.root.model)}`}
+        meta={`${status} · ${shortModel(tree.root.routedModel ?? tree.root.model)}`}
       >
         <Helpers node={id} r={root.r} />
       </Pod>
@@ -163,7 +174,8 @@ function stepRole(step: GraphStep): string {
 
 function StepPod({ id, data }: NodeProps<StepNode>) {
   const { step } = data;
-  const state = stepState(step);
+  const waits = useContext(WaitsContext);
+  const state = stepState(step, step.agent && waits.get(step.agent.agentId));
   return (
     <>
       <Pod
@@ -279,13 +291,24 @@ function FitButton() {
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-function Canvas({ trees, helpers }: { trees: readonly GraphTree[]; helpers: HelpersByNode }) {
+function Canvas({
+  trees,
+  helpers,
+  waits,
+}: {
+  trees: readonly GraphTree[];
+  helpers: HelpersByNode;
+  waits: Waits;
+}) {
   const api = useApi();
   const phone = usePhone();
   // This mount's drags, shown until the server echoes the saved place in the next topic event, and after.
   const [moved, setMoved] = useState<ReadonlyMap<string, XYPosition>>(new Map());
   const [error, setError] = useState<string | undefined>();
-  const layout = useMemo(() => layoutGraph(trees, helpers, phone), [trees, helpers, phone]);
+  const layout = useMemo(
+    () => layoutGraph(trees, helpers, phone, waits),
+    [trees, helpers, phone, waits],
+  );
   // Node ids are unique across trees. A step's place is relative to its group, as the layout gives it.
   const saved = useMemo(
     () => new Map(trees.flatMap((tree) => Object.entries(tree.positions))),
@@ -369,16 +392,19 @@ function Canvas({ trees, helpers }: { trees: readonly GraphTree[]; helpers: Help
   );
 }
 
-function summary(trees: readonly GraphTree[]): string {
+function summary(trees: readonly GraphTree[], waits: Waits): string {
   const states = trees.flatMap((tree) => [
-    rootState(tree.root),
-    ...tree.groups.flatMap((group) => group.steps.map(stepState)),
+    rootState(tree.root, waits.get(tree.root.agentId)),
+    ...tree.groups.flatMap((group) =>
+      group.steps.map((step) => stepState(step, step.agent && waits.get(step.agent.agentId))),
+    ),
   ]);
-  const failed = states.filter((state) => state === "fail").length;
+  const count = (state: PodState) => states.filter((each) => each === state).length;
   return [
     `${trees.length} ${trees.length === 1 ? "workspace" : "workspaces"}`,
-    `${states.filter((state) => state === "work").length} working`,
-    ...(failed > 0 ? [`${failed} failed`] : []),
+    `${count("work")} working`,
+    ...(count("wait") > 0 ? [`${count("wait")} wait for you`] : []),
+    ...(count("fail") > 0 ? [`${count("fail")} failed`] : []),
   ].join(" · ");
 }
 
@@ -393,14 +419,23 @@ const LEGEND_STATES = [
   ["idle", "idle"],
   ["none", "not started"],
   ["fail", "failed"],
+  ["wait", "waits for you"],
 ] as const;
 
 /**
  * The workspaces landing page: every agent tree, live (ADR 0176). The topic's first event is the snapshot; each
  * event is the whole graph again.
  */
-export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
+export function AgentGraph({
+  projectId,
+  useUserWaits,
+}: {
+  projectId?: string | undefined;
+  /** The agents module's hook for the chats that wait for the user. */
+  useUserWaits: UseUserWaits;
+}) {
   const api = useApi();
+  const waits = useUserWaits();
   const [all, setAll] = useState<readonly GraphTree[]>();
   useEffect(
     () => api.subscribe("agent-graph:trees", (event) => setAll((event as AgentGraphEvent).trees)),
@@ -418,7 +453,7 @@ export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
         <div className="flex flex-wrap items-center gap-3">
           <SporeLogo className="size-6 text-accent" />
           <h1 className="m-0 text-lg font-semibold">Agents</h1>
-          {trees && <span className="text-[13px] text-muted">{summary(trees)}</span>}
+          {trees && <span className="text-[13px] text-muted">{summary(trees, waits)}</span>}
         </div>
         <div className="ag-legend">
           {LEGEND_TYPES.map(([tone, label]) => (
@@ -450,7 +485,9 @@ export function AgentGraph({ projectId }: { projectId?: string | undefined }) {
       )}
       {trees && trees.length > 0 && (
         <HelpersContext value={helpers}>
-          <Canvas trees={trees} helpers={helpers.byNode} />
+          <WaitsContext value={waits}>
+            <Canvas trees={trees} helpers={helpers.byNode} waits={waits} />
+          </WaitsContext>
         </HelpersContext>
       )}
     </div>

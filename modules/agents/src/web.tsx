@@ -44,6 +44,7 @@ import { parseWorkspaceWorking, reduceAgentList, workspaceStatuses } from "./sta
 import { type AgentsWeb, AgentsWebKey, type UserWait, type UseUserWaits } from "./web-contract.js";
 import { WorkingIndicator } from "./working-indicator.js";
 
+export { waitShows } from "./status.js";
 export * from "./web-contract.js";
 
 const AgentBody = Type.Object({ agent: Type.Object({ id: Type.String() }) });
@@ -636,6 +637,8 @@ export const agentsWeb: WebModule = {
       setUserWaits: (hook) => {
         useUserWaits = hook;
       },
+      // Attention sets the hook after other modules' setup, so this reads it on each call.
+      useUserWaits: () => useUserWaits(),
       shownChat: () => shownChat,
       setFileLink,
       DialogCard,
