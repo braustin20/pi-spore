@@ -1594,6 +1594,80 @@ describe("pause and resume (ADR 0187)", () => {
     expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1"]);
   });
 
+  /**
+   * Holds `endedRun` from its `from`-th true answer on, until `release`: the pipeline's `await` step is then mid-read
+   * when the test pauses.
+   */
+  function holdEndedRun(from: number) {
+    const manager = (servers.at(-1) as (typeof servers)[number]).agents.manager();
+    const real = manager.endedRun.bind(manager);
+    let ended = 0;
+    let entered = false;
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    manager.endedRun = async (id) => {
+      if (!(await real(id))) return false;
+      ended += 1;
+      if (ended >= from) {
+        entered = true;
+        await released;
+      }
+      return true;
+    };
+    return { entered: () => entered, release: () => release() };
+  }
+
+  /** Starts a run of IMPLEMENT, pauses it while `endedRun` is held, and releases the read; the job settles. */
+  async function pauseDuringEndedRun(server: TestServer, name: string, from: number) {
+    const held = holdEndedRun(from);
+    const { workspaceId } = await workspace(server, name);
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(() => held.entered());
+    await json(await pause(server, run.id));
+    const before = stageJob(server, workspaceId).updatedAt;
+    held.release();
+    await until(() => {
+      const job = stageJob(server, workspaceId);
+      return job.state === "waiting" && job.updatedAt > before;
+    });
+    const stopped = await getRun(server, run.id);
+    return { run: stopped, workerId: stopped.workerAgentId as string, workspaceId };
+  }
+
+  it("sends no reminder when Pause lands while await reads whether the turn ended", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["silent", DONE] }) });
+
+    const { run, workerId } = await pauseDuringEndedRun(server, "pause-reminder", 1);
+
+    const turnId = run.turns[0]?.id as string;
+    expect(run).toMatchObject({ state: "running", paused: true });
+    expect(await chat(server, workerId)).not.toContain(reminderOf(turnId));
+    await json(await resume(server, run.id));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    const messages = await chat(server, workerId);
+    expect(messages.filter((message) => message === resumeMessage(turnId))).toHaveLength(1);
+    expect(messages).not.toContain(reminderOf(turnId));
+  });
+
+  it("raises no ADR 0169 block when Pause lands while await reads the second end of a turn", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["silent", "silent", DONE] }) });
+
+    const { run, workspaceId } = await pauseDuringEndedRun(server, "pause-block", 2);
+
+    expect(run).toMatchObject({ state: "running", paused: true });
+    // A later step run clears a block at once, so the events the browser saw are the record of one.
+    const seen = (server.events.eventsOf(`pipelines:${workspaceId}`) as PipelineEvent[]).flatMap(
+      (event) => (event.type === "runs" ? event.runs.filter((entry) => entry.blocked) : []),
+    );
+    expect(seen).toEqual([]);
+    await json(await resume(server, run.id));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    expect((await getRun(server, run.id)).blocked).toBeUndefined();
+  });
+
   it("answers 409 to Pause on an ended run and to Resume on a run that is not paused", async () => {
     const server = await start({ env: scriptEnv({ worker: ["hang", DONE] }) });
     const { workspaceId } = await workspace(server, "pause-409");

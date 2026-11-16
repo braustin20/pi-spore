@@ -1600,8 +1600,16 @@ export const pipelinesModule: ServerModule = {
         },
       });
       if (open.length === 0) return withGates(gated?.done === false ? { wait: true } : {});
+      // Pause can land while the reads below wait on session files. Each effect or block after a read checks again
+      // (ADR 0187).
+      const holdIfPaused = () =>
+        loadRun(run.id)?.paused_at == null
+          ? undefined
+          : withGates({ wait: true, checkpoint: { paused: true } });
       for (const turn of open) {
         const failure = await agents.turnError(turn.agent_id);
+        const paused = holdIfPaused();
+        if (paused) return paused;
         if (failure !== undefined) throw new Error(failedMessage(turn, `failed: ${failure}`));
       }
       // An agent that asked its asking chat waits for the answer, whose delivery starts it again (ADR 0179).
@@ -1637,11 +1645,15 @@ export const pipelinesModule: ServerModule = {
         if (!(await agents.endedRun(turn.agent_id))) continue;
         // The agent may have done the whole turn and reported while the awaits above read its session file.
         if (turnById(turn.id)?.report !== null || openQuestionOf(turn)) continue;
+        const paused = holdIfPaused();
+        if (paused) return paused;
         if (turn.reminded === 1) {
           throw new Error(failedMessage(turn, "ended its turn twice without a report"));
         }
         remind.push(turn);
       }
+      const paused = holdIfPaused();
+      if (paused) return paused;
       return withGates({
         wait: true,
         commit: () => {
