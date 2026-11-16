@@ -1903,10 +1903,23 @@ export const pipelinesModule: ServerModule = {
       };
     };
 
+    type StageStep = JobStep<StageSubject, StageCheckpoint>["run"];
+    /**
+     * Pause can land while a step awaits its reads, and the step's commit would then start a turn. A step that ends on
+     * a paused run takes no effect and waits (ADR 0187).
+     */
+    const unlessPaused =
+      (step: StageStep): StageStep =>
+      async (context) => {
+        const outcome = await step(context);
+        const run = loadRun(context.subject.runId);
+        return run?.state === "running" && run.paused_at !== null ? { wait: true } : outcome;
+      };
+
     const steps: JobStep<StageSubject, StageCheckpoint>[] = [
-      { name: "advance", run: advance },
+      { name: "advance", run: unlessPaused(advance) },
       { name: "await", run: awaitReport },
-      { name: "decide", run: decide },
+      { name: "decide", run: unlessPaused(decide) },
       // A job stored on the gate step before gate members goes back to `advance`, which opens the gate round.
       { name: "gate", run: async () => ({ next: "advance" }) },
       { name: "finish", run: finish },

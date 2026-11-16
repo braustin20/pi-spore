@@ -1516,29 +1516,82 @@ describe("pause and resume (ADR 0187)", () => {
     expect(kinds(await getRun(second, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
   });
 
-  it("sends no ADR 0169 reminder to a turn that ended during the pause, and one resume message after Resume", async () => {
-    const server = await start({ env: scriptEnv({ worker: ["hang", DONE] }) });
-    const { workspaceId } = await workspace(server, "pause-silent");
+  it("sends no ADR 0169 reminder to a turn that ends without a report during the pause, and one resume message after Resume", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["silent", DONE] }) });
+    const { workspaceId, folder } = await workspace(server, "pause-silent");
     userPipeline(server.paths.root, "p", IMPLEMENT);
-    const { runId, workerId } = await startAndWork(server, workspaceId);
-    await json(await pause(server, runId));
-    const turn = (await getRun(server, runId)).turns[0] as PipelineTurn;
+    // The worker holds its first turn until the run is paused, so its silent end falls in the pause.
+    const hold = join(folder, ".fake-pi-hold-turn");
+    writeFileSync(hold, "");
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).workerAgentId !== undefined);
+    const { workerAgentId, turns } = await getRun(server, run.id);
+    const workerId = workerAgentId as string;
+    const turnId = turns[0]?.id as string;
+    await json(await pause(server, run.id));
 
-    await settleAfter(server, workspaceId, async () => {
-      await json(await server.request("POST", `/api/agents/${workerId}/abort`));
-      server.services.jobs.wake("pipelines.stage", workspaceId);
-    });
+    rmSync(hold);
+    await until(() => said(server, workerId).some((message) => message.startsWith("assistant:")));
+    await until(
+      async () =>
+        (
+          await json<{ agent: { status: string } }>(
+            await server.request("GET", `/api/agents/${workerId}`),
+          )
+        ).agent.status === "idle",
+    );
+    await settleAfter(server, workspaceId, async () =>
+      server.services.jobs.wake("pipelines.stage", workspaceId),
+    );
 
-    const held = await getRun(server, runId);
+    const held = await getRun(server, run.id);
     expect(held).toMatchObject({ state: "running", paused: true });
     expect(held.blocked).toBeUndefined();
-    expect(await chat(server, workerId)).not.toContain(reminderOf(turn.id));
+    expect(await chat(server, workerId)).not.toContain(reminderOf(turnId));
 
-    await json(await resume(server, runId));
-    await until(async () => (await getRun(server, runId)).state === "passed");
+    await json(await resume(server, run.id));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
     const messages = await chat(server, workerId);
-    expect(messages.filter((message) => message === resumeMessage(turn.id))).toHaveLength(1);
-    expect(messages).not.toContain(reminderOf(turn.id));
+    expect(messages.filter((message) => message === resumeMessage(turnId))).toHaveLength(1);
+    expect(messages).not.toContain(reminderOf(turnId));
+  });
+
+  it("starts no reviewer when Pause lands while the advance step reads, and starts it after Resume", async () => {
+    let entered = false;
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [APPROVE] }),
+      roleDefaults: async (role) => {
+        if (role === "reviewer") {
+          entered = true;
+          await released;
+        }
+        return {};
+      },
+    });
+    const { workspaceId } = await workspace(server, "pause-advance");
+    userPipeline(server.paths.root, "p", withReview());
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(() => entered);
+    await json(await pause(server, run.id));
+    const before = stageJob(server, workspaceId).updatedAt;
+
+    release();
+    await until(() => {
+      const job = stageJob(server, workspaceId);
+      return job.state === "waiting" && job.updatedAt > before;
+    });
+
+    const held = await getRun(server, run.id);
+    expect(kinds(held)).toEqual(["task1"]);
+    expect(held).toMatchObject({ state: "running", paused: true });
+
+    await json(await resume(server, run.id));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1"]);
   });
 
   it("answers 409 to Pause on an ended run and to Resume on a run that is not paused", async () => {
