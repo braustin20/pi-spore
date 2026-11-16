@@ -45,6 +45,17 @@
   overflow: hidden;
   text-overflow: ellipsis;
 }
+/* 2px + 16px: layout.ts moves a merging group's steps down by MERGING_ROW (18px) for this line. */
+.ag-group-merging {
+  padding: 2px 12px 0 50px;
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--run);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 
 /* A pod: the circle, and the text to its right. The circle's center is 22px from the top. */
 .ag-pod {

@@ -386,6 +386,28 @@ describe("the agent graph canvas", () => {
     expect(pod("T7")?.getAttribute("href")).toBe("#/workspaces/W5/chats/S5");
   });
 
+  it("marks a lane's group that the run merges, with the merge step", async () => {
+    const ended = (pipelineRunId: string, merging: string): GraphGroup => ({
+      ...group(pipelineRunId, "L1", [step(`${pipelineRunId}:0`, {})]),
+      state: "passed",
+      live: false,
+      merging,
+    });
+    const { scope } = await render([
+      {
+        ...runTree,
+        groups: [ended("PR1", "gate test"), ended("PR2", "merging")],
+      },
+    ]);
+    const panel = (id: string) =>
+      scope.querySelector(`.react-flow__node[data-id="group:${id}"] .ag-group`);
+    expect(panel("PR1")?.classList).toContain("live");
+    expect(panel("PR1")?.querySelector(".ag-group-merging")?.textContent).toBe(
+      "merging: gate test",
+    );
+    expect(panel("PR2")?.querySelector(".ag-group-merging")?.textContent).toBe("merging");
+  });
+
   describe("a chat that waits for the user", () => {
     const rootTree = (status: GraphAgent["status"]): GraphTree => ({
       ...workspaceTree,
@@ -479,6 +501,51 @@ describe("the graph layout", () => {
       expect(after?.x).toBeGreaterThanOrEqual((before?.x ?? 0) + (before?.width ?? 0));
       expect(after?.y).toBe(before?.y);
     }
+  });
+
+  it("draws a merging lane's group as live, with a live thread from the root", () => {
+    const merging: GraphTree = {
+      ...runTree,
+      root: { ...runTree.root, status: "idle" },
+      groups: [
+        {
+          ...group("PR1", "L1", [step("T1", { agent: agent("S1", "L1", { status: "idle" }) })]),
+          state: "passed",
+          live: false,
+          merging: "gate test",
+        },
+      ],
+    };
+    const { nodes, edges } = layoutGraph([merging], new Map(), false);
+    expect(nodes.find((node) => node.type === "tree")?.data).toMatchObject({ live: true });
+    expect(edges.find((edge) => edge.id === "thread:step:T1")?.data).toMatchObject({
+      tone: "coord",
+      live: true,
+      dim: false,
+    });
+  });
+
+  it("moves a merging lane's steps down, so its merging line does not cover the first step", () => {
+    const lane = group("PR1", "L1", [step("T1", {}), step("T2", { state: "waiting" })]);
+    const placed = (merging?: string) => {
+      const { nodes } = layoutGraph(
+        [{ ...runTree, groups: [merging ? { ...lane, merging } : lane] }],
+        new Map(),
+        false,
+      );
+      const at = (id: string) => nodes.find((node) => node.id === id);
+      return {
+        first: at("step:T1")?.position.y ?? 0,
+        second: at("step:T2")?.position.y ?? 0,
+        height: at("group:PR1")?.height ?? 0,
+      };
+    };
+    const plain = placed();
+    const merging = placed("gate test");
+    const shift = merging.first - plain.first;
+    expect(shift).toBeGreaterThanOrEqual(16);
+    expect(merging.second - plain.second).toBe(shift);
+    expect(merging.height - plain.height).toBe(shift);
   });
 
   it("stacks trees on a phone", () => {

@@ -1603,7 +1603,8 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     group per pipeline run that is `running` or `waiting_user`, plus the newest run when it ended.
   - Side chats and planner chats are not in the graph.
 - A group (`GraphGroup`) has the pipeline run id, workspace, lane id for a lane, a name (slice name, lane name, or
-  pipeline id), the run state, the current stage and round, `live` (state `running`), and its steps in pipeline
+  pipeline id), the run state, the current stage and round, `live` (state `running`), `merging` while the run
+  merges that lane (the lane's `mergeStep`, such as `gate test`, else `merging`; ADR 0150), and its steps in pipeline
   order. A started agent stage gives one step per turn (`task`, `review`, or `fix`, with its round and agent). A
   gate stage gives one `gates` step with the gate names. A stage not reached gives one `waiting` step. A step whose
   agent retention deleted has no agent.
@@ -1646,7 +1647,9 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A root, or
     a running step, whose chat waits for the user (`waitShows`, read through `AgentsWebKey.useUserWaits`) is
     `--warn` with a steady glow and reads "waiting for your answer". A fix step reads `fix r<round>`. In a live
-    group, the threads from the root to the running step take the root's color and carry SVG drops. Reduced motion:
+    group, the threads from the root to the running step take the root's color and carry SVG drops. A group with
+    `merging` is live too: a `merging: <step>` line in `--run` under its name (its steps move down one line for it),
+    and a live thread from the root to its first step; its steps keep their own looks. Reduced motion:
     no drops, no breathing.
   - Helpers (`helpers.tsx`): small spores inside their parent pod, so they move with it and a click opens the
     parent's chat. Hover shows the current tool; a touch screen shows it inline. `useHelpers` keeps their life on

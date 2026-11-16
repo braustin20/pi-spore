@@ -10,6 +10,7 @@ import {
   type GraphHelper,
   type GraphStep,
   type GraphTree,
+  type Lane,
   type PipelineRun,
   stageGroups,
   type Workspace,
@@ -92,7 +93,7 @@ function stepsOf(run: PipelineRun, node: (agentId: string) => GraphAgent | undef
 function groupOf(
   run: PipelineRun,
   node: (agentId: string) => GraphAgent | undefined,
-  lane?: { id: string; name: string },
+  lane?: Pick<Lane, "id" | "name" | "state" | "mergeStep">,
 ): GraphGroup {
   const round = run.turns.filter((turn) => turn.stageIndex === run.stageIndex).at(-1)?.round;
   return {
@@ -105,6 +106,7 @@ function groupOf(
     stage: (run.stages[run.stageIndex] as { name: string }).name,
     ...(round === undefined ? {} : { round }),
     live: run.state === "running",
+    ...(lane?.state === "merging" ? { merging: lane.mergeStep ?? "merging" } : {}),
     steps: stepsOf(run, node),
   };
 }
