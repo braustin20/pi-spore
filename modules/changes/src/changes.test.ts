@@ -155,6 +155,82 @@ describe("changes", () => {
     ]);
   });
 
+  it("picks the first scope with changes as the tab's initial scope", async () => {
+    const initial = async (id: string) =>
+      (await get<ChangesSummary>(`workspaces/${id}`)).initialScope;
+    const workspace = await gitWorkspace();
+    expect(await initial(workspace.id)).toBe("uncommitted");
+
+    writeFileSync(join(workspace.path, "a.txt"), "one\nTWO\n");
+    git(workspace.path, "commit", "-q", "-am", "edit a");
+    expect(await initial(workspace.id)).toBe("line");
+
+    writeFileSync(join(workspace.path, "b.txt"), "b\n");
+    expect(await initial(workspace.id)).toBe("uncommitted");
+  });
+
+  it("opens on uncommitted when a staged edit is the only change", async () => {
+    const workspace = await gitWorkspace();
+    writeFileSync(join(workspace.path, "a.txt"), "one\nTWO\n");
+    git(workspace.path, "add", "a.txt");
+
+    // Both scopes hold the file, so the order decides, and `uncommitted` comes first.
+    const staged = await get<ChangedFileList>(`workspaces/${workspace.id}/files?scope=staged`);
+    expect(staged.files.map((file) => file.path)).toEqual(["a.txt"]);
+    const initial = await get<ChangesSummary>(`workspaces/${workspace.id}`);
+    expect(initial.initialScope).toBe("uncommitted");
+  });
+
+  it("skips the line scope when the workspace has no base", async () => {
+    // A repo on a branch no default-base lookup knows: only `trunk`, and no remote.
+    const repo = join(scratch, "trunked");
+    git(scratch, "init", "-q", "-b", "trunk", repo);
+    writeFileSync(join(repo, "a.txt"), "one\n");
+    git(repo, "add", ".");
+    git(repo, "commit", "-q", "-m", "init");
+    const { project } = await json<{ project: { id: string } }>(
+      await server.request("POST", "/api/projects", { path: repo }),
+      201,
+    );
+    // In place, so the workspace records no base either: the tab has nothing to measure a line from.
+    const { workspace } = await json<{ workspace: Workspace }>(
+      await server.request("POST", "/api/workspaces", {
+        projectId: project.id,
+        name: "On trunk",
+        isolation: "in-place",
+      }),
+      201,
+    );
+
+    const summary = await get<ChangesSummary>(`workspaces/${workspace.id}`);
+    expect(summary.scopes).toContain("line");
+    expect(summary.base).toBeUndefined();
+    expect(summary.records.map((record) => record.subject)).toEqual(["init"]);
+    expect(summary.initialScope).toBe("uncommitted");
+  });
+
+  it("names a base the branch shares no history with, and still lists uncommitted files", async () => {
+    const workspace = await gitWorkspace();
+    // An orphan branch with a clean copy, so the tab reaches the `line` probe and finds no fork point.
+    git(workspace.path, "checkout", "-q", "--orphan", "orphan");
+    git(workspace.path, "rm", "-rq", "--cached", ".");
+    git(workspace.path, "clean", "-qfd");
+    writeFileSync(join(workspace.path, "start.txt"), "start\n");
+    git(workspace.path, "add", "start.txt");
+    git(workspace.path, "commit", "-q", "-m", "orphan start");
+
+    expect((await get<ChangedFileList>(`workspaces/${workspace.id}/files`)).files).toEqual([]);
+    // The summary still answers and names the base; the probe skips the line scope it cannot measure.
+    const clean = await get<ChangesSummary>(`workspaces/${workspace.id}`);
+    expect(clean.base).toBe("main");
+    expect(clean.initialScope).toBe("uncommitted");
+
+    // With a dirty copy the search stops at `uncommitted`, so the tab still opens.
+    writeFileSync(join(workspace.path, "draft.txt"), "draft\n");
+    const summary = await get<ChangesSummary>(`workspaces/${workspace.id}`);
+    expect(summary.initialScope).toBe("uncommitted");
+  });
+
   it("answers a diff without a path for every file up to the limit, and says when it cut", async () => {
     const workspace = await gitWorkspace();
     for (const name of ["x", "y", "z"]) writeFileSync(join(workspace.path, name), `${name}\n`);

@@ -93,6 +93,8 @@ export type ChangeRecord = Static<typeof ChangeRecord>;
 /** What the Changes tab can show for a workspace. */
 export const ChangesSummary = Type.Object({
   scopes: Type.Array(ChangeScopeKind),
+  /** The scope the Changes tab opens on: the first of uncommitted, staged, line with a changed file, else uncommitted. */
+  initialScope: ChangeScopeKind,
   /** The base `line` changes are measured from; missing when the provider knows none. */
   base: Type.Optional(Type.String()),
   /** Records on the line since the base, newest first; the last 50 records when there is no base. */
