@@ -63,6 +63,15 @@ export const STAGE_REVIEWER_TOOLS: readonly string[] = [
 export const STAGE_WORKER_TOOLS: readonly string[] = ["--exclude-tools", "contact_supervisor"];
 
 /**
+ * The tools of a workspace chat (ADR 0120, ADR 0189): Pi's normal tools, less pi-subagents' loader
+ * `subagents_enable`, so `subagent` is active from the first request. On a bridge model that fixes the tool list for
+ * a whole prompt, the loader turns `subagent` on only at the next user prompt, and a Home answer is not one
+ * (pi-subagents docs, configuration.md, "Tool activation lifecycle"). Excluding a tool that is not registered, as
+ * when pi-subagents is not installed, does nothing.
+ */
+export const WORKSPACE_CHAT_TOOLS: readonly string[] = ["--exclude-tools", "subagents_enable"];
+
+/**
  * The launch arguments that load the user's Pi setup minus excluded packages (ADR 0025): `--no-extensions`,
  * `--no-skills`, and `--no-prompt-templates`, then one explicit flag per remaining resource. Pi's own package
  * manager resolves the list from the user's and the project's settings without loading any extension code. Packages

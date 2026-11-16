@@ -73,6 +73,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     no session file yet is saved in these columns too, so a process that stops before the first message keeps the
     pick (ADR 0175). A resumed session keeps its own model. An existing chat keeps its model, so
     `activeWorker` ignores `model` when the workspace already has one.
+  - Tools (ADR 0189): an orchestrator chat has Pi's normal tools less pi-subagents' loader
+    (`--exclude-tools subagents_enable`, `WORKSPACE_CHAT_TOOLS`), so `subagent` is active from its first request. On a
+    bridge model the loader would turn `subagent` on only at the next typed prompt, and a Home answer is not one.
   - A workspace has one active orchestrator chat (a partial unique index). Only it and side chats can run; an older orchestrator
     chat is read-only history and refuses to start with 409 `chat_inactive`. The manager also refuses to start an
     orchestrator chat while another orchestrator chat of the workspace has a live process (409 `worker_running`).

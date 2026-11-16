@@ -233,6 +233,9 @@ describe("agents", () => {
       "fake-1",
       "--thinking",
       "high",
+      // `subagent` is active from the first request, so a reviewer can start in a Home answer's turn (ADR 0189).
+      "--exclude-tools",
+      "subagents_enable",
     ]);
     expect(launch?.env).toEqual({
       PI_SPORE_AGENT_ID: agentId,
@@ -752,7 +755,7 @@ describe("agents", () => {
       await json(await prompt(agent.id, "one"));
       await until(() => existsSync(record));
       const argv = launches()[0]?.argv ?? [];
-      expect(argv.slice(argv.indexOf("--provider"))).toEqual([
+      expect(argv.slice(argv.indexOf("--provider"), argv.indexOf("--exclude-tools"))).toEqual([
         "--provider",
         "fake",
         "--model",
@@ -777,7 +780,7 @@ describe("agents", () => {
       await json(await prompt(agentId, "one"));
       await until(() => launches().length === 2 && statuses(agentId).at(-1) === "idle");
       const argv = launches()[1]?.argv ?? [];
-      expect(argv.slice(argv.indexOf("--provider"))).toEqual([
+      expect(argv.slice(argv.indexOf("--provider"), argv.indexOf("--exclude-tools"))).toEqual([
         "--provider",
         "fake",
         "--model",
@@ -2568,6 +2571,7 @@ describe("stage agents (R6)", () => {
     expect(launch?.argv).not.toContain("--tools");
     // pi-subagents' contact_supervisor works only in a child it started, so a stage agent must not have it.
     expect(launch?.argv).toEqual(expect.arrayContaining(["--exclude-tools", "contact_supervisor"]));
+    expect(launch?.argv).not.toContain("subagents_enable");
     expect(launch?.argv).toEqual(expect.arrayContaining(["--thinking", "high"]));
     expect(launch?.env).toMatchObject({
       PI_SPORE_CHAT_KIND: "stage",
