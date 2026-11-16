@@ -112,6 +112,8 @@ const MIGRATIONS = [
   "ALTER TABLE runs_runs ADD COLUMN settings TEXT",
   // ADR 0180: the card this lane does, from kanban. NULL when the lane names none.
   "ALTER TABLE runs_lanes ADD COLUMN card_id TEXT",
+  // ADR 0182: the model a revise moves the lane to. `launch` moves it into `model`. NULL when none is pending.
+  "ALTER TABLE runs_lanes ADD COLUMN new_model TEXT",
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -144,6 +146,7 @@ interface LaneRow {
   approval_id: string | null;
   message: string | null;
   card_id: string | null;
+  new_model: string | null;
   created_at: number;
 }
 
@@ -264,6 +267,9 @@ const failedMessage = (lane: LaneRow) =>
 
 const workerGoneMessage = (lane: LaneRow) =>
   `Lane "${lane.name}" (${lane.id}): its worker chat is gone, so the revise runs the full pipeline "${lane.pipeline}" with a new worker.`;
+
+const modelMovedMessage = (lane: LaneRow, model: string) =>
+  `Lane "${lane.name}" (${lane.id}): the revise moves it to model ${model}, so it runs the full pipeline "${lane.pipeline}" with a new worker.`;
 
 /** The built-in pipeline that gives a revise brief to the lane's own worker chat (ADR 0158). */
 const REVISE_PIPELINE = "revise";
@@ -520,6 +526,26 @@ export const runsModule: ServerModule = {
       return `${model} is tier ${modelTier}; the worker default ${worker} is tier ${workerTier}`;
     };
 
+    /** R4.8: a lane model above the worker default needs the user's approval (ADR 0014). */
+    const fileLaneModel = (
+      run: RunRow,
+      laneId: string,
+      laneName: string,
+      model: string | undefined,
+      higher: string | undefined,
+    ) =>
+      higher
+        ? approvals.file(
+            { agentId: run.coordinator_agent_id, workspaceId: run.workspace_id },
+            {
+              kind: LANE_MODEL,
+              title: `Lane "${laneName}" wants model ${model}`,
+              reason: `R4.8: a lane may use a model above the worker default only with your approval. ${higher}.`,
+              subject: { laneId },
+            },
+          )
+        : undefined;
+
     const startLane = async (caller: BridgeCaller, request: StartLaneRequest): Promise<Lane> => {
       const run = runOfCaller(caller);
       await readBrief(run, request.brief);
@@ -562,17 +588,7 @@ export const runsModule: ServerModule = {
             runWorkspaceId: run.workspace_id,
           });
         }
-        const approval = higher
-          ? approvals.file(
-              { agentId: run.coordinator_agent_id, workspaceId: run.workspace_id },
-              {
-                kind: LANE_MODEL,
-                title: `Lane "${request.name}" wants model ${request.model}`,
-                reason: `R4.8: a lane may use a model above the worker default only with your approval. ${higher}.`,
-                subject: { laneId: id },
-              },
-            )
-          : undefined;
+        const approval = fileLaneModel(run, id, request.name, request.model, higher);
         host.store.run(
           `INSERT INTO runs_lanes (id, run_id, name, wave, depends_on, brief, pipeline, model, state, approval_id, card_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -610,13 +626,19 @@ export const runsModule: ServerModule = {
         );
       }
       await readBrief(run, request.brief);
+      if (request.model) await pipelines.requireModel(request.model, caller.agentId);
+      const higher = request.model ? await aboveWorkerTier(request.model) : undefined;
       host.store.transaction(() => {
+        const approval = fileLaneModel(run, lane.id, lane.name, request.model, higher);
         host.store.run(
-          "UPDATE runs_lanes SET brief = ?, state = 'starting', message = NULL WHERE id = ?",
+          "UPDATE runs_lanes SET brief = ?, new_model = ?, state = ?, approval_id = ?, message = NULL WHERE id = ?",
           request.brief,
+          request.model ?? null,
+          approval ? "approval" : "starting",
+          approval?.id ?? lane.approval_id,
           lane.id,
         );
-        startLaneJob(lane.id);
+        if (!approval) startLaneJob(lane.id);
       });
       publish();
       return laneView(loadLane(lane.id) as LaneRow);
@@ -806,7 +828,20 @@ export const runsModule: ServerModule = {
         const lane = loadLane(subject.laneId);
         // A decision for a lane that has moved on is ignored.
         if (lane?.state !== "approval" || lane.approval_id !== approval.id) return;
-        if (approved) {
+        if (lane.new_model) {
+          // A revise on a new model (ADR 0182): the lane has its workspace, so it starts, or fails and keeps its model.
+          if (approved) {
+            host.store.run("UPDATE runs_lanes SET state = 'starting' WHERE id = ?", lane.id);
+            startLaneJob(lane.id);
+          } else {
+            host.store.run(
+              "UPDATE runs_lanes SET state = 'failed', new_model = NULL, message = ? WHERE id = ?",
+              `The user declined the model ${lane.new_model}`,
+              lane.id,
+            );
+            agents.deliver(coordinatorOf(lane.run_id), failedMessage(loadLane(lane.id) as LaneRow));
+          }
+        } else if (approved) {
           host.store.run("UPDATE runs_lanes SET state = 'waiting' WHERE id = ?", lane.id);
           startLaneJob(lane.id);
         } else {
@@ -874,10 +909,13 @@ export const runsModule: ServerModule = {
       const run = requireRun(lane.run_id);
       const brief = await readBrief(run, lane.brief);
       // A lane that ran before is a revise. It needs its last run's worker chat, so a deleted or closed one is gone.
-      const worker = lane.pipeline_run_id
-        ? pipelines.get(lane.pipeline_run_id).workerAgentId
-        : undefined;
+      // A new model (ADR 0182) never reuses it: a reused chat keeps its model.
+      const worker =
+        lane.pipeline_run_id && !lane.new_model
+          ? pipelines.get(lane.pipeline_run_id).workerAgentId
+          : undefined;
       const reuse = worker !== undefined && workerPresent(worker);
+      const workerModel = lane.new_model ?? lane.model;
       let pipelineRunId: string | undefined;
       try {
         const started = await pipelines.start(lane.workspace_id as string, {
@@ -886,7 +924,7 @@ export const runsModule: ServerModule = {
           askingAgentId: run.coordinator_agent_id,
           ...(reuse
             ? { pipeline: REVISE_PIPELINE, previousRunId: lane.pipeline_run_id as string }
-            : { pipeline: lane.pipeline, ...(lane.model ? { workerModel: lane.model } : {}) }),
+            : { pipeline: lane.pipeline, ...(workerModel ? { workerModel } : {}) }),
         });
         pipelineRunId = started.id;
       } catch (error) {
@@ -906,13 +944,16 @@ export const runsModule: ServerModule = {
       return {
         commit: () => {
           host.store.run(
-            "UPDATE runs_lanes SET state = 'running', pipeline_run_id = COALESCE(?, pipeline_run_id) WHERE id = ? AND state = 'starting'",
+            "UPDATE runs_lanes SET state = 'running', pipeline_run_id = COALESCE(?, pipeline_run_id), model = COALESCE(new_model, model), new_model = NULL WHERE id = ? AND state = 'starting'",
             pipelineRunId ?? null,
             lane.id,
           );
           // Only the step that started the run tells, so a restart does not send it twice.
           if (pipelineRunId && lane.pipeline_run_id && !reuse) {
-            agents.deliver(coordinatorOf(run.id), workerGoneMessage(lane));
+            agents.deliver(
+              coordinatorOf(run.id),
+              lane.new_model ? modelMovedMessage(lane, lane.new_model) : workerGoneMessage(lane),
+            );
           }
         },
       };
