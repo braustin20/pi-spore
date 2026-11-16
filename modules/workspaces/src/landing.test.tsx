@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 import { type ApiClient, ApiContext, type WebHost, type WebPage } from "@pi-spore/module-api";
 import type { Project } from "@pi-spore/shared";
-import { TooltipProvider } from "@pi-spore/ui";
+import { PHONE_QUERY, TooltipProvider } from "@pi-spore/ui";
 import { act, type ComponentType } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type WorkspaceView, workspacesWeb } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -42,7 +42,7 @@ function setup(): WorkspaceView {
 
 const view = setup();
 // The module holds one landing for its lifetime, so this file sets it once, as the app does at load.
-view.setLanding(Landing);
+view.setLanding(Landing, { label: "Agent graph", icon: () => <svg /> });
 
 function page(route: string) {
   const found = pages.find((each) => each.path === route);
@@ -62,6 +62,7 @@ afterEach(() => {
   unmount();
   localStorage.clear();
   window.location.hash = "";
+  vi.unstubAllGlobals();
 });
 
 /**
@@ -115,7 +116,7 @@ describe("the landing page", () => {
 
   it("lets only one module set it", () => {
     // This file set the landing above, so this call is the second.
-    expect(() => view.setLanding(Landing)).toThrow(/landing page is set twice/);
+    expect(() => view.setLanding(Landing, { label: "Again", icon: () => <svg /> })).toThrow(/landing page is set twice/);
   });
 });
 
@@ -153,5 +154,39 @@ describe("the New workspace button", () => {
 
     const one = await render("/workspaces/in/p1", { projectId: "p1" });
     expect(newLink(one)?.getAttribute("href")).toBe("#/workspaces/new/in/p1");
+  });
+});
+
+const graphLink = (scope: Element) => scope.querySelector('a[aria-label="Agent graph"]');
+
+describe("the landing button of the list header", () => {
+  it("opens the landing page, with the module's label, and is lit while it is open", async () => {
+    const landing = await render("/workspaces");
+    expect(graphLink(landing)?.getAttribute("href")).toBe("#/workspaces");
+    expect(graphLink(landing)?.getAttribute("aria-current")).toBe("page");
+
+    const other = await render("/workspaces/new");
+    expect(graphLink(other)?.getAttribute("href")).toBe("#/workspaces");
+    expect(graphLink(other)?.hasAttribute("aria-current")).toBe(false);
+  });
+
+  it("keeps the list's project", async () => {
+    const one = await render("/workspaces/in/p1", { projectId: "p1" });
+    expect(graphLink(one)?.getAttribute("href")).toBe("#/workspaces/in/p1");
+  });
+
+  it("closes the list on a phone", async () => {
+    vi.stubGlobal("matchMedia", (query: string) => ({
+      matches: query === PHONE_QUERY,
+      addEventListener() {},
+      removeEventListener() {},
+    }));
+    const phone = await render("/workspaces/new?pane=list");
+    const link = graphLink(phone);
+    if (!(link instanceof HTMLAnchorElement)) throw new Error("no Agent graph link on the phone list");
+    await act(async () => link.click());
+    // The landing is open and the list pane is gone.
+    expect(phone.textContent).toContain("Landing: all projects");
+    expect(phone.querySelector('aside[aria-label="Workspaces"]')).toBeNull();
   });
 });
