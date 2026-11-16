@@ -1600,8 +1600,12 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
 - A group (`GraphGroup`) has the pipeline run id, workspace, lane id for a lane, a name (slice name, lane name, or
   pipeline id), the run state, the current stage and round, `live` (state `running`), and its steps in pipeline
   order. A started agent stage gives one step per turn (`task`, `review`, or `fix`, with its round and agent). A
-  gate stage gives one `gates` step with the gate names. A stage not reached gives one `waiting` step. A step whose
-  agent retention deleted has no agent.
+  gate stage gives one `gates` step with the gate names per gate run (`PipelineRun.gateRuns`), with id
+  `<pipeline run id>:<stage index>:<round>`; its state comes from the gate run, and a gate round that waits for an
+  open fix turn is `waiting`. A stage not started gives one `waiting` step. A group of 2+ stages (ADR 0178) gives one
+  row per round: each member's review turns or gate step of the round, every step after the first with
+  `beside: true`, then the round's fix turns. After a fix of a live run, its gate members get `waiting` steps of the
+  next round until that round starts. A step whose agent retention deleted has no agent.
 - An agent node (`GraphAgent`) has its id, workspace, kind, role, title, status, `workingFor`, model, routed model,
   `since` (from `AgentsKey.attention`, else its creation time), and `helpers`: one per `running` step of a
   `running` child run, with id `<child run id>:<step index>`, agent name, model, current tool, and start time. One

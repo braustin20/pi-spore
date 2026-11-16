@@ -88,6 +88,48 @@ const WITH_REVIEW = `${IMPLEMENT}\n[[stage]]\nname = "review"\nrole = "reviewer"
 
 const DONE = { summary: "Done", tests: [{ name: "adds", proof: "proofs/adds.md" }] };
 
+const APPROVE = { summary: "Good", verdict: "approve" };
+const REVISE = {
+  summary: "Not yet",
+  verdict: "revise",
+  findings: [{ severity: "important", title: "Missing check" }],
+};
+
+/**
+ * config.toml text with the gate actions `check` and `test`. Each counts its runs in a file of its own and hangs on
+ * run `hangOn[name]` (until killed, at most two minutes), else exits 0.
+ */
+const gateConfig = (hangOn: { check?: number; test?: number } = {}) =>
+  (["check", "test"] as const)
+    .map((name) => {
+      const script = `const fs = require("node:fs"); const [file, hang] = process.argv.slice(1); fs.appendFileSync(file, "x"); if (fs.readFileSync(file, "utf8").length === Number(hang)) { setTimeout(() => process.exit(1), 120000); setInterval(() => {}, 1000); }`;
+      const run = [
+        process.execPath,
+        "-e",
+        script,
+        join(scratch, `${name}.count`),
+        String(hangOn[name] ?? 0),
+      ];
+      return `[actions.${name}]\nrun = ${JSON.stringify(run)}\n`;
+    })
+    .join("\n");
+
+/** A pipeline: implement, then a review stage with `review` keys, then the stages of `more`. */
+const reviewThen = (review: string, more: string) => `${WITH_REVIEW}${review}\n${more}`;
+const GATES_BESIDE = `\n[[stage]]\nname = "gates"\nwith_previous = true\ngates = ["check", "test"]\n`;
+
+/** The steps of the only group, cut to what says where they sit. */
+const rows = async (server: TestServer) =>
+  ((await graph(server))[0]?.groups[0]?.steps ?? []).map(
+    ({ stage, kind, round, state, beside }) => ({
+      stage,
+      kind,
+      round,
+      state,
+      ...(beside ? { beside } : {}),
+    }),
+  );
+
 const DAY = 86_400_000;
 const START = 1_700_000_000_000;
 
@@ -154,11 +196,11 @@ async function stop() {
   last?.server.close();
 }
 
-/** A folder project with one in-place workspace and its worker chat. */
-async function workspace(server: TestServer, name: string) {
+/** A folder project with one in-place workspace and its worker chat; `config` is its `.pi-spore/config.toml`. */
+async function workspace(server: TestServer, name: string, config = "") {
   const folder = join(scratch, name);
   mkdirSync(join(folder, ".pi-spore"), { recursive: true });
-  writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+  writeFileSync(join(folder, ".pi-spore", "config.toml"), config);
   const { project } = await json<{ project: { id: string } }>(
     await server.request("POST", "/api/projects", { path: folder }),
     201,
@@ -591,6 +633,94 @@ describe("the agent graph (ADR 0176)", () => {
     expect(byId.get(task.id)).toEqual([]);
     expect(byId.get(fix.id)).toEqual([
       expect.objectContaining({ id: "run-1:0", state: "running" }),
+    ]);
+  });
+});
+
+describe("the steps of a parallel group (ADR 0178)", () => {
+  it("puts a running gate round beside the running review of its round", async () => {
+    const server = await start(
+      { worker: [DONE], reviewer: ["hang"] },
+      reviewThen("", GATES_BESIDE),
+    );
+    const { workspaceId } = await workspace(server, "beside", gateConfig({ test: 1 }));
+    const run = await startRun(server, workspaceId);
+    await until(async () => {
+      const now = await getPipelineRun(server, run.id);
+      return now.turns.length === 2 && now.gateRuns.length === 1;
+    });
+
+    expect(await rows(server)).toEqual([
+      { stage: "implement", kind: "task", round: 1, state: "done" },
+      { stage: "review", kind: "review", round: 1, state: "running" },
+      { stage: "gates", kind: "gates", round: 1, state: "running", beside: true },
+    ]);
+  });
+
+  it("shows the next gate round as waiting while the worker fixes", async () => {
+    const server = await start(
+      { worker: [DONE, "hang"], reviewer: [REVISE] },
+      reviewThen("rounds = 2\nfix_passes = 1\n", GATES_BESIDE),
+    );
+    const { workspaceId } = await workspace(server, "fixing", gateConfig());
+    const run = await startRun(server, workspaceId);
+    await until(async () => {
+      const now = await getPipelineRun(server, run.id);
+      return now.turns.some((turn) => turn.kind === "fix") && now.gateRuns[0]?.state === "passed";
+    });
+
+    expect(await rows(server)).toEqual([
+      { stage: "implement", kind: "task", round: 1, state: "done" },
+      { stage: "review", kind: "review", round: 1, state: "done" },
+      { stage: "gates", kind: "gates", round: 1, state: "done", beside: true },
+      { stage: "review", kind: "fix", round: 1, state: "running" },
+      { stage: "gates", kind: "gates", round: 2, state: "waiting" },
+    ]);
+  });
+
+  it("gives each round its own row, with the fix between them", async () => {
+    const adversarial = `\n[[stage]]\nname = "adversarial"\nrole = "adversarial-reviewer"\nwith_previous = true\nrounds = 1\n${GATES_BESIDE}`;
+    const server = await start(
+      { worker: [DONE, DONE], reviewer: [REVISE, "hang"], "adversarial-reviewer": [APPROVE] },
+      reviewThen("rounds = 2\nfix_passes = 1\n", adversarial),
+    );
+    const { workspaceId } = await workspace(server, "rounds", gateConfig({ test: 2 }));
+    const run = await startRun(server, workspaceId);
+    await until(async () => {
+      const now = await getPipelineRun(server, run.id);
+      return (
+        now.turns.some((turn) => turn.kind === "review" && turn.round === 2) &&
+        now.gateRuns.some((gate) => gate.round === 2)
+      );
+    });
+
+    expect(await rows(server)).toEqual([
+      { stage: "implement", kind: "task", round: 1, state: "done" },
+      { stage: "review", kind: "review", round: 1, state: "done" },
+      { stage: "adversarial", kind: "review", round: 1, state: "done", beside: true },
+      { stage: "gates", kind: "gates", round: 1, state: "done", beside: true },
+      { stage: "review", kind: "fix", round: 1, state: "done" },
+      { stage: "review", kind: "review", round: 2, state: "running" },
+      { stage: "gates", kind: "gates", round: 2, state: "running", beside: true },
+    ]);
+  });
+
+  it("puts no step beside another without with_previous, and names a gate step by its round", async () => {
+    const server = await start(
+      { worker: [DONE], reviewer: [APPROVE] },
+      reviewThen("", `\n[[stage]]\nname = "gates"\ngates = ["check", "test"]\n`),
+    );
+    const { workspaceId } = await workspace(server, "alone", gateConfig());
+    const run = await startRun(server, workspaceId);
+    await until(async () => (await getPipelineRun(server, run.id)).state === "passed");
+
+    const steps = (await graph(server))[0]?.groups[0]?.steps ?? [];
+    expect(
+      steps.map(({ id, stage, round, state, beside }) => ({ id, stage, round, state, beside })),
+    ).toEqual([
+      { id: expect.any(String), stage: "implement", round: 1, state: "done" },
+      { id: expect.any(String), stage: "review", round: 1, state: "done" },
+      { id: `${run.id}:2:1`, stage: "gates", round: 1, state: "done" },
     ]);
   });
 });

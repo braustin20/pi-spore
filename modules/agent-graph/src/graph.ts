@@ -11,6 +11,8 @@ import {
   type GraphStep,
   type GraphTree,
   type PipelineRun,
+  type PipelineStage,
+  type PipelineTurn,
   stageGroups,
   type Workspace,
 } from "@pi-spore/shared";
@@ -44,48 +46,107 @@ function helpersOf(children: ChildRun[]): GraphHelper[] {
   );
 }
 
-/** The steps of a run in pipeline order, with their states as ADR 0176 ("Shapes") says. */
+/**
+ * The steps of a run in pipeline order, with their states as ADR 0176 ("Shapes") says. A group of 2+ stages gives one
+ * row per round: its members' review turns and gate runs side by side (`beside`), then the round's fix turns (ADR 0178).
+ */
 function stepsOf(run: PipelineRun, node: (agentId: string) => GraphAgent | undefined): GraphStep[] {
   const passed = run.state === "passed";
   const ended = run.state === "failed" || run.state === "stopped";
-  // A step with no turn: before the current group it is over, in it the run decides, after it nothing started.
   // A group runs as one stage and `run.stageIndex` is its first member (ADR 0178), so compare groups.
   const groups = stageGroups(run.stages);
-  const groupAt = (index: number) => groups.findIndex((group) => group.includes(index));
-  const current = groupAt(run.stageIndex);
-  const placed = (index: number): GraphStep["state"] => {
-    if (passed || groupAt(index) < current) return "done";
-    if (groupAt(index) > current) return "waiting";
-    return ended ? "failed" : "running";
-  };
-  return run.stages.flatMap((stage, index): GraphStep[] => {
-    const id = `${run.id}:${index}`;
-    if (stage.gates)
-      return [{ id, stage: stage.name, kind: "gates", state: placed(index), gates: stage.gates }];
-    const turns = run.turns.filter((turn) => turn.stageIndex === index);
-    if (turns.length === 0) {
-      // An agent stage without a turn has not started, even at the current stage.
-      const state = placed(index);
-      return [
-        {
-          id,
+  const current = groups.findIndex((group) => group.includes(run.stageIndex));
+  // SAFETY: every index comes from the run's own stages or turns.
+  const stageAt = (index: number) => run.stages[index] as PipelineStage;
+  // A step that has not started: before the current group it is over, in it it waits unless the run ended.
+  const notStarted = (index: number, group: number): GraphStep => {
+    const stage = stageAt(index);
+    const state =
+      passed || group < current ? "done" : group > current || !ended ? "waiting" : "failed";
+    return stage.gates
+      ? { id: `${run.id}:${index}`, stage: stage.name, kind: "gates", state, gates: stage.gates }
+      : {
+          id: `${run.id}:${index}`,
           stage: stage.name,
           kind: stage.role === "worker" ? "task" : "review",
-          state: state === "running" ? "waiting" : state,
-        },
-      ];
+          state,
+        };
+  };
+  const turnStep = (turn: PipelineTurn): GraphStep => {
+    const agent = node(turn.agentId);
+    return {
+      id: turn.id,
+      stage: stageAt(turn.stageIndex).name,
+      kind: turn.kind,
+      round: turn.round,
+      state: passed || turn.report ? "done" : turn.error || ended ? "failed" : "running",
+      ...(agent ? { agent } : {}),
+    };
+  };
+  // A gate step's state comes from its gate run; a cut-off round stays `running` there after the run ended.
+  const gateStep = (index: number, round: number, state: GraphStep["state"]): GraphStep => ({
+    id: `${run.id}:${index}:${round}`,
+    stage: stageAt(index).name,
+    kind: "gates",
+    round,
+    state,
+    gates: stageAt(index).gates as string[],
+  });
+  const beside = (row: GraphStep[]) =>
+    row.map((step, place): GraphStep => (place === 0 ? step : { ...step, beside: true }));
+
+  return groups.flatMap((group, at): GraphStep[] => {
+    const turns = run.turns.filter((turn) => group.includes(turn.stageIndex));
+    const fixOpen = turns.some((turn) => turn.kind === "fix" && !turn.report && !turn.error);
+    const gateRunsOf = (index: number) =>
+      run.gateRuns.filter((gate) => gate.stage === stageAt(index).name);
+    const gateSteps = (index: number) =>
+      gateRunsOf(index).map((gate) =>
+        gateStep(
+          index,
+          gate.round,
+          gate.state === "passed" || (gate.state === "running" && passed)
+            ? "done"
+            : gate.state === "failed" || ended
+              ? "failed"
+              : fixOpen
+                ? "waiting"
+                : "running",
+        ),
+      );
+    if (group.length === 1) {
+      const [index] = group as [number];
+      const steps = stageAt(index).gates ? gateSteps(index) : turns.map(turnStep);
+      return steps.length > 0 ? steps : [notStarted(index, at)];
     }
-    return turns.map((turn) => {
-      const agent = node(turn.agentId);
-      return {
-        id: turn.id,
-        stage: stage.name,
-        kind: turn.kind,
-        round: turn.round,
-        state: passed || turn.report ? "done" : turn.error || ended ? "failed" : "running",
-        ...(agent ? { agent } : {}),
-      };
-    });
+    const last = Math.max(
+      0,
+      ...turns.map((turn) => turn.round),
+      ...group.flatMap(gateRunsOf).map((gate) => gate.round),
+    );
+    if (last === 0) return beside(group.map((index) => notStarted(index, at)));
+    // After every fix the gates run again (ADR 0178 rules 9 and 10): until they start, a waiting row stands for them.
+    const fixed = turns.some((turn) => turn.kind === "fix" && turn.round === last);
+    const rounds = last + (fixed && !passed && !ended ? 1 : 0);
+    return Array.from({ length: rounds }, (_, r): GraphStep[] => {
+      const round = r + 1;
+      const row = group.flatMap((index): GraphStep[] => {
+        const own = stageAt(index).gates
+          ? gateSteps(index).filter((step) => step.round === round)
+          : turns
+              .filter(
+                (turn) => turn.stageIndex === index && turn.kind !== "fix" && turn.round === round,
+              )
+              .map(turnStep);
+        if (own.length > 0) return own;
+        if (round === 1) return [notStarted(index, at)];
+        return round > last && stageAt(index).gates ? [gateStep(index, round, "waiting")] : [];
+      });
+      const fixes = turns
+        .filter((turn) => turn.kind === "fix" && turn.round === round)
+        .map(turnStep);
+      return [...beside(row), ...fixes];
+    }).flat();
   });
 }
 
