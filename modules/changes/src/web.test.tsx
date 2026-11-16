@@ -45,6 +45,7 @@ afterEach(() => {
   root = undefined;
   container?.remove();
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 /**
@@ -58,6 +59,7 @@ async function renderPanel(
 ) {
   const listeners: ((event: unknown) => void)[] = [];
   const asked: string[] = [];
+  const blobs: string[] = [];
   const subscriptions = new Map<string, number>();
   let chatPanel: ComponentType<{ chatId: string }> | undefined;
   let tab: ComponentType<{ workspace: Workspace }> | undefined;
@@ -77,6 +79,10 @@ async function renderPanel(
       if (body !== undefined) return body;
       if (path === "changes/workspaces/W1/comments") return loadComments();
       throw new Error(`unexpected GET ${path}`);
+    },
+    getBlob: async (path: string) => {
+      blobs.push(path);
+      return new Blob([path.endsWith("side=old") ? "old" : "newer"]);
     },
     subscribe: (topic: string, listener: (event: unknown) => void) => {
       listeners.push(listener);
@@ -102,6 +108,7 @@ async function renderPanel(
   return {
     root: container,
     asked,
+    blobs,
     subscriptions,
     emit: (event: unknown) => act(async () => listeners.map((l) => l(event))),
   };
@@ -336,5 +343,60 @@ describe("the Changes tab's large view", () => {
     await resize(false);
     expect(dialog()).toBeNull();
     expect(largeButton(root)).not.toBeNull();
+  });
+});
+
+describe("the Changes tab's image diff", () => {
+  const answer =
+    (path: string, status: string) =>
+    (asked: string): unknown => {
+      const file = { path, status, additions: 0, deletions: 0, binary: true };
+      return asked === "changes/workspaces/W1"
+        ? { scopes: ["uncommitted"], records: [], initialScope: "uncommitted" }
+        : asked.startsWith("changes/workspaces/W1/files?")
+          ? { files: [file], truncated: false }
+          : asked.startsWith("changes/workspaces/W1/diff?")
+            ? { diffs: [{ file, hunks: [], note: "binary" }], truncated: false }
+            : undefined;
+    };
+
+  const stubUrls = () => {
+    let next = 0;
+    vi.spyOn(URL, "createObjectURL").mockImplementation(() => `blob:test/${next++}`);
+    vi.spyOn(URL, "revokeObjectURL").mockImplementation(() => {});
+  };
+
+  it("shows the old and new picture of a modified image, with their sizes", async () => {
+    stubUrls();
+    const { root, blobs } = await renderPanel("tab", undefined, answer("shot.png", "modified"));
+    expect(root.querySelectorAll("img")).toHaveLength(2);
+    expect(root.querySelector('img[alt="shot.png before"]')).not.toBeNull();
+    expect(root.querySelector('img[alt="shot.png after"]')).not.toBeNull();
+    expect(blobs.sort()).toEqual([
+      "changes/workspaces/W1/content?scope=uncommitted&path=shot.png&side=new",
+      "changes/workspaces/W1/content?scope=uncommitted&path=shot.png&side=old",
+    ]);
+    expect(root.textContent).toContain("Before");
+    expect(root.textContent).toContain("3 bytes");
+    expect(root.textContent).toContain("After");
+    expect(root.textContent).toContain("5 bytes");
+    expect(root.textContent).not.toContain("Binary file");
+  });
+
+  it("shows only the new picture of an added image", async () => {
+    stubUrls();
+    const { root, blobs } = await renderPanel("tab", undefined, answer("shot.png", "added"));
+    expect(root.querySelectorAll("img")).toHaveLength(1);
+    expect(blobs).toEqual([
+      "changes/workspaces/W1/content?scope=uncommitted&path=shot.png&side=new",
+    ]);
+  });
+
+  it("keeps the binary note for a file that is not an image", async () => {
+    stubUrls();
+    const { root, blobs } = await renderPanel("tab", undefined, answer("blob.bin", "modified"));
+    expect(root.textContent).toContain("Binary file. Its contents are not shown.");
+    expect(root.querySelector("img")).toBeNull();
+    expect(blobs).toEqual([]);
   });
 });
