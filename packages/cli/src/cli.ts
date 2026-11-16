@@ -101,6 +101,8 @@ Server:
   service install [--yes]                  Run pi-spore as a systemd user service (Linux)
   service uninstall [--yes]                Stop and remove the systemd user service
   logs [-f]                                Show the service's log; -f follows it
+  restart                                  Restart the service; asks first if agents are busy
+  rebuild [--install]                      Build, then restart the service; --install runs npm ci first
 
 Commands:
   health                                   Show whether the pi-spore server is running
@@ -360,12 +362,14 @@ function needLinux(system: System): void {
     throw new CliError("pi-spore service needs Linux with systemd", 1);
 }
 
+type RunOptions = NonNullable<Parameters<System["run"]>[2]>;
+
 /** Runs a program; a missing program becomes a CliError that names it. */
 async function exec(
   system: System,
   file: string,
   args: readonly string[],
-  options?: { cwd?: string },
+  options?: RunOptions,
 ): Promise<number> {
   try {
     return await system.run(file, args, options);
@@ -374,8 +378,13 @@ async function exec(
   }
 }
 
-async function mustRun(system: System, file: string, args: readonly string[]): Promise<void> {
-  const code = await exec(system, file, args);
+async function mustRun(
+  system: System,
+  file: string,
+  args: readonly string[],
+  options?: RunOptions,
+): Promise<void> {
+  const code = await exec(system, file, args, options);
   if (code !== 0) throw new CliError(`${[file, ...args].join(" ")} exited with code ${code}`, 1);
 }
 
@@ -520,6 +529,86 @@ async function serviceUninstall(deps: CliDeps, yes: boolean): Promise<void> {
   deps.out("The pi-spore service is removed.");
 }
 
+/**
+ * True to go ahead with a restart. A restart stops the turns of the agents at work, so list them and ask
+ * first (ADR 0184). A server that does not answer runs nothing, so there is nothing to stop.
+ */
+async function confirmRestart(deps: CliDeps, base: string): Promise<boolean> {
+  if (!(await serverAnswers(deps, base))) {
+    deps.out("The pi-spore server does not answer, so no agent is busy.");
+    return true;
+  }
+  const api = new Api(deps, base);
+  const { agents } = await api.call("GET", "agents", AgentList);
+  const { workspaces } = await api.call("GET", "workspaces", WorkspaceList);
+  const busy = agents.filter(
+    (agent) =>
+      agent.status === "busy" || agent.status === "starting" || (agent.helpersRunning ?? 0) > 0,
+  );
+  if (busy.length === 0) return true;
+  deps.out("These agents are busy. A restart stops their turns:");
+  for (const agent of busy) {
+    const name = workspaces.find((workspace) => workspace.id === agent.workspaceId)?.name;
+    deps.out(
+      `  ${agent.id}  ${agent.role}  ${name ?? agent.workspaceId}  ${agent.title ?? "(no messages yet)"}`,
+    );
+  }
+  return deps.system.ask("Restart pi-spore anyway?");
+}
+
+/** The step both `restart` and `rebuild` end with: check, ask, restart. */
+async function restartService(deps: CliDeps, base: string): Promise<void> {
+  if (!(await confirmRestart(deps, base))) return deps.out("Not restarted.");
+  await mustRun(deps.system, "systemctl", ["--user", "restart", "pi-spore"]);
+  deps.out("pi-spore restarted. Read the log: pi-spore logs -f");
+}
+
+async function restart(deps: CliDeps, base: string): Promise<void> {
+  if (deps.system.readFile(unitPath(deps.system)) === undefined)
+    throw new CliError(
+      "The pi-spore service is not installed. Run pi-spore service install, or restart the server in its terminal.",
+      1,
+    );
+  await restartService(deps, base);
+}
+
+/** The folder of the node a unit runs, so the build uses the same Node as the service. */
+function unitNodeDir(unit: string, path: string): string {
+  const start = unit.split("\n").find((line) => line.startsWith("ExecStart="));
+  const file = start?.slice("ExecStart=".length).trim().split(/\s+/)[0];
+  if (!file)
+    throw new CliError(
+      `The pi-spore unit at ${path} has no ExecStart line. Run pi-spore service install again.`,
+      1,
+    );
+  return dirname(file);
+}
+
+async function rebuild(deps: CliDeps, base: string, args: readonly string[]): Promise<void> {
+  const { positional, on } = parseArgs(args, [], ["install"]);
+  if (positional.length > 0) throw usageError("rebuild takes only --install");
+  const { system, env } = deps;
+  const unit = unitPath(system);
+  const text = system.readFile(unit);
+  const nodeDir = text === undefined ? dirname(system.node.path) : unitNodeDir(text, unit);
+  // npm's `#!/usr/bin/env node` must find that same node, so its folder goes first on PATH.
+  const options = {
+    cwd: system.repoRoot,
+    env: { ...env, PATH: env.PATH ? `${nodeDir}:${env.PATH}` : nodeDir },
+  };
+  const npm = `${nodeDir}/npm`;
+  // Never `npm ci` unasked: it deletes node_modules under the running server.
+  if (on.has("install")) await mustRun(system, npm, ["ci"], options);
+  const code = await exec(system, npm, ["run", "build"], options);
+  if (code !== 0)
+    throw new CliError(`The build failed (exit ${code}). The running server was not touched.`, 1);
+  if (system.platform !== "linux" || text === undefined)
+    return deps.out(
+      "Build done. The service is not installed; restart the server in its terminal.",
+    );
+  await restartService(deps, base);
+}
+
 async function serverCommand(
   deps: CliDeps,
   base: string,
@@ -531,7 +620,13 @@ async function serverCommand(
     if (args.length > 0) throw usageError("open takes no arguments");
     return mustRun(deps.system, "xdg-open", [base]);
   }
+  // The build works on any platform and without a unit; only its last step needs systemd.
+  if (command === "rebuild") return rebuild(deps, base, args);
   needLinux(deps.system);
+  if (command === "restart") {
+    if (args.length > 0) throw usageError("restart takes no arguments");
+    return restart(deps, base);
+  }
   if (command === "logs") {
     const { positional, on } = parseArgs(
       args.map((arg) => (arg === "-f" ? "--follow" : arg)),
@@ -1518,7 +1613,7 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
   }
   try {
     if (command === "health" && rest.length === 0) await health(deps, base, json);
-    else if (["start", "open", "service", "logs"].includes(command))
+    else if (["start", "open", "service", "logs", "restart", "rebuild"].includes(command))
       await serverCommand(deps, base, command, rest);
     else if (command === "remote" && rest.length === 0)
       await remote(new Api(deps, base), deps, base, json);
