@@ -114,6 +114,8 @@ const MIGRATIONS = [
   "ALTER TABLE runs_runs ADD COLUMN settings TEXT",
   // ADR 0180: the card this lane does, from kanban. NULL when the lane names none.
   "ALTER TABLE runs_lanes ADD COLUMN card_id TEXT",
+  // ADR 0182: the model a revise moves the lane to. `launch` moves it into `model`. NULL when none is pending.
+  "ALTER TABLE runs_lanes ADD COLUMN new_model TEXT",
 ];
 
 // JSON columns are written by this module only: the database is inside the boundary.
@@ -146,6 +148,7 @@ interface LaneRow {
   approval_id: string | null;
   message: string | null;
   card_id: string | null;
+  new_model: string | null;
   created_at: number;
 }
 
@@ -267,6 +270,9 @@ const failedMessage = (lane: LaneRow) =>
 const workerGoneMessage = (lane: LaneRow) =>
   `Lane "${lane.name}" (${lane.id}): its worker chat is gone, so the revise runs the full pipeline "${lane.pipeline}" with a new worker.`;
 
+const modelMovedMessage = (lane: LaneRow, model: string) =>
+  `Lane "${lane.name}" (${lane.id}): the revise moves it to model ${model}, so it runs the full pipeline "${lane.pipeline}" with a new worker.`;
+
 /** The built-in pipeline that gives a revise brief to the lane's own worker chat (ADR 0158). */
 const REVISE_PIPELINE = "revise";
 
@@ -288,11 +294,11 @@ const gateFailedMessage = (
     "You can call revise_lane with a new brief to fix it.",
   ].join("\n");
 
-/** What the coordinator of a `running` run is told once every lane is merged or declined (ADR 0150, ADR 0182). */
+/** What the coordinator of a `running` run is told once every lane is merged or declined (ADR 0150, ADR 0183). */
 const OPEN_PR_MESSAGE =
   "All lanes of the run are merged or declined. Call open_run_pr with a title and a body to ask the user to open the run's one PR. pi-spore never merges to the base line.";
 
-/** The user's decline of a lane, as the coordinator hears it (ADR 0182). */
+/** The user's decline of a lane, as the coordinator hears it (ADR 0183). */
 const userDeclineMessage = (lane: LaneRow, reason: string) =>
   `The user declined lane "${lane.name}" (${lane.id}): ${reason}`;
 
@@ -301,7 +307,7 @@ const laneDiffPath = (runId: string, laneId: string) => `runs/${runId}/lanes/${l
 
 const HAS_LANE_DIFF: readonly LaneState[] = ["passed", "merging", "merged"];
 
-/** The states a lane can be declined from (ADR 0182). The others are asked about, at work, merging, or over. */
+/** The states a lane can be declined from (ADR 0183). The others are asked about, at work, merging, or over. */
 const DECLINABLE: readonly LaneState[] = ["waiting", "passed", "failed"];
 
 /** The states a lane can be revised from: a revise sends a lane that finished its run back for one more turn. */
@@ -541,6 +547,26 @@ export const runsModule: ServerModule = {
       return `${model} is tier ${modelTier}; the worker default ${worker} is tier ${workerTier}`;
     };
 
+    /** R4.8: a lane model above the worker default needs the user's approval (ADR 0014). */
+    const fileLaneModel = (
+      run: RunRow,
+      laneId: string,
+      laneName: string,
+      model: string | undefined,
+      higher: string | undefined,
+    ) =>
+      higher
+        ? approvals.file(
+            { agentId: run.coordinator_agent_id, workspaceId: run.workspace_id },
+            {
+              kind: LANE_MODEL,
+              title: `Lane "${laneName}" wants model ${model}`,
+              reason: `R4.8: a lane may use a model above the worker default only with your approval. ${higher}.`,
+              subject: { laneId },
+            },
+          )
+        : undefined;
+
     const startLane = async (caller: BridgeCaller, request: StartLaneRequest): Promise<Lane> => {
       const run = runOfCaller(caller);
       await readBrief(run, request.brief);
@@ -583,17 +609,7 @@ export const runsModule: ServerModule = {
             runWorkspaceId: run.workspace_id,
           });
         }
-        const approval = higher
-          ? approvals.file(
-              { agentId: run.coordinator_agent_id, workspaceId: run.workspace_id },
-              {
-                kind: LANE_MODEL,
-                title: `Lane "${request.name}" wants model ${request.model}`,
-                reason: `R4.8: a lane may use a model above the worker default only with your approval. ${higher}.`,
-                subject: { laneId: id },
-              },
-            )
-          : undefined;
+        const approval = fileLaneModel(run, id, request.name, request.model, higher);
         host.store.run(
           `INSERT INTO runs_lanes (id, run_id, name, wave, depends_on, brief, pipeline, model, state, approval_id, card_id, created_at)
            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -633,18 +649,23 @@ export const runsModule: ServerModule = {
       }
       if (!REVISABLE.includes(lane.state)) throw notRevisable(lane);
       await readBrief(run, request.brief);
+      if (request.model) await pipelines.requireModel(request.model, caller.agentId);
+      const higher = request.model ? await aboveWorkerTier(request.model) : undefined;
       host.store.transaction(() => {
-        // The brief is read outside the transaction, so the lane may have been declined or cancelled during
-        // that read, and a revise must not bring it back: only a lane still waiting for its revise starts.
-        const { changes } = host.store.run(
-          `UPDATE runs_lanes SET brief = ?, state = 'starting', message = NULL
-           WHERE id = ? AND state IN (${REVISABLE.map(() => "?").join(", ")})`,
+        // The brief and the model are checked outside the transaction, so the lane may have been declined or
+        // cancelled meanwhile, and a revise must not bring it back (ADR 0183).
+        const now = loadLane(lane.id) as LaneRow;
+        if (!REVISABLE.includes(now.state)) throw notRevisable(now);
+        const approval = fileLaneModel(run, lane.id, lane.name, request.model, higher);
+        host.store.run(
+          "UPDATE runs_lanes SET brief = ?, new_model = ?, state = ?, approval_id = ?, message = NULL WHERE id = ?",
           request.brief,
+          request.model ?? null,
+          approval ? "approval" : "starting",
+          approval?.id ?? lane.approval_id,
           lane.id,
-          ...REVISABLE,
         );
-        if (changes === 0) throw notRevisable(loadLane(lane.id) as LaneRow);
-        startLaneJob(lane.id);
+        if (!approval) startLaneJob(lane.id);
       });
       publish();
       return laneView(loadLane(lane.id) as LaneRow);
@@ -674,7 +695,7 @@ export const runsModule: ServerModule = {
       return laneView(loadLane(lane.id) as LaneRow);
     };
 
-    /** A lane that is not in a state a decline accepts, named as it is now (ADR 0182). */
+    /** A lane that is not in a state a decline accepts, named as it is now (ADR 0183). */
     const notDeclinable = (lane: LaneRow) =>
       new ApiError(
         409,
@@ -683,7 +704,7 @@ export const runsModule: ServerModule = {
       );
 
     /**
-     * Drops a lane that will not merge (ADR 0182). It merges and deletes nothing: the lane's workspace and branch
+     * Drops a lane that will not merge (ADR 0183). It merges and deletes nothing: the lane's workspace and branch
      * stay, and only its own waiting lane job is cancelled, so it never gets one. Lanes that waited on it wake. The
      * coordinator hears of a user decline, and of a decline that leaves the run with nothing to do but ask for its PR.
      */
@@ -813,7 +834,7 @@ export const runsModule: ServerModule = {
         const filed = approvals.file(caller, {
           kind: RUN_PR,
           title: `Open the PR of run "${workspaces.get(run.workspace_id).name}"`,
-          // ADR 0182: the user reads each declined lane and its reason here, before the PR opens.
+          // ADR 0183: the user reads each declined lane and its reason here, before the PR opens.
           reason: [
             "Opening a PR sends the run's branch and this text to GitHub. pi-spore never merges it; a human does (ADR 0130).",
             ...lanes
@@ -894,7 +915,20 @@ export const runsModule: ServerModule = {
         const lane = loadLane(subject.laneId);
         // A decision for a lane that has moved on is ignored.
         if (lane?.state !== "approval" || lane.approval_id !== approval.id) return;
-        if (approved) {
+        if (lane.new_model) {
+          // A revise on a new model (ADR 0182): the lane has its workspace, so it starts, or fails and keeps its model.
+          if (approved) {
+            host.store.run("UPDATE runs_lanes SET state = 'starting' WHERE id = ?", lane.id);
+            startLaneJob(lane.id);
+          } else {
+            host.store.run(
+              "UPDATE runs_lanes SET state = 'failed', new_model = NULL, message = ? WHERE id = ?",
+              `The user declined the model ${lane.new_model}`,
+              lane.id,
+            );
+            agents.deliver(coordinatorOf(lane.run_id), failedMessage(loadLane(lane.id) as LaneRow));
+          }
+        } else if (approved) {
           host.store.run("UPDATE runs_lanes SET state = 'waiting' WHERE id = ?", lane.id);
           startLaneJob(lane.id);
         } else {
@@ -928,7 +962,7 @@ export const runsModule: ServerModule = {
       if (waitsFor(lane)) {
         // A build that failed, or that a restart cut short, holds the lane as `starting`, and only a
         // `waiting` lane is woken: give it back the state that a merged or declined lane can release, so a
-        // lane that arrives later in that wave cannot strand it (ADR 0182).
+        // lane that arrives later in that wave cannot strand it (ADR 0183).
         host.store.run(
           "UPDATE runs_lanes SET state = 'waiting' WHERE id = ? AND state = 'starting' AND workspace_id IS NULL",
           lane.id,
@@ -936,7 +970,7 @@ export const runsModule: ServerModule = {
         return { wait: true };
       }
       const run = requireRun(lane.run_id);
-      // Take the lane for building before the build starts (ADR 0182): the build is the step's async work, so
+      // Take the lane for building before the build starts (ADR 0183): the build is the step's async work, so
       // a decline cannot be undone once it is under way, and a declined lane must never get a workspace. From
       // here a decline answers 409 `lane_not_declinable`, as it does for a lane that is already running. A
       // decline or a cancel that got here first wins the same compare-and-set, and the step stops.
@@ -984,10 +1018,13 @@ export const runsModule: ServerModule = {
       const run = requireRun(lane.run_id);
       const brief = await readBrief(run, lane.brief);
       // A lane that ran before is a revise. It needs its last run's worker chat, so a deleted or closed one is gone.
-      const worker = lane.pipeline_run_id
-        ? pipelines.get(lane.pipeline_run_id).workerAgentId
-        : undefined;
+      // A new model (ADR 0182) never reuses it: a reused chat keeps its model.
+      const worker =
+        lane.pipeline_run_id && !lane.new_model
+          ? pipelines.get(lane.pipeline_run_id).workerAgentId
+          : undefined;
       const reuse = worker !== undefined && workerPresent(worker);
+      const workerModel = lane.new_model ?? lane.model;
       let pipelineRunId: string | undefined;
       try {
         const started = await pipelines.start(lane.workspace_id as string, {
@@ -996,7 +1033,7 @@ export const runsModule: ServerModule = {
           askingAgentId: run.coordinator_agent_id,
           ...(reuse
             ? { pipeline: REVISE_PIPELINE, previousRunId: lane.pipeline_run_id as string }
-            : { pipeline: lane.pipeline, ...(lane.model ? { workerModel: lane.model } : {}) }),
+            : { pipeline: lane.pipeline, ...(workerModel ? { workerModel } : {}) }),
         });
         pipelineRunId = started.id;
       } catch (error) {
@@ -1016,13 +1053,16 @@ export const runsModule: ServerModule = {
       return {
         commit: () => {
           host.store.run(
-            "UPDATE runs_lanes SET state = 'running', pipeline_run_id = COALESCE(?, pipeline_run_id) WHERE id = ? AND state = 'starting'",
+            "UPDATE runs_lanes SET state = 'running', pipeline_run_id = COALESCE(?, pipeline_run_id), model = COALESCE(new_model, model), new_model = NULL WHERE id = ? AND state = 'starting'",
             pipelineRunId ?? null,
             lane.id,
           );
           // Only the step that started the run tells, so a restart does not send it twice.
           if (pipelineRunId && lane.pipeline_run_id && !reuse) {
-            agents.deliver(coordinatorOf(run.id), workerGoneMessage(lane));
+            agents.deliver(
+              coordinatorOf(run.id),
+              lane.new_model ? modelMovedMessage(lane, lane.new_model) : workerGoneMessage(lane),
+            );
           }
         },
       };
@@ -1481,7 +1521,7 @@ export const runsModule: ServerModule = {
       c.json({ run: await cancelRun(c.req.param("id")) }),
     );
 
-    // The user's Decline button on the Runs page (ADR 0182).
+    // The user's Decline button on the Runs page (ADR 0183).
     host.routes.post("/:id/lanes/:laneId/decline", async (c) => {
       const body = parseJsonBody(DeclineLaneBody, await c.req.text(), "lane decline");
       const run = requireRun(c.req.param("id"));

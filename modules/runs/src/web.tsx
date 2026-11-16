@@ -80,7 +80,7 @@ function byWave(lanes: readonly Lane[]): [number, Lane[]][] {
   return [...waves].sort(([a], [b]) => a - b);
 }
 
-/** A lane the user can drop (ADR 0182): one that is waiting, passed, or failed, in a run not cancelled. */
+/** A lane the user can drop (ADR 0183): one that is waiting, passed, or failed, in a run not cancelled. */
 const canDecline = (runState: RunState, laneState: LaneState) =>
   runState !== "cancelled" &&
   (laneState === "waiting" || laneState === "passed" || laneState === "failed");
