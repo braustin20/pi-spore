@@ -604,6 +604,41 @@ describe("a lane", () => {
     expect(messages.filter((message) => message.includes("ended passed"))).toEqual([]);
   });
 
+  it("does not report a lane as passed while its pipeline run is paused (ADR 0187)", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "lanepause");
+    const { run, coordinator } = await createRun(server, projectId, "lanepause");
+    const started = await startLane(run, coordinator, "feature");
+    await until(async () => (await laneOf(server, run.id, started.id)).state === "running");
+    const lane = await laneOf(server, run.id, started.id);
+    const { agentId, turnId } = await laneWorker(server, lane);
+    const { runs: pipelineRuns } = await json<{ runs: PipelineRun[] }>(
+      await server.request("GET", `/api/pipelines/workspaces/${lane.workspaceId}/runs`),
+    );
+    const pipelineRunId = (pipelineRuns[0] as PipelineRun).id;
+    const stageJob = () =>
+      server.services.jobs
+        .list({ kind: "pipelines.stage", key: lane.workspaceId as string })
+        .at(-1) as JobView;
+    await json(await server.request("POST", `/api/pipelines/runs/${pipelineRunId}/pause`));
+    const before = stageJob().updatedAt;
+
+    await json(
+      await asAgent(server, agentId, lane.workspaceId as string)("POST", "reports", {
+        turn: turnId,
+        summary: "Done",
+      }),
+    );
+    await until(() => stageJob().state === "waiting" && stageJob().updatedAt > before);
+
+    expect((await laneOf(server, run.id, lane.id)).state).toBe("running");
+    const messages = await chat(server, run.coordinatorAgentId);
+    expect(messages.filter((message) => message.includes("its pipeline"))).toEqual([]);
+
+    await json(await server.request("POST", `/api/pipelines/runs/${pipelineRunId}/resume`));
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "passed");
+  });
+
   it("tells the coordinator once when the lane's pipeline blocks on a missing gate action, and passes after the fix", async () => {
     const server = await start();
     writeFileSync(

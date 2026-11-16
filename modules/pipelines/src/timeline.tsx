@@ -1,6 +1,15 @@
 import { type PipelineRun, type PipelineTurn, stageGroups, stripAnsi } from "@pi-spore/shared";
 import { Chip, CollapsibleSection, Spinner } from "@pi-spore/ui";
-import { Check, ChevronRight, Circle, Hourglass, Square, TriangleAlert, X } from "lucide-react";
+import {
+  Check,
+  ChevronRight,
+  Circle,
+  Hourglass,
+  Pause,
+  Square,
+  TriangleAlert,
+  X,
+} from "lucide-react";
 import { Fragment, type ReactNode, useState } from "react";
 import { GateLog, splitRunMessage } from "./gate-log.js";
 import { EarlyStopLine, FindingItems, routeText, SEVERITIES, TestList } from "./turns.js";
@@ -8,6 +17,7 @@ import { EarlyStopLine, FindingItems, routeText, SEVERITIES, TestList } from "./
 type StepState =
   | "done"
   | "running"
+  | "paused"
   | "blocked"
   | "waiting"
   | "waiting for the fix"
@@ -18,6 +28,8 @@ type StepState =
 const STEP_ICONS: Record<StepState, ReactNode> = {
   done: <Check aria-hidden="true" className="size-3.5 text-ok" />,
   running: <Spinner />,
+  // Muted: the user paused the run on purpose (ADR 0187).
+  paused: <Pause aria-hidden="true" className="size-3.5 text-muted" />,
   blocked: <TriangleAlert aria-hidden="true" className="size-3.5 text-warn" />,
   waiting: <Hourglass aria-hidden="true" className="size-3.5 text-warn" />,
   // Muted, not warn: the user has nothing to do while the worker fixes.
@@ -52,7 +64,7 @@ function stepState(run: PipelineRun, index: number): StepState {
   const own = groupAt(groups, index);
   // During a fix the worker runs, and the reviewers of the current group wait for it (R6, ADR 0158).
   const fix = runningFix(run);
-  if (fix && index === stageOf(run, fix)) return "running";
+  if (fix && index === stageOf(run, fix)) return run.paused ? "paused" : "running";
   if (fix && own === current) return "waiting for the fix";
   if (own < current) return "done";
   if (own > current) return "not started";
@@ -65,6 +77,7 @@ function stepState(run: PipelineRun, index: number): StepState {
   if (run.state === "failed") return "failed";
   if (run.state === "stopped") return "stopped";
   if (run.blocked) return "blocked";
+  if (run.paused) return "paused";
   return run.state === "waiting_user" ? "waiting" : "running";
 }
 

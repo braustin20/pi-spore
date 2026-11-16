@@ -1,3 +1,4 @@
+import { AgentsWebKey } from "@pi-spore/mod-agents/web";
 import {
   type ApprovalViewProps,
   type AttentionWeb,
@@ -6,6 +7,7 @@ import {
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
+  Agent,
   PipelineEvent,
   PipelineList,
   type PipelineRun,
@@ -31,6 +33,7 @@ import {
 } from "@pi-spore/ui";
 import { ChevronRight, Workflow } from "lucide-react";
 import { type SubmitEvent, useEffect, useState } from "react";
+import { Type } from "typebox";
 import { splitRunMessage } from "./gate-log.js";
 import { formatDuration, isActive, StepBar, Timeline } from "./timeline.js";
 import { openFindings, SEVERITIES } from "./turns.js";
@@ -44,6 +47,10 @@ const STATES: Record<PipelineRunState, { text: string; tone: Tone }> = {
   failed: { text: "Failed", tone: "fail" },
   stopped: { text: "Stopped", tone: "neutral" },
 };
+
+/** The run's chip. A paused run is still `running`; only its flag says so (ADR 0187). */
+const shownState = (run: PipelineRun) =>
+  run.paused ? { text: "Paused", tone: "warn" as const } : STATES[run.state];
 
 /** The workspace's runs, newest first: the topic sends the snapshot, then every change. */
 function useRuns(workspaceId: string): PipelineRun[] | undefined {
@@ -175,7 +182,7 @@ function RunCard({
   const [open, setOpen] = useState(defaultOpen);
   // A step click on a closed card opens it; the row exists only after that render.
   const [pendingStep, setPendingStep] = useState<number | undefined>();
-  const shown = STATES[run.state];
+  const shown = shownState(run);
 
   useEffect(() => {
     if (pendingStep === undefined) return;
@@ -185,7 +192,7 @@ function RunCard({
     setPendingStep(undefined);
   }, [pendingStep, run.id]);
 
-  const act = async (action: "retry" | "cancel") => {
+  const act = async (action: "retry" | "cancel" | "pause" | "resume") => {
     setBusy(true);
     setError(undefined);
     try {
@@ -222,6 +229,16 @@ function RunCard({
         <Chip tone={shown.tone}>{shown.text}</Chip>
         <span className="text-xs text-muted">{elapsed(run, now)}</span>
         <span className="flex-1" />
+        {run.state === "running" && (
+          <Button
+            size="sm"
+            variant="ghost"
+            disabled={busy}
+            onClick={() => void act(run.paused ? "resume" : "pause")}
+          >
+            {run.paused ? "Resume" : "Pause"}
+          </Button>
+        )}
         {isActive(run) && (
           <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act("cancel")}>
             Cancel
@@ -303,7 +320,7 @@ function PipelineTab({ workspace }: { workspace: Workspace }) {
 function PipelinePanel({ workspace }: { workspace: Workspace }) {
   const run = useRuns(workspace.id)?.[0];
   if (!run) return null;
-  const shown = STATES[run.state];
+  const shown = shownState(run);
   const counts = openFindings(run);
   return (
     <CollapsibleSection title="Pipeline">
@@ -329,6 +346,48 @@ function PipelinePanel({ workspace }: { workspace: Workspace }) {
         </div>
       )}
     </CollapsibleSection>
+  );
+}
+
+const AgentResponse = Type.Object({ agent: Agent });
+
+/** Above a stage chat's composer while its turn is open: a message there cannot stop the run (ADR 0187). */
+function StageChatNote({ chatId }: { chatId: string }) {
+  const api = useApi();
+  const [workspaceId, setWorkspaceId] = useState<string | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  useEffect(() => {
+    let live = true;
+    api
+      .get(`agents/${chatId}`)
+      .then((body) => {
+        const { agent } = parse(AgentResponse, body, "agent");
+        // Only a stage agent has pipeline turns; other chats need no runs feed.
+        if (live && agent.kind === "stage") setWorkspaceId(agent.workspaceId);
+      })
+      .catch((caught: unknown) => live && setError(message(caught)));
+    return () => {
+      live = false;
+    };
+  }, [api, chatId]);
+  if (error) return <Notice tone="fail">{error}</Notice>;
+  return workspaceId ? <OpenTurnNote workspaceId={workspaceId} chatId={chatId} /> : null;
+}
+
+function OpenTurnNote({ workspaceId, chatId }: { workspaceId: string; chatId: string }) {
+  const open = useRuns(workspaceId)?.some(
+    (run) =>
+      run.state === "running" &&
+      !run.paused &&
+      run.turns.some(
+        (turn) => turn.agentId === chatId && turn.reportedAt === undefined && !turn.error,
+      ),
+  );
+  if (!open) return null;
+  return (
+    <Notice tone="info">
+      The pipeline goes on after this turn. To stop it, use Pause on the Pipeline tab.
+    </Notice>
   );
 }
 
@@ -366,9 +425,10 @@ function RoundLimitView({ approval, busy, approve, decline }: ApprovalViewProps)
 
 export const pipelinesWeb: WebModule = {
   id: "pipelines",
-  requires: ["workspaces", "attention"],
+  requires: ["workspaces", "attention", "agents"],
   core: false,
   setup(host) {
+    host.use(AgentsWebKey).addChatPanel("pipelines-note", StageChatNote);
     const attention = host.use(AttentionWebKey);
     DeclineNote = attention.DeclineNote;
     attention.addApprovalView("pipeline-round-limit", RoundLimitView);

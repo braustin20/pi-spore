@@ -140,6 +140,8 @@ const MIGRATIONS = [
   // The state of each gate round, as a JSON list of `PipelineGateRun` (ADR 0178): the job's checkpoint holds only the
   // current round, and the view must tell gates that run from a group that waits on its fix.
   "ALTER TABLE pipelines_runs ADD COLUMN gate_runs TEXT NOT NULL DEFAULT '[]'",
+  // When the user paused the run (ADR 0187). The run stays `running`; the stage job's steps wait while this is set.
+  "ALTER TABLE pipelines_runs ADD COLUMN paused_at INTEGER",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -187,6 +189,7 @@ interface RunRow {
   name: string | null;
   gate_reds: string;
   gate_runs: string;
+  paused_at: number | null;
   created_at: number;
   ended_at: number | null;
 }
@@ -263,6 +266,8 @@ interface StageSubject {
  */
 interface StageCheckpoint {
   boot?: string;
+  /** `await` saw the run paused; the first `await` after Resume reads this (ADR 0187). */
+  paused?: true;
   round?: number;
   places?: Record<string, { gate: number; attempt: number }>;
 }
@@ -358,6 +363,7 @@ const runToView = (
   stageIndex: row.stage_index,
   ...(row.message === null ? {} : { message: row.message }),
   ...(blocked === undefined ? {} : { blocked }),
+  ...(row.paused_at !== null && row.state === "running" ? { paused: true as const } : {}),
   tests: JSON.parse(row.tests) as TestProof[],
   turns: turns.map((turn) =>
     turn.report === null && turn.error === null
@@ -535,6 +541,9 @@ const fixPrompt = (
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
 
+const resumedMessage = (turnId: string) =>
+  `The user resumed the pipeline. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
+
 const questionMessage = (run: RunRow, turn: TurnRow, title: string, question: QuestionRow) =>
   [
     `Stage "${turn.stage}" of pipeline run ${run.id} asks (question ${question.id}). The ${turn.role} agent "${title}" wrote:`,
@@ -677,6 +686,7 @@ export const pipelinesModule: ServerModule = {
     const workingLabel = (runs: RunRow[]): string => {
       const [run] = runs as [RunRow];
       if (runs.length > 1) return `Pipeline: ${runs.length} runs`;
+      if (run.paused_at !== null) return "Pipeline paused";
       const group = groupOf(run, run.stage_index);
       // The review round, not the group's: a fix keeps the round of the reviews it answers.
       const round = reviewRound(groupTurns(run, group));
@@ -1419,6 +1429,7 @@ export const pipelinesModule: ServerModule = {
       }
       const run = runOf(subject);
       if (!run) return { next: null };
+      if (run.paused_at !== null) return { wait: true };
       const stage = stageOf(run, subject.stageIndex);
       if (stage.role === "worker") return advanceWorker(run, stage, subject.stageIndex);
       return advanceGroup(run, groupOf(run, subject.stageIndex), checkpoint);
@@ -1525,13 +1536,18 @@ export const pipelinesModule: ServerModule = {
      */
     const awaitReport = async ({
       subject,
-      checkpoint,
+      checkpoint: saved,
     }: {
       subject: StageSubject;
       checkpoint: StageCheckpoint | undefined;
     }): Promise<StepOutcome<StageCheckpoint>> => {
       const run = runOf(subject);
       if (!run) return { next: null };
+      // A paused run reminds no one and blocks nothing (ADR 0187). `paused` leaves the checkpoint at the first await
+      // after Resume.
+      const { paused: wasPaused, ...checkpoint } = saved ?? {};
+      if (run.paused_at !== null)
+        return { wait: true, checkpoint: { ...checkpoint, paused: true } };
       const group = groupOf(run, subject.stageIndex);
       const turns = groupTurns(run, group);
       // Retry marked these failed; a fresh agent of each role takes its turn over.
@@ -1584,13 +1600,35 @@ export const pipelinesModule: ServerModule = {
         },
       });
       if (open.length === 0) return withGates(gated?.done === false ? { wait: true } : {});
+      // Pause can land while the reads below wait on session files. Each effect or block after a read checks again
+      // (ADR 0187).
+      const holdIfPaused = () =>
+        loadRun(run.id)?.paused_at == null
+          ? undefined
+          : withGates({ wait: true, checkpoint: { paused: true } });
       for (const turn of open) {
         const failure = await agents.turnError(turn.agent_id);
+        const paused = holdIfPaused();
+        if (paused) return paused;
         if (failure !== undefined) throw new Error(failedMessage(turn, `failed: ${failure}`));
       }
       // An agent that asked its asking chat waits for the answer, whose delivery starts it again (ADR 0179).
       const waiting = open.filter((turn) => !openQuestionOf(turn));
-      if (checkpoint?.boot !== bootId) {
+      if (wasPaused) {
+        // The resume message covers the restart reminder. A busy agent reports when its turn ends.
+        const resumed = waiting.filter((turn) => agents.get(turn.agent_id).status !== "busy");
+        return withGates({
+          wait: true,
+          checkpoint: { boot: bootId },
+          commit: () => {
+            for (const turn of resumed) {
+              host.store.run("UPDATE pipelines_turns SET reminded = 0 WHERE id = ?", turn.id);
+              agents.deliver(turn.agent_id, resumedMessage(turn.id));
+            }
+          },
+        });
+      }
+      if (checkpoint.boot !== bootId) {
         // The server restarted while the agents worked. Their processes are gone, so each gets one reminder (R6.6).
         return withGates({
           wait: true,
@@ -1607,11 +1645,15 @@ export const pipelinesModule: ServerModule = {
         if (!(await agents.endedRun(turn.agent_id))) continue;
         // The agent may have done the whole turn and reported while the awaits above read its session file.
         if (turnById(turn.id)?.report !== null || openQuestionOf(turn)) continue;
+        const paused = holdIfPaused();
+        if (paused) return paused;
         if (turn.reminded === 1) {
           throw new Error(failedMessage(turn, "ended its turn twice without a report"));
         }
         remind.push(turn);
       }
+      const paused = holdIfPaused();
+      if (paused) return paused;
       return withGates({
         wait: true,
         commit: () => {
@@ -1767,6 +1809,7 @@ export const pipelinesModule: ServerModule = {
       // Retry or a restart runs this step again while the user decides; it keeps waiting. A decline ends the run.
       if (run.state === "waiting_user") return { wait: true };
       if (run.state !== "running") return { next: null };
+      if (run.paused_at !== null) return { wait: true };
       // Uncommitted work never passes: the throw blocks the stage until a commit and Retry (ADR 0140).
       const uncommitted = await uncommittedFiles(run.workspace_id);
       if (uncommitted.length > 0) {
@@ -1849,6 +1892,7 @@ export const pipelinesModule: ServerModule = {
     const finish = async ({ subject }: { subject: StageSubject }): Promise<StepOutcome<never>> => {
       const run = runOf(subject);
       if (!run) return { next: null };
+      if (run.paused_at !== null) return { wait: true };
       const next = (groupOf(run, subject.stageIndex).at(-1) as number) + 1;
       return {
         next: null,
@@ -1871,10 +1915,23 @@ export const pipelinesModule: ServerModule = {
       };
     };
 
+    type StageStep = JobStep<StageSubject, StageCheckpoint>["run"];
+    /**
+     * Pause can land while a step awaits its reads, and the step's commit would then start a turn. A step that ends on
+     * a paused run takes no effect and waits (ADR 0187).
+     */
+    const unlessPaused =
+      (step: StageStep): StageStep =>
+      async (context) => {
+        const outcome = await step(context);
+        const run = loadRun(context.subject.runId);
+        return run?.state === "running" && run.paused_at !== null ? { wait: true } : outcome;
+      };
+
     const steps: JobStep<StageSubject, StageCheckpoint>[] = [
-      { name: "advance", run: advance },
+      { name: "advance", run: unlessPaused(advance) },
       { name: "await", run: awaitReport },
-      { name: "decide", run: decide },
+      { name: "decide", run: unlessPaused(decide) },
       // A job stored on the gate step before gate members goes back to `advance`, which opens the gate round.
       { name: "gate", run: async () => ({ next: "advance" }) },
       { name: "finish", run: finish },
@@ -2345,6 +2402,36 @@ export const pipelinesModule: ServerModule = {
       // A wake during a running step applies when it settles, so a step that read the turn before the mark runs again.
       if (job.state === "waiting") host.jobs.retry(job.id);
       else host.jobs.wake(STAGE_JOB, run.workspace_id);
+      publish(run.workspace_id);
+      return c.json({ run: viewOf(requireRun(run.id)) });
+    });
+
+    // The user steps away (ADR 0187). The open turn goes on; the stage job starts nothing until Resume.
+    host.routes.post("/runs/:id/pause", (c) => {
+      const run = requireRun(c.req.param("id"));
+      if (run.state !== "running") {
+        throw new ApiError(
+          409,
+          "run_not_running",
+          `The run is ${run.state}; only a running run pauses`,
+        );
+      }
+      host.store.run(
+        "UPDATE pipelines_runs SET paused_at = ? WHERE id = ? AND paused_at IS NULL",
+        host.now(),
+        run.id,
+      );
+      publish(run.workspace_id);
+      return c.json({ run: viewOf(requireRun(run.id)) });
+    });
+
+    host.routes.post("/runs/:id/resume", (c) => {
+      const run = requireRun(c.req.param("id"));
+      if (run.state !== "running" || run.paused_at === null) {
+        throw new ApiError(409, "run_not_paused", "The run is not paused");
+      }
+      host.store.run("UPDATE pipelines_runs SET paused_at = NULL WHERE id = ?", run.id);
+      host.jobs.wake(STAGE_JOB, run.workspace_id);
       publish(run.workspace_id);
       return c.json({ run: viewOf(requireRun(run.id)) });
     });

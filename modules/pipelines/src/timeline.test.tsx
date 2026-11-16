@@ -415,6 +415,34 @@ describe("StepBar", () => {
     ]);
   });
 
+  it("shows the current stage of a paused run as paused, not running", async () => {
+    const root = await mount(
+      <StepBar run={run({ stageIndex: 1, paused: true })} onStep={() => {}} />,
+    );
+    expect(labels(root)).toEqual(["implement: done", "review: paused", "verify: not started"]);
+  });
+
+  it("shows the worker of a paused run as paused during a fix", async () => {
+    const root = await mount(
+      <StepBar run={run({ turns: [TASK, REVIEW1, FIXING], paused: true })} onStep={() => {}} />,
+    );
+    expect(labels(root)).toEqual([
+      "implement: paused",
+      "review: waiting for the fix",
+      "verify: not started",
+    ]);
+  });
+
+  it("keeps a blocked paused run blocked", async () => {
+    const root = await mount(
+      <StepBar
+        run={run({ stageIndex: 1, paused: true, blocked: "no report" })}
+        onStep={() => {}}
+      />,
+    );
+    expect(labels(root)).toEqual(["implement: done", "review: blocked", "verify: not started"]);
+  });
+
   it("renders one button per stage and no group box for a pipeline without groups", async () => {
     const root = await mount(<StepBar run={run({ stageIndex: 1 })} onStep={() => {}} />);
     expect(root.querySelectorAll("button")).toHaveLength(3);
