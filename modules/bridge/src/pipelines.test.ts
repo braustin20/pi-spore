@@ -1415,6 +1415,181 @@ describe("a stage agent that ends its turn without a report (ADR 0169)", () => {
   });
 });
 
+const resumeMessage = (turnId: string) =>
+  `user: The user resumed the pipeline. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
+
+describe("pause and resume (ADR 0187)", () => {
+  const APPROVE = { summary: "Good", verdict: "approve" };
+  const pause = (server: TestServer, runId: string) =>
+    server.request("POST", `/api/pipelines/runs/${runId}/pause`);
+  const resume = (server: TestServer, runId: string) =>
+    server.request("POST", `/api/pipelines/runs/${runId}/resume`);
+  const stageJob = (server: TestServer, workspaceId: string) =>
+    server.services.jobs.list({ kind: "pipelines.stage", key: workspaceId }).at(-1) as JobView;
+  /** Runs `act`, then waits until the stage job has taken a step and waits again, so a missing pause shows up. */
+  async function settleAfter(server: TestServer, workspaceId: string, act: () => Promise<unknown>) {
+    const before = stageJob(server, workspaceId).updatedAt;
+    await act();
+    await until(() => {
+      const job = stageJob(server, workspaceId);
+      return job.state === "waiting" && job.updatedAt > before;
+    });
+  }
+  const reportAs = async (server: TestServer, turn: PipelineTurn, body: object, ws: string) =>
+    json(await asAgent(server, turn.agentId, ws)("POST", "reports", { turn: turn.id, ...body }));
+
+  it("starts no round 2 reviewer while a fix turn's report waits, and goes on after Resume", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE, "hang"], reviewer: [REVISE, APPROVE] }),
+    });
+    const { workspaceId } = await workspace(server, "pause-fix");
+    userPipeline(server.paths.root, "p", withReview("rounds = 2"));
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).turns.length === 3);
+
+    const paused = await json<{ run: PipelineRun }>(await pause(server, run.id));
+    expect(paused.run).toMatchObject({ state: "running", paused: true });
+    const fix = (await getRun(server, run.id)).turns[2] as PipelineTurn;
+    await settleAfter(server, workspaceId, () =>
+      reportAs(server, fix, { summary: "Fixed" }, workspaceId),
+    );
+
+    const held = await getRun(server, run.id);
+    expect(kinds(held)).toEqual(["task1", "review1", "fix1"]);
+    expect(held).toMatchObject({ state: "running", paused: true });
+    expect(held.turns[2]?.report?.summary).toBe("Fixed");
+
+    const resumed = await json<{ run: PipelineRun }>(await resume(server, run.id));
+    expect(resumed.run.paused).toBeUndefined();
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
+  });
+
+  it("starts no fix turn while a review's report waits, and starts it after Resume", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE, { summary: "Fixed" }], reviewer: ["hang", APPROVE] }),
+    });
+    const { workspaceId } = await workspace(server, "pause-review");
+    userPipeline(server.paths.root, "p", withReview("rounds = 2"));
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).turns.length === 2);
+    await json(await pause(server, run.id));
+    const review = (await getRun(server, run.id)).turns[1] as PipelineTurn;
+
+    await settleAfter(server, workspaceId, () => reportAs(server, review, REVISE, workspaceId));
+
+    const held = await getRun(server, run.id);
+    expect(kinds(held)).toEqual(["task1", "review1"]);
+    expect(held.paused).toBe(true);
+
+    await json(await resume(server, run.id));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
+  });
+
+  it("stays paused and starts nothing after a restart, and Resume goes on to the end", async () => {
+    const home = join(scratch, "home");
+    const env = scriptEnv({
+      worker: [DONE, "hang", { summary: "Fixed after resume" }],
+      reviewer: [REVISE, APPROVE],
+    });
+    const first = await start({ home, env });
+    const { workspaceId } = await workspace(first, "pause-restart");
+    userPipeline(home, "p", withReview("rounds = 2"));
+    const { run } = await json<{ run: PipelineRun }>(await startRun(first, workspaceId), 201);
+    await until(async () => (await getRun(first, run.id)).turns.length === 3);
+    await json(await pause(first, run.id));
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const second = await start({ home, env, firstId: 1_000, startAt: 1_700_000_100_000 });
+    await until(() => stageJob(second, workspaceId).state === "waiting");
+
+    const held = await getRun(second, run.id);
+    expect(held).toMatchObject({ state: "running", paused: true });
+    expect(kinds(held)).toEqual(["task1", "review1", "fix1"]);
+    expect(held.blocked).toBeUndefined();
+
+    await json(await resume(second, run.id));
+    await until(async () => (await getRun(second, run.id)).state === "passed");
+    expect(kinds(await getRun(second, run.id))).toEqual(["task1", "review1", "fix1", "review2"]);
+  });
+
+  it("sends no ADR 0169 reminder to a turn that ended during the pause, and one resume message after Resume", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang", DONE] }) });
+    const { workspaceId } = await workspace(server, "pause-silent");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId, workerId } = await startAndWork(server, workspaceId);
+    await json(await pause(server, runId));
+    const turn = (await getRun(server, runId)).turns[0] as PipelineTurn;
+
+    await settleAfter(server, workspaceId, async () => {
+      await json(await server.request("POST", `/api/agents/${workerId}/abort`));
+      server.services.jobs.wake("pipelines.stage", workspaceId);
+    });
+
+    const held = await getRun(server, runId);
+    expect(held).toMatchObject({ state: "running", paused: true });
+    expect(held.blocked).toBeUndefined();
+    expect(await chat(server, workerId)).not.toContain(reminderOf(turn.id));
+
+    await json(await resume(server, runId));
+    await until(async () => (await getRun(server, runId)).state === "passed");
+    const messages = await chat(server, workerId);
+    expect(messages.filter((message) => message === resumeMessage(turn.id))).toHaveLength(1);
+    expect(messages).not.toContain(reminderOf(turn.id));
+  });
+
+  it("answers 409 to Pause on an ended run and to Resume on a run that is not paused", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang", DONE] }) });
+    const { workspaceId } = await workspace(server, "pause-409");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId } = await startAndWork(server, workspaceId);
+
+    const notPaused = await resume(server, runId);
+    expect(notPaused.status).toBe(409);
+    expect(await notPaused.json()).toMatchObject({ error: { code: "run_not_paused" } });
+    await json(await server.request("POST", `/api/pipelines/runs/${runId}/cancel`));
+
+    const ended = await pause(server, runId);
+    expect(ended.status).toBe(409);
+    expect(await ended.json()).toMatchObject({ error: { code: "run_not_running" } });
+  });
+
+  it("makes a repeated Pause a no-op", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const { workspaceId } = await workspace(server, "pause-twice");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId } = await startAndWork(server, workspaceId);
+
+    await json(await pause(server, runId));
+    const again = await json<{ run: PipelineRun }>(await pause(server, runId));
+
+    expect(again.run.paused).toBe(true);
+  });
+
+  it("labels the asking chat Pipeline paused, and lists it as working", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const { workspaceId, agentId } = await workspace(server, "pause-label");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId } = await startAndWork(server, workspaceId);
+    const label = async () =>
+      (
+        await json<{ agent: { workingFor?: string } }>(
+          await server.request("GET", `/api/agents/${agentId}`),
+        )
+      ).agent.workingFor;
+    await until(async () => (await label()) === "Pipeline: implement");
+
+    await json(await pause(server, runId));
+    await until(async () => (await label()) === "Pipeline paused");
+
+    await json(await resume(server, runId));
+    await until(async () => (await label()) === "Pipeline: implement");
+  });
+});
+
 describe("uncommitted work (card 01M7G34F)", () => {
   const commitAll = (folder: string) => {
     execFileSync("git", ["add", "."], { cwd: folder });

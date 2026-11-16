@@ -275,6 +275,8 @@ export const PipelineRun = Type.Object({
   message: Type.Optional(Type.String()),
   /** Why a running run does not move: the error of its stage job, which waits for a fix and a retry. */
   blocked: Type.Optional(Type.String()),
+  /** The user paused the run (ADR 0187). Set only on a `running` run. */
+  paused: Type.Optional(Type.Literal(true)),
   /** Every test a worker reported, with its proof path. */
   tests: Type.Array(TestProof),
   turns: Type.Array(PipelineTurn),
