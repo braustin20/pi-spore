@@ -24,7 +24,7 @@ import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { BridgeCaller, JobView, ServerModule } from "@pi-spore/module-api";
-import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
+import { createTestServer, TEST_TOKEN, type TestServer } from "@pi-spore/server-core/testing";
 import type {
   Approval,
   Lane,
@@ -866,6 +866,238 @@ describe("merging a lane (ADR 0150)", () => {
     await expect(
       runs.mergeLane({ agentId: "a", workspaceId: "w" }, { laneId: lane.id }),
     ).rejects.toMatchObject({ status: 403, code: "not_coordinator" });
+  });
+});
+
+describe("decline_lane (ADR 0181)", () => {
+  const GREEN = { check: "pass", test: "pass" };
+  /** The `lint` gate fails, so a lane on the `lint` pipeline ends `failed`. */
+  const RED_LINT = { ...GREEN, lint: "fail" };
+
+  /** A lane on a pipeline with a red gate, reported by its worker, so it is `failed`. */
+  async function failedLane(
+    server: TestServer,
+    run: Run,
+    coordinator: BridgeCaller,
+    name: string,
+  ): Promise<Lane> {
+    writeFileSync(join(server.paths.root, "pipelines", "lint.toml"), LINT_PIPELINE);
+    const lane = await startLane(run, coordinator, name, { pipeline: "lint" });
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const running = await laneOf(server, run.id, lane.id);
+    const worker = await laneWorker(server, running);
+    await json(
+      await asAgent(server, worker.agentId, running.workspaceId as string)("POST", "reports", {
+        turn: worker.turnId,
+        summary: "Done",
+      }),
+    );
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "failed");
+    return running;
+  }
+
+  /** A run with one merged lane and one failed lane, so only a decline can finish it. */
+  async function mergedAndFailed(name: string) {
+    const server = await start();
+    const { projectId } = await project(server, name, RED_LINT);
+    const { run, coordinator } = await createRun(server, projectId, name);
+    const kept = await startLane(run, coordinator, "kept");
+    await laneChanges(server, run, kept.id, "feature.txt", "x\n");
+    // The failed lane exists before the merge, so the merge does not ask for the run's PR.
+    const dropped = await failedLane(server, run, coordinator, "dropped");
+    await runs.mergeLane(coordinator, { laneId: kept.id });
+    await until(async () => (await laneOf(server, run.id, kept.id)).state === "merged");
+    return { server, run, coordinator, dropped };
+  }
+
+  it("opens the way to the run PR when a failed lane is declined, and names it on the approval", async () => {
+    const { server, coordinator, dropped } = await mergedAndFailed("decline-pr");
+
+    expect(() => runs.requestPr(coordinator, { title: "Ship it", body: "" })).toThrow(
+      expect.objectContaining({
+        status: 409,
+        code: "run_not_finished",
+        message: expect.stringContaining(`"dropped" (${dropped.id}) is failed`),
+      }),
+    );
+
+    const declined = runs.declineLane(coordinator, {
+      laneId: dropped.id,
+      reason: "redone in the kept lane",
+    });
+
+    expect(declined).toMatchObject({
+      id: dropped.id,
+      state: "declined",
+      message: "redone in the kept lane",
+    });
+    const filed = runs.requestPr(coordinator, { title: "Ship it", body: "" });
+    const [approval] = await openApprovals(server);
+    expect(approval?.id).toBe(filed.id);
+    expect(approval?.reason).toContain('Declined lane "dropped": redone in the kept lane.');
+  });
+
+  it("refuses a lane that is not waiting, passed, or failed with 409, and a stranger lane with 404", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "decline-refuse");
+    const { run, coordinator } = await createRun(server, projectId, "decline-refuse");
+    const lane = await startLane(run, coordinator, "busy");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const other = await createRun(server, projectId, "other");
+    const stranger = await startLane(other.run, other.coordinator, "elsewhere");
+
+    expect(() => runs.declineLane(coordinator, { laneId: lane.id, reason: "no" })).toThrow(
+      expect.objectContaining({
+        status: 409,
+        code: "lane_not_declinable",
+        message: expect.stringContaining("is running"),
+      }),
+    );
+    expect(() => runs.declineLane(coordinator, { laneId: stranger.id, reason: "no" })).toThrow(
+      expect.objectContaining({
+        status: 404,
+        code: "lane_not_found",
+        message: expect.stringContaining(stranger.id),
+      }),
+    );
+    expect(() => runs.declineLane(coordinator, { laneId: "nope", reason: "no" })).toThrow(
+      expect.objectContaining({ status: 404, code: "lane_not_found" }),
+    );
+
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({ state: "running" });
+  });
+
+  it("tells the coordinator to call open_run_pr when a decline leaves only merged and declined lanes", async () => {
+    const { server, run, coordinator, dropped } = await mergedAndFailed("decline-last");
+    const merged = await deliveredWith(server, run.coordinatorAgentId, "is merged into");
+    expect(merged).not.toContain("Call open_run_pr");
+
+    runs.declineLane(coordinator, { laneId: dropped.id, reason: "not needed" });
+
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "Call open_run_pr");
+    expect(delivery).toContain("All lanes of the run are merged or declined");
+    expect(delivery).not.toContain("The user declined");
+  });
+
+  it("declines a lane for the user over HTTP with its reason, and tells the coordinator", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "decline-route");
+    const { run, coordinator } = await createRun(server, projectId, "decline-route");
+    const first = await startLane(run, coordinator, "first");
+    const later = await startLane(run, coordinator, "later", { wave: 2 });
+    await until(() => laneJob(server, later.id).state === "waiting");
+
+    const response = await server.request("POST", `/api/runs/${run.id}/lanes/${later.id}/decline`, {
+      reason: "the user replaced it",
+    });
+
+    expect(response.status).toBe(200);
+    const { lane } = await json<{ lane: Lane }>(response);
+    expect(lane).toMatchObject({
+      id: later.id,
+      state: "declined",
+      message: "the user replaced it",
+    });
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "The user declined");
+    expect(delivery).toContain(`"${later.name}" (${later.id})`);
+    expect(delivery).toContain("the user replaced it");
+
+    const broken = await fetch(`${server.url}/api/runs/${run.id}/lanes/${first.id}/decline`, {
+      method: "POST",
+      headers: { "content-type": "application/json", "x-pi-spore-token": TEST_TOKEN },
+      body: '{ reason: "unquoted"',
+    });
+    expect(broken.status).toBe(400);
+    expect(((await broken.json()) as { error: { message: string } }).error.message).toContain(
+      "not valid JSON",
+    );
+    expect(await laneOf(server, run.id, first.id)).toMatchObject({ state: "running" });
+
+    // A cancelled run refuses a decline from anyone (ADR 0181).
+    await json(await server.request("POST", `/api/runs/${run.id}/cancel`));
+    const refused = await server.request("POST", `/api/runs/${run.id}/lanes/${first.id}/decline`, {
+      reason: "too late",
+    });
+
+    expect(refused.status).toBe(409);
+    expect(await refused.json()).toMatchObject({ error: { code: "run_cancelled" } });
+  });
+
+  it("declines a lane over the bridge route, and refuses a read-only chat", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "decline-bridge");
+    const { run, coordinator } = await createRun(server, projectId, "decline-bridge");
+    const lane = await startLane(run, coordinator, "extra");
+    await laneChanges(server, run, lane.id, "feature.txt", "x\n");
+
+    const declined = await json<{ lane: Lane }>(
+      await asAgent(server, coordinator.agentId, run.workspaceId)("POST", "lanes/decline", {
+        laneId: lane.id,
+        reason: "not needed after all",
+      }),
+    );
+
+    expect(declined.lane).toMatchObject({
+      id: lane.id,
+      state: "declined",
+      message: "not needed after all",
+    });
+
+    const token = server.agentTokens.issue({
+      agentId: coordinator.agentId,
+      workspaceId: run.workspaceId,
+      readOnly: true,
+    });
+    const refused = await server.request(
+      "POST",
+      "/api/bridge/lanes/decline",
+      { laneId: lane.id, reason: "once more" },
+      { "x-pi-spore-token": "", authorization: `Bearer ${token}` },
+    );
+
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "read_only_chat" } });
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({ state: "declined" });
+  });
+
+  it("starts a wave-2 lane once the failed wave-1 lane it waited on is declined", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "decline-wave", RED_LINT);
+    const { run, coordinator } = await createRun(server, projectId, "decline-wave");
+    const dropped = await failedLane(server, run, coordinator, "wave1");
+    const next = await startLane(run, coordinator, "wave2", { wave: 2 });
+    await until(() => laneJob(server, next.id).state === "waiting");
+
+    runs.declineLane(coordinator, { laneId: dropped.id, reason: "redone by hand" });
+
+    await until(async () => (await laneOf(server, run.id, next.id)).state === "running");
+    // A coordinator's own decline with lanes still open sends it nothing.
+    const said = await chat(server, run.coordinatorAgentId);
+    expect(said.filter((message) => message.includes("Call open_run_pr"))).toEqual([]);
+    expect(said.filter((message) => message.includes("The user declined"))).toEqual([]);
+  });
+
+  it("cancels a waiting lane's job, so a declined lane never gets a workspace", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "decline-waiting", GREEN);
+    const { run, coordinator } = await createRun(server, projectId, "decline-waiting");
+    const first = await startLane(run, coordinator, "first");
+    const later = await startLane(run, coordinator, "later", { wave: 2 });
+    await until(() => laneJob(server, later.id).state === "waiting");
+
+    const declined = runs.declineLane(coordinator, { laneId: later.id, reason: "not needed" });
+
+    expect(declined.state).toBe("declined");
+    expect(laneJob(server, later.id).state).toBe("cancelled");
+    // The merged wave-1 lane wakes waiting lanes; a cancelled job stays down.
+    await laneChanges(server, run, first.id, "feature.txt", "x\n");
+    await runs.mergeLane(coordinator, { laneId: first.id });
+    await until(async () => (await laneOf(server, run.id, first.id)).state === "merged");
+
+    const settled = await laneOf(server, run.id, later.id);
+    expect(settled.state).toBe("declined");
+    expect(settled.workspaceId).toBeUndefined();
+    expect(laneJob(server, later.id).state).toBe("cancelled");
   });
 });
 

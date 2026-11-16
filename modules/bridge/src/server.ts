@@ -25,6 +25,7 @@ import {
   CARD_COLUMNS,
   type Card,
   type CardColumn,
+  DeclineLaneRequest,
   FileQuestionRequest,
   MergeLaneRequest,
   OpenRunPrRequest,
@@ -344,6 +345,13 @@ export const bridgeModule: ServerModule = {
       refuseReadOnly(caller, "merge lanes");
       const request = parseJsonBody(MergeLaneRequest, await c.req.text(), "lane merge");
       return c.json({ lane: await runs.mergeLane(caller, request) });
+    });
+
+    host.routes.post("/lanes/decline", async (c) => {
+      const caller = bridgeCaller(c);
+      refuseReadOnly(caller, "decline lanes");
+      const request = parseJsonBody(DeclineLaneRequest, await c.req.text(), "lane decline");
+      return c.json({ lane: runs.declineLane(caller, request) });
     });
 
     host.routes.post("/coordinator/pr", async (c) => {
