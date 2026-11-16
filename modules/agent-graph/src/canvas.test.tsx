@@ -386,6 +386,23 @@ describe("the agent graph canvas", () => {
     expect(pod("T7")?.getAttribute("href")).toBe("#/workspaces/W5/chats/S5");
   });
 
+  it("names a gates step's round, like a review step's", async () => {
+    const gates: GraphTree = {
+      ...workspaceTree,
+      groups: [
+        group("PR3", "W2", [
+          step("G0", { kind: "gates", stage: "gates" }),
+          step("G2", { kind: "gates", stage: "gates", round: 2, state: "running" }),
+        ]),
+      ],
+    };
+    const { scope } = await render([gates]);
+    const role = (id: string) =>
+      scope.querySelector(`.react-flow__node[data-id="step:${id}"] .ag-role`)?.textContent;
+    expect(role("G0")).toBe("gates");
+    expect(role("G2")).toBe("gates r2");
+  });
+
   it("marks a lane's group that the run merges, with the merge step", async () => {
     const ended = (pipelineRunId: string, merging: string): GraphGroup => ({
       ...group(pipelineRunId, "L1", [step(`${pipelineRunId}:0`, {})]),
@@ -556,6 +573,118 @@ describe("the graph layout", () => {
       expect(after?.y).toBeGreaterThanOrEqual((before?.y ?? 0) + (before?.height ?? 0));
       expect(after?.x).toBe(before?.x);
     }
+  });
+
+  /** The `default` pipeline's steps up to round 2, with the given states; members of a round have `beside`. */
+  type Id = "I" | "R1" | "A1" | "G1" | "F1" | "R2" | "G2";
+  const parallel = (
+    states: Partial<Record<Id, GraphStep["state"]>>,
+    phone = false,
+    live = true,
+  ) => {
+    const all: [Id, Partial<GraphStep>][] = [
+      ["I", {}],
+      ["R1", { kind: "review", stage: "review", round: 1 }],
+      ["A1", { kind: "review", stage: "adversarial", round: 1, beside: true }],
+      ["G1", { kind: "gates", stage: "gates", round: 1, beside: true }],
+      ["F1", { kind: "fix", round: 1 }],
+      ["R2", { kind: "review", stage: "review", round: 2 }],
+      ["G2", { kind: "gates", stage: "gates", round: 2, beside: true }],
+    ];
+    const steps = all.flatMap(([id, extra]) => {
+      const state = states[id];
+      return state ? [step(id, { ...extra, state })] : [];
+    });
+    const tree: GraphTree = {
+      ...workspaceTree,
+      groups: [{ ...group("PR3", "W2", steps), live }],
+    };
+    const { nodes, edges } = layoutGraph([tree], new Map(), phone);
+    const at = (id: string) => nodes.find((node) => node.id === `step:${id}`)?.position;
+    const edge = (id: string) => {
+      const found = edges.find((each) => each.id === id);
+      if (!found)
+        throw new Error(`no edge ${id}; edges: ${edges.map((each) => each.id).join(", ")}`);
+      return found;
+    };
+    return { at, edge, edges };
+  };
+
+  it("forks a step into a round's members, side by side, each with a live thread", () => {
+    const { at, edge } = parallel({ I: "done", R1: "running", G1: "running" });
+    for (const id of ["thread:step:R1", "thread:step:G1"]) {
+      expect(edge(id).source).toBe("step:I");
+      expect(edge(id).data?.live).toBe(true);
+    }
+    expect(at("G1")?.y).toBe(at("R1")?.y);
+    expect(at("G1")?.x).not.toBe(at("R1")?.x);
+  });
+
+  it("keeps the route's color in a group that is not live, without making it live", () => {
+    const { edge } = parallel({ I: "done", R1: "running", G1: "running" }, false, false);
+    for (const id of ["thread:step:R1", "thread:step:G1"]) {
+      expect(edge(id).data?.tone).toBe("chat");
+      expect(edge(id).data?.live).toBe(false);
+    }
+  });
+
+  it("joins a round's members into the fix after them, live only on the route", () => {
+    const { edge } = parallel({
+      I: "done",
+      R1: "done",
+      G1: "done",
+      F1: "running",
+      R2: "waiting",
+      G2: "waiting",
+    });
+    expect(edge("thread:step:R1:step:F1").source).toBe("step:R1");
+    expect(edge("thread:step:G1:step:F1").source).toBe("step:G1");
+    expect(edge("thread:step:R1:step:F1").data?.live).toBe(true);
+    expect(edge("thread:step:G1:step:F1").data?.live).toBe(false);
+    expect(edge("thread:step:G2").data?.live).toBe(false);
+    expect(edge("thread:step:G2").data?.dim).toBe(true);
+  });
+
+  it("in round 2, runs live threads to every running step through each round's first step", () => {
+    const { edge } = parallel({
+      I: "done",
+      R1: "done",
+      A1: "done",
+      G1: "done",
+      F1: "done",
+      R2: "running",
+      G2: "running",
+    });
+    expect(edge("thread:step:A1").data?.live).toBe(false);
+    for (const id of [
+      "thread:step:I",
+      "thread:step:R1",
+      "thread:step:R1:step:F1",
+      "thread:step:R2",
+      "thread:step:G2",
+    ])
+      expect(edge(id).data?.live).toBe(true);
+    expect(edge("thread:step:A1:step:F1").data?.live).toBe(false);
+    expect(edge("thread:step:G2").source).toBe("step:F1");
+  });
+
+  it("draws a chain without `beside` as one thread from each step to the next", () => {
+    const { edges } = layoutGraph([runTree], new Map(), false);
+    expect(edges.map((each) => [each.id, each.source, each.sourceHandle, each.data?.live])).toEqual(
+      [
+        ["thread:step:T1", "tree:W1", "root", true],
+        ["thread:step:T2", "step:T1", "out", true],
+        ["thread:step:PR1:2", "step:T2", "out", false],
+        ["thread:step:T3", "tree:W1", "root", true],
+      ],
+    );
+  });
+
+  it("stacks a round's members on a phone, each with its thread from the step before the round", () => {
+    const { at, edge } = parallel({ I: "done", R1: "running", G1: "running" }, true);
+    expect(at("G1")?.y).not.toBe(at("R1")?.y);
+    expect(edge("thread:step:R1").source).toBe("step:I");
+    expect(edge("thread:step:G1").source).toBe("step:I");
   });
 });
 

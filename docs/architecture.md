@@ -797,6 +797,8 @@ fail_first = "artifact"
   (`gate_reds`: round, stage, message, log path), because the round-limit answer and Retry build a fix outside the
   job. The message is `gate <action> failed`, the action error, the failed vitest tests (up to 10), and the last 4 KiB
   of the log, with no color codes.
+  `gate_runs` (the run view's `gateRuns`) holds each member's state per gate round: `running` from when the round
+  opens until its gates end, then `passed` or `failed`.
   - In a group with a reviewer, a red gate does not stop the reviews. When the round ends, every REVISE and every
     red gate go into one fix turn: each red gate gives its headline and `Log: <path>`. After every fix the gates run
     again, with the next review round, or alone when no reviewer is open (the final gate run). A red final gate run
@@ -1619,8 +1621,12 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
   pipeline id), the run state, the current stage and round, `live` (state `running`), `merging` while the run
   merges that lane (the lane's `mergeStep`, such as `gate test`, else `merging`; ADR 0150), and its steps in pipeline
   order. A started agent stage gives one step per turn (`task`, `review`, or `fix`, with its round and agent). A
-  gate stage gives one `gates` step with the gate names. A stage not reached gives one `waiting` step. A step whose
-  agent retention deleted has no agent.
+  gate stage gives one `gates` step with the gate names per gate run (`PipelineRun.gateRuns`), with id
+  `<pipeline run id>:<stage index>:<round>`; its state comes from the gate run, and a gate round that waits for an
+  open fix turn is `waiting`. A stage not started gives one `waiting` step. A group of 2+ stages (ADR 0178) gives one
+  row per round: each member's review turns or gate step of the round, every step after the first with
+  `beside: true`, then the round's fix turns. After a fix of a live run, its gate members get `waiting` steps of the
+  next round until that round starts. A step whose agent retention deleted has no agent.
 - An agent node (`GraphAgent`) has its id, workspace, kind, role, title, status, `workingFor`, model, routed model,
   `since` (from `AgentsKey.attention`, else its creation time), and `helpers`: one per `running` step of a
   `running` child run, with id `<child run id>:<step index>`, agent name, model, current tool, and start time. One
@@ -1647,7 +1653,11 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
   subscribes to `agent-graph:trees` and redraws from each event, so an archived workspace's tree leaves at once.
   - Layout: `layoutGraph` in `layout.ts`, a fixed tree layout with no library. Desktop: trees side by side, oldest
     first; in a tree, the root on top and its groups side by side; steps top-down. Phone: trees and groups stack,
-    the root thread down the left. Each pod reserves one row per helper under it.
+    the root thread down the left. Each pod reserves one row per helper under it. A step with `beside` runs in one
+    round with the step before it (ADR 0178): on a desktop a round's steps sit side by side, and the group widens one
+    column per member past the first; on a phone they stack. Each step's threads start at every step of the round
+    before it, so a step forks into a round and the round joins into the next step. The live route ends at the last
+    round with a running step: it runs through each earlier round's first step to every running step.
   - Nodes: a tree box (the root pod is its drag handle, so dragging the root moves the tree), a group panel, and a
     step pod. Every pod with an agent links to `#/workspaces/<workspace>/chats/<agent>`. A drag's end sends
     one `PUT /api/agent-graph/positions`; the canvas draws each node at this mount's drag, else at its tree's

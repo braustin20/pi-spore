@@ -29,6 +29,7 @@ import {
   GATE_LOG_HEADING,
   logTail,
   type PipelineEvent,
+  type PipelineGateRun,
   type PipelineRun,
   type PipelineRunState,
   type PipelineSource,
@@ -136,6 +137,9 @@ const MIGRATIONS = [
   // The worker turn's report was refused once for uncommitted files, so its next report is taken and `decide` blocks
   // the stage instead; it survives a restart.
   "ALTER TABLE pipelines_turns ADD COLUMN commit_reminded INTEGER NOT NULL DEFAULT 0",
+  // The state of each gate round, as a JSON list of `PipelineGateRun` (ADR 0178): the job's checkpoint holds only the
+  // current round, and the view must tell gates that run from a group that waits on its fix.
+  "ALTER TABLE pipelines_runs ADD COLUMN gate_runs TEXT NOT NULL DEFAULT '[]'",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -182,6 +186,7 @@ interface RunRow {
   blocked_sent: string | null;
   name: string | null;
   gate_reds: string;
+  gate_runs: string;
   created_at: number;
   ended_at: number | null;
 }
@@ -359,6 +364,7 @@ const runToView = (
       ? turnToView(turn, liveModel?.(turn.agent_id), questionOf?.(turn))
       : turnToView(turn),
   ),
+  gateRuns: JSON.parse(row.gate_runs) as PipelineGateRun[],
   createdAt: row.created_at,
   ...(row.ended_at === null ? {} : { endedAt: row.ended_at }),
 });
@@ -917,6 +923,24 @@ export const pipelinesModule: ServerModule = {
         runId,
       );
     };
+    /** Sets the state of each `(stage, round)`, adding the entries the stored list lacks. */
+    const writeGateRuns = (runId: string, states: readonly PipelineGateRun[]) => {
+      const stored = JSON.parse(requireRun(runId).gate_runs) as PipelineGateRun[];
+      let changed = false;
+      for (const next of states) {
+        const entry = stored.find((run) => run.stage === next.stage && run.round === next.round);
+        if (entry?.state === next.state) continue;
+        if (entry) entry.state = next.state;
+        else stored.push({ ...next });
+        changed = true;
+      }
+      if (!changed) return;
+      host.store.run(
+        "UPDATE pipelines_runs SET gate_runs = ? WHERE id = ?",
+        JSON.stringify(stored),
+        runId,
+      );
+    };
     const modelOf = (stage: PipelineStage) =>
       stage.model ?? (stage.tier === "route" ? ROUTE_MODEL : undefined);
     const rolesTitle = (role: StageRole) => (role === "reviewer" ? "Review" : "Adversarial");
@@ -1254,6 +1278,7 @@ export const pipelinesModule: ServerModule = {
       const gates = gateMembers(run, group);
       const opened: StageCheckpoint = {};
       const reds: GateRed[] = [];
+      const started: PipelineGateRun[] = [];
       if (gates.length > 0 && checkpoint?.round !== round) {
         opened.round = round;
         opened.places = {};
@@ -1271,6 +1296,14 @@ export const pipelinesModule: ServerModule = {
             });
             break;
           }
+        }
+        for (const index of gates) {
+          const { name } = stageOf(run, index);
+          started.push({
+            stage: name,
+            round,
+            state: isRed(reds, round, name) ? "failed" : "running",
+          });
         }
       }
       // A replacement after Retry keeps the diff its failed turn had, so every member of a round reads one snapshot.
@@ -1347,6 +1380,7 @@ export const pipelinesModule: ServerModule = {
         checkpoint: { ...checkpoint, boot: bootId, ...opened },
         commit: () => {
           writeReds(run.id, reds);
+          writeGateRuns(run.id, started);
           for (const turn of resumed) agents.deliver(turn.agent_id, restartMessage(turn.id));
           for (const { member, prompt } of starts) {
             const role = member.stage.role as StageRole;
@@ -1519,10 +1553,22 @@ export const pipelinesModule: ServerModule = {
       }
       const open = turns.filter((turn) => turn.error === null && turn.report === null);
       // The gates run while the reviewers work, never while the worker fixes: they must see the fixed code.
+      const round = checkpoint?.round;
       const gated =
-        checkpoint?.round === undefined || open.some((turn) => turn.kind === "fix")
+        round === undefined || open.some((turn) => turn.kind === "fix")
           ? undefined
-          : await driveGates(run, group, checkpoint.round, checkpoint.places ?? {});
+          : await driveGates(run, group, round, checkpoint?.places ?? {});
+      // A member whose gates all ran green passed its round; one with a red of the round failed it.
+      const ended: PipelineGateRun[] = [];
+      if (gated && round !== undefined) {
+        for (const index of gateMembers(run, group)) {
+          const { name, gates } = stageOf(run, index);
+          if (isRed(gated.reds, round, name)) ended.push({ stage: name, round, state: "failed" });
+          else if (gated.places[name]?.gate === (gates as string[]).length) {
+            ended.push({ stage: name, round, state: "passed" });
+          }
+        }
+      }
       // Gate progress rides on every outcome, the restart one too: a group with no reviewer has no agent to wake it.
       const withGates = (outcome: StepOutcome<StageCheckpoint>): StepOutcome<StageCheckpoint> => ({
         ...outcome,
@@ -1533,6 +1579,7 @@ export const pipelinesModule: ServerModule = {
         },
         commit: () => {
           writeReds(run.id, gated?.reds ?? []);
+          writeGateRuns(run.id, ended);
           outcome.commit?.();
         },
       });

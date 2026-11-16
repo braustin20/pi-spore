@@ -52,6 +52,8 @@ export const GraphStep = Type.Object({
   ]),
   gates: Type.Optional(Type.Array(Type.String())),
   agent: Type.Optional(GraphAgent),
+  /** The step runs next to the step before it, in one round of a parallel group (ADR 0178). */
+  beside: Type.Optional(Type.Literal(true)),
 });
 export type GraphStep = Static<typeof GraphStep>;
 
