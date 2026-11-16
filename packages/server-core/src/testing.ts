@@ -66,6 +66,8 @@ export interface TestServer {
     headers?: Record<string, string>,
     peer?: string,
   ): Promise<Response>;
+  /** Moves the test clock forward by `ms`. */
+  advance(ms: number): void;
   close(): void;
 }
 
@@ -178,6 +180,9 @@ export async function createTestServer(
         },
         { incoming: { socket: { remoteAddress: peer } } },
       ),
+    advance: (ms) => {
+      clock += ms;
+    },
     close: () => {
       jobs.stop();
       sockets.close();
