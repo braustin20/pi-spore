@@ -80,6 +80,7 @@ function Pod({
   shape,
   role,
   title,
+  hover,
   meta,
   children,
 }: {
@@ -89,6 +90,8 @@ function Pod({
   shape?: ReactNode;
   role: string;
   title: string | undefined;
+  /** What a hover says beyond the one line the pod has room for. */
+  hover?: string | undefined;
   meta: string;
   children?: ReactNode;
 }) {
@@ -103,7 +106,7 @@ function Pod({
       {children}
     </>
   );
-  const props = { className: cn("ag-pod", className), style, "data-pod": "" };
+  const props = { className: cn("ag-pod", className), style, "data-pod": "", title: hover };
   return agent ? (
     <a
       {...props}
@@ -176,15 +179,40 @@ function stepRole(step: GraphStep): string {
   return step.round === undefined || step.kind === "task" ? name : `${name} r${step.round}`;
 }
 
+/**
+ * What a step's pod says about how the step ended, or why it waits (ADR 0188): the word for its meta line, and the
+ * ring tone that goes with it. `reported` has no tone: it only says the agent finished its turn.
+ */
+function stepOutcome(step: GraphStep): { text: string; tone: string | undefined } | undefined {
+  if (step.outcome === undefined) return undefined;
+  const findings =
+    step.outcome === "revise" && step.findings !== undefined
+      ? ` · ${step.findings} finding${step.findings === 1 ? "" : "s"}`
+      : "";
+  return {
+    text: `${step.outcome}${findings}`,
+    tone:
+      step.outcome === "approved" || step.outcome === "passed"
+        ? "o-ok"
+        : step.outcome === "revise" || step.outcome === "asking"
+          ? "o-warn"
+          : step.outcome === "blocked"
+            ? "o-fail"
+            : undefined,
+  };
+}
+
 function StepPod({ id, data }: NodeProps<StepNode>) {
   const { step } = data;
   const waits = useContext(WaitsContext);
   const state = stepState(step, step.agent && waits.get(step.agent.agentId));
+  const outcome = stepOutcome(step);
+  const title = step.agent?.title ?? step.gates?.join(" · ");
   return (
     <>
       <Pod
         agent={step.agent}
-        className={cn("ag-step", `s-${state}`)}
+        className={cn("ag-step", `s-${state}`, outcome?.tone)}
         style={{ "--r": `${STAGE_R}px` } as CSSProperties}
         shape={
           state === "fail" && (
@@ -194,8 +222,10 @@ function StepPod({ id, data }: NodeProps<StepNode>) {
           )
         }
         role={stepRole(step)}
-        title={step.agent?.title ?? step.gates?.join(" · ")}
-        meta={`${STATE_TEXT[state]} · ${shortModel(step.agent?.routedModel ?? step.agent?.model)}`}
+        title={title}
+        // A step that waits says why on hover, since the pod's one line has no room for the reason.
+        hover={step.note === undefined ? undefined : [title, step.note].filter(Boolean).join("\n")}
+        meta={`${outcome?.text ?? STATE_TEXT[state]} · ${shortModel(step.agent?.routedModel ?? step.agent?.model)}`}
       >
         {step.agent && <Helpers node={id} r={STAGE_R} />}
       </Pod>

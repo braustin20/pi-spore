@@ -48,6 +48,31 @@ function helpersOf(children: ChildRun[]): GraphHelper[] {
 }
 
 /**
+ * How a step ended, or, while it runs, why it waits (ADR 0188). A `failed` step keeps its own `failed` text and a
+ * `waiting` step has not begun, so neither gets one. `turn` is the step's turn; a gate step has none, and its round
+ * passed when its gate run did.
+ */
+function outcomeOf(
+  state: GraphStep["state"],
+  run: PipelineRun,
+  turn?: PipelineTurn,
+): Partial<GraphStep> {
+  if (state === "running")
+    return run.blocked !== undefined
+      ? { outcome: "blocked", note: run.blocked }
+      : turn?.question !== undefined
+        ? { outcome: "asking" }
+        : {};
+  if (state !== "done") return {};
+  if (turn === undefined) return { outcome: "passed" };
+  if (turn.report === undefined) return {};
+  if (turn.kind !== "review" || turn.report.verdict === undefined) return { outcome: "reported" };
+  if (turn.report.verdict === "approve") return { outcome: "approved" };
+  const findings = turn.report.findings?.length ?? 0;
+  return { outcome: "revise", ...(findings > 0 ? { findings } : {}) };
+}
+
+/**
  * The steps of a run in pipeline order, with their states as ADR 0176 ("Shapes") says. A group of 2+ stages gives one
  * row per round: its members' review turns and gate runs side by side (`beside`), then the round's fix turns (ADR 0178).
  */
@@ -75,13 +100,15 @@ function stepsOf(run: PipelineRun, node: (agentId: string) => GraphAgent | undef
   };
   const turnStep = (turn: PipelineTurn): GraphStep => {
     const agent = node(turn.agentId);
+    const state = passed || turn.report ? "done" : turn.error || ended ? "failed" : "running";
     return {
       id: turn.id,
       stage: stageAt(turn.stageIndex).name,
       kind: turn.kind,
       round: turn.round,
-      state: passed || turn.report ? "done" : turn.error || ended ? "failed" : "running",
+      state,
       ...(agent ? { agent } : {}),
+      ...outcomeOf(state, run, turn),
     };
   };
   // A gate step's state comes from its gate run; a cut-off round stays `running` there after the run ended.
@@ -92,6 +119,7 @@ function stepsOf(run: PipelineRun, node: (agentId: string) => GraphAgent | undef
     round,
     state,
     gates: stageAt(index).gates as string[],
+    ...outcomeOf(state, run),
   });
   const beside = (row: GraphStep[]) =>
     row.map((step, place): GraphStep => (place === 0 ? step : { ...step, beside: true }));

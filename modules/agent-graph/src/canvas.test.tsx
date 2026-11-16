@@ -386,6 +386,113 @@ describe("the agent graph canvas", () => {
     expect(pod("T7")?.getAttribute("href")).toBe("#/workspaces/W5/chats/S5");
   });
 
+  it("says approved on an approved review step, with an ok ring", async () => {
+    const { scope } = await render([
+      {
+        ...workspaceTree,
+        groups: [
+          group("PR8", "W2", [
+            step("R8", {
+              kind: "review",
+              stage: "review",
+              round: 1,
+              outcome: "approved",
+              agent: agent("S8", "W2", { role: "reviewer", status: "idle" }),
+            }),
+          ]),
+        ],
+      },
+    ]);
+    const pod = scope.querySelector('.react-flow__node[data-id="step:R8"] [data-pod]');
+
+    expect(pod?.querySelector(".ag-meta")?.textContent).toBe("approved · sonnet 5.5");
+    expect(pod?.classList).toContain("o-ok");
+  });
+
+  it("counts a revising review step's findings in its meta, with a warn ring", async () => {
+    const { scope } = await render([
+      {
+        ...workspaceTree,
+        groups: [
+          group("PR9", "W2", [
+            step("R9", {
+              kind: "review",
+              stage: "review",
+              round: 1,
+              outcome: "revise",
+              findings: 2,
+              agent: agent("S9", "W2", { role: "reviewer", status: "idle" }),
+            }),
+            step("R10", {
+              kind: "review",
+              stage: "review",
+              round: 2,
+              outcome: "revise",
+              findings: 1,
+              agent: agent("S10", "W2", { role: "reviewer", status: "idle" }),
+            }),
+          ]),
+        ],
+      },
+    ]);
+    const meta = (id: string) =>
+      scope.querySelector(`.react-flow__node[data-id="step:${id}"] .ag-meta`)?.textContent;
+
+    expect(meta("R9")).toBe("revise · 2 findings · sonnet 5.5");
+    expect(meta("R10")).toBe("revise · 1 finding · sonnet 5.5");
+    expect(
+      scope.querySelector('.react-flow__node[data-id="step:R9"] [data-pod]')?.classList,
+    ).toContain("o-warn");
+  });
+
+  it("says why a blocked step waits in its pod's hover title, keeping its heading", async () => {
+    const note =
+      'stage review: the reviewer agent "Review 1" failed. Retry starts a fresh reviewer.';
+    const { scope } = await render([
+      {
+        ...workspaceTree,
+        workspaceId: "W11",
+        groups: [
+          group("PR11", "W11", [
+            step("B11", {
+              kind: "review",
+              stage: "review",
+              round: 1,
+              state: "running",
+              outcome: "blocked",
+              note,
+              agent: agent("S11", "W11", { role: "reviewer", title: "Review 1" }),
+            }),
+            step("B12", {
+              kind: "review",
+              stage: "review",
+              round: 1,
+              outcome: "approved",
+              agent: agent("S12", "W11", { role: "reviewer", status: "idle", title: "Review 2" }),
+            }),
+            step("B13", {
+              kind: "gates",
+              stage: "gates",
+              state: "running",
+              outcome: "blocked",
+              note,
+            }),
+          ]),
+        ],
+      },
+    ]);
+    const pod = (id: string) =>
+      scope.querySelector(`.react-flow__node[data-id="step:${id}"] [data-pod]`);
+
+    // The reason is a hover line under the pod's own title, so the heading stays and nothing clips.
+    expect(pod("B11")?.getAttribute("title")).toBe(`Review 1\n${note}`);
+    expect(pod("B11")?.querySelector(".ag-title")?.textContent).toBe("Review 1");
+    // A step that waits for nobody has no hover text, as before.
+    expect(pod("B12")?.hasAttribute("title")).toBe(false);
+    // A step with no heading of its own says only why it waits.
+    expect(pod("B13")?.getAttribute("title")).toBe(note);
+  });
+
   it("names a gates step's round, like a review step's", async () => {
     const gates: GraphTree = {
       ...workspaceTree,

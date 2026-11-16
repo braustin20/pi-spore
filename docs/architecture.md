@@ -1637,7 +1637,10 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
   open fix turn is `waiting`. A stage not started gives one `waiting` step. A group of 2+ stages (ADR 0178) gives one
   row per round: each member's review turns or gate step of the round, every step after the first with
   `beside: true`, then the round's fix turns. After a fix of a live run, its gate members get `waiting` steps of the
-  next round until that round starts. A step whose agent retention deleted has no agent.
+  next round until that round starts. A step whose agent retention deleted has no agent. A step can carry an
+  `outcome` (ADR 0188, `outcomeOf`): a done review is `approved` or `revise` (with `findings`, the count, when there
+  are any), another done turn `reported`, a done gate step `passed`; a running step of a run with `blocked` is
+  `blocked` (with `note`, the message), else a running turn with an open question is `asking`.
 - An agent node (`GraphAgent`) has its id, workspace, kind, role, title, status, `workingFor`, model, routed model,
   `since` (from `AgentsKey.attention`, else its creation time), and `helpers`: one per `running` step of a
   `running` child run, with id `<child run id>:<step index>`, agent name, model, current tool, and start time. One
@@ -1680,7 +1683,10 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     look from the step's own `state`, never its agent's status, since a task step and its fix steps share one
     worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A root, or
     a running step, whose chat waits for the user (`waitShows`, read through `AgentsWebKey.useUserWaits`) is
-    `--warn` with a steady glow and reads "waiting for your answer". A fix step reads `fix r<round>`. In a live
+    `--warn` with a steady glow and reads "waiting for your answer". A step with an `outcome` shows it in place of
+    its state text (`approved · sonnet 5.5`, `revise · 2 findings · sonnet 5.5`), and its ring takes a tone:
+    `--ok` (approved, passed), `--warn` (revise, asking), `--fail` (blocked). A blocked step's hover adds the
+    blocked message. A fix step reads `fix r<round>`. In a live
     group, the threads from the root to the running step take the root's color and carry SVG drops. A group with
     `merging` is live too: a `merging: <step>` line in `--run` under its name (its steps move down one line for it),
     and a live thread from the root to its first step; its steps keep their own looks. Reduced motion:

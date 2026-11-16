@@ -1,6 +1,6 @@
 # 0176. The workspaces landing page is a live graph of all agents
 
-- Status: Accepted
+- Status: Accepted; extended by [0188](0188-agent-graph-step-outcome.md) (step outcome)
 - Date: 2026-11-14
 - Requirements: R3.3 (helpers), R6 (pipelines), R7 (runs and lanes), R15 (attention)
 

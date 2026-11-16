@@ -54,6 +54,21 @@ export const GraphStep = Type.Object({
   agent: Type.Optional(GraphAgent),
   /** The step runs next to the step before it, in one round of a parallel group (ADR 0178). */
   beside: Type.Optional(Type.Literal(true)),
+  /** How the step ended, or why it waits (ADR 0188). A failed step says so with `state` instead. */
+  outcome: Type.Optional(
+    Type.Union([
+      Type.Literal("approved"),
+      Type.Literal("revise"),
+      Type.Literal("reported"),
+      Type.Literal("passed"),
+      Type.Literal("blocked"),
+      Type.Literal("asking"),
+    ]),
+  ),
+  /** How many findings a `revise` report held, so only with `outcome: "revise"`, and only when there are any. */
+  findings: Type.Optional(Type.Integer({ minimum: 1 })),
+  /** Why a `blocked` step waits: the run's blocked message. Only with `outcome: "blocked"`. */
+  note: Type.Optional(Type.String()),
 });
 export type GraphStep = Static<typeof GraphStep>;
 
