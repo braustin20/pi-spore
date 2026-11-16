@@ -80,6 +80,7 @@ function Pod({
   shape,
   role,
   title,
+  hover,
   meta,
   children,
 }: {
@@ -89,6 +90,8 @@ function Pod({
   shape?: ReactNode;
   role: string;
   title: string | undefined;
+  /** What a hover says beyond the one line the pod has room for. */
+  hover?: string | undefined;
   meta: string;
   children?: ReactNode;
 }) {
@@ -103,7 +106,7 @@ function Pod({
       {children}
     </>
   );
-  const props = { className: cn("ag-pod", className), style, "data-pod": "" };
+  const props = { className: cn("ag-pod", className), style, "data-pod": "", title: hover };
   return agent ? (
     <a
       {...props}
@@ -204,10 +207,7 @@ function StepPod({ id, data }: NodeProps<StepNode>) {
   const waits = useContext(WaitsContext);
   const state = stepState(step, step.agent && waits.get(step.agent.agentId));
   const outcome = stepOutcome(step);
-  // A step that waits says why, on a line under its title.
-  const title = [step.agent?.title ?? step.gates?.join(" · "), step.note]
-    .filter(Boolean)
-    .join("\n");
+  const title = step.agent?.title ?? step.gates?.join(" · ");
   return (
     <>
       <Pod
@@ -222,7 +222,9 @@ function StepPod({ id, data }: NodeProps<StepNode>) {
           )
         }
         role={stepRole(step)}
-        title={title || undefined}
+        title={title}
+        // A step that waits says why on hover, since the pod's one line has no room for the reason.
+        hover={step.note === undefined ? undefined : [title, step.note].filter(Boolean).join("\n")}
         meta={`${outcome?.text ?? STATE_TEXT[state]} · ${shortModel(step.agent?.routedModel ?? step.agent?.model)}`}
       >
         {step.agent && <Helpers node={id} r={STAGE_R} />}
