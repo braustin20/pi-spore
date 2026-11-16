@@ -168,15 +168,24 @@ async function workspace(
   return { workspaceId: workspace.id, agentId: agent.id, folder };
 }
 
-/** What a worker leaves in a git workspace: a commit, an edited tracked file, and an untracked file. */
+/**
+ * What a worker leaves in a git workspace: a commit that adds a file, then one that edits a tracked file and adds a
+ * new one. A run with uncommitted files blocks, so the worker commits everything (card 01M7G34F).
+ */
 function workerChange(folder: string) {
+  const commit = (...paths: string[]) => {
+    execFileSync("git", ["add", ...paths], { cwd: folder });
+    execFileSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work"],
+      { cwd: folder },
+    );
+  };
   writeFileSync(join(folder, "committed.txt"), "committed line\n");
-  execFileSync("git", ["add", "committed.txt"], { cwd: folder });
-  execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work"], {
-    cwd: folder,
-  });
+  commit("committed.txt");
   writeFileSync(join(folder, "a.txt"), "one\nedited line\n");
-  writeFileSync(join(folder, "new.txt"), "untracked line\n");
+  writeFileSync(join(folder, "new.txt"), "new line\n");
+  commit("a.txt", "new.txt");
 }
 
 /** The agent's messages as seen live. */
@@ -719,11 +728,12 @@ describe("a review stage", () => {
         workspaceId,
       )("GET", `artifacts/file?scope=workspace&path=pipelines/${run.id}/review-1.diff`),
     );
-    expect(diff.content).toContain("## Committed since main");
-    expect(diff.content).toContain("+committed line");
-    expect(diff.content).toContain("## Uncommitted and untracked");
-    expect(diff.content).toContain("+edited line");
-    expect(diff.content).toContain("+untracked line");
+    const [committed, uncommitted] = diff.content.split("## Uncommitted and untracked");
+    expect(committed).toContain("## Committed since main");
+    expect(committed).toContain("+committed line");
+    expect(committed).toContain("+edited line");
+    expect(committed).toContain("+new line");
+    expect(uncommitted).toContain("(no changes)");
   });
 
   it("says there is no diff for a project without change support", async () => {
@@ -1401,6 +1411,133 @@ describe("a stage agent that ends its turn without a report (ADR 0169)", () => {
       "ended its turn twice without a report",
     );
     expect(await reminders(second, workerAgentId as string, turnId)).toHaveLength(1);
+  });
+});
+
+describe("uncommitted work (card 01M7G34F)", () => {
+  const commitAll = (folder: string) => {
+    execFileSync("git", ["add", "."], { cwd: folder });
+    execFileSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "work"],
+      { cwd: folder },
+    );
+  };
+  const blockedFor = (name: string, files: string) =>
+    `uncommitted changes in workspace "${name}": 1 file (${files}). Commit them, then Retry.`;
+  const refusals = async (server: TestServer, agentId: string) =>
+    (await chat(server, agentId)).filter((message) =>
+      message.startsWith("assistant: report failed: 409 uncommitted_changes"),
+    );
+
+  /** A git workspace with an untracked `extra.txt`, and a run of IMPLEMENT whose worker reports twice. */
+  async function dirtyRun(server: TestServer, name: string) {
+    const { workspaceId, folder } = await workspace(server, name, { git: true });
+    writeFileSync(join(folder, "extra.txt"), "left over\n");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+    return { folder, run: await getRun(server, run.id) };
+  }
+
+  it("refuses the worker's first report once, naming the uncommitted file", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
+    const { workspaceId, folder } = await workspace(server, "refused", { git: true });
+    writeFileSync(join(folder, "extra.txt"), "left over\n");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { runId, workerId } = await startAndWork(server, workspaceId);
+    const turn = (await getRun(server, runId)).turns[0] as PipelineTurn;
+    const worker = asAgent(server, workerId, workspaceId);
+    holdJobs(server);
+
+    const first = await worker("POST", "reports", { turn: turn.id, summary: "Done" });
+    const second = await worker("POST", "reports", { turn: turn.id, summary: "Done" });
+
+    expect(first.status).toBe(409);
+    expect(await first.json()).toEqual({
+      error: {
+        code: "uncommitted_changes",
+        message: `The workspace has uncommitted files: extra.txt. Commit them, then call report again with turn ${turn.id}.`,
+      },
+    });
+    expect((await json<{ turn: PipelineTurn }>(second)).turn.report?.summary).toBe("Done");
+  });
+
+  it("blocks the run when the worker reports again with the file still there", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, DONE] }) });
+
+    const { run } = await dirtyRun(server, "dirty");
+
+    expect(run.state).toBe("running");
+    expect(run.blocked).toBe(blockedFor("dirty", "extra.txt"));
+    expect(run.turns).toHaveLength(1);
+    expect(run.turns[0]?.report?.summary).toBe("Done");
+    expect(await refusals(server, run.workerAgentId as string)).toEqual([
+      `assistant: report failed: 409 uncommitted_changes: The workspace has uncommitted files: extra.txt. Commit them, then call report again with turn ${run.turns[0]?.id}.`,
+    ]);
+  });
+
+  it("blocks the run for a staged change that the working copy undid", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, DONE] }) });
+    const { workspaceId, folder } = await workspace(server, "staged", { git: true });
+    writeFileSync(join(folder, "a.txt"), "one\nstaged line\n");
+    execFileSync("git", ["add", "a.txt"], { cwd: folder });
+    writeFileSync(join(folder, "a.txt"), "one\n");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    const blocked = await getRun(server, run.id);
+    expect(blocked.blocked).toBe(blockedFor("staged", "a.txt"));
+    expect(await refusals(server, blocked.workerAgentId as string)).toHaveLength(1);
+  });
+
+  it("passes on Retry after the file is committed", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE, DONE] }) });
+    const { folder, run } = await dirtyRun(server, "retried");
+
+    commitAll(folder);
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+
+    await untilState(server, run.id, "passed");
+  });
+
+  it("passes a clean workspace with no refusal", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId, folder } = await workspace(server, "clean", { git: true });
+    writeFileSync(join(folder, "work.txt"), "committed\n");
+    commitAll(folder);
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await untilState(server, run.id, "passed");
+
+    const passed = await getRun(server, run.id);
+    expect(await refusals(server, passed.workerAgentId as string)).toEqual([]);
+    expect(passed.turns).toHaveLength(1);
+  });
+
+  it("blocks the run at decide for a file a gate left", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const write = `require("node:fs").writeFileSync("left.txt", "")`;
+    const { workspaceId } = await workspace(server, "gated", {
+      git: true,
+      config: `[actions.check]\nrun = ${JSON.stringify([process.execPath, "-e", write])}\n`,
+    });
+    userPipeline(
+      server.paths.root,
+      "p",
+      `${IMPLEMENT}\n[[stage]]\nname = "gates"\ngates = ["check"]\n`,
+    );
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+
+    const blocked = await getRun(server, run.id);
+    expect(blocked).toMatchObject({ state: "running", stageIndex: 1 });
+    expect(blocked.blocked).toBe(blockedFor("gated", "left.txt"));
+    expect(await refusals(server, blocked.workerAgentId as string)).toEqual([]);
   });
 });
 
@@ -3308,6 +3445,13 @@ fix_passes = 1
     await until(async () => (await getRun(server, run.id)).blocked !== undefined);
 
     writeFileSync(join(folder, "later.txt"), "written while the group was blocked\n");
+    // Committed, so the uncommitted check (card 01M7G34F) lets the run pass, and a new diff would list it.
+    execFileSync("git", ["add", "later.txt"], { cwd: folder });
+    execFileSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "later"],
+      { cwd: folder },
+    );
     await json(await server.request("POST", `/api/pipelines/runs/${run.id}/retry`));
     await until(async () => (await getRun(server, run.id)).state === "passed");
 

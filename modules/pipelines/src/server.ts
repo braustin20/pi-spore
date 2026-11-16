@@ -133,6 +133,9 @@ const MIGRATIONS = [
   // The red gate results of the run, as a JSON list of `GateRed` (ADR 0178). On the run, not in the job's checkpoint:
   // the round-limit approval and Retry build a fix outside the job.
   "ALTER TABLE pipelines_runs ADD COLUMN gate_reds TEXT NOT NULL DEFAULT '[]'",
+  // The worker turn's report was refused once for uncommitted files, so its next report is taken and `decide` blocks
+  // the stage instead; it survives a restart.
+  "ALTER TABLE pipelines_turns ADD COLUMN commit_reminded INTEGER NOT NULL DEFAULT 0",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -206,6 +209,7 @@ interface TurnRow {
   model_note: string | null;
   fix_for: string | null;
   reminded: number;
+  commit_reminded: number;
   model: string | null;
   created_at: number;
   reported_at: number | null;
@@ -261,6 +265,14 @@ interface StageCheckpoint {
 /** How much of a failed gate's log goes into the run's message. */
 const LOG_TAIL_CHARS = 4096;
 const MAX_FAILED_TESTS_LISTED = 10;
+/** How many uncommitted files the check reads; more than this counts as this many. */
+const UNCOMMITTED_LIMIT = 1000;
+
+/** The first `max` paths, then how many more there are. */
+const pathList = (paths: readonly string[], max: number) =>
+  paths.length > max
+    ? `${paths.slice(0, max).join(", ")} and ${paths.length - max} more`
+    : paths.join(", ");
 
 /** The message of a run that a gate ended: no color codes, the failed vitest tests, then the log tail. */
 function gateFailureMessage(name: string, error: string | undefined, log: string): string {
@@ -1189,6 +1201,23 @@ export const pipelinesModule: ServerModule = {
     };
 
     /**
+     * The workspace's changed, staged, and untracked file paths, gitignored files left out. None without a VCS that
+     * shows them. The uncommitted scope compares the working copy with the last record, so a staged change that the
+     * working copy undid shows in the staged scope only.
+     */
+    const uncommittedFiles = async (workspaceId: string): Promise<string[]> => {
+      const { ops, location } = await changesOf(workspaceId);
+      if (!ops) return [];
+      const [uncommitted, staged] = await Promise.all([
+        ops.files(location, { kind: "uncommitted" }, UNCOMMITTED_LIMIT),
+        ops.scopes.includes("staged")
+          ? ops.files(location, { kind: "staged" }, UNCOMMITTED_LIMIT)
+          : { files: [] },
+      ]);
+      return [...new Set([...uncommitted.files, ...staged.files].map((file) => file.path))].sort();
+    };
+
+    /**
      * The diff text: commits since the workspace's base, plus uncommitted and untracked files. A fix diff passes the
      * run's `fix_base` instead; null (no head when the fix started) lists no commits.
      */
@@ -1691,6 +1720,14 @@ export const pipelinesModule: ServerModule = {
       // Retry or a restart runs this step again while the user decides; it keeps waiting. A decline ends the run.
       if (run.state === "waiting_user") return { wait: true };
       if (run.state !== "running") return { next: null };
+      // Uncommitted work never passes: the throw blocks the stage until a commit and Retry (ADR 0140).
+      const uncommitted = await uncommittedFiles(run.workspace_id);
+      if (uncommitted.length > 0) {
+        const count = uncommitted.length === 1 ? "1 file" : `${uncommitted.length} files`;
+        throw new Error(
+          `uncommitted changes in ${workspaceLabel(run.workspace_id)}: ${count} (${pathList(uncommitted, 5)}). Commit them, then Retry.`,
+        );
+      }
       // The user accepted the round limit and nothing is left to fix: the group ends.
       if (run.approval_id !== null) return { next: "finish" };
       // The worker stage ends when its task reported.
@@ -1810,6 +1847,25 @@ export const pipelinesModule: ServerModule = {
         "SELECT * FROM pipelines_turns WHERE id = ?",
         request.turn,
       );
+      // A worker that reports with uncommitted files is told once, by name; its next report is taken and `decide`
+      // blocks the stage. The flag is written outside the transaction, so the refusal does not roll it back.
+      if (
+        open?.role === "worker" &&
+        open.agent_id === caller.agentId &&
+        open.report === null &&
+        open.commit_reminded === 0
+      ) {
+        const run = requireRun(open.run_id);
+        const uncommitted = await uncommittedFiles(run.workspace_id);
+        if (uncommitted.length > 0) {
+          host.store.run("UPDATE pipelines_turns SET commit_reminded = 1 WHERE id = ?", open.id);
+          throw new ApiError(
+            409,
+            "uncommitted_changes",
+            `The workspace has uncommitted files: ${pathList(uncommitted, 10)}. Commit them, then call report again with turn ${open.id}.`,
+          );
+        }
+      }
       if (open?.role === "worker") {
         const { records } = await readRecords(host.home.root, 500);
         const decision = records.find((record) => record.agentId === open.agent_id);

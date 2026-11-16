@@ -282,6 +282,12 @@ const conflictMessage = (lane: LaneRow, line: string, files: readonly string[]) 
     `The run line did not move. You can call revise_lane with a brief that tells the lane to merge ${line} into its branch and resolve these files.`,
   ].join("\n");
 
+const emptyLaneMessage = (lane: LaneRow, line: string) =>
+  [
+    `Lane "${lane.name}" (${lane.id}) adds no commits to ${line}, so nothing was merged. The run line did not move.`,
+    "Its worker may have left its work uncommitted in its workspace. You can call revise_lane with a brief that tells the worker to commit its work.",
+  ].join("\n");
+
 const gateFailedMessage = (
   lane: LaneRow,
   failure: { action: string; logTail: string },
@@ -1154,6 +1160,20 @@ export const runsModule: ServerModule = {
       const { integrate, location, laneLine } = await mergeSite(run, lane);
       // A restart may have left an earlier try of this merge in progress.
       await integrate.abort(location);
+      // A lane without commits would "merge" as a no-op. Say so instead of showing it as merged.
+      if ((await integrate.diff(location, laneLine)) === "") {
+        return {
+          next: null,
+          commit: () => {
+            host.store.run(
+              "UPDATE runs_lanes SET state = 'passed', message = ? WHERE id = ?",
+              "empty lane: its branch adds no commits",
+              lane.id,
+            );
+            agents.deliver(coordinatorOf(run.id), emptyLaneMessage(lane, run.line));
+          },
+        };
+      }
       const { conflicts } = await integrate.merge(location, laneLine);
       // A cancel that landed during the merge has already run its own abort, before this merge touched the tree.
       if (!mergingLane(subject)) {
