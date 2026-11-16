@@ -1632,7 +1632,11 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
   subscribes to `agent-graph:trees` and redraws from each event, so an archived workspace's tree leaves at once.
   - Layout: `layoutGraph` in `layout.ts`, a fixed tree layout with no library. Desktop: trees side by side, oldest
     first; in a tree, the root on top and its groups side by side; steps top-down. Phone: trees and groups stack,
-    the root thread down the left. Each pod reserves one row per helper under it.
+    the root thread down the left. Each pod reserves one row per helper under it. A step with `beside` runs in one
+    round with the step before it (ADR 0178): on a desktop a round's steps sit side by side, and the group widens one
+    column per member past the first; on a phone they stack. Each step's threads start at every step of the round
+    before it, so a step forks into a round and the round joins into the next step. The live route ends at the last
+    round with a running step: it runs through each earlier round's first step to every running step.
   - Nodes: a tree box (the root pod is its drag handle, so dragging the root moves the tree), a group panel, and a
     step pod. Every pod with an agent links to `#/workspaces/<workspace>/chats/<agent>`. A drag's end sends
     one `PUT /api/agent-graph/positions`; the canvas draws each node at this mount's drag, else at its tree's

@@ -167,9 +167,7 @@ function GroupPanel({ data }: NodeProps<GroupNode>) {
 /** "implement", "review r1", "fix r1", "gates". A fix step carries its review's stage name, so it shows its kind. */
 function stepRole(step: GraphStep): string {
   const name = step.kind === "fix" ? "fix" : step.stage;
-  return step.round === undefined || step.kind === "task" || step.kind === "gates"
-    ? name
-    : `${name} r${step.round}`;
+  return step.round === undefined || step.kind === "task" ? name : `${name} r${step.round}`;
 }
 
 function StepPod({ id, data }: NodeProps<StepNode>) {
