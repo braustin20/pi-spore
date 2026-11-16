@@ -131,10 +131,12 @@ export interface Agents {
   liveState(agentId: string): AgentLiveState;
   /**
    * Marks the agent as working for something while it is idle or stopped, such as a pipeline run, so Home and the
-   * workspace list show it as working, not done. `undefined` clears it. The label is in memory only. It does not
-   * touch the wait for the user. Does nothing when the label is unchanged. Throws a 404 ApiError for an unknown id.
+   * workspace list show it as working, not done. Each `source` (the caller's module id) has its own label, so two
+   * modules do not overwrite each other; the view joins the labels in source name order. `undefined` clears that
+   * source's label. The label is in memory only. It does not touch the wait for the user. Does nothing when that
+   * source's label is unchanged. Throws a 404 ApiError for an unknown id.
    */
-  setWorkingFor(agentId: string, label: string | undefined): void;
+  setWorkingFor(agentId: string, source: string, label: string | undefined): void;
   /**
    * Marks the workspace as working for something, such as a running pipeline run, so its list row shows it as working
    * even when it has no worker chat, or one that is idle or stopped (R7). `undefined` clears it. The label is in

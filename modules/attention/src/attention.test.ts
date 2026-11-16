@@ -274,7 +274,7 @@ describe("Home inbox", () => {
     // workspace has. The row still shows the stage chat that works.
     await json(await prompt(agentId, "one"));
     await until(async () => (await kinds()).includes("finished lane"));
-    agentsApi.setWorkingFor(agentId, "pipeline 7: worker");
+    agentsApi.setWorkingFor(agentId, "pipelines", "pipeline 7: worker");
 
     const rows = (await inbox()).running;
     expect(rows.map((row) => row.workspace.name)).toEqual(["lane"]);
@@ -291,7 +291,7 @@ describe("Home inbox", () => {
     const { agentId, workspaceId } = await makeAgent("crowd");
     await json(await prompt(agentId, "one"));
     await until(async () => (await kinds()).includes("finished crowd"));
-    agentsApi.setWorkingFor(agentId, "pipeline 7: worker");
+    agentsApi.setWorkingFor(agentId, "pipelines", "pipeline 7: worker");
     const stage = startStage(workspaceId);
     await until(async () => agentsApi.get(stage.id).status === "busy");
 
@@ -320,7 +320,7 @@ describe("Home inbox", () => {
     // the user proves its run ended after both chats above became busy.
     await json(await prompt(first.agentId, "one"));
     await until(async () => (await kinds()).includes("finished first"));
-    agentsApi.setWorkingFor(first.agentId, "pipeline 7: worker");
+    agentsApi.setWorkingFor(first.agentId, "pipelines", "pipeline 7: worker");
 
     // Its row shows the stage chat instead, so the row is as old as that chat: the other workspace comes first.
     const rows = (await inbox()).running;
@@ -438,14 +438,14 @@ describe("Home inbox", () => {
     await json(await prompt(agentId, "one"));
     await until(async () => (await kinds()).includes("finished piped"));
 
-    agentsApi.setWorkingFor(agentId, "Pipeline: review");
+    agentsApi.setWorkingFor(agentId, "pipelines", "Pipeline: review");
     await until(async () => (await inbox()).running[0]?.status === "pipeline");
     expect(await inbox()).toMatchObject({
       items: [],
       running: [{ agentId, status: "pipeline", detail: "Pipeline: review" }],
     });
 
-    agentsApi.setWorkingFor(agentId, undefined);
+    agentsApi.setWorkingFor(agentId, "pipelines", undefined);
     await until(async () => (await kinds()).includes("finished piped"));
     expect((await inbox()).running).toEqual([]);
   });
@@ -517,7 +517,7 @@ describe("Home inbox", () => {
       }),
       201,
     );
-    agentsApi.setWorkingFor(side.id, "Pipeline: review");
+    agentsApi.setWorkingFor(side.id, "pipelines", "Pipeline: review");
     agentsApi.setWorkspaceWorkingFor(gated.workspaceId, "Pipeline: gates");
     agentsApi.setWorkspaceWorkingFor(owned.workspaceId, "Pipeline: gates");
 

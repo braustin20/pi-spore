@@ -156,8 +156,8 @@ interface Live {
   children: ChildRun[];
   /** "Waiting for <model>" while the router holds the next request for a busy local model (R4.5). */
   routerStatus?: string;
-  /** What the agent waits on while idle, from `setWorkingFor`. */
-  workingFor?: string;
+  /** What the agent waits on while idle, from `setWorkingFor`: one label per source (module id). */
+  workingFor: Map<string, string>;
   /** The last payload error shown, so a broken payload that repeats every second shows one notice. */
   childrenError?: string;
   /** Waiting `/subagents-inspect-rpc` requests, by request id. */
@@ -201,6 +201,13 @@ const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly stri
  */
 const hasSessionFile = async (file: string | null): Promise<boolean> =>
   file !== null && (await stat(file).catch(() => undefined)) !== undefined;
+
+/** The labels of an agent's sources, joined in source name order so the view text does not depend on call order. */
+const joinWorkingFor = (labels: Map<string, string>): string =>
+  [...labels]
+    .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
+    .map(([, label]) => label)
+    .join("; ");
 
 /** How long a transcript request waits for pi-subagents' reply. */
 const INSPECT_TIMEOUT_MS = 10_000;
@@ -288,6 +295,7 @@ export class AgentManager {
         loaded: false,
         dialogs: new Map(),
         children: [],
+        workingFor: new Map(),
         inspects: new Map(),
         unstarted: new Set(),
       });
@@ -311,7 +319,7 @@ export class AgentManager {
       ...(live.error ? { error: live.error } : {}),
       ...(deliveryError ? { deliveryError } : {}),
       ...(runningCount(live.children) > 0 ? { helpersRunning: runningCount(live.children) } : {}),
-      ...(live.workingFor ? { workingFor: live.workingFor } : {}),
+      ...(live.workingFor.size > 0 ? { workingFor: joinWorkingFor(live.workingFor) } : {}),
       ...(live.routerStatus ? { routerStatus: live.routerStatus } : {}),
       createdAt: record.createdAt,
     };
@@ -329,11 +337,11 @@ export class AgentManager {
     };
   }
 
-  setWorkingFor(id: string, label: string | undefined): void {
+  setWorkingFor(id: string, source: string, label: string | undefined): void {
     const live = this.get(id);
-    if (live.workingFor === label) return;
-    if (label === undefined) delete live.workingFor;
-    else live.workingFor = label;
+    if (live.workingFor.get(source) === label) return;
+    if (label === undefined) live.workingFor.delete(source);
+    else live.workingFor.set(source, label);
     // An open chat page follows `agent:<id>`, not `agents:list`.
     this.publish(live, { type: "agent", agent: this.view(id) });
     this.options.onChange(id, "working");

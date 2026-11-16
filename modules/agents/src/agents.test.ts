@@ -1984,14 +1984,14 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
         (event) => (event.agent ? [event.agent.workingFor] : []),
       );
 
-    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
-    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
+    probe.agents().setWorkingFor(agentId, "pipelines", "Pipeline: gates");
+    probe.agents().setWorkingFor(agentId, "pipelines", "Pipeline: gates");
     expect((await view()).workingFor).toBe("Pipeline: gates");
     await until(() => listed().length >= 1);
     expect(listed()).toEqual(["Pipeline: gates"]);
 
-    probe.agents().setWorkingFor(agentId, undefined);
-    probe.agents().setWorkingFor(agentId, undefined);
+    probe.agents().setWorkingFor(agentId, "pipelines", undefined);
+    probe.agents().setWorkingFor(agentId, "pipelines", undefined);
     expect(await view()).not.toHaveProperty("workingFor");
     await until(() => listed().length >= 2);
     expect(listed()).toEqual(["Pipeline: gates", undefined]);
@@ -2007,10 +2007,52 @@ describe("pi-subagents helpers as child runs (R3.3, ADR 0034)", () => {
         .slice(before)
         .flatMap((event) => (event.type === "agent" ? [event.agent.workingFor] : []));
 
-    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
-    probe.agents().setWorkingFor(agentId, "Pipeline: gates");
-    probe.agents().setWorkingFor(agentId, undefined);
+    probe.agents().setWorkingFor(agentId, "pipelines", "Pipeline: gates");
+    probe.agents().setWorkingFor(agentId, "pipelines", "Pipeline: gates");
+    probe.agents().setWorkingFor(agentId, "pipelines", undefined);
     expect(labels()).toEqual(["Pipeline: gates", undefined]);
+  });
+
+  it("keeps one working-for label per source, joins them in source order, and clears one source at a time", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    const view = async () =>
+      (await json<{ agent: Agent }>(await server.request("GET", `/api/agents/${agentId}`))).agent;
+    const before = events(agentId).length;
+    const labels = () =>
+      events(agentId)
+        .slice(before)
+        .flatMap((event) => (event.type === "agent" ? [event.agent.workingFor] : []));
+
+    probe.agents().setWorkingFor(agentId, "pipelines", "Pipeline: implement");
+    probe.agents().setWorkingFor(agentId, "runs", 'Merging lane "A": gate test');
+    expect((await view()).workingFor).toBe('Pipeline: implement; Merging lane "A": gate test');
+
+    probe.agents().setWorkingFor(agentId, "pipelines", undefined);
+    expect((await view()).workingFor).toBe('Merging lane "A": gate test');
+
+    probe.agents().setWorkingFor(agentId, "runs", undefined);
+    expect(await view()).not.toHaveProperty("workingFor");
+    expect(labels()).toEqual([
+      "Pipeline: implement",
+      'Pipeline: implement; Merging lane "A": gate test',
+      'Merging lane "A": gate test',
+      undefined,
+    ]);
+  });
+
+  it("publishes nothing when a source sets the label it already has", async () => {
+    const probe = agentsProbe();
+    await setup({}, {}, {}, [probe.module]);
+    const { agentId } = await makeAgent();
+    probe.agents().setWorkingFor(agentId, "pipelines", "Pipeline: implement");
+    probe.agents().setWorkingFor(agentId, "runs", 'Merging lane "A": gate test');
+    const before = events(agentId).length;
+
+    probe.agents().setWorkingFor(agentId, "pipelines", "Pipeline: implement");
+    probe.agents().setWorkingFor(agentId, "runs", 'Merging lane "A": gate test');
+    expect(events(agentId).slice(before)).toEqual([]);
   });
 
   describe("router status (R4.5)", () => {

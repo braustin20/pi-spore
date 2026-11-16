@@ -268,14 +268,16 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     `agents:list` and Home ignore it; the agent graph follows it (section 11g, ADR 0176). An idle chat with a running helper shows
     as working: "Working (helper running)" in the workspace list and on Home, `working (helper running)` in the chat
     header. It is not done; its process gets the helper's result.
-  - Another module can mark an agent as working for something with `Agents.setWorkingFor(agentId, label)`, for
-    example a chat that waits on a pipeline run. The label is `workingFor` on the agent view, in memory only, and a
-    change of it is an `AgentChange` of kind `working`. `undefined` clears it. It never touches `waitingSince`.
+  - Another module can mark an agent as working for something with `Agents.setWorkingFor(agentId, source, label)`,
+    for example a chat that waits on a pipeline run. `source` is the caller's module id. A label is per source, in memory
+    only, so two modules do not overwrite each other. The view's `workingFor` joins the labels in source name order with
+    `"; "`. A change of it is an `AgentChange` of kind `working`. `undefined` clears that source's label. It never touches
+    `waitingSince`.
     An idle or stopped chat with `workingFor` shows as working: Home has a running item with status `pipeline` and
     the label as its detail, and no `finished` item, unless the pipeline's stage chat takes that workspace's row
     (section 11b); the workspace line is `Working (<label>)`, and the chat header `working (<label>)`. A wait for
     the user and a failed agent still win. The pipelines module sets the label
-    for the chat of each `running` run.
+    under source `pipelines` for the chat of each `running` run.
   - A workspace can carry a working label too: `Agents.setWorkspaceWorkingFor(workspaceId, label)`, in memory only.
     `undefined` clears it; a deleted workspace loses it. Topic `agents:working` sends `{ type: "working",
     workspaces }`, the whole map, on subscription and after each change. `workspacesWorkingFor()` reads the map and

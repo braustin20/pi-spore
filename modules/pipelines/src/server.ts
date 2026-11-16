@@ -686,13 +686,13 @@ export const pipelinesModule: ServerModule = {
         }
       }
       for (const [agentId, runs] of byAgent) {
-        agents.setWorkingFor(agentId, workingLabel(runs));
+        agents.setWorkingFor(agentId, "pipelines", workingLabel(runs));
         labelled.add(agentId);
       }
       for (const agentId of labelled) {
         if (byAgent.has(agentId)) continue;
         labelled.delete(agentId);
-        unlessGone(() => agents.setWorkingFor(agentId, undefined));
+        unlessGone(() => agents.setWorkingFor(agentId, "pipelines", undefined));
       }
       for (const [workspaceId, runs] of byWorkspace) {
         agents.setWorkspaceWorkingFor(workspaceId, workingLabel(runs));
