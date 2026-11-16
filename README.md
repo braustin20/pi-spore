@@ -69,6 +69,30 @@ The CLI talks to the same server:
 node packages/cli/dist/main.js health
 ```
 
+### Run it in the background (Linux with systemd)
+
+Put the `pi-spore` command on your PATH once, then run the server as a systemd user service. Closing a terminal
+then does not stop the agents ([ADR 0184](docs/decisions/0184-systemd-user-service.md)).
+
+```sh
+nvm use
+npm link -w @pi-spore/cli     # one time
+pi-spore service install      # shows the unit, asks, then starts the service
+pi-spore open                 # opens the UI
+pi-spore logs -f              # follows the server log
+```
+
+After you pull new code:
+
+```sh
+pi-spore rebuild              # builds; if it passes, asks before it stops busy agents, then restarts
+pi-spore rebuild --install    # runs npm ci first, when dependencies changed
+```
+
+`pi-spore start --open` runs the server in this terminal instead. `pi-spore service uninstall` removes the service.
+systemd does not read your shell files: put variables such as API keys in `~/.config/pi-spore/service.env`. A user
+service stops when you log out, unless you run `loginctl enable-linger` once.
+
 ## Docs
 
 - [Vision and requirements](docs/vision.md)

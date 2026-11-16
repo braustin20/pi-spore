@@ -301,7 +301,7 @@ packages/
   server/       the runnable server: startup and the plain-list module registry
   ui/           shared web components, stylesheet, and themes (Tailwind + Radix, ADR 0029)
   web/          React app shell (top bar, rail, theme menu) and web module registry
-  cli/          pi-spore CLI over the HTTP API
+  cli/          pi-spore CLI over the HTTP API, and the commands that run the server (ADR 0184)
 modules/<id>/   one npm package per module, @pi-spore/mod-<id>
   src/server.ts server entry: exports the ServerModule and any interface keys and types
   src/web.tsx   web entry: exports the WebModule (pages)
@@ -2140,7 +2140,23 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - CLI for jobs: `pi-spore jobs [--all]` (id, kind, state, step, error), `pi-spore jobs retry <id>`, `pi-spore jobs
   cancel <id>`.
 - `GET /api/health` returns status, version, uptime, and enabled modules. Store status is added with the store.
-- The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead.
+- The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead. Its server
+  address is `PI_SPORE_URL`, else `http://127.0.0.1:$PI_SPORE_PORT`, else `http://127.0.0.1:7420`.
+- The CLI also runs the server (ADR 0184). These commands run local programs through `CliDeps.system.run`, with argv
+  and no shell; tests fake it.
+  - `pi-spore start [--open]`: the server in the foreground, with the CLI's Node.
+  - `pi-spore service install [--yes]` writes `~/.config/systemd/user/pi-spore.service` after it shows the unit and
+    the user says yes, then runs `systemctl --user daemon-reload` and `enable --now pi-spore`. The unit has the
+    absolute path of a Node 26 (`.nvmrc`), a PATH with the folders of that Node, `pi` (required), `git`, `gh`, and
+    `unity`, the `PI_SPORE_HOME` and `PI_SPORE_PORT` of the shell, and an optional
+    `EnvironmentFile=-%h/.config/pi-spore/service.env`. `service uninstall [--yes]` disables and removes it.
+  - `pi-spore open` (`xdg-open`), `pi-spore logs [-f]` (`journalctl --user -u pi-spore`).
+  - `pi-spore restart` and `pi-spore rebuild [--install]`: before `systemctl --user restart pi-spore`, they read
+    `GET /api/agents` and ask y/N when a chat is busy, starting, or has helpers running. `rebuild` runs `npm ci`
+    (only with `--install`) and `npm run build` first, with the npm of the unit's Node; a failed build stops before
+    the restart.
+  - The repo folder comes from the CLI's own file, not the current folder. `service`, `restart`, and `logs` need
+    Linux with systemd.
 - `pi-spore remote [--json]` prints the `tailscale serve` command, the URLs, and the allowed logins, or the
   settings to add when remote access is off. It runs nothing (ADR 0143).
 - Chats (agents module, ADR 0030):
