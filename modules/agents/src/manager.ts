@@ -38,6 +38,7 @@ import {
   SIDE_CHAT_TOOLS,
   STAGE_REVIEWER_TOOLS,
   STAGE_WORKER_TOOLS,
+  WORKSPACE_CHAT_TOOLS,
   withModel,
 } from "./launch.js";
 import { type PiCommand, PiProcess } from "./rpc.js";
@@ -179,8 +180,8 @@ const isReadOnly = ({ kind, role }: AgentRecord): boolean =>
   kind === "side" || role === "planner" || (kind === "stage" && role !== "worker");
 
 /**
- * The tool arguments of an agent: a workspace chat gets Pi's normal tools, and a stage worker gets those less
- * `contact_supervisor` (ADR 0179). A launch hook's tools replace them, except for a planner chat, which is read-only
+ * The tool arguments of an agent: a workspace chat gets Pi's normal tools less `subagents_enable` (ADR 0189), and a
+ * stage worker gets them less `contact_supervisor` (ADR 0179). A launch hook's tools replace them, except for a planner chat, which is read-only
  * whatever a hook says.
  */
 const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly string[] => {
@@ -192,7 +193,7 @@ const toolArgs = (record: AgentRecord, tools?: readonly string[]): readonly stri
   if (record.kind === "side") return SIDE_CHAT_TOOLS;
   if (record.kind === "stage")
     return record.role === "worker" ? STAGE_WORKER_TOOLS : STAGE_REVIEWER_TOOLS;
-  return [];
+  return WORKSPACE_CHAT_TOOLS;
 };
 
 /**
