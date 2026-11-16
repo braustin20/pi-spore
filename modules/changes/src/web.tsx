@@ -492,7 +492,7 @@ function CommentsBar({
 function ChangesTab({ workspace }: { workspace: Workspace }) {
   const api = useApi();
   const [summary, setSummary] = useState<ChangesSummary | undefined>();
-  const [scope, setScope] = useState<ChangeScopeKind>("uncommitted");
+  const [scope, setScope] = useState<ChangeScopeKind | undefined>();
   const [record, setRecord] = useState<string | undefined>();
   const [files, setFiles] = useState<ChangedFileList | undefined>();
   const [selected, setSelected] = useState<string | undefined>();
@@ -510,18 +510,28 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   const base = `changes/workspaces/${workspace.id}`;
 
   const query = useMemo(() => {
-    const params = new URLSearchParams({ scope });
+    const params = new URLSearchParams(scope ? { scope } : {});
     if (scope === "record" && record) params.set("record", record);
     return params;
   }, [scope, record]);
-  const ready = scope !== "record" || record !== undefined;
+  // Until the summary says which scope to open on, there is nothing to ask for.
+  const ready = scope !== undefined && (scope !== "record" || record !== undefined);
 
   useEffect(() => {
     void generation;
     api
       .get(base)
-      .then((body) => setSummary(parse(ChangesSummary, body, "changes summary")))
-      .catch((caught: unknown) => setError(message(caught)));
+      .then((body) => {
+        const loaded = parse(ChangesSummary, body, "changes summary");
+        setSummary(loaded);
+        // Only the first summary picks the scope, so a refresh, a `stale` event, or the user's own choice stays.
+        setScope((current) => current ?? loaded.initialScope);
+      })
+      .catch((caught: unknown) => {
+        setError(message(caught));
+        // The tab must still get a scope, so the files load can run and show its own result.
+        setScope((current) => current ?? "uncommitted");
+      });
   }, [api, base, generation]);
 
   useEffect(() => {
@@ -645,7 +655,7 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-3 py-2">
         <Select
           aria-label="Which changes"
-          value={scope}
+          value={scope ?? ""}
           onChange={(event) => {
             const next = event.target.value as ChangeScopeKind;
             setScope(next);

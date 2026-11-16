@@ -1374,7 +1374,7 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 
 | Route | Does |
 |---|---|
-| `GET /api/changes/workspaces/:id` | Scopes, base, and the records since the base (100), or the last 50 records without one. |
+| `GET /api/changes/workspaces/:id` | Scopes, the initial scope for the tab, base, and the records since the base (100), or the last 50 records without one. `initialScope`: the first of `uncommitted`, `staged`, `line` with a changed file, else `uncommitted`. A scope whose list fails is skipped. |
 | `GET /api/changes/workspaces/:id/files?scope=&record=` | Changed files with status and counts. `scope`: `uncommitted` (default), `staged`, `line`, `record` (needs `record=<id>`). |
 | `GET /api/changes/workspaces/:id/diff?scope=&record=&path=` | Hunks of one changed file, or of every file up to the limit; `truncated` says it cut. A path without changes is 404 `file_not_changed`. |
 | `GET /api/changes/workspaces/:id/comments` | Open comments. |
@@ -1393,7 +1393,8 @@ counts, then its hunks in unified form.
   they follow the theme; each side of a hunk is colored as one block. Binary and large files show a note.
 - Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
   bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
-  `stale` event.
+  `stale` event. The tab opens on the summary's `initialScope`, once per open: a refresh, a `stale` event, or the
+  user's own pick does not move it. If the summary fails, the tab opens on Uncommitted.
 - The module adds a chat panel (`AgentsWeb.addChatPanel`) above the composer of an orchestrator chat. It shows the
   staged comments with a count, Drop on each, and Drop all. It follows the `changes:<workspace id>` topic. The panel
   and the Changes tab each also load the open comments when they mount. A newer event wins over a late load.

@@ -47,8 +47,10 @@ afterEach(() => container?.remove());
 async function renderPanel(
   pick: "chat" | "tab",
   loadComments: () => Promise<unknown> = async () => ({ comments: [comment] }),
+  answer: (path: string) => unknown = () => undefined,
 ) {
   const listeners: ((event: unknown) => void)[] = [];
+  const asked: string[] = [];
   let chatPanel: ComponentType<{ chatId: string }> | undefined;
   let tab: ComponentType<{ workspace: Workspace }> | undefined;
   changesWeb.setup({
@@ -61,7 +63,10 @@ async function renderPanel(
   } as unknown as WebHost);
   const api = {
     get: async (path: string) => {
+      asked.push(path);
       if (path === "agents/A1") return { agent };
+      const body = answer(path);
+      if (body !== undefined) return body;
       if (path === "changes/workspaces/W1/comments") return loadComments();
       throw new Error(`unexpected GET ${path}`);
     },
@@ -86,6 +91,7 @@ async function renderPanel(
   });
   return {
     root: container,
+    asked,
     emit: (event: unknown) => act(async () => listeners.map((l) => l(event))),
   };
 }
@@ -121,5 +127,50 @@ describe("comments as a second subscriber", () => {
     });
     expect(root.textContent).toContain("down");
     expect(root.textContent).not.toContain("0 diff comments");
+  });
+});
+
+describe("the Changes tab's first scope", () => {
+  const answer = (path: string) =>
+    path === "changes/workspaces/W1"
+      ? {
+          scopes: ["uncommitted", "staged", "line", "record"],
+          base: "main",
+          records: [],
+          initialScope: "line",
+        }
+      : path.startsWith("changes/workspaces/W1/files?")
+        ? { files: [], truncated: false }
+        : undefined;
+  const filesAsked = (asked: string[]) =>
+    asked.filter((path) => path.startsWith("changes/workspaces/W1/files?"));
+
+  it("opens on the summary's initial scope, then keeps the user's pick after a stale event", async () => {
+    const { root, asked, emit } = await renderPanel("tab", undefined, answer);
+    const select = root.querySelector<HTMLSelectElement>('select[aria-label="Which changes"]');
+    expect(select?.selectedOptions[0]?.textContent).toBe("Branch since main");
+    expect(filesAsked(asked)[0]).toBe("changes/workspaces/W1/files?scope=line");
+
+    await act(async () => {
+      if (!select) return;
+      select.value = "uncommitted";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    const before = filesAsked(asked).length;
+    await emit({ type: "stale" });
+    expect(filesAsked(asked).length).toBeGreaterThan(before);
+    expect(filesAsked(asked).at(-1)).toBe("changes/workspaces/W1/files?scope=uncommitted");
+    expect(select?.value).toBe("uncommitted");
+  });
+
+  it("opens on uncommitted and asks for its files when the summary fails", async () => {
+    // The tab must not hang with no scope, so the files load still runs.
+    const { root, asked } = await renderPanel("tab", undefined, (path) => {
+      if (path === "changes/workspaces/W1") throw new Error("The summary failed");
+      return answer(path);
+    });
+    const select = root.querySelector<HTMLSelectElement>('select[aria-label="Which changes"]');
+    expect(select?.value).toBe("uncommitted");
+    expect(filesAsked(asked)[0]).toBe("changes/workspaces/W1/files?scope=uncommitted");
   });
 });

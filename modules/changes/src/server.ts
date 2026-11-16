@@ -165,6 +165,27 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
         return { kind };
       };
 
+      /** The first scope with a changed file, in the order uncommitted, staged, line; else uncommitted. */
+      const initialScopeOf = async (current: Target): Promise<ChangeScopeKind> => {
+        const scopes: ChangeScope[] = [
+          { kind: "uncommitted" },
+          { kind: "staged" },
+          ...(current.base ? [{ kind: "line" as const, base: current.base }] : []),
+        ];
+        for (const scope of scopes) {
+          if (!current.ops.scopes.includes(scope.kind)) continue;
+          try {
+            // One list at a time, so the first scope with a file stops the search.
+            if ((await current.ops.files(current.location, scope, 1)).files.length > 0)
+              return scope.kind;
+          } catch (caught) {
+            // The probe only picks where the tab opens; the same error still shows when the user picks that scope.
+            if (!(caught instanceof ApiError)) throw caught;
+          }
+        }
+        return "uncommitted";
+      };
+
       const openComments = (workspaceId: string): DiffComment[] =>
         host.store
           .all<CommentRow>(
@@ -205,6 +226,7 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
         const current = await target(c.req.param("id"));
         const body: ChangesSummary = {
           scopes: [...current.ops.scopes],
+          initialScope: await initialScopeOf(current),
           ...(current.base ? { base: current.base } : {}),
           records: await current.ops.records(
             current.location,
