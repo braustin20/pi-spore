@@ -20,6 +20,7 @@ import {
 import {
   Button,
   Chip,
+  ContentDialog,
   cn,
   DiffCount,
   EmptyState,
@@ -34,13 +35,22 @@ import {
 import {
   Columns2,
   FileDiff as FileDiffIcon,
+  Maximize2,
   MessageSquarePlus,
   RefreshCw,
   Rows3,
   Send,
   X,
 } from "lucide-react";
-import { Fragment, type SubmitEvent, useCallback, useEffect, useMemo, useState } from "react";
+import {
+  Fragment,
+  type SubmitEvent,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import { languageOf } from "./highlight.js";
 import { colorHunk, type ShownLine, splitRows } from "./rows.js";
 import { StagedComments } from "./staged.js";
@@ -505,6 +515,11 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   const [splitSetting, setSplit] = useStoredFlag("pi-spore.changes.split", false);
   // The split view is too wide for a phone, so it is never used there.
   const split = splitSetting && !phone;
+  const [large, setLarge] = useState(false);
+  // The large view is for wide screens only, like the split view.
+  const open = large && !phone;
+  const largeButton = useRef<HTMLButtonElement>(null);
+  const wasOpen = useRef(false);
   /** Bumped to reload the files and the open diff. */
   const [generation, setGeneration] = useState(0);
   const base = `changes/workspaces/${workspace.id}`;
@@ -601,6 +616,17 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
     };
   }, [api, base, workspace.id]);
 
+  // A phone closes the large view, so it does not open again by itself when the screen gets wide.
+  useEffect(() => {
+    if (phone) setLarge(false);
+  }, [phone]);
+
+  // The Large view button left the page while the dialog was open, so the dialog has no trigger to give focus back to.
+  useEffect(() => {
+    if (wasOpen.current && !open) largeButton.current?.focus();
+    wasOpen.current = open;
+  }, [open]);
+
   const refresh = useCallback(() => setGeneration((value) => value + 1), []);
 
   const addComment = async (side: CommentSide, line: number, code: string, body: string) => {
@@ -650,7 +676,9 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
   const fileComments = comments.filter((comment) => comment.path === selected);
   const current = files?.files.find((file) => file.path === selected);
 
-  return (
+  // One render function, not a component, so the view reads this tab's state with no props, and the state stays
+  // when the large view closes.
+  const view = (layout: "tab" | "large") => (
     <div className="flex min-h-0 flex-1 flex-col">
       <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-line px-3 py-2">
         <Select
@@ -700,6 +728,19 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
             </Button>
           </Tooltip>
         )}
+        {!phone && layout === "tab" && (
+          <Tooltip label="Large view" side="bottom">
+            <Button
+              size="icon-sm"
+              variant="ghost"
+              aria-label="Large view"
+              ref={largeButton}
+              onClick={() => setLarge(true)}
+            >
+              <Maximize2 />
+            </Button>
+          </Tooltip>
+        )}
         <Tooltip label="Refresh" side="bottom">
           <Button size="icon-sm" variant="ghost" aria-label="Refresh" onClick={refresh}>
             <RefreshCw />
@@ -727,9 +768,13 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
                 : "This commit changes no files."}
         </EmptyState>
       ) : (
-        <>
+        <div className={layout === "large" ? "flex min-h-0 flex-1" : "contents"}>
           <ul
-            className="max-h-[35%] shrink-0 overflow-y-auto border-b border-line py-1"
+            className={
+              layout === "large"
+                ? "w-72 shrink-0 overflow-y-auto border-r border-line py-1"
+                : "max-h-[35%] shrink-0 overflow-y-auto border-b border-line py-1"
+            }
             aria-label="Changed files"
           >
             {files?.files.map((file) => (
@@ -747,7 +792,11 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
               </li>
             )}
           </ul>
-          <div className="min-h-0 flex-1 overflow-auto">
+          <div
+            className={
+              layout === "large" ? "min-w-0 flex-1 overflow-auto" : "min-h-0 flex-1 overflow-auto"
+            }
+          >
             {current && (
               <div className="sticky top-0 z-10 flex items-center gap-2 border-b border-line bg-panel px-3 py-1.5">
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">
@@ -772,7 +821,7 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
               )
             )}
           </div>
-        </>
+        </div>
       )}
       <CommentsBar
         comments={comments}
@@ -782,6 +831,21 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
         onShow={setSelected}
       />
     </div>
+  );
+
+  return open ? (
+    <>
+      <EmptyState
+        icon={Maximize2}
+        title="Open in the large view"
+        action={<Button onClick={() => setLarge(false)}>Close large view</Button>}
+      />
+      <ContentDialog open size="full" title="Changes" onOpenChange={setLarge}>
+        {view("large")}
+      </ContentDialog>
+    </>
+  ) : (
+    view("tab")
   );
 }
 

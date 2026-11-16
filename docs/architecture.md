@@ -1413,6 +1413,10 @@ counts, then its hunks in unified form.
   bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
   `stale` event. The tab opens on the summary's `initialScope`, once per open: a refresh, a `stale` event, or the
   user's own pick does not move it. If the summary fails, the tab opens on Uncommitted.
+- Large view (not on a phone) moves the whole tab into a full-size `ContentDialog` (`size: "full"`), with the
+  file list left of the diff. The tab keeps the state and renders the view in one place only, so there is one
+  `changes:<id>` subscription. While the dialog is open, the tab shows a note with a button that closes it.
+  Escape in a field does not close the dialog, so a comment form can use Escape to cancel.
 - The module adds a chat panel (`AgentsWeb.addChatPanel`) above the composer of an orchestrator chat. It shows the
   staged comments with a count, Drop on each, and Drop all. It follows the `changes:<workspace id>` topic. The panel
   and the Changes tab each also load the open comments when they mount. A newer event wins over a late load.
