@@ -165,6 +165,26 @@ export const MergeLaneRequest = Type.Object(
 );
 export type MergeLaneRequest = Static<typeof MergeLaneRequest>;
 
+/**
+ * Drops a lane that will not merge (ADR 0181). `reason` says why, so the run PR approval can show the user the
+ * dropped work before its PR opens.
+ */
+export const DeclineLaneRequest = Type.Object(
+  {
+    laneId: Type.String({ minLength: 1 }),
+    reason: Type.String({ minLength: 1, maxLength: 2_000 }),
+  },
+  { additionalProperties: false },
+);
+export type DeclineLaneRequest = Static<typeof DeclineLaneRequest>;
+
+/** The user's decline on the Runs page, where the lane id is in the route (ADR 0181). */
+export const DeclineLaneBody = Type.Object(
+  { reason: Type.String({ minLength: 1, maxLength: 2_000 }) },
+  { additionalProperties: false },
+);
+export type DeclineLaneBody = Static<typeof DeclineLaneBody>;
+
 export const AskCoordinatorRequest = Type.Object(
   { question: Type.String({ minLength: 1, maxLength: 4_000 }) },
   { additionalProperties: false },
