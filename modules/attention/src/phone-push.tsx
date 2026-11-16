@@ -79,16 +79,16 @@ export function PhonePushButton() {
     if (!shows) return;
     let current = true;
     void currentSubscription()
-      .then((subscription) => {
+      .then(async (subscription) => {
         if (!current) return;
         if (!subscription) {
           setState(Notification.permission === "denied" ? { phase: "blocked" } : { phase: "off" });
           return;
         }
         setState({ phase: "on" });
-        // A phone keeps its subscription across a server restart. Sending it again is idempotent, so
-        // this gives the server back a row it lost.
-        void api.send("POST", "attention/push/subscriptions", bodyOf(subscription)).catch(() => {});
+        // A phone keeps its subscription across a server restart, so sending it again is how a
+        // server that lost its row gets it back. When that fails there is no push, so say so.
+        await api.send("POST", "attention/push/subscriptions", bodyOf(subscription));
       })
       .catch((caught: unknown) => {
         if (current) setState({ phase: "error", text: message(caught) });

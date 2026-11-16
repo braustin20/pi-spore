@@ -106,8 +106,14 @@ afterEach(async () => {
 });
 
 /** The button on a phone as `stubPhone` describes it, with a fake API. */
-async function renderButton(platform: ReturnType<typeof stubPhone> = stubPhone()) {
-  const send = vi.fn(async () => ({}));
+async function renderButton(
+  platform: ReturnType<typeof stubPhone> = stubPhone(),
+  { sendFails = false }: { sendFails?: boolean } = {},
+) {
+  const send = vi.fn(async () => {
+    if (sendFails) throw new Error("the server refused the subscription");
+    return {};
+  });
   const get = vi.fn(async () => ({ publicKey: PUBLIC_KEY }));
   const api = { get, send } as unknown as ApiClient;
   container = document.body.appendChild(document.createElement("div"));
@@ -225,6 +231,21 @@ describe("the phone push button", () => {
     // A subscription the server would refuse is not push: it must not be sent or claimed as on.
     expect(send).not.toHaveBeenCalled();
     expect(textOf(container)).toContain("push subscription");
+    expect(textOf(container)).toContain("Turn on notifications");
+  });
+
+  it("shows an error text when the server will not take the stored subscription back", async () => {
+    // The phone keeps its subscription across a server restart, so the POST on load is how a server
+    // that lost the row gets it back (ADR 0187). If that fails there is no push, and Home must say so.
+    const { container, send } = await renderButton(
+      stubPhone({ subscription: fakeSubscription() }),
+      { sendFails: true },
+    );
+    expect(send).toHaveBeenCalledWith("POST", "attention/push/subscriptions", {
+      endpoint: ENDPOINT,
+      keys: KEYS,
+    });
+    expect(textOf(container)).toContain("the server refused the subscription");
     expect(textOf(container)).toContain("Turn on notifications");
   });
 
