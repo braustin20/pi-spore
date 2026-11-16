@@ -13,6 +13,7 @@ import {
 import { MapPinOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { findPage, railActive, useHashPath } from "./router.js";
+import { lockDocumentScroll } from "./scroll-lock.js";
 
 const HEALTH_EVERY_MS = 30_000;
 
@@ -55,6 +56,7 @@ const noBadge = () => 0;
 /** Follows the visual viewport on phones. See the phone rules in packages/ui/src/styles.css. */
 function useKeyboardInset() {
   const phone = usePhone();
+  useEffect(() => (phone ? lockDocumentScroll(document) : undefined), [phone]);
   useEffect(() => {
     const viewport = window.visualViewport;
     if (!phone || !viewport) return;
