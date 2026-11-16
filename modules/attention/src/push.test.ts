@@ -322,6 +322,18 @@ describe("phone push", () => {
       );
   });
 
+  it("refuses an endpoint that a URL parser rejects", async () => {
+    await start();
+    for (const endpoint of ["https://push.example:99999/push", "https://256.256.256.256/push"])
+      await ok(
+        await server.request("POST", "/api/attention/push/subscriptions", {
+          endpoint,
+          keys: { p256dh: "p", auth: "a" },
+        }),
+        400,
+      );
+  });
+
   it("keeps what a newer build saw when the start build ends last", async () => {
     await start();
     await subscribe("https://push.example/one");

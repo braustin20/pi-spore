@@ -804,6 +804,9 @@ export const createAttentionModule = ({
         await c.req.text(),
         "push subscription",
       );
+      // The schema's pattern does not catch a bad port or IPv4 host; the sender would fail on each push.
+      if (!URL.canParse(request.endpoint) || new URL(request.endpoint).protocol !== "https:")
+        throw new ApiError(400, "bad_endpoint", "The push endpoint is not a valid https URL");
       const hostHeader = c.req.header("host");
       if (!hostHeader) throw new ApiError(400, "no_host", "The request has no Host header");
       const subject = `https://${hostHeader}`;
