@@ -802,7 +802,7 @@ describe("the steps of a parallel group (ADR 0178)", () => {
   });
 });
 
-describe("how a step ended, and why a running one waits (ADR 0187)", () => {
+describe("how a step ended, and why a running one waits (ADR 0188)", () => {
   /** The only group's steps, by step id. */
   const stepsById = async (server: TestServer) =>
     new Map(((await graph(server))[0]?.groups[0]?.steps ?? []).map((step) => [step.id, step]));

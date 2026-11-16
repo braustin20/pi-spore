@@ -48,7 +48,7 @@ function helpersOf(children: ChildRun[]): GraphHelper[] {
 }
 
 /**
- * How a step ended, or, while it runs, why it waits (ADR 0187). A `failed` step keeps its own `failed` text and a
+ * How a step ended, or, while it runs, why it waits (ADR 0188). A `failed` step keeps its own `failed` text and a
  * `waiting` step has not begun, so neither gets one. `turn` is the step's turn; a gate step has none, and its round
  * passed when its gate run did.
  */

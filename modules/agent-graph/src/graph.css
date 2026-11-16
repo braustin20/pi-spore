@@ -183,7 +183,7 @@
   stroke-width: 2;
   stroke-linecap: round;
 }
-/* How a step ended, or why it waits (ADR 0187): the tone takes the ring only, so the pod keeps its state color.
+/* How a step ended, or why it waits (ADR 0188): the tone takes the ring only, so the pod keeps its state color.
    These come after the state rules above, whose `--ring: transparent` an idle step's tone must win over. */
 .ag-step.o-ok .ag-shape {
   --ring: var(--ok);

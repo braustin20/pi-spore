@@ -54,7 +54,7 @@ export const GraphStep = Type.Object({
   agent: Type.Optional(GraphAgent),
   /** The step runs next to the step before it, in one round of a parallel group (ADR 0178). */
   beside: Type.Optional(Type.Literal(true)),
-  /** How the step ended, or why it waits (ADR 0187). A failed step says so with `state` instead. */
+  /** How the step ended, or why it waits (ADR 0188). A failed step says so with `state` instead. */
   outcome: Type.Optional(
     Type.Union([
       Type.Literal("approved"),

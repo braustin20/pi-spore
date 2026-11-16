@@ -180,7 +180,7 @@ function stepRole(step: GraphStep): string {
 }
 
 /**
- * What a step's pod says about how the step ended, or why it waits (ADR 0187): the word for its meta line, and the
+ * What a step's pod says about how the step ended, or why it waits (ADR 0188): the word for its meta line, and the
  * ring tone that goes with it. `reported` has no tone: it only says the agent finished its turn.
  */
 function stepOutcome(step: GraphStep): { text: string; tone: string | undefined } | undefined {
