@@ -175,6 +175,9 @@ const subscribe = async (endpoint: string, keys = { p256dh: "p-key", auth: "a-ke
     ),
   );
 
+/** Where pushes went. Tests compare these, not whole calls, so a failure never prints the VAPID keys. */
+const endpoints = () => calls.map((call) => call.target.endpoint);
+
 const payloadOf = (call: PushCall | undefined) =>
   JSON.parse(call?.payload ?? "null") as PushPayload;
 
@@ -190,10 +193,7 @@ describe("phone push", () => {
     const text = `Which way? ${"x".repeat(300)}`;
     const question = await ask(caller, text);
 
-    expect(calls.map((call) => call.target.endpoint).sort()).toEqual([
-      "https://push.example/one",
-      "https://push.example/two",
-    ]);
+    expect(endpoints().sort()).toEqual(["https://push.example/one", "https://push.example/two"]);
     const payload = payloadOf(calls[0]);
     expect(payload).toEqual({
       title: "Question from asker (asker)",
@@ -212,7 +212,7 @@ describe("phone push", () => {
     await subscribe("https://push.example/one");
     const caller = await makeAgent("asker");
     await ask(caller, "Before the restart?");
-    expect(calls).toHaveLength(1);
+    expect(endpoints()).toHaveLength(1);
     await stop();
     calls = [];
 
@@ -222,7 +222,7 @@ describe("phone push", () => {
       await server.request("GET", "/api/attention/inbox"),
     );
     expect(inbox.items).toHaveLength(1);
-    expect(calls).toEqual([]);
+    expect(endpoints()).toEqual([]);
     const question = await ask(caller, "After the restart?");
     expect(calls.map((call) => payloadOf(call).tag)).toEqual([`question:${question.id}`]);
   });
@@ -237,7 +237,7 @@ describe("phone push", () => {
     const info = vi.spyOn(silentLog, "info");
     const caller = await makeAgent("asker");
     await ask(caller, "First?");
-    expect(calls).toHaveLength(2);
+    expect(endpoints()).toHaveLength(2);
     expect(warn).toHaveBeenCalledWith("Push failed", { subscription: failing, status: 500 });
     const logged = JSON.stringify([...warn.mock.calls, ...info.mock.calls]);
     expect(logged).not.toContain("push.example");
@@ -245,7 +245,7 @@ describe("phone push", () => {
 
     calls = [];
     await ask(caller, "Second?");
-    expect(calls.map((call) => call.target.endpoint)).toEqual(["https://push.example/failing"]);
+    expect(endpoints()).toEqual(["https://push.example/failing"]);
   });
 
   it("logs a send that throws by its code, and still pushes to the others", async () => {
@@ -259,7 +259,7 @@ describe("phone push", () => {
     );
     const warn = vi.spyOn(silentLog, "warn");
     await ask(await makeAgent("asker"));
-    expect(calls).toHaveLength(2);
+    expect(endpoints()).toHaveLength(2);
     expect(warn).toHaveBeenCalledWith("Push failed", { subscription: id, error: "ECONNREFUSED" });
   });
 
@@ -286,7 +286,7 @@ describe("phone push", () => {
       }),
     );
     await ask(await makeAgent("asker"));
-    expect(calls).toEqual([]);
+    expect(endpoints()).toEqual([]);
   });
 
   it("refuses a subscription whose endpoint is not https", async () => {
@@ -309,18 +309,18 @@ describe("phone push", () => {
 
     await focus(true);
     await ask(caller, "While focused?");
-    expect(calls).toEqual([]);
+    expect(endpoints()).toEqual([]);
 
     server.advance(61_000);
     await ask(caller, "After the report expired?");
-    expect(calls).toHaveLength(1);
+    expect(endpoints()).toHaveLength(1);
 
     await focus(true);
     await ask(caller, "Focused again?");
-    expect(calls).toHaveLength(1);
+    expect(endpoints()).toHaveLength(1);
     await focus(false);
     await ask(caller, "After blur?");
-    expect(calls).toHaveLength(2);
+    expect(endpoints()).toHaveLength(2);
   });
 
   it("sends nothing for a Home notice", async () => {
@@ -330,7 +330,7 @@ describe("phone push", () => {
     homeItems.changed();
     await until(() => published((item) => item.kind === "notice"));
     await new Promise((resolve) => setImmediate(resolve));
-    expect(calls).toEqual([]);
+    expect(endpoints()).toEqual([]);
   });
 
   it("makes the VAPID key file once, mode 0600, and reads the same key after a restart", async () => {
