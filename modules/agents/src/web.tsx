@@ -1,3 +1,4 @@
+import { SettingsPageKey } from "@pi-spore/mod-projects/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
@@ -38,6 +39,7 @@ import { Helpers } from "./helpers.js";
 import { MessageList, setFileLink } from "./messages.js";
 import { activity, emptyPage, reducePage, routedModel } from "./page-state.js";
 import { PhoneChatRow } from "./phone-row.js";
+import { RoleModelsSection } from "./role-models-section.js";
 import { parseWorkspaceWorking, reduceAgentList, workspaceStatuses } from "./status.js";
 import { type AgentsWeb, AgentsWebKey, type UserWait, type UseUserWaits } from "./web-contract.js";
 import { WorkingIndicator } from "./working-indicator.js";
@@ -624,7 +626,7 @@ function useAgentStatus(workspaces: readonly Workspace[]) {
 
 export const agentsWeb: WebModule = {
   id: "agents",
-  requires: ["workspaces"],
+  requires: ["workspaces", "projects"],
   core: true,
   setup(host) {
     const web: AgentsWeb = {
@@ -642,5 +644,10 @@ export const agentsWeb: WebModule = {
     const view = host.use(WorkspaceViewKey);
     view.setMain(ChatPane);
     view.setStatus(useAgentStatus);
+    host.use(SettingsPageKey).addSection({
+      id: "role-models",
+      order: 10,
+      component: RoleModelsSection,
+    });
   },
 };

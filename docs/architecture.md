@@ -1872,7 +1872,10 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   row shows the server's value and source. A failure shows the server's message in the row. After a save of an
   `agents.*` or `server.*` key, the row says "Restart pi-spore to apply". A change to `server.allowedHosts` or
   `server.allowedLogins` asks first ("Change remote access?"), because a wrong value can lock you out. The
-  "Workspace settings" panel stays read-only.
+  "Workspace settings" panel stays read-only. Other web modules add panels between "Global settings" and
+  "Workspace settings" through `SettingsPageKey` (`modules/projects/src/web-contract.ts`), sorted by `order`. The
+  agents module adds "Role models" there: one row per role and subagent with a model picker and Reset, which save
+  at once with `PUT /api/agents/role-models/:name` and show the list it answers (ADR 0181).
 
 - Role models (ADR 0181) live in Pi's own file, not in pi-spore's: `<agentDir>/settings.json` (`PI_CODING_AGENT_DIR`,
   else `~/.pi/agent`), key `subagents.agentOverrides.<name>.model`. pi-subagents reads the same key for its helpers.

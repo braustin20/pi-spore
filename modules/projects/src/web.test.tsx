@@ -5,7 +5,7 @@ import type { ComponentType } from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { projectsWeb } from "./web.js";
+import { projectsWeb, SettingsPageKey, type SettingsPageView } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -33,6 +33,7 @@ describe("the workspace settings panel", () => {
   it("ignores a slow answer for a workspace that is no longer picked", async () => {
     let page: ComponentType | undefined;
     projectsWeb.setup({
+      provide: () => {},
       addPage: (added: { path: string; component: ComponentType }) => {
         if (added.path === "/settings") page = added.component;
       },
@@ -82,6 +83,7 @@ type Entry = { key: string; value: unknown; source: string };
 function pageAt(path: string): ComponentType<{ params: Record<string, string> }> {
   let page: ComponentType<{ params: Record<string, string> }> | undefined;
   projectsWeb.setup({
+    provide: () => {},
     addPage: (added: {
       path: string;
       component: ComponentType<{ params: Record<string, string> }>;
@@ -350,5 +352,40 @@ describe("the project settings panel", () => {
     expect(row.textContent).toContain("me");
     expect(row.textContent).toContain("local override");
     expect(row.textContent).not.toContain("Restart pi-spore to apply");
+  });
+});
+
+describe("the settings page slot", () => {
+  it("renders a section another module adds, between the global and workspace panels", async () => {
+    let view: SettingsPageView | undefined;
+    let Page: ComponentType | undefined;
+    projectsWeb.setup({
+      provide: (key: unknown, impl: SettingsPageView) => {
+        if (key === SettingsPageKey) view = impl;
+      },
+      addPage: (added: { path: string; component: ComponentType }) => {
+        if (added.path === "/settings") Page = added.component;
+      },
+    } as unknown as WebHost);
+    if (!view || !Page) throw new Error("the projects module did not set up the settings page");
+    view.addSection({ id: "extra", order: 10, component: () => <p>Extra section</p> });
+    const Shown = Page;
+    const api = {
+      get: (path: string) =>
+        Promise.resolve(path === "projects/settings" ? { settings: [] } : { workspaces: [] }),
+    } as unknown as ApiClient;
+    container = document.body.appendChild(document.createElement("div"));
+    const root = container;
+    await act(async () => {
+      createRoot(root).render(
+        <ApiContext value={api}>
+          <Shown />
+        </ApiContext>,
+      );
+    });
+    const text = root.textContent ?? "";
+    expect(text).toContain("Extra section");
+    expect(text.indexOf("Global settings")).toBeLessThan(text.indexOf("Extra section"));
+    expect(text.indexOf("Extra section")).toBeLessThan(text.indexOf("Workspace settings"));
   });
 });
