@@ -372,7 +372,9 @@ export interface ServerHost {
   and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,
   Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
   the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
-  Hover-only controls also show with `touch:` (`@media (hover: none)`). `packages/web/public` holds the web app manifest and icons. At 768 px and above nothing changes.
+  Hover-only controls also show with `touch:` (`@media (hover: none)`). `packages/web/public` holds the web app
+  manifest, the icons, and the service worker `sw.js` (ADR 0187; push and notification taps only, no `fetch`
+  handler, no cache). At 768 px and above nothing changes.
 - Confirmations use `useConfirm()` from `@pi-spore/ui`, never `window.confirm`. It returns `{ confirm, dialog }`:
   render `dialog` once, and `await confirm({ message, title?, confirmLabel?, tone?: "danger" })` for a boolean.
   The dialog is themed, focuses Cancel first, and answers false on Cancel or Escape. A test fails if
@@ -1297,9 +1299,29 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
 - Desktop notifications (R15.2): a button asks for permission; the page never asks on load. While the page is open
   but not focused, each new item shows a notification, except one whose chat is on screen while the page is
   visible (see Toasts). Items already there when the page loads do not. Phone browsers show notifications only from
-  a service worker, which pi-spore does not have, so the button hides on phones (ADR 0159). A notification that
+  a service worker, so this button hides on phones (ADR 0159); phones use Web Push (below). A notification that
   fails to show logs one warning and the inbox goes on. The browser's permission is the only switch; pi-spore has
   no notification setting (ADR 0167).
+- **Phone push** (ADR 0187): on a phone that runs the app from the Home Screen (`display-mode: standalone`) and has
+  `serviceWorker`, `PushManager`, and `Notification`, Home shows "Turn on notifications" (`PhonePushButton` in
+  `phone-push.tsx`). The tap asks for permission first, then registers `/sw.js`, subscribes with the VAPID public
+  key (`GET /api/attention/push/key`), and sends the subscription (`POST /api/attention/push/subscriptions`, an
+  upsert by endpoint). Then it shows "Notifications are on" and "Turn off" (unsubscribe, then
+  `DELETE /api/attention/push/subscriptions`). On load a phone with a subscription sends it again.
+  - The server keeps subscriptions in `attention_push_subscriptions` (endpoint, keys, VAPID subject
+    `https://<Host it subscribed through>`, user agent label, created at). The VAPID key pair is in
+    `~/.pi-spore/vapid.json`, mode 0600, made on first start.
+  - When the server starts it builds the inbox once and pushes nothing for it. After that, each new chat item
+    (question, approval, dialog, failed, finished; never a notice) sends one push to each subscription through
+    `web-push` (TTL one day, urgency high), unless a desktop page has focus. The payload is `PushPayload`: the
+    `notification(item)` title and body, each cut to 200 characters, the item's link, its key as the tag, and the
+    Home count as the badge. `createAttentionModule({ sendPush })` lets tests pass a fake sender.
+  - A desktop page (the toast rule) reports focus with `POST /api/attention/push/focus { page, focused }` at load,
+    on focus, every 30 seconds while focused, and on blur. The server keeps each report in memory for 60 seconds.
+  - A 404 or 410 from the push service deletes that subscription. A failed push is logged by subscription id and
+    status, never by endpoint.
+  - `sw.js`: `push` shows the notification and sets the app badge best effort; `notificationclick` focuses an open
+    window and navigates it to the link, or opens one. Home clears the app badge when it opens.
 - Toasts (R15.2): while the page has focus, each new item shows an in-page toast instead (`showToast` and
   `Toaster` in `packages/ui`, mounted once in `App.tsx`). One item gives a toast or a notification, never both;
   `notifyItem` in the attention web module makes that choice. Toasts show only on desktop screens

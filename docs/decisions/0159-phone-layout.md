@@ -1,6 +1,7 @@
 # 0159. A phone layout below 768 px
 
-- Status: Accepted; changes the "Not planned" line that [0143](0143-phone-over-tailscale-serve.md) left in the vision
+- Status: Accepted; changes the "Not planned" line that [0143](0143-phone-over-tailscale-serve.md) left in the vision;
+  the "No service worker" line is changed by [0187](0187-phone-web-push.md)
 - Date: 2026-11-09
 - Requirements: R1.1, R15.2
 
@@ -24,7 +25,7 @@
   `interactive-widget=resizes-content` for Android. Fields use 16 px text, so iOS does not zoom.
 - A web app manifest and icons let "Add to Home Screen" open pi-spore without the browser bar.
 - No service worker. Phone browsers show notifications only from a service worker, so the notification button
-  hides on phones. Push is out of scope.
+  hides on phones. Push is out of scope. (Changed by ADR 0187: a service worker for Web Push only.)
 - No special mobile terminal. The xterm.js terminal shows as it is.
 
 ## Consequences

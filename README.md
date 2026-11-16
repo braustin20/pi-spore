@@ -33,6 +33,8 @@ no hosting.
 - **Unity.** pi-spore opens and closes editors, copies `Library/` into new worktrees, and runs EditMode and PlayMode
   tests as gates.
 - **Phone.** The UI works on a phone and installs as a web app. It reaches the server through `tailscale serve`.
+  The Home Screen app gets push notifications for questions, approvals, and failed or finished chats, and its icon
+  shows the Home count.
 
 ## Screenshots
 
