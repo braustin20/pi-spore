@@ -1,5 +1,7 @@
+import { join } from "node:path";
 import type { ChangeOps, PublishOps, WorkspaceLocation } from "@pi-spore/mod-projects/server";
 import { ApiError, type Exec } from "@pi-spore/module-api";
+import { readFileInside } from "@pi-spore/module-api/node";
 import {
   type ChangedFile,
   ChangeRecord,
@@ -13,6 +15,9 @@ import {
 
 /** Flags for every diff: no color, no user diff drivers, renames found. Output then has one fixed format. */
 const DIFF_FLAGS = ["--no-color", "--no-ext-diff", "--no-textconv", "-M"] as const;
+
+const MIB = 1024 * 1024;
+const formatMib = (bytes: number) => `${(bytes / MIB).toFixed(1)} MiB`;
 
 /** Untracked files are diffed one process each; this many run at once. */
 const UNTRACKED_CONCURRENCY = 8;
@@ -216,17 +221,22 @@ export function createGitChanges(exec: Exec): ChangeOps {
     return commit;
   };
 
-  /** The `git diff` arguments that select a scope, before the flags and paths. */
-  const scopeArgs = async (cwd: string, scope: ChangeScope): Promise<string[]> => {
+  /**
+   * The two sides of a scope. `old` is undefined for the empty tree (no commit before it). `new` is undefined for
+   * the working tree (`uncommitted`) and the index (`staged`).
+   */
+  const scopeRevs = async (
+    cwd: string,
+    scope: ChangeScope,
+  ): Promise<{ old: string | undefined; new?: string }> => {
     switch (scope.kind) {
       case "uncommitted":
-        return ["diff", (await head(cwd)) ?? (await emptyTree(run, cwd))];
       case "staged":
-        return ["diff", "--cached", (await head(cwd)) ?? (await emptyTree(run, cwd))];
+        return { old: await head(cwd) };
       case "line": {
         const [base, ...otherBases] = await baseCommits(cwd, scope.base);
         const tip = await head(cwd);
-        if (!tip) return ["diff", base, base];
+        if (!tip) return { old: base, new: base };
         // Given more than two commits, git returns the merge base of the first and a hypothetical merge of
         // the rest, so a newer upstream base beats the stale local one.
         const fork = (await run(cwd, ["merge-base", tip, base, ...otherBases], [0, 1])).trim();
@@ -237,14 +247,24 @@ export function createGitChanges(exec: Exec): ChangeOps {
             `The branch shares no history with "${scope.base}"`,
           );
         }
-        return ["diff", fork, tip];
+        return { old: fork, new: tip };
       }
       case "record": {
         const commit = await recordCommit(cwd, scope.id);
-        const parent = await resolveCommit(exec, cwd, `${commit}^`);
-        return ["diff", parent ?? (await emptyTree(run, cwd)), commit];
+        return { old: await resolveCommit(exec, cwd, `${commit}^`), new: commit };
       }
     }
+  };
+
+  /** The `git diff` arguments that select a scope, before the flags and paths. */
+  const scopeArgs = async (cwd: string, scope: ChangeScope): Promise<string[]> => {
+    const revs = await scopeRevs(cwd, scope);
+    return [
+      "diff",
+      ...(scope.kind === "staged" ? ["--cached"] : []),
+      revs.old ?? (await emptyTree(run, cwd)),
+      ...(revs.new ? [revs.new] : []),
+    ];
   };
 
   const untracked = async (cwd: string, paths: readonly string[] = []): Promise<string[]> =>
@@ -371,6 +391,40 @@ export function createGitChanges(exec: Exec): ChangeOps {
         return result([], "binary");
       }
       return result(parseHunks(patch));
+    },
+
+    async content(location, scope, file, side, maxBytes) {
+      const missing = () =>
+        new ApiError(404, "side_missing", `${file.path} has no ${side} side in this scope`);
+      if (side === "old" ? file.status === "added" : file.status === "deleted") throw missing();
+      const cwd = location.path;
+      if (side === "new" && scope.kind === "uncommitted") {
+        return (await readFileInside(join(cwd, file.path), [cwd], maxBytes)).bytes;
+      }
+      const revs = await scopeRevs(cwd, scope);
+      // The index for `staged`: `:<path>` names its blob.
+      const rev = side === "old" ? revs.old : (revs.new ?? "");
+      if (rev === undefined) throw missing();
+      const object = `${rev}:${side === "old" ? (file.oldPath ?? file.path) : file.path}`;
+      const options = { cwd, timeoutMs: 120_000, env: { GIT_OPTIONAL_LOCKS: "0" } };
+      const size = await exec("git", ["cat-file", "-s", object], options);
+      if (size.code !== 0) throw missing();
+      const bytes = Number(size.stdout.trim());
+      if (bytes > maxBytes) {
+        throw new ApiError(
+          413,
+          "file_too_large",
+          `The file is ${formatMib(bytes)}; the limit is ${formatMib(maxBytes)}`,
+        );
+      }
+      const blob = await exec("git", ["cat-file", "blob", object], {
+        ...options,
+        encoding: "buffer",
+      });
+      if (blob.code !== 0) {
+        throw new ApiError(422, "git_failed", `git cat-file blob ${object}: ${blob.stderr}`);
+      }
+      return blob.stdout;
     },
   };
 }

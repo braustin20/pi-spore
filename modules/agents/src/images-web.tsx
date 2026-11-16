@@ -1,8 +1,8 @@
-import { useApi } from "@pi-spore/module-api";
+import { useBlobUrl } from "@pi-spore/module-api";
 import type { ImageRef } from "@pi-spore/shared";
 import { Button, cn, ImageViewer, Spinner } from "@pi-spore/ui";
 import { ImageIcon, ImageOff } from "lucide-react";
-import { createContext, type ReactNode, useContext, useEffect, useState } from "react";
+import { createContext, type ReactNode, useContext, useState } from "react";
 
 /** The chat whose images a message list shows: refs and linked files are read through its routes (ADR 0060). */
 const ChatContext = createContext<string | undefined>(undefined);
@@ -15,41 +15,6 @@ function useChatId(): string {
   const agentId = useContext(ChatContext);
   if (!agentId) throw new Error("Chat images need a ChatImages provider");
   return agentId;
-}
-
-type Loaded =
-  | { state: "loading" }
-  | { state: "ready"; url: string }
-  | { state: "failed"; error: string };
-
-/** Fetches an API path as a blob URL with the token header, and frees it when the component goes. */
-function useBlobUrl(path: string): Loaded {
-  const api = useApi();
-  const [loaded, setLoaded] = useState<Loaded>({ state: "loading" });
-  useEffect(() => {
-    let url: string | undefined;
-    let current = true;
-    setLoaded({ state: "loading" });
-    api
-      .getBlob(path)
-      .then((blob) => {
-        if (!current) return;
-        url = URL.createObjectURL(blob);
-        setLoaded({ state: "ready", url });
-      })
-      .catch((caught: unknown) => {
-        if (current)
-          setLoaded({
-            state: "failed",
-            error: caught instanceof Error ? caught.message : String(caught),
-          });
-      });
-    return () => {
-      current = false;
-      if (url) URL.revokeObjectURL(url);
-    };
-  }, [api, path]);
-  return loaded;
 }
 
 const BOX =

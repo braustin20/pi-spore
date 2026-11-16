@@ -26,25 +26,30 @@ export interface Store {
   transaction<T>(fn: () => T): T;
 }
 
-export interface ExecResult {
+export interface ExecResult<T = string> {
   code: number;
-  stdout: string;
-  stderr: string;
+  stdout: T;
+  stderr: T;
 }
 
 export interface ExecOptions {
   cwd: string;
   timeoutMs?: number;
   env?: Readonly<Record<string, string>>;
+  /** `"buffer"`: output as bytes, for binary files (ADR 0186). Without it, output is UTF-8 text. */
+  encoding?: "buffer";
 }
 
 /** Runs a program with an argv array, never through a shell. Resolves with any exit code; rejects only on spawn
  * failure or timeout. */
-export type Exec = (
-  command: string,
-  args: readonly string[],
-  options: ExecOptions,
-) => Promise<ExecResult>;
+export interface Exec {
+  (
+    command: string,
+    args: readonly string[],
+    options: ExecOptions & { encoding: "buffer" },
+  ): Promise<ExecResult<Buffer>>;
+  (command: string, args: readonly string[], options: ExecOptions): Promise<ExecResult>;
+}
 
 export interface HomePaths {
   root: string;

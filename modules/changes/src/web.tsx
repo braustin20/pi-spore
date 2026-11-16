@@ -1,6 +1,6 @@
 import { AgentsWebKey } from "@pi-spore/mod-agents/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
-import { useApi, type WebModule } from "@pi-spore/module-api";
+import { useApi, useBlobUrl, type WebModule } from "@pi-spore/module-api";
 import {
   type ChangedFile,
   ChangedFileList,
@@ -13,6 +13,7 @@ import {
   type DiffLine,
   DiffList,
   type FileDiff,
+  imageTypeOfPath,
   parse,
   SendCommentsResponse,
   type Workspace,
@@ -247,13 +248,70 @@ function Extras({
   );
 }
 
-function DiffView({ diff, split, ...props }: DiffProps) {
+/** One side of a changed image, with its size (ADR 0186). */
+function ImageSide({ path, side, url }: { path: string; side: CommentSide; url: string }) {
+  const loaded = useBlobUrl(url);
+  const label = side === "old" ? "Before" : "After";
+  return (
+    <figure className="m-0 flex min-w-0 flex-1 basis-64 flex-col gap-1">
+      <figcaption className="text-xs text-muted">
+        {label}
+        {loaded.state === "ready" && ` · ${loaded.bytes.toLocaleString()} bytes`}
+      </figcaption>
+      {loaded.state === "failed" ? (
+        <Notice tone="fail">{loaded.error}</Notice>
+      ) : (
+        <div className="flex justify-center rounded-lg border border-line bg-raised p-2">
+          {loaded.state === "loading" ? (
+            <Spinner />
+          ) : (
+            <img
+              src={loaded.url}
+              alt={`${path} ${label.toLowerCase()}`}
+              className="h-auto max-w-full"
+            />
+          )}
+        </div>
+      )}
+    </figure>
+  );
+}
+
+/** A changed image: the side that exists, or both sides next to each other. */
+function ImageDiff({
+  diff,
+  contentPath,
+}: {
+  diff: FileDiff;
+  contentPath: (side: CommentSide) => string;
+}) {
+  const { status, path } = diff.file;
+  const sides: CommentSide[] =
+    status === "added" ? ["new"] : status === "deleted" ? ["old"] : ["old", "new"];
+  return (
+    <div className="m-3 flex flex-wrap gap-3">
+      {sides.map((side) => (
+        <ImageSide key={side} path={path} side={side} url={contentPath(side)} />
+      ))}
+    </div>
+  );
+}
+
+function DiffView({
+  diff,
+  split,
+  contentPath,
+  ...props
+}: DiffProps & { contentPath: (side: CommentSide) => string }) {
   const [open, setOpen] = useState<string | undefined>();
   const language = languageOf(diff.file.path);
   const hunks = useMemo(
     () => diff.hunks.map((hunk) => ({ hunk, lines: colorHunk(hunk, language) })),
     [diff, language],
   );
+  if (diff.note === "binary" && imageTypeOfPath(diff.file.path)) {
+    return <ImageDiff diff={diff} contentPath={contentPath} />;
+  }
   if (diff.note) {
     return (
       <Notice className="m-3">
@@ -404,7 +462,9 @@ function FileRow({
           </Chip>
         )}
         {file.binary ? (
-          <span className="font-mono text-xs text-muted">bin</span>
+          <span className="font-mono text-xs text-muted">
+            {imageTypeOfPath(file.path) ? "img" : "bin"}
+          </span>
         ) : (
           <DiffCount added={file.additions} deleted={file.deletions} />
         )}
@@ -802,7 +862,9 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-fg">
                   {current.oldPath ? `${current.oldPath} → ${current.path}` : current.path}
                 </span>
-                <DiffCount added={current.additions} deleted={current.deletions} />
+                {!current.binary && (
+                  <DiffCount added={current.additions} deleted={current.deletions} />
+                )}
               </div>
             )}
             {diff ? (
@@ -812,6 +874,12 @@ function ChangesTab({ workspace }: { workspace: Workspace }) {
                 comments={fileComments}
                 onComment={addComment}
                 onDelete={deleteComment}
+                contentPath={(side) => {
+                  const params = new URLSearchParams(query);
+                  params.set("path", diff.file.path);
+                  params.set("side", side);
+                  return `${base}/content?${params}`;
+                }}
               />
             ) : (
               selected && (

@@ -1365,7 +1365,8 @@ See [ADR 0050](decisions/0050-terminals.md). Requirements R13.
 
 ## 11d. Changes
 
-See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
+See [ADR 0090](decisions/0090-changes-and-pull-requests.md) and [ADR 0186](decisions/0186-changed-file-content.md).
+Requirements R8.
 
 - The `changes` module (not core, requires `projects`, `workspaces`, `agents`) reads a workspace's changes through
   its provider's `changes` capability (section 7). Projects without it (folders) answer 422 `not_supported`; a
@@ -1374,6 +1375,9 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
   `no_base`.
 - Limits (module options): 1000 files in a list, 200 files with hunks in a diff without `path`, and 3000 lines or
   512 KiB per file. A larger or binary file has a `note` (`too_large`, `binary`) and no hunks.
+- One side of a changed file comes from the optional `ChangeOps.content` (ADR 0186), at most 20 MiB (module option
+  `maxContentBytes`). Git reads the new side of `uncommitted` from the working tree with `readFileInside`, and every
+  other side with `git cat-file` on `<rev>:<path>`, through `exec` with `encoding: "buffer"`.
 - Diff-line comments (R8.3) live in `changes_comments` (workspace, path, side `old` or `new`, line, the line's
   code, body, created, sent). "Send to agent" writes one delivery to the workspace's active orchestrator chat
   (`AgentsKey.deliver`) and marks the comments sent in the same transaction. Sent comments leave the open list. No
@@ -1395,6 +1399,7 @@ See [ADR 0090](decisions/0090-changes-and-pull-requests.md). Requirements R8.
 | `GET /api/changes/workspaces/:id` | Scopes, the initial scope for the tab, base, and the records since the base (100), or the last 50 records without one. `initialScope`: the first of `uncommitted`, `staged`, `line` with a changed file, else `uncommitted`. A scope whose list fails is skipped. |
 | `GET /api/changes/workspaces/:id/files?scope=&record=` | Changed files with status and counts. `scope`: `uncommitted` (default), `staged`, `line`, `record` (needs `record=<id>`). |
 | `GET /api/changes/workspaces/:id/diff?scope=&record=&path=` | Hunks of one changed file, or of every file up to the limit; `truncated` says it cut. A path without changes is 404 `file_not_changed`. |
+| `GET /api/changes/workspaces/:id/content?scope=&record=&path=&side=old\|new` | One side of a changed file. An image extension (PNG, JPEG, WebP, GIF) answers that type only when the bytes match, else 415 `not_an_image`. A text file answers `text/plain; charset=utf-8`. Another binary file is 415 `not_supported`. A missing side is 404 `side_missing`; too big is 413 `file_too_large`. Every answer has `nosniff`, `default-src 'none'; sandbox`, and `no-store`. |
 | `GET /api/changes/workspaces/:id/comments` | Open comments. |
 | `POST /api/changes/workspaces/:id/comments` `{ path, side, line, code, body }` | Adds a comment. |
 | `POST /api/changes/workspaces/:id/comments/stage` `{ staged, ids? }` | Stages open comments for the composer, or drops them from the batch (`staged: false`). No `ids` means every open comment. A dropped comment stays open. Answers the open comments. |
@@ -1408,7 +1413,9 @@ counts, then its hunks in unified form.
   (Uncommitted, Staged, "Branch since <base>", One commit with a commit select), the changed files with a status
   chip (A, M, D, R), a comment count, and `+`/`-` counts, then the selected file's diff. Unified or split view (a
   browser choice). Code colors come from lowlight (highlight.js grammars, `common` set), mapped to role tokens, so
-  they follow the theme; each side of a hunk is colored as one block. Binary and large files show a note.
+  they follow the theme; each side of a hunk is colored as one block. A changed image shows its picture: the new
+  side when added, the old side when deleted, else both sides with their sizes, side by side or stacked when narrow.
+  SVG keeps its text diff. Other binary files and large files show a note.
 - Each diff line has a comment button (shown on hover and keyboard focus). Comments show under their line; the
   bar at the bottom lists them with Add to composer and Send now. The tab reloads on Refresh, on a scope change, and on the
   `stale` event. The tab opens on the summary's `initialScope`, once per open: a refresh, a `stale` event, or the

@@ -43,4 +43,4 @@ export type {
   Settings,
   SettingsOverride,
 } from "./settings.js";
-export { ApiContext, useApi } from "./web-context.js";
+export { ApiContext, useApi, useBlobUrl } from "./web-context.js";

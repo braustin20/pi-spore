@@ -14,10 +14,13 @@ import {
   type DiffComment,
   type DiffList,
   type FileDiff,
+  imageHeaders,
+  imageTypeOfPath,
   parse,
   parseJsonBody,
   type SendCommentsResponse,
   StageCommentsRequest,
+  sniffImage,
   type Workspace,
 } from "@pi-spore/shared";
 
@@ -74,6 +77,8 @@ export interface ChangesModuleOptions {
   /** Bounds on one file's diff; a larger file shows a note. */
   maxDiffLines?: number;
   maxDiffBytes?: number;
+  /** Largest side of a file the content route serves. */
+  maxContentBytes?: number;
 }
 
 /** The message "Send to agent" delivers: each comment with its file, line, and quoted code (R8.3). */
@@ -91,7 +96,7 @@ export function commentsMessage(comments: readonly DiffComment[]): string {
   return `Review comments on your changes. Address each one.\n\n${items.join("\n\n")}`;
 }
 
-/** Defaults: 1000 files in a list, 200 with hunks, 3000 lines or 512 KiB per file. */
+/** Defaults: 1000 files in a list, 200 with hunks, 3000 lines or 512 KiB per file, 20 MiB of content. */
 export function createChangesModule(options: ChangesModuleOptions = {}): ServerModule {
   const maxFiles = options.maxFiles ?? 1000;
   const maxDiffFiles = options.maxDiffFiles ?? 200;
@@ -99,6 +104,7 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
     maxLines: options.maxDiffLines ?? 3000,
     maxBytes: options.maxDiffBytes ?? 512 * 1024,
   };
+  const maxContentBytes = options.maxContentBytes ?? 20 * 1024 * 1024;
   return {
     id: "changes",
     requires: ["projects", "workspaces", "agents"],
@@ -262,6 +268,44 @@ export function createChangesModule(options: ChangesModuleOptions = {}): ServerM
           truncated: listed.truncated || files.length > maxDiffFiles,
         };
         return c.json(body);
+      });
+
+      /** One side of a changed file (ADR 0186): an image of the type its name says, or text. */
+      host.routes.get("/workspaces/:id/content", async (c) => {
+        const current = await target(c.req.param("id"));
+        const scope = scopeOf((name) => c.req.query(name), current);
+        const side = c.req.query("side");
+        if (side !== "old" && side !== "new") {
+          throw new ApiError(400, "bad_side", "side must be old or new");
+        }
+        const path = c.req.query("path");
+        if (!path) throw new ApiError(400, "bad_path", "path is required");
+        const listed = await current.ops.files(current.location, scope, maxFiles);
+        const file = listed.files.find((entry) => entry.path === path);
+        if (!file)
+          throw new ApiError(404, "file_not_changed", `${path} has no changes in this scope`);
+        const { content } = current.ops;
+        if (!content) {
+          throw new ApiError(422, "not_supported", "This project cannot show file content");
+        }
+        const read = () => content(current.location, scope, file, side, maxContentBytes);
+        const type = imageTypeOfPath(path);
+        if (type) {
+          const bytes = await read();
+          if (sniffImage(bytes) !== type) {
+            throw new ApiError(415, "not_an_image", `${path} is not a ${type} image`);
+          }
+          return c.body(new Uint8Array(bytes), 200, imageHeaders(type, "no-store"));
+        }
+        if (file.binary) {
+          throw new ApiError(415, "not_supported", `${path} is a binary file that is not an image`);
+        }
+        return c.body(new Uint8Array(await read()), 200, {
+          "content-type": "text/plain; charset=utf-8",
+          "cache-control": "no-store",
+          "x-content-type-options": "nosniff",
+          "content-security-policy": "default-src 'none'; sandbox",
+        });
       });
 
       host.routes.get("/workspaces/:id/comments", (c) => {
