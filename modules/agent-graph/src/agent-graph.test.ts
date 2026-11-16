@@ -522,7 +522,14 @@ describe("the agent graph (ADR 0176)", () => {
 
     const [tree] = (await graph(server)) as [GraphTree];
     expect(tree.groups[0]?.steps).toEqual([
-      { id: task.id, stage: "implement", kind: "task", round: 1, state: "done" },
+      {
+        id: task.id,
+        stage: "implement",
+        kind: "task",
+        round: 1,
+        state: "done",
+        outcome: "reported",
+      },
     ]);
   });
 
@@ -792,5 +799,112 @@ describe("the steps of a parallel group (ADR 0178)", () => {
       { id: expect.any(String), stage: "review", round: 1, state: "done" },
       { id: `${run.id}:2:1`, stage: "gates", round: 1, state: "done" },
     ]);
+  });
+});
+
+describe("how a step ended, and why a running one waits (ADR 0187)", () => {
+  /** The only group's steps, by step id. */
+  const stepsById = async (server: TestServer) =>
+    new Map(((await graph(server))[0]?.groups[0]?.steps ?? []).map((step) => [step.id, step]));
+
+  const REVISE_TWO = {
+    summary: "Not yet",
+    verdict: "revise",
+    findings: [
+      { severity: "important", title: "Missing check" },
+      { severity: "minor", title: "Extra comment" },
+    ],
+  };
+
+  it("says approved on a review step whose report approves", async () => {
+    const server = await start({ worker: [DONE], reviewer: [APPROVE] }, WITH_REVIEW);
+    const { workspaceId } = await workspace(server, "outcome-approve");
+    const run = await startRun(server, workspaceId);
+    await until(async () => (await getPipelineRun(server, run.id)).state === "passed");
+    const [task, review] = (await getPipelineRun(server, run.id)).turns as [
+      PipelineTurn,
+      PipelineTurn,
+    ];
+
+    const steps = await stepsById(server);
+
+    expect(steps.get(review.id)).toMatchObject({ state: "done", outcome: "approved" });
+    expect(steps.get(review.id)).not.toHaveProperty("findings");
+    // A worker's report says only that it reported.
+    expect(steps.get(task.id)).toMatchObject({ state: "done", outcome: "reported" });
+  });
+
+  it("counts the findings of a review step that revises", async () => {
+    const server = await start(
+      { worker: [DONE, "hang"], reviewer: [REVISE_TWO] },
+      reviewThen("rounds = 2\nfix_passes = 1\n", ""),
+    );
+    const { workspaceId } = await workspace(server, "outcome-revise");
+    const run = await startRun(server, workspaceId);
+    await until(async () => (await getPipelineRun(server, run.id)).turns[1]?.report !== undefined);
+    const review = (await getPipelineRun(server, run.id)).turns[1] as PipelineTurn;
+
+    const steps = await stepsById(server);
+
+    expect(steps.get(review.id)).toMatchObject({
+      state: "done",
+      outcome: "revise",
+      findings: 2,
+    });
+  });
+
+  it("says blocked, with the reason, on the blocked run's running step, and on no other", async () => {
+    const server = await start(
+      { worker: [DONE], reviewer: [{ error: "The provider refused the review turn" }] },
+      WITH_REVIEW,
+    );
+    const { workspaceId } = await workspace(server, "outcome-blocked");
+    const run = await startRun(server, workspaceId);
+    await until(async () => (await getPipelineRun(server, run.id)).blocked !== undefined);
+    const now = await getPipelineRun(server, run.id);
+    const [task, review] = now.turns as [PipelineTurn, PipelineTurn];
+
+    const steps = await stepsById(server);
+
+    expect(steps.get(review.id)).toMatchObject({
+      state: "running",
+      outcome: "blocked",
+      note: now.blocked,
+    });
+    // Only the step that waits carries the reason; the done one keeps its own report.
+    expect(steps.get(task.id)).toMatchObject({ state: "done", outcome: "reported" });
+    expect(steps.get(task.id)).not.toHaveProperty("note");
+  });
+
+  it("says asking on a running step whose agent waits for an answer", async () => {
+    const server = await start({ worker: [{ ask: "Which color?" }] }, IMPLEMENT);
+    const { workspaceId } = await workspace(server, "outcome-ask");
+    const run = await startRun(server, workspaceId);
+    await until(
+      async () => (await getPipelineRun(server, run.id)).turns[0]?.question !== undefined,
+    );
+    const [task] = (await getPipelineRun(server, run.id)).turns as [PipelineTurn];
+
+    const steps = await stepsById(server);
+
+    expect(steps.get(task.id)).toMatchObject({ state: "running", outcome: "asking" });
+    expect(steps.get(task.id)).not.toHaveProperty("note");
+  });
+
+  it("says passed on a gates step that passed", async () => {
+    const server = await start(
+      { worker: [DONE], reviewer: [APPROVE] },
+      reviewThen("", `\n[[stage]]\nname = "gates"\ngates = ["check", "test"]\n`),
+    );
+    const { workspaceId } = await workspace(server, "outcome-gates", gateConfig());
+    const run = await startRun(server, workspaceId);
+    await until(async () => (await getPipelineRun(server, run.id)).state === "passed");
+
+    const steps = (await graph(server))[0]?.groups[0]?.steps ?? [];
+
+    expect(steps.find((step) => step.kind === "gates")).toMatchObject({
+      state: "done",
+      outcome: "passed",
+    });
   });
 });
