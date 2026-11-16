@@ -119,6 +119,8 @@ function cli() {
     resolvePath: (path) => path,
     newKey: () => "key",
     now: server.services.now,
+    // The inbox commands never touch local programs or files.
+    system: {} as CliDeps["system"],
   };
   return { deps, out, err };
 }

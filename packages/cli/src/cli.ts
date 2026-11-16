@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { dirname } from "node:path";
 import {
   ActionList,
   ActionLog,
@@ -65,9 +66,41 @@ export interface CliDeps {
   newKey: () => string;
   /** The clock, in epoch milliseconds, for ages. */
   now: () => number;
+  /** Local programs and files, for the server commands (ADR 0184). */
+  system: {
+    /** Runs a program with argv, stdio inherited. Resolves to its exit code. Rejects with "<file> not found" if missing. */
+    run: (
+      file: string,
+      args: readonly string[],
+      options?: { cwd?: string; env?: Record<string, string | undefined> },
+    ) => Promise<number>;
+    /** undefined when the file does not exist. */
+    readFile: (path: string) => string | undefined;
+    /** Makes the parent folders. */
+    writeFile: (path: string, text: string) => void;
+    removeFile: (path: string) => void;
+    isExecutable: (path: string) => boolean;
+    /** Asks y/N. false when stdin is not a TTY. */
+    ask: (question: string) => Promise<boolean>;
+    /** `process.execPath` and `process.version`. */
+    node: { path: string; version: string };
+    platform: NodeJS.Platform;
+    /** The repo root, three folders up from packages/cli/dist/main.js (from import.meta.url, not the cwd). */
+    repoRoot: string;
+    /** `XDG_CONFIG_HOME`, else `~/.config`. */
+    configHome: string;
+    delay: (ms: number) => Promise<void>;
+  };
 }
 
 const USAGE = `Usage: pi-spore <command> [options] [--json]
+
+Server:
+  start [--open]                           Run the server in this terminal; --open opens the UI
+  open                                     Open the pi-spore UI in the browser
+  service install [--yes]                  Run pi-spore as a systemd user service (Linux)
+  service uninstall [--yes]                Stop and remove the systemd user service
+  logs [-f]                                Show the service's log; -f follows it
 
 Commands:
   health                                   Show whether the pi-spore server is running
@@ -140,6 +173,7 @@ Commands:
 
 Environment:
   PI_SPORE_URL    Server address (default ${DEFAULT_URL})
+  PI_SPORE_PORT   Server port when PI_SPORE_URL is not set
   PI_SPORE_TOKEN  API token (default: read from the server's token file)`;
 
 class CliError extends Error {
@@ -313,6 +347,211 @@ async function health(deps: CliDeps, base: string, json: boolean): Promise<void>
   deps.out(
     `ok  version ${body.version}  up ${Math.round(body.uptimeMs / 1000)}s  modules: ${modules}`,
   );
+}
+
+// Server commands (ADR 0184, R1.1, R1.2, R1.6). Every program runs through system.run with argv.
+
+type System = CliDeps["system"];
+
+const unitPath = (system: System) => `${system.configHome}/systemd/user/pi-spore.service`;
+
+function needLinux(system: System): void {
+  if (system.platform !== "linux")
+    throw new CliError("pi-spore service needs Linux with systemd", 1);
+}
+
+/** Runs a program; a missing program becomes a CliError that names it. */
+async function exec(
+  system: System,
+  file: string,
+  args: readonly string[],
+  options?: { cwd?: string },
+): Promise<number> {
+  try {
+    return await system.run(file, args, options);
+  } catch (error) {
+    throw new CliError(error instanceof Error ? error.message : String(error), 1);
+  }
+}
+
+async function mustRun(system: System, file: string, args: readonly string[]): Promise<void> {
+  const code = await exec(system, file, args);
+  if (code !== 0) throw new CliError(`${[file, ...args].join(" ")} exited with code ${code}`, 1);
+}
+
+/** A network error means no server. */
+async function serverAnswers(deps: CliDeps, base: string): Promise<boolean> {
+  try {
+    return (await deps.fetch(new URL("/api/health", base))).ok;
+  } catch {
+    return false;
+  }
+}
+
+const ENDED = Symbol("server ended");
+
+async function start(deps: CliDeps, base: string, args: readonly string[]): Promise<void> {
+  const { positional, on } = parseArgs(args, [], ["open"]);
+  if (positional.length > 0) throw usageError("start takes no arguments");
+  const { system } = deps;
+  const server = exec(
+    system,
+    system.node.path,
+    [`${system.repoRoot}/packages/server/dist/main.js`],
+    {
+      cwd: system.repoRoot,
+    },
+  );
+  // Also handles a server that fails while we poll, so that is not an unhandled rejection.
+  const ended = server.then(
+    () => ENDED,
+    () => ENDED,
+  );
+  // Each wait gives up when the server ends, so a late health answer never opens the browser.
+  const untilEnd = <T>(work: Promise<T>) => Promise.race([work, ended]);
+  if (on.has("open")) {
+    for (let tries = 0; tries < 40; tries++) {
+      const up = await untilEnd(serverAnswers(deps, base));
+      if (up === ENDED) break;
+      if (up) {
+        // The server keeps running if the browser does not open.
+        await mustRun(system, "xdg-open", [base]).catch((error: CliError) =>
+          deps.err(error.message),
+        );
+        break;
+      }
+      if ((await untilEnd(system.delay(250))) === ENDED) break;
+    }
+  }
+  const code = await server;
+  if (code !== 0) throw new CliError(`pi-spore server exited with code ${code}`, 1);
+}
+
+async function serviceInstall(deps: CliDeps, base: string, yes: boolean): Promise<void> {
+  const { system, env } = deps;
+  const want = system.readFile(`${system.repoRoot}/.nvmrc`)?.trim();
+  if (system.node.version.replace(/^v/, "").split(".")[0] !== want) {
+    throw new CliError(
+      `The service needs Node ${want} (.nvmrc); this CLI runs on Node ${system.node.version} at ${system.node.path}. Run \`nvm use\`, then try again.`,
+      1,
+    );
+  }
+  const dirs = (env.PATH ?? "").split(":").filter(Boolean);
+  const find = (name: string) => dirs.find((dir) => system.isExecutable(`${dir}/${name}`));
+  const piDir = find("pi");
+  if (!piDir)
+    throw new CliError("pi is not on PATH. Install Pi and make sure `pi` runs in this shell.", 1);
+  const pathDirs = [
+    ...new Set([
+      dirname(system.node.path),
+      piDir,
+      ...["git", "gh", "unity"].flatMap((name) => find(name) ?? []),
+      "/usr/local/bin",
+      "/usr/bin",
+      "/bin",
+    ]),
+  ];
+  const home = env.PI_SPORE_HOME;
+  // systemd splits and expands these characters in unit values.
+  for (const path of [system.node.path, system.repoRoot, ...pathDirs, ...(home ? [home] : [])]) {
+    if (/[\s"\\$%]/.test(path)) {
+      throw new CliError(
+        `"${path}" cannot go in a systemd unit: it has whitespace, ", \\, $, or %. Move it to a path without them.`,
+        1,
+      );
+    }
+  }
+  const unit = unitPath(system);
+  const existed = system.readFile(unit) !== undefined;
+  // A foreground server holds the lock, so the service would not start.
+  if (!existed && (await serverAnswers(deps, base))) {
+    throw new CliError(
+      `A pi-spore server already runs at ${base}. Stop it (Ctrl+C in its terminal), then run this again.`,
+      1,
+    );
+  }
+  const text = [
+    "[Unit]",
+    "Description=pi-spore agent workbench",
+    "",
+    "[Service]",
+    `ExecStart=${system.node.path} ${system.repoRoot}/packages/server/dist/main.js`,
+    `WorkingDirectory=${system.repoRoot}`,
+    `Environment=PATH=${pathDirs.join(":")}`,
+    ...(home ? [`Environment=PI_SPORE_HOME=${home}`] : []),
+    ...(env.PI_SPORE_PORT ? [`Environment=PI_SPORE_PORT=${env.PI_SPORE_PORT}`] : []),
+    // systemd does not read the shell's rc files; the user puts the keys their shell sets here.
+    "EnvironmentFile=-%h/.config/pi-spore/service.env",
+    "Restart=on-failure",
+    "RestartSec=2",
+    "",
+    "[Install]",
+    "WantedBy=default.target",
+    "",
+  ].join("\n");
+  deps.out(`Unit file: ${unit}`);
+  deps.out("");
+  deps.out(text);
+  if (!yes && !(await system.ask("Write this unit and start the service?"))) {
+    deps.out("Nothing changed.");
+    return;
+  }
+  system.writeFile(unit, text);
+  await mustRun(system, "systemctl", ["--user", "daemon-reload"]);
+  await mustRun(system, "systemctl", ["--user", "enable", "--now", "pi-spore"]);
+  deps.out("The pi-spore service is installed.");
+  if (existed) deps.out("Run pi-spore restart to use the new unit.");
+  deps.out("Open the UI: pi-spore open");
+  deps.out("Read the log: pi-spore logs -f");
+}
+
+async function serviceUninstall(deps: CliDeps, yes: boolean): Promise<void> {
+  const { system } = deps;
+  const unit = unitPath(system);
+  if (system.readFile(unit) === undefined)
+    return deps.out("The pi-spore service is not installed.");
+  if (!yes && !(await system.ask("Stop and remove the pi-spore service?"))) {
+    deps.out("Nothing changed.");
+    return;
+  }
+  await mustRun(system, "systemctl", ["--user", "disable", "--now", "pi-spore"]);
+  system.removeFile(unit);
+  await mustRun(system, "systemctl", ["--user", "daemon-reload"]);
+  deps.out("The pi-spore service is removed.");
+}
+
+async function serverCommand(
+  deps: CliDeps,
+  base: string,
+  command: string,
+  args: readonly string[],
+): Promise<void> {
+  if (command === "start") return start(deps, base, args);
+  if (command === "open") {
+    if (args.length > 0) throw usageError("open takes no arguments");
+    return mustRun(deps.system, "xdg-open", [base]);
+  }
+  needLinux(deps.system);
+  if (command === "logs") {
+    const { positional, on } = parseArgs(
+      args.map((arg) => (arg === "-f" ? "--follow" : arg)),
+      [],
+      ["follow"],
+    );
+    if (positional.length > 0) throw usageError("logs takes only -f");
+    return mustRun(deps.system, "journalctl", [
+      "--user",
+      "-u",
+      "pi-spore",
+      ...(on.has("follow") ? ["-f"] : []),
+    ]);
+  }
+  const [sub, ...rest] = args;
+  const { positional, on } = parseArgs(rest, [], ["yes"]);
+  if (positional.length > 0) throw usageError(`Unknown command: service ${args.join(" ")}`);
+  if (sub === "install") return serviceInstall(deps, base, on.has("yes"));
+  if (sub === "uninstall") return serviceUninstall(deps, on.has("yes"));
+  throw usageError(`Unknown command: service ${args.join(" ")}`);
 }
 
 /** One setting's value, checked against the type the command needs. */
@@ -1270,7 +1509,8 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
   const args = argv.filter((arg) => arg !== "--json");
   const json = args.length !== argv.length;
   const [command, ...rest] = args;
-  const base = deps.env.PI_SPORE_URL ?? DEFAULT_URL;
+  const port = deps.env.PI_SPORE_PORT;
+  const base = deps.env.PI_SPORE_URL ?? (port ? `http://127.0.0.1:${port}` : DEFAULT_URL);
 
   if (command === undefined || command === "help" || command === "--help" || command === "-h") {
     deps.out(USAGE);
@@ -1278,6 +1518,8 @@ export async function run(argv: readonly string[], deps: CliDeps): Promise<numbe
   }
   try {
     if (command === "health" && rest.length === 0) await health(deps, base, json);
+    else if (["start", "open", "service", "logs"].includes(command))
+      await serverCommand(deps, base, command, rest);
     else if (command === "remote" && rest.length === 0)
       await remote(new Api(deps, base), deps, base, json);
     else if (command === "project") await projectCommand(new Api(deps, base), deps, rest, json);
