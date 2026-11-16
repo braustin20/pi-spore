@@ -1,44 +1,6 @@
 import type { UserWait } from "@pi-spore/mod-agents/web";
 import type { ApiClient } from "@pi-spore/module-api";
-import { type Inbox, InboxEvent, type InboxItem, parse } from "@pi-spore/shared";
-
-/** One key per thing that needs the user, stable across inbox updates. */
-export function itemKey(item: InboxItem): string {
-  switch (item.kind) {
-    case "question":
-      return `question:${item.question.id}`;
-    case "approval":
-      return `approval:${item.approval.id}`;
-    case "dialog":
-      return `dialog:${item.agentId}:${item.dialog.id}`;
-    case "notice":
-      return `notice:${item.source}:${item.id}`;
-    default:
-      return `${item.kind}:${item.agentId}:${item.at}`;
-  }
-}
-
-/** The title and body of a desktop notification for an item (R15.2). */
-export function notification(item: InboxItem): { title: string; body: string } {
-  if (item.kind === "notice") return { title: item.title, body: item.detail ?? "" };
-  const chat = item.chat.title ? `, ${item.chat.title}` : "";
-  const where = `${item.workspace.name} (${item.workspace.projectName}${chat})`;
-  switch (item.kind) {
-    case "question":
-      return { title: `Question from ${where}`, body: item.question.question };
-    case "approval":
-      return { title: `${where} asks for approval`, body: item.approval.title };
-    case "dialog":
-      return {
-        title: `${where} asks`,
-        body: item.dialog.title ?? item.dialog.message ?? "An extension dialog is open",
-      };
-    case "failed":
-      return { title: `Agent failed in ${where}`, body: item.error.split("\n")[0] ?? "" };
-    case "finished":
-      return { title: `${where} is done`, body: "The agent finished and waits for you." };
-  }
-}
+import { type Inbox, InboxEvent, type InboxItem, itemKey, parse } from "@pi-spore/shared";
 
 /** Items in `inbox` whose keys are not in `seen`. */
 export function newItems(seen: ReadonlySet<string>, inbox: Inbox): InboxItem[] {

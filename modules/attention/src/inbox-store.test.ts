@@ -1,7 +1,7 @@
 import type { ApiClient } from "@pi-spore/module-api";
-import type { Inbox, InboxItem } from "@pi-spore/shared";
+import { type Inbox, type InboxItem, itemKey, notification } from "@pi-spore/shared";
 import { describe, expect, it } from "vitest";
-import { chatAsks, chatWaits, createInboxStore, itemKey, notification } from "./inbox-store.js";
+import { chatAsks, chatWaits, createInboxStore } from "./inbox-store.js";
 
 const workspace = { id: "w1", name: "Colors", projectName: "game", state: "active" as const };
 const chat = { id: "a1", title: "Pick colors", kind: "worker" as const, active: true };

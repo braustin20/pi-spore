@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { type AgentAttention, AgentsKey } from "@pi-spore/mod-agents/server";
 import { ProjectsKey } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
@@ -13,6 +14,13 @@ import {
   type InboxEvent,
   type InboxItem,
   type InboxWorkspace,
+  itemHref,
+  itemKey,
+  notification,
+  PushFocusRequest,
+  type PushPayload,
+  PushSubscriptionRequest,
+  PushUnsubscribeRequest,
   parse,
   parseJsonBody,
   type Question,
@@ -30,8 +38,10 @@ import {
   type Questions,
   QuestionsKey,
 } from "./contract.js";
+import { ensureVapidKeys, type PushSender, sendWebPush } from "./push.js";
 
 export * from "./contract.js";
+export type { PushSender } from "./push.js";
 
 export const INBOX_TOPIC = "attention:inbox";
 
@@ -67,7 +77,31 @@ const MIGRATIONS = [
   "ALTER TABLE attention_questions ADD COLUMN recommended INTEGER",
   // A JSON array of QuestionStep. NULL for an old-form question: its one step comes from `question` and `choices`.
   "ALTER TABLE attention_questions ADD COLUMN steps TEXT",
+  // ADR 0187: one row per browser that turned phone notifications on.
+  `CREATE TABLE attention_push_subscriptions (
+    id TEXT PRIMARY KEY,
+    endpoint TEXT NOT NULL UNIQUE,
+    p256dh TEXT NOT NULL,
+    auth TEXT NOT NULL,
+    subject TEXT NOT NULL,
+    label TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  )`,
 ];
+
+interface SubscriptionRow {
+  id: string;
+  endpoint: string;
+  p256dh: string;
+  auth: string;
+  /** The VAPID subject, `https://<the Host it subscribed through>`. */
+  subject: string;
+}
+
+/** A desktop page's focus report counts this long, so a closed tab stops counting by itself (ADR 0187). */
+const FOCUS_MS = 60_000;
+/** The push service shows these, so cut them to what fits a lock screen (ADR 0187). */
+const PUSH_TEXT = 200;
 
 interface ApprovalRow {
   id: string;
@@ -263,16 +297,25 @@ export function buildWorkspaceRows(items: RunningItem[]): RunningItem[] {
   return chosen.map(({ kept, others }) => (others > 0 ? { ...kept, others } : kept));
 }
 
+export interface AttentionModuleOptions {
+  /** Sends one Web Push. The real one goes to the browser's push service; tests pass a fake. */
+  sendPush?: PushSender;
+}
+
 /**
  * Home (R15): questions from agents, and what needs the user across workspaces, built from the agents module's
- * state. Browsers follow topic `attention:inbox`, which sends the whole inbox after every change.
+ * state. Browsers follow topic `attention:inbox`, which sends the whole inbox after every change. A new chat item
+ * also goes to every phone that subscribed, as a Web Push (ADR 0187).
  */
-export const attentionModule: ServerModule = {
+export const createAttentionModule = ({
+  sendPush = sendWebPush,
+}: AttentionModuleOptions = {}): ServerModule => ({
   id: "attention",
   requires: ["projects", "workspaces", "agents"],
   core: true,
   setup(host) {
     host.store.migrate("attention", MIGRATIONS);
+    const vapid = ensureVapidKeys(join(host.home.root, "vapid.json"));
     const projects = host.use(ProjectsKey);
     const workspaces = host.use(WorkspacesKey);
     const agents = host.use(AgentsKey);
@@ -436,12 +479,75 @@ export const attentionModule: ServerModule = {
         const build = ++latestBuild;
         inbox().then(
           (current) => {
-            if (build === latestBuild)
-              host.events.publish(INBOX_TOPIC, { type: "inbox", inbox: current });
+            if (build !== latestBuild) return;
+            host.events.publish(INBOX_TOPIC, { type: "inbox", inbox: current });
+            pushNew(current);
           },
           (error: unknown) => host.log.error("Home inbox failed", { error: String(error) }),
         );
       });
+    };
+    /** Pages by id, and until when their last focus report counts. */
+    const focus = new Map<string, number>();
+    /** Keys of the chat items already there; undefined until the first inbox. Notices never push. */
+    let seen: Set<string> | undefined;
+    const chatKeys = (current: Inbox) =>
+      new Set(current.items.filter((item) => item.kind !== "notice").map(itemKey));
+    host.onStarted(async () => {
+      // What is there at start is not news, as in the web store. A newer build may have set `seen` while this one
+      // ran; its keys are newer, so they stay.
+      const keys = chatKeys(await inbox());
+      seen ??= keys;
+    });
+    const pushTo = async (row: SubscriptionRow, payload: string) => {
+      try {
+        const status = await sendPush(
+          { endpoint: row.endpoint, keys: { p256dh: row.p256dh, auth: row.auth } },
+          payload,
+          { subject: row.subject, ...vapid },
+        );
+        if (status >= 200 && status < 300) return;
+        if (status === 404 || status === 410) {
+          host.store.run("DELETE FROM attention_push_subscriptions WHERE id = ?", row.id);
+          host.log.info("Removed a push subscription that is gone", { subscription: row.id });
+          return;
+        }
+        // Never the endpoint, keys, or payload (ADR 0187).
+        host.log.warn("Push failed", { subscription: row.id, status });
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        host.log.warn("Push failed", {
+          subscription: row.id,
+          error: code ?? (error instanceof Error ? error.name : typeof error),
+        });
+      }
+    };
+    const pushNew = (inbox: Inbox) => {
+      const before = seen;
+      seen = chatKeys(inbox);
+      if (before === undefined) return;
+      const fresh = inbox.items.filter(
+        (item) => item.kind !== "notice" && !before.has(itemKey(item)),
+      );
+      if (fresh.length === 0) return;
+      const now = host.now();
+      // A focused desktop page shows a toast instead.
+      if ([...focus.values()].some((until) => until > now)) return;
+      const rows = host.store.all<SubscriptionRow>(
+        "SELECT id, endpoint, p256dh, auth, subject FROM attention_push_subscriptions",
+      );
+      const badge = inbox.items.length + inbox.interrupted.length;
+      for (const item of fresh) {
+        const { title, body } = notification(item);
+        const payload: PushPayload = {
+          title: title.slice(0, PUSH_TEXT),
+          body: body.slice(0, PUSH_TEXT),
+          href: itemHref(item),
+          tag: itemKey(item),
+          badge,
+        };
+        for (const row of rows) void pushTo(row, JSON.stringify(payload));
+      }
     };
     /**
      * ADR 0033: a question from a worker chat that is no longer active is closed. It stays in that chat's history;
@@ -690,6 +796,56 @@ export const attentionModule: ServerModule = {
 
     host.routes.get("/inbox", async (c) => c.json(await inbox()));
 
+    host.routes.get("/push/key", (c) => c.json({ publicKey: vapid.publicKey }));
+
+    host.routes.post("/push/subscriptions", async (c) => {
+      const request = parseJsonBody(
+        PushSubscriptionRequest,
+        await c.req.text(),
+        "push subscription",
+      );
+      // The schema's pattern does not catch a bad port or IPv4 host; the sender would fail on each push.
+      if (!URL.canParse(request.endpoint) || new URL(request.endpoint).protocol !== "https:")
+        throw new ApiError(400, "bad_endpoint", "The push endpoint is not a valid https URL");
+      const hostHeader = c.req.header("host");
+      if (!hostHeader) throw new ApiError(400, "no_host", "The request has no Host header");
+      const subject = `https://${hostHeader}`;
+      host.store.run(
+        `INSERT INTO attention_push_subscriptions (id, endpoint, p256dh, auth, subject, label, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT (endpoint) DO UPDATE SET p256dh = excluded.p256dh, auth = excluded.auth, subject = excluded.subject`,
+        host.newId(),
+        request.endpoint,
+        request.keys.p256dh,
+        request.keys.auth,
+        subject,
+        (c.req.header("user-agent") ?? "").slice(0, 200),
+        host.now(),
+      );
+      const row = host.store.get<{ id: string }>(
+        "SELECT id FROM attention_push_subscriptions WHERE endpoint = ?",
+        request.endpoint,
+      );
+      // SAFETY: the row was written just above.
+      return c.json({ id: (row as { id: string }).id });
+    });
+
+    host.routes.delete("/push/subscriptions", async (c) => {
+      const request = parseJsonBody(PushUnsubscribeRequest, await c.req.text(), "push unsubscribe");
+      host.store.run(
+        "DELETE FROM attention_push_subscriptions WHERE endpoint = ?",
+        request.endpoint,
+      );
+      return c.json({ ok: true });
+    });
+
+    host.routes.post("/push/focus", async (c) => {
+      const request = parseJsonBody(PushFocusRequest, await c.req.text(), "push focus");
+      if (request.focused) focus.set(request.page, host.now() + FOCUS_MS);
+      else focus.delete(request.page);
+      return c.json({ ok: true });
+    });
+
     host.routes.get("/questions/:id", (c) =>
       c.json({ question: toQuestion(load(c.req.param("id"))) }),
     );
@@ -752,4 +908,6 @@ export const attentionModule: ServerModule = {
       return c.json({ question });
     });
   },
-};
+});
+
+export const attentionModule = createAttentionModule();

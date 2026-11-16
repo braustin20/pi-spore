@@ -82,11 +82,17 @@ async function render(shown: Question) {
 /** Home with `shownInbox` as the only inbox the fake server reports. */
 async function renderInbox(shownInbox: Inbox) {
   let page: ComponentType | undefined;
-  const send = vi.fn(async () => undefined);
+  const send = vi.fn(async (_method: string, _path: string, _body?: unknown) => undefined);
+  // A focused desktop page reports itself so the server sends no push (ADR 0187). These tests ask
+  // about answers and approvals, so the focus reports go to their own mock.
+  const focus = vi.fn(async (_method: string, _path: string, _body?: unknown) => undefined);
+  const sendToServer = async (method: string, path: string, body?: unknown) => {
+    await (path === "attention/push/focus" ? focus : send)(method, path, body);
+  };
   let emit: (event: unknown) => void = () => {};
   const api = {
     get: async () => undefined,
-    send,
+    send: sendToServer,
     subscribe: (_topic: string, listener: (event: unknown) => void) => {
       emit = listener;
       listener({ type: "inbox", inbox: shownInbox });
@@ -165,7 +171,18 @@ async function renderInbox(shownInbox: Inbox) {
     root = undefined;
     shownIn.remove();
   };
-  return { choice, send, later, container: shownIn, option, click, press, type, unmount };
+  return {
+    choice,
+    send,
+    focus,
+    later,
+    container: shownIn,
+    option,
+    click,
+    press,
+    type,
+    unmount,
+  };
 }
 
 const checked = (element: HTMLElement) => element.getAttribute("aria-checked") === "true";
@@ -509,5 +526,55 @@ describe("a new item on Home", () => {
       vi.advanceTimersByTime(8_100);
     });
     expect(toasts()).toHaveLength(0);
+  });
+});
+
+describe("push support around Home", () => {
+  it("reports a focused desktop page, so the server sends no push", async () => {
+    fakeScreen({ focused: true, desktop: true });
+    const { focus } = await render(question({}));
+    expect(focus).toHaveBeenCalledWith("POST", "attention/push/focus", {
+      page: expect.any(String),
+      focused: true,
+    });
+  });
+
+  it("reports nothing from a touch screen, which has no desktop toast", async () => {
+    fakeScreen({ focused: true, desktop: false });
+    const { focus } = await render(question({}));
+    expect(focus).not.toHaveBeenCalled();
+  });
+
+  it("reports focus again every 30 seconds, and reports blur", async () => {
+    fakeScreen({ focused: true, desktop: true });
+    vi.useFakeTimers();
+    const { focus, unmount } = await render(question({}));
+    expect(focus).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      vi.advanceTimersByTime(30_000);
+    });
+    expect(focus).toHaveBeenCalledTimes(2);
+    expect(focus).toHaveBeenLastCalledWith("POST", "attention/push/focus", {
+      page: expect.any(String),
+      focused: true,
+    });
+    await act(async () => {
+      window.dispatchEvent(new Event("blur"));
+    });
+    expect(focus).toHaveBeenLastCalledWith("POST", "attention/push/focus", {
+      page: expect.any(String),
+      focused: false,
+    });
+    // The server keeps each report under one page id, so it must stay the same across reports.
+    const pageIds = focus.mock.calls.map((call) => (call[2] as { page: string }).page);
+    expect(new Set(pageIds).size).toBe(1);
+    await unmount();
+  });
+
+  it("clears the app badge when Home opens", async () => {
+    const clearAppBadge = vi.fn(async () => undefined);
+    vi.stubGlobal("navigator", { clearAppBadge });
+    await render(question({}));
+    expect(clearAppBadge).toHaveBeenCalled();
   });
 });

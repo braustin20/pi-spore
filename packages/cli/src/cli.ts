@@ -720,6 +720,9 @@ async function remote(api: Api, deps: CliDeps, base: string, json: boolean): Pro
   deps.out(`Allowed logins: ${logins.join(", ")}`);
   deps.out("Turn off: tailscale serve --https=443 off");
   deps.out("Never use tailscale funnel: it publishes pi-spore to the internet.");
+  deps.out(
+    "Phone notifications: add the page to the Home Screen, open it from there, and tap Turn on notifications on Home.",
+  );
 }
 
 async function projectCommand(

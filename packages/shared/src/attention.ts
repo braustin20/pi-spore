@@ -257,6 +257,83 @@ export type Inbox = Static<typeof Inbox>;
 export const InboxEvent = Type.Object({ type: Type.Literal("inbox"), inbox: Inbox });
 export type InboxEvent = Static<typeof InboxEvent>;
 
+/** One key per thing that needs the user, stable across inbox updates. */
+export function itemKey(item: InboxItem): string {
+  switch (item.kind) {
+    case "question":
+      return `question:${item.question.id}`;
+    case "approval":
+      return `approval:${item.approval.id}`;
+    case "dialog":
+      return `dialog:${item.agentId}:${item.dialog.id}`;
+    case "notice":
+      return `notice:${item.source}:${item.id}`;
+    default:
+      return `${item.kind}:${item.agentId}:${item.at}`;
+  }
+}
+
+/** The title and body of a notification for an item (R15.2): a desktop one, or a phone push (ADR 0187). */
+export function notification(item: InboxItem): { title: string; body: string } {
+  if (item.kind === "notice") return { title: item.title, body: item.detail ?? "" };
+  const chat = item.chat.title ? `, ${item.chat.title}` : "";
+  const where = `${item.workspace.name} (${item.workspace.projectName}${chat})`;
+  switch (item.kind) {
+    case "question":
+      return { title: `Question from ${where}`, body: item.question.question };
+    case "approval":
+      return { title: `${where} asks for approval`, body: item.approval.title };
+    case "dialog":
+      return {
+        title: `${where} asks`,
+        body: item.dialog.title ?? item.dialog.message ?? "An extension dialog is open",
+      };
+    case "failed":
+      return { title: `Agent failed in ${where}`, body: item.error.split("\n")[0] ?? "" };
+    case "finished":
+      return { title: `${where} is done`, body: "The agent finished and waits for you." };
+  }
+}
+
+/** Where an item leads: the link of a notice, else its chat, `#/workspaces/<workspace>/chats/<chat>`. */
+export const itemHref = (item: InboxItem): string =>
+  item.kind === "notice" ? item.href : `#/workspaces/${item.workspace.id}/chats/${item.chat.id}`;
+
+const pushKey = Type.String({ minLength: 1, maxLength: 512 });
+
+/** A browser's push subscription (ADR 0187), as `PushSubscription.toJSON()` gives it. */
+export const PushSubscriptionRequest = Type.Object({
+  // A whole https URL: a host of letters, digits, dots, and dashes, an optional port, then an optional path.
+  endpoint: Type.String({
+    pattern: "^https://[A-Za-z0-9.-]+(:[0-9]{1,5})?(/[^\\s]*)?$",
+    maxLength: 2_048,
+  }),
+  keys: Type.Object({ p256dh: pushKey, auth: pushKey }),
+});
+export type PushSubscriptionRequest = Static<typeof PushSubscriptionRequest>;
+
+export const PushUnsubscribeRequest = Type.Object(
+  { endpoint: Type.String({ minLength: 1, maxLength: 2_048 }) },
+  { additionalProperties: false },
+);
+export type PushUnsubscribeRequest = Static<typeof PushUnsubscribeRequest>;
+
+/** A desktop page reports its focus; while one has focus, no push goes out (ADR 0187). */
+export const PushFocusRequest = Type.Object(
+  { page: Type.String({ minLength: 1, maxLength: 64 }), focused: Type.Boolean() },
+  { additionalProperties: false },
+);
+export type PushFocusRequest = Static<typeof PushFocusRequest>;
+
+/** All a push carries (ADR 0187). `badge`: the Home count. */
+export interface PushPayload {
+  title: string;
+  body: string;
+  href: string;
+  tag: string;
+  badge: number;
+}
+
 /** What spore-bridge's `check` and `run_action` send to start a run. */
 export const StartBridgeRunRequest = Type.Object(
   { action: Type.String({ pattern: "^[a-z0-9_-]{1,64}$" }) },

@@ -1,12 +1,15 @@
 import { type AgentsWeb, AgentsWebKey } from "@pi-spore/mod-agents/web";
-import { useApi, type WebModule } from "@pi-spore/module-api";
-import type {
-  Approval,
-  InboxChat,
-  InboxItem,
-  InboxWorkspace,
-  Job,
-  RunningItem,
+import { type ApiClient, useApi, type WebModule } from "@pi-spore/module-api";
+import {
+  type Approval,
+  type InboxChat,
+  type InboxItem,
+  type InboxWorkspace,
+  itemHref,
+  itemKey,
+  type Job,
+  notification,
+  type RunningItem,
 } from "@pi-spore/shared";
 import {
   Button,
@@ -22,15 +25,16 @@ import {
   usePhone,
 } from "@pi-spore/ui";
 import { Bell, CheckCheck, House } from "lucide-react";
-import { type ComponentType, type ReactNode, useMemo, useState, useSyncExternalStore } from "react";
 import {
-  chatAsks,
-  chatWaits,
-  createInboxStore,
-  type InboxStore,
-  itemKey,
-  notification,
-} from "./inbox-store.js";
+  type ComponentType,
+  type ReactNode,
+  useEffect,
+  useMemo,
+  useState,
+  useSyncExternalStore,
+} from "react";
+import { chatAsks, chatWaits, createInboxStore, type InboxStore } from "./inbox-store.js";
+import { BlockedChip, PhonePushButton } from "./phone-push.js";
 import { QuestionCard } from "./question-card.js";
 import { type ApprovalViewProps, AttentionWebKey } from "./web-contract.js";
 
@@ -79,10 +83,6 @@ const chatHref = (workspace: InboxWorkspace, chat: InboxChat) =>
   `#/workspaces/${workspace.id}/chats/${chat.id}`;
 
 const DESKTOP_QUERY = "(hover: hover) and (pointer: fine)";
-
-/** Where an item leads: the link of a notice, else its chat. */
-const itemHref = (item: InboxItem) =>
-  item.kind === "notice" ? item.href : chatHref(item.workspace, item.chat);
 
 const TONES = {
   question: "warn",
@@ -390,12 +390,7 @@ function NotificationButton() {
   const [permission, setPermission] = useState(supported ? Notification.permission : "denied");
   if (phone || !supported) return null;
   if (permission === "granted") return <Chip tone="ok">Desktop notifications on</Chip>;
-  if (permission === "denied")
-    return (
-      <Chip title="Allow notifications for this site in the browser settings">
-        Notifications blocked
-      </Chip>
-    );
+  if (permission === "denied") return <BlockedChip />;
   return (
     <Button size="sm" onClick={() => void Notification.requestPermission().then(setPermission)}>
       <Bell />
@@ -404,14 +399,30 @@ function NotificationButton() {
   );
 }
 
+/**
+ * A desktop page with focus shows a toast for a new item, so the server sends no push while one has
+ * focus (ADR 0187). The server keeps a report for 60 seconds, so a closed tab stops counting itself.
+ */
+function reportFocus(api: ApiClient, page: string, focused: boolean): void {
+  api.send("POST", "attention/push/focus", { page, focused }).catch(() => {});
+}
+
+/** How often a focused desktop page says so again, well inside the 60 seconds the server keeps it. */
+const FOCUS_MS = 30_000;
+
 function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
   return function HomePage() {
     const inbox = useSyncExternalStore(store.subscribe, store.get);
     const [error, setError] = useState<string | undefined>();
+    useEffect(() => {
+      // The badge on the app's icon counts what Home holds, so opening Home clears it (ADR 0187).
+      navigator.clearAppBadge?.().catch(() => {});
+    }, []);
     return (
       <Page>
         <PageHeader title="Home">
           <NotificationButton />
+          <PhonePushButton />
         </PageHeader>
         {error && (
           <Notice tone="fail">
@@ -534,5 +545,14 @@ export const attentionWeb: WebModule = {
       },
       component: makeHomePage(store, DialogCard),
     });
+    if (window.matchMedia(DESKTOP_QUERY).matches) {
+      const page = crypto.randomUUID();
+      if (document.hasFocus()) reportFocus(host.api, page, true);
+      window.addEventListener("focus", () => reportFocus(host.api, page, true));
+      window.addEventListener("blur", () => reportFocus(host.api, page, false));
+      setInterval(() => {
+        if (document.hasFocus()) reportFocus(host.api, page, true);
+      }, FOCUS_MS);
+    }
   },
 };
