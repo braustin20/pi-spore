@@ -386,6 +386,65 @@ describe("the agent graph canvas", () => {
     expect(pod("T7")?.getAttribute("href")).toBe("#/workspaces/W5/chats/S5");
   });
 
+  it("says approved on an approved review step, with an ok ring", async () => {
+    const { scope } = await render([
+      {
+        ...workspaceTree,
+        groups: [
+          group("PR8", "W2", [
+            step("R8", {
+              kind: "review",
+              stage: "review",
+              round: 1,
+              outcome: "approved",
+              agent: agent("S8", "W2", { role: "reviewer", status: "idle" }),
+            }),
+          ]),
+        ],
+      },
+    ]);
+    const pod = scope.querySelector('.react-flow__node[data-id="step:R8"] [data-pod]');
+
+    expect(pod?.querySelector(".ag-meta")?.textContent).toBe("approved · sonnet 5.5");
+    expect(pod?.classList).toContain("o-ok");
+  });
+
+  it("counts a revising review step's findings in its meta, with a warn ring", async () => {
+    const { scope } = await render([
+      {
+        ...workspaceTree,
+        groups: [
+          group("PR9", "W2", [
+            step("R9", {
+              kind: "review",
+              stage: "review",
+              round: 1,
+              outcome: "revise",
+              findings: 2,
+              agent: agent("S9", "W2", { role: "reviewer", status: "idle" }),
+            }),
+            step("R10", {
+              kind: "review",
+              stage: "review",
+              round: 2,
+              outcome: "revise",
+              findings: 1,
+              agent: agent("S10", "W2", { role: "reviewer", status: "idle" }),
+            }),
+          ]),
+        ],
+      },
+    ]);
+    const meta = (id: string) =>
+      scope.querySelector(`.react-flow__node[data-id="step:${id}"] .ag-meta`)?.textContent;
+
+    expect(meta("R9")).toBe("revise · 2 findings · sonnet 5.5");
+    expect(meta("R10")).toBe("revise · 1 finding · sonnet 5.5");
+    expect(
+      scope.querySelector('.react-flow__node[data-id="step:R9"] [data-pod]')?.classList,
+    ).toContain("o-warn");
+  });
+
   it("names a gates step's round, like a review step's", async () => {
     const gates: GraphTree = {
       ...workspaceTree,
