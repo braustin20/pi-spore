@@ -2,21 +2,14 @@
 // Push, and only when the app runs from the Home Screen, so this button is for that one case: a
 // desktop browser keeps the plain permission button in `web.tsx`.
 import { useApi } from "@pi-spore/module-api";
-import { parse } from "@pi-spore/shared";
+import { PushSubscriptionRequest, parse } from "@pi-spore/shared";
 import { Button, Chip, usePhone } from "@pi-spore/ui";
 import { Bell } from "lucide-react";
 import { useEffect, useState } from "react";
-import Type, { type Static } from "typebox";
+import Type from "typebox";
 
 /** The manifest's `display` is `standalone`, so this is true only in a Home Screen web app. */
 const STANDALONE_QUERY = "(display-mode: standalone)";
-
-/** What one device gives the server, as `PushSubscription.toJSON()` reports it (loosely typed). */
-const PushSubscriptionBody = Type.Object({
-  endpoint: Type.String({ minLength: 1, maxLength: 2_048 }),
-  keys: Type.Object({ p256dh: Type.String({ minLength: 1 }), auth: Type.String({ minLength: 1 }) }),
-});
-type PushSubscriptionBody = Static<typeof PushSubscriptionBody>;
 
 /** The VAPID public key, from `GET attention/push/key`. */
 const PushKey = Type.Object({ publicKey: Type.String({ minLength: 1, maxLength: 512 }) });
@@ -35,10 +28,14 @@ function isPushCapable(): boolean {
   return "serviceWorker" in navigator && "PushManager" in window && "Notification" in window;
 }
 
-/** The subscription to send the server. A phone that gives no keys cannot be pushed. */
-function bodyOf(subscription: PushSubscription): PushSubscriptionBody {
+/**
+ * The subscription to send the server, checked against the server's own request schema.
+ * `PushSubscription.toJSON()` types every field as optional, and a phone that gives no keys cannot
+ * be pushed.
+ */
+function bodyOf(subscription: PushSubscription): PushSubscriptionRequest {
   const { endpoint, keys } = subscription.toJSON();
-  return parse(PushSubscriptionBody, { endpoint, keys }, "push subscription");
+  return parse(PushSubscriptionRequest, { endpoint, keys }, "push subscription");
 }
 
 async function currentSubscription(): Promise<PushSubscription | null> {
@@ -90,7 +87,7 @@ export function PhonePushButton() {
         }
         setState({ phase: "on" });
         // A phone keeps its subscription across a server restart. Sending it again is idempotent, so
-        // this gives the server back a row it lost; nothing the user sees depends on it.
+        // this gives the server back a row it lost.
         void api.send("POST", "attention/push/subscriptions", bodyOf(subscription)).catch(() => {});
       })
       .catch((caught: unknown) => {

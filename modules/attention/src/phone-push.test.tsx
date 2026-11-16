@@ -23,14 +23,14 @@ interface SubscribeOptions {
 
 interface FakeSubscription {
   endpoint: string;
-  toJSON(): { endpoint: string; keys: typeof KEYS };
+  toJSON(): { endpoint: string; keys: Record<string, string> };
   unsubscribe(): Promise<boolean>;
 }
 
-function fakeSubscription(): FakeSubscription {
+function fakeSubscription(keys: Record<string, string> = KEYS): FakeSubscription {
   return {
     endpoint: ENDPOINT,
-    toJSON: () => ({ endpoint: ENDPOINT, keys: KEYS }),
+    toJSON: () => ({ endpoint: ENDPOINT, keys }),
     unsubscribe: vi.fn(async () => true),
   };
 }
@@ -42,6 +42,7 @@ function stubPhone({
   permission = "default",
   grant = permission,
   subscription,
+  subscribeKeys,
   subscribeFails = false,
 }: {
   phone?: boolean;
@@ -51,6 +52,8 @@ function stubPhone({
   /** What the tap on Turn on gets. */
   grant?: NotificationPermission;
   subscription?: FakeSubscription;
+  /** What the phone's new subscription reports as its keys. */
+  subscribeKeys?: Record<string, string>;
   subscribeFails?: boolean;
 } = {}) {
   /** The order of the platform calls, to show permission came from the tap alone. */
@@ -58,7 +61,7 @@ function stubPhone({
   const subscribe = vi.fn(async (_options: SubscribeOptions) => {
     order.push("subscribe");
     if (subscribeFails) throw new Error("the phone refused the subscription");
-    return fakeSubscription();
+    return fakeSubscription(subscribeKeys);
   });
   const getSubscription = vi.fn(async () => subscription ?? null);
   const registration = { pushManager: { getSubscription, subscribe } };
@@ -212,6 +215,17 @@ describe("the phone push button", () => {
       endpoint: ENDPOINT,
       keys: KEYS,
     });
+  });
+
+  it("shows an error text when the phone gives a subscription with no keys", async () => {
+    const { container, click, send } = await renderButton(
+      stubPhone({ permission: "granted", subscribeKeys: {} }),
+    );
+    await click("Turn on notifications");
+    // A subscription the server would refuse is not push: it must not be sent or claimed as on.
+    expect(send).not.toHaveBeenCalled();
+    expect(textOf(container)).toContain("push subscription");
+    expect(textOf(container)).toContain("Turn on notifications");
   });
 
   it("unsubscribes the phone and deletes the subscription on Turn off", async () => {
