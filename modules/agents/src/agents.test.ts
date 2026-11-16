@@ -850,7 +850,15 @@ describe("agents", () => {
   });
 
   describe("role models (ADR 0181)", () => {
-    type Listed = { roles: { name: string; kind: string; model?: string; fallback?: string }[] };
+    type Listed = {
+      roles: {
+        name: string;
+        kind: string;
+        model?: string;
+        fallback?: string;
+        description?: string;
+      }[];
+    };
     const agentDir = () => join(scratch, "pi-agent");
     const settingsFile = () => join(agentDir(), "settings.json");
     const builtinDir = () => join(scratch, "builtin-agents");
@@ -890,17 +898,102 @@ describe("agents", () => {
       await start(JSON.stringify(original));
       const { roles } = await json<Listed>(await get());
       expect(roles).toEqual([
-        { name: "orchestrator", kind: "role", model: "fake/fake-1" },
-        { name: "planner", kind: "role", fallback: "orchestrator" },
-        { name: "coordinator", kind: "role", fallback: "orchestrator" },
-        { name: "worker", kind: "role" },
-        { name: "reviewer", kind: "role" },
-        { name: "adversarial-reviewer", kind: "role" },
+        {
+          name: "orchestrator",
+          kind: "role",
+          model: "fake/fake-1",
+          description: "The chat that plans a workspace's work and checks it.",
+        },
+        {
+          name: "planner",
+          kind: "role",
+          fallback: "orchestrator",
+          description: "The read-only chat that plans a project and adds its cards.",
+        },
+        {
+          name: "coordinator",
+          kind: "role",
+          fallback: "orchestrator",
+          description: "The chat that runs a run: its lanes, questions, and gates.",
+        },
+        {
+          name: "worker",
+          kind: "role",
+          description: "The agent that writes the code, in a workspace or a pipeline stage.",
+        },
+        {
+          name: "reviewer",
+          kind: "role",
+          description: "Reviews a pipeline stage's change with a verdict and findings.",
+        },
+        {
+          name: "adversarial-reviewer",
+          kind: "role",
+          description: "Looks for what a change breaks.",
+        },
         { name: "acme.tool", kind: "subagent" },
-        { name: "helper", kind: "subagent" },
+        { name: "helper", kind: "subagent", description: "x" },
         { name: "oracle", kind: "subagent", model: "fake/fake-2" },
-        { name: "scout", kind: "subagent" },
+        { name: "scout", kind: "subagent", description: "x" },
       ]);
+    });
+
+    it("describes each entry with one line, from a fixed note or the file's frontmatter", async () => {
+      agentFile(builtinDir(), "scout.md", "name: scout\ndescription: Fast recon");
+      agentFile(builtinDir(), "helper.md", 'name: helper\ndescription: "The package note"');
+      agentFile(builtinDir(), "worker.md", "name: worker\ndescription: A built-in worker note");
+      agentFile(builtinDir(), "block.md", "name: block\ndescription: >");
+      agentFile(builtinDir(), "blank.md", "name: blank\ndescription:");
+      agentFile(agentDir(), "agents/helper.md", "name: helper\ndescription: 'Writes short notes'");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const note = (name: string) => roles.find((role) => role.name === name)?.description;
+      expect(note("scout")).toBe("Fast recon");
+      // The user's file wins over the built-in one, and the quotes go.
+      expect(note("helper")).toBe("Writes short notes");
+      expect(note("block")).toBeUndefined();
+      expect(note("blank")).toBeUndefined();
+      // A name with only an `agentOverrides` entry has no description.
+      expect(note("oracle")).toBeUndefined();
+      // A pi-spore role keeps its own note, even with a pi-subagents file of that name (ADR 0181).
+      expect(note("worker")).not.toBe("A built-in worker note");
+      expect(roles.filter((role) => role.kind === "role" && !role.description)).toEqual([]);
+    });
+
+    it("reads only the last file's description, so a user file clears a built-in one", async () => {
+      agentFile(builtinDir(), "plain.md", "name: plain\ndescription: The package note");
+      agentFile(builtinDir(), "blocked.md", "name: blocked\ndescription: The package note");
+      agentFile(builtinDir(), "blank.md", "name: blank\ndescription: The package note");
+      agentFile(agentDir(), "agents/plain.md", "name: plain");
+      agentFile(agentDir(), "agents/blocked.md", "name: blocked\ndescription: >-");
+      agentFile(agentDir(), "agents/blank.md", "name: blank\ndescription:");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const note = (name: string) => roles.find((role) => role.name === name)?.description;
+      // No description of its own, a block, and an empty value all give none, not the built-in file's note.
+      expect(note("plain")).toBeUndefined();
+      expect(note("blocked")).toBeUndefined();
+      expect(note("blank")).toBeUndefined();
+    });
+
+    it("keeps a quoted description that starts with a block indicator", async () => {
+      agentFile(builtinDir(), "arrow.md", 'name: arrow\ndescription: "> Summarizes changes"');
+      agentFile(agentDir(), "agents/bar.md", "name: bar\ndescription: '| Marks a note'");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const note = (name: string) => roles.find((role) => role.name === name)?.description;
+      expect(note("arrow")).toBe("> Summarizes changes");
+      expect(note("bar")).toBe("| Marks a note");
+    });
+
+    it("describes an agent named like an Object property, not that property", async () => {
+      agentFile(builtinDir(), "__proto__.md", "name: __proto__\ndescription: Reads the chain");
+      agentFile(builtinDir(), "toString.md", "name: toString\ndescription: Prints the object");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const note = (name: string) => roles.find((role) => role.name === name)?.description;
+      expect(note("__proto__")).toBe("Reads the chain");
+      expect(note("toString")).toBe("Prints the object");
     });
 
     it("lists the roles when the settings file does not exist", async () => {

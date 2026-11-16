@@ -1874,14 +1874,20 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   row shows the server's value and source. A failure shows the server's message in the row. After a save of an
   `agents.*` or `server.*` key, the row says "Restart pi-spore to apply". A change to `server.allowedHosts` or
   `server.allowedLogins` asks first ("Change remote access?"), because a wrong value can lock you out. The
-  "Workspace settings" panel stays read-only.
+  "Workspace settings" panel stays read-only. Other web modules add panels between "Global settings" and
+  "Workspace settings" through `SettingsPageKey` (`modules/projects/src/web-contract.ts`), sorted by `order`. The
+  agents module adds "Role models" there: one row per role and subagent with a model picker and Reset, which save
+  at once with `PUT /api/agents/role-models/:name` and show the list it answers (ADR 0181).
 
 - Role models (ADR 0181) live in Pi's own file, not in pi-spore's: `<agentDir>/settings.json` (`PI_CODING_AGENT_DIR`,
   else `~/.pi/agent`), key `subagents.agentOverrides.<name>.model`. pi-subagents reads the same key for its helpers.
   `GET /api/agents/role-models` lists the pi-spore roles (`orchestrator`, `planner`, `coordinator`, `worker`,
   `reviewer`, `adversarial-reviewer`), pi-subagents' built-in agents (the `agents/` folder of the installed package),
   the user's agents (`<agentDir>/agents/**/*.md`), and every name already in `agentOverrides`. Each entry has `name`,
-  `kind` (`role` or `subagent`), `model` when set, and `fallback: "orchestrator"` for `planner` and `coordinator`.
+  `kind` (`role` or `subagent`), `model` when set, and `fallback: "orchestrator"` for `planner` and `coordinator`. Each
+  also has `description`: one line on what the name does. A pi-spore role has a fixed note, even when pi-subagents has
+  an agent of that name. Any other name has the frontmatter `description` of its file, the user's file winning over the
+  built-in one; a name with no file, or with an empty value or an unquoted YAML block (`>`, `|`), has none.
   `PUT /api/agents/role-models/:name` takes `{ model }` or `{ unset: true }` and answers the new list. The model must
   be in `GET /api/agents/models` (422 `unknown_model`); the name must be listed (404 `unknown_role`). It changes only
   that `model` key; unset also removes the name's object when it is left empty. Writes go to `<file>.tmp`, then a

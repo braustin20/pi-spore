@@ -38,7 +38,11 @@ const chat = (id: string, active: boolean): Agent => ({
 function setup() {
   let main: ComponentType<{ workspace: Workspace; chatId?: string }> | undefined;
   let web: AgentsWeb | undefined;
-  const view = { setMain: (pane: typeof main) => (main = pane), setStatus: () => {} };
+  const view = {
+    setMain: (pane: typeof main) => (main = pane),
+    setStatus: () => {},
+    addSection: () => {},
+  };
   agentsWeb.setup({
     provide: (key: unknown, impl: AgentsWeb) => {
       if (key === AgentsWebKey) web = impl;

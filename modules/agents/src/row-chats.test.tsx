@@ -55,7 +55,10 @@ function listPage() {
     },
     addPage: (page: WebPage) => pages.push(page),
   } as unknown as WebHost);
-  agentsWeb.setup({ provide: () => {}, use: () => view } as unknown as WebHost);
+  agentsWeb.setup({
+    provide: () => {},
+    use: () => ({ ...(view as object), addSection: () => {} }),
+  } as unknown as WebHost);
   const page = pages.find((each) => each.path === "/workspaces/:workspaceId/chats/:chatId");
   if (!page) throw new Error("the workspaces module did not add its chat page");
   return page.component;

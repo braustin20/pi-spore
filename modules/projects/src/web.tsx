@@ -30,6 +30,11 @@ import {
 import { FolderGit2, Settings } from "lucide-react";
 import { type ReactNode, type SubmitEvent, useCallback, useEffect, useRef, useState } from "react";
 import Type from "typebox";
+import { SettingsPageKey, type SettingsSection } from "./web-contract.js";
+
+export * from "./web-contract.js";
+
+const sections: SettingsSection[] = [];
 
 const ConfigBody = Type.Object({ config: ProjectConfigView, warnings: Type.Array(Type.String()) });
 const ProjectBody = Type.Object({ project: Project });
@@ -575,6 +580,11 @@ function SettingsPage() {
           </p>
         </div>
       </Panel>
+      {[...sections]
+        .sort((a, b) => a.order - b.order)
+        .map(({ id, component: Section }) => (
+          <Section key={id} />
+        ))}
       <WorkspaceSettingsPanel />
     </Page>
   );
@@ -585,6 +595,13 @@ export const projectsWeb: WebModule = {
   requires: [],
   core: true,
   setup(host) {
+    host.provide(SettingsPageKey, {
+      addSection: (section) => {
+        if (sections.some((existing) => existing.id === section.id))
+          throw new Error(`Settings section "${section.id}" is added twice`);
+        sections.push(section);
+      },
+    });
     host.addPage({
       path: "/projects",
       title: "Projects",

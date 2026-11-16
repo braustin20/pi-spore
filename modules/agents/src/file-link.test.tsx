@@ -42,7 +42,7 @@ describe("links to Markdown files in a message", () => {
       provide: (key: unknown, impl: AgentsWeb) => {
         if (key === AgentsWebKey) web = impl;
       },
-      use: () => ({ setMain: () => {}, setStatus: () => {} }),
+      use: () => ({ setMain: () => {}, setStatus: () => {}, addSection: () => {} }),
     } as unknown as WebHost);
     web?.setFileLink(({ workspaceId, path, children }) => (
       <span data-file-link={`${workspaceId}:${path}`}>{children}</span>

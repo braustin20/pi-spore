@@ -39,7 +39,11 @@ const busy: Agent = { ...idle, status: "busy" };
 
 function mainPane() {
   let main: ComponentType<{ workspace: Workspace; chatId?: string }> | undefined;
-  const view = { setMain: (pane: typeof main) => (main = pane), setStatus: () => {} };
+  const view = {
+    setMain: (pane: typeof main) => (main = pane),
+    setStatus: () => {},
+    addSection: () => {},
+  };
   agentsWeb.setup({ provide: () => {}, use: () => view } as unknown as WebHost);
   if (!main) throw new Error("the agents module did not set a main pane");
   return main;
