@@ -18,6 +18,7 @@ import {
   parseJsonBody,
   RenameChatRequest,
   SetModelRequest,
+  SetRoleModelRequest,
   SetThinkingRequest,
   type Workspace,
 } from "@pi-spore/shared";
@@ -30,8 +31,15 @@ import {
   Deliveries,
 } from "./deliveries.js";
 import { checkPromptImages, imageHeaders, readLinkedImage, servableType } from "./images.js";
-import { agentEnv, readRoleDefaults, resolveResourceArgs, SPORE_EXTENSIONS } from "./launch.js";
+import {
+  agentEnv,
+  findSubagentsRoot,
+  readRoleDefaults,
+  resolveResourceArgs,
+  SPORE_EXTENSIONS,
+} from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
+import { listRoleModels, writeRoleModel } from "./role-models.js";
 import type { PiCommand } from "./rpc.js";
 import { declareAgentSettings } from "./settings.js";
 
@@ -121,6 +129,8 @@ export interface AgentsModuleOptions {
   pi?: PiCommand;
   /** Pi's agent folder, `~/.pi/agent` unless `PI_CODING_AGENT_DIR` says otherwise. */
   agentDir?: string;
+  /** pi-subagents' built-in agent files. Found in the installed package unless set; tests set it (ADR 0181). */
+  builtinAgentsDir?: string;
   /** Package sources agents do not load (ADR 0025). */
   excludeExtensions?: readonly string[];
   maxLive?: number;
@@ -750,6 +760,29 @@ export function createAgentsModule(
       host.routes.get("/models", async (c) =>
         c.json(await withTiers(host.home.root, await agents.availableModels())),
       );
+
+      // Default models of the roles and subagent types, in Pi's own settings file (ADR 0181). Before "/:id" too.
+      const roleModels = async () => ({
+        roles: await listRoleModels(
+          agentDir,
+          options.builtinAgentsDir ??
+            (await findSubagentsRoot(agentDir).then((root) => root && join(root, "agents"))),
+        ),
+      });
+      host.routes.get("/role-models", async (c) => c.json(await roleModels()));
+      host.routes.put("/role-models/:role", async (c) => {
+        const request = parseJsonBody(SetRoleModelRequest, await c.req.text(), "role model");
+        const role = c.req.param("role");
+        if (!(await roleModels()).roles.some((entry) => entry.name === role))
+          throw new ApiError(404, "unknown_role", `Unknown role: ${role}`);
+        if ("model" in request) {
+          const models = await agents.availableModels();
+          const listed = models.some((model) => `${model.provider}/${model.id}` === request.model);
+          if (!listed) throw new ApiError(422, "unknown_model", `Unknown model: ${request.model}`);
+        }
+        await writeRoleModel(agentDir, role, "model" in request ? request.model : undefined);
+        return c.json(await roleModels());
+      });
 
       host.routes.get("/:id", (c) => c.json({ agent: agents.view(c.req.param("id")) }));
 
