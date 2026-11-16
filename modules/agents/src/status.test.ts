@@ -112,8 +112,11 @@ describe("workspaceStatuses", () => {
     expect(lines([worker, stage], []).text).toBe("Working: Implement");
   });
 
-  it("keeps a busy or failed chat's own status", () => {
-    expect(lines([chat("a1", "busy")], [["a1", "dialog"]]).text).toBe("Working");
+  it("keeps a busy or failed chat's own status, but a busy chat's open dialog first", () => {
+    expect(lines([chat("a1", "busy")], [["a1", "question"]]).text).toBe("Working");
+    expect(lines([chat("a1", "busy")], [["a1", "approval"]]).text).toBe("Working");
+    // A dialog blocks the chat mid-turn, so it stays busy while it waits.
+    expect(lines([chat("a1", "busy")], [["a1", "dialog"]]).text).toBe("Waiting for your answer");
     expect(lines([chat("a1", "failed")], [["a1", "question"]]).text).toBe("Agent failed");
   });
 

@@ -1,3 +1,4 @@
+import { type UserWait, waitShows } from "@pi-spore/mod-agents/web";
 import {
   type GraphAgent,
   type GraphGroup,
@@ -10,8 +11,14 @@ import {
 import { type Edge, type Node, type NodeHandle, Position } from "@xyflow/react";
 import type { HelperLife } from "./helpers.js";
 
-/** How a pod looks: working, idle (done or an idle agent), not started, or failed (ADR 0176, the approved mockup). */
-export type PodState = "work" | "idle" | "none" | "fail";
+/**
+ * How a pod looks: working, idle (done or an idle agent), not started, failed (ADR 0176, the approved mockup), or
+ * waiting for the user's answer.
+ */
+export type PodState = "work" | "idle" | "none" | "fail" | "wait";
+
+/** The chats that wait for the user, by agent id. */
+export type Waits = ReadonlyMap<string, UserWait>;
 
 /** The thread and root colors: coordinator `--accent`, a chat `--accent-strong`, else muted. */
 export type Tone = "coord" | "chat" | "muted";
@@ -60,15 +67,17 @@ export function shortModel(ref: string | undefined): string {
 
 /**
  * From the step's own state, never its agent's status: a task step and its fix steps share one worker agent, so
- * during a fix the done task step's agent is busy too.
+ * during a fix the done task step's agent is busy too. Only a running step shows its agent's wait.
  */
-export function stepState(step: GraphStep): PodState {
+export function stepState(step: GraphStep, wait: UserWait | undefined): PodState {
   if (step.state === "failed") return "fail";
   if (step.state === "waiting") return "none";
-  return step.state === "done" ? "idle" : "work";
+  if (step.state === "done") return "idle";
+  return step.agent && waitShows(step.agent.status, wait) ? "wait" : "work";
 }
 
-export function rootState(agent: GraphAgent): PodState {
+export function rootState(agent: GraphAgent, wait: UserWait | undefined): PodState {
+  if (waitShows(agent.status, wait)) return "wait";
   if (agent.status === "busy" || agent.status === "starting") return "work";
   return agent.status === "failed" ? "fail" : "idle";
 }
@@ -97,7 +106,14 @@ export const rootHandles = (root: { x: number; y: number; r: number }) => [
   handle("root", "source", root.x, root.y + root.r),
 ];
 
-function layoutTree(tree: GraphTree, helpers: HelpersByNode, phone: boolean, x: number, y: number) {
+function layoutTree(
+  tree: GraphTree,
+  helpers: HelpersByNode,
+  waits: Waits,
+  phone: boolean,
+  x: number,
+  y: number,
+) {
   const id = treeNodeId(tree);
   const rows = (nodeId: string) => helpers.get(nodeId)?.length ?? 0;
   const tone: Tone = tree.kind === "run" ? "coord" : "chat";
@@ -185,7 +201,9 @@ function layoutTree(tree: GraphTree, helpers: HelpersByNode, phone: boolean, x: 
       tree,
       tone,
       root: { x: rx, y: ry, r: rootR },
-      live: rootState(tree.root) === "work" || tree.groups.some((group) => group.live),
+      live:
+        rootState(tree.root, waits.get(tree.root.agentId)) === "work" ||
+        tree.groups.some((group) => group.live),
     },
     handles: rootHandles({ x: rx, y: ry, r: rootR }),
     ...sized(width, height),
@@ -201,14 +219,15 @@ export function layoutGraph(
   trees: readonly GraphTree[],
   helpers: HelpersByNode,
   phone: boolean,
+  waits: Waits = new Map(),
 ): { nodes: GraphNode[]; edges: ThreadEdge[] } {
   const nodes: GraphNode[] = [];
   const edges: ThreadEdge[] = [];
   let offset = 0;
   for (const tree of trees) {
     const placed = phone
-      ? layoutTree(tree, helpers, true, 0, offset)
-      : layoutTree(tree, helpers, false, offset, 0);
+      ? layoutTree(tree, helpers, waits, true, 0, offset)
+      : layoutTree(tree, helpers, waits, false, offset, 0);
     nodes.push(...placed.nodes);
     edges.push(...placed.edges);
     offset += (phone ? placed.height : placed.width) + TREE_GAP;

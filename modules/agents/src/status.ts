@@ -46,8 +46,18 @@ const BY_STATUS: Record<Agent["status"], StatusText> = {
 };
 
 /**
+ * Whether a chat's wait for the user shows, on the workspace list and the agent graph. A dialog blocks the chat
+ * mid-turn, so it shows also while the chat is busy. A question or approval shows once the chat is idle or stopped; a
+ * busy chat with an old one still works.
+ */
+export function waitShows(status: Agent["status"], wait: UserWait | undefined): boolean {
+  if (wait === "dialog") return status !== "failed";
+  return wait !== undefined && (status === "idle" || status === "stopped");
+}
+
+/**
  * The list column's status line for a workspace, from its worker agent if it has one. A chat that waits for the user
- * says so once it is idle or stopped. `workspaceLabel` is what the workspace itself works for, such as a running
+ * says so when `waitShows`. `workspaceLabel` is what the workspace itself works for, such as a running
  * pipeline run: it shows as working where the chat would only read Idle, Agent stopped, or No agent yet, and a busy
  * chat, a helper, a wait for the user, or the chat's own label all beat it.
  */
@@ -63,7 +73,7 @@ export function workspaceStatus(
     return workspaceLabel
       ? { text: `Working (${workspaceLabel})`, tone: "run" }
       : { text: "No agent yet", tone: "neutral" };
-  if (wait && (agent.status === "idle" || agent.status === "stopped")) {
+  if (waitShows(agent.status, wait)) {
     return { text: "Waiting for your answer", tone: "warn" };
   }
   if (agent.status === "idle" && agent.helpersRunning) {

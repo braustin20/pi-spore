@@ -1251,11 +1251,14 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   `QuestionCard` and approval views. An answer is the same call from both places, and the inbox update removes the
   item from both. Failures, finished work, and dialogs stay as they were (dialogs show in the chat already). An older
   worker chat, a side chat, or a workspace that is not active shows no panel; their questions are closed (ADR 0033).
-- The workspace list shows "Waiting for your answer" (tone `warn`) for a workspace whose active worker chat has an
-  open question, approval, or dialog and is idle or stopped. The agents web interface has
-  `AgentsWebKey.setUserWaits(hook)`: a React hook that returns, per chat id, why that chat waits for the user
-  (`question`, `approval`, or `dialog`). The attention web module sets it from the same `attention:inbox` store, with
-  `chatWaits(inbox)`. With no hook set, the list looks as before.
+- The workspace list shows "Waiting for your answer" (tone `warn`) for a workspace whose active worker chat waits
+  for the user. One rule, `waitShows(status, wait)` in the agents module's `status.ts`, decides when a wait shows,
+  for the list and the agent graph: an open dialog always, also while the chat is busy, since the dialog blocks it;
+  an open question or approval only while the chat is idle or stopped. A failed chat stays failed. The agents web
+  interface has `AgentsWebKey.setUserWaits(hook)`: a React hook that returns, per chat id, why that chat waits for
+  the user (`question`, `approval`, or `dialog`). The attention web module sets it from the same `attention:inbox`
+  store, with `chatWaits(inbox)`. `AgentsWebKey.useUserWaits` calls the hook set now, so the agent graph reads the
+  same waits with no second subscription. With no hook set, the list looks as before.
 - **Home sources** (ADR 0155): a module adds items to Home with `HomeItemsKey.register(name, source)`, where
   `source()` returns the current `HomeNotice[]` (`id` stable and unique within the source, `at`, `title`, `detail?`,
   `href`). Attention keeps no state for them. It reads every source each time it builds the inbox, so an item shows
@@ -1633,9 +1636,11 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     Flow's.
   - Look (the approved mockup): roots `--accent` (coordinator) or `--accent-strong` (chat); a step pod takes its
     look from the step's own `state`, never its agent's status, since a task step and its fix steps share one
-    worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A fix
-    step reads `fix r<round>`. In a live group, the threads from the root to the running step take the root's
-    color and carry SVG drops. Reduced motion: no drops, no breathing.
+    worker: working `--run` and breathing, done idle gray, waiting an outline, failed `--fail` with an X. A root, or
+    a running step, whose chat waits for the user (`waitShows`, read through `AgentsWebKey.useUserWaits`) is
+    `--warn` with a steady glow and reads "waiting for your answer". A fix step reads `fix r<round>`. In a live
+    group, the threads from the root to the running step take the root's color and carry SVG drops. Reduced motion:
+    no drops, no breathing.
   - Helpers (`helpers.tsx`): small spores inside their parent pod, so they move with it and a click opens the
     parent's chat. Hover shows the current tool; a touch screen shows it inline. `useHelpers` keeps their life on
     the client: a helper new after the first snapshot buds (600 ms), an ended one or one that left the list pops
@@ -2071,8 +2076,8 @@ fill it through the workspaces web interface `WorkspaceViewKey`:
   <title>" (tone `run`), or "Waiting for a free agent slot" (tone `warn`), since the worker chat of a pipeline or a
   run lane sits stopped while stages work. A stage that works beats one that waits. An idle, stopped, or failed
   stage agent never shows. Otherwise the status line follows the active orchestrator chat. When that chat is idle or
-  stopped and waits for the user (`AgentsWebKey.setUserWaits`, section 11b), the line says "Waiting for your
-  answer". Otherwise an idle chat with a running helper (`helpersRunning`, section 2) says "Working (helper
+  stopped and waits for the user, or has a dialog open while busy (`waitShows`, section 11b), the line says "Waiting
+  for your answer". Otherwise an idle chat with a running helper (`helpersRunning`, section 2) says "Working (helper
   running)", tone `run`. An idle or stopped chat with its own `workingFor` says "Working (<label>)". A busy chat
   whose router waits for a local model shows its `routerStatus` ("Waiting for <model>", section 10), tone `warn`.
   Last, where the line would say "Idle", "Agent stopped", or "No agent yet", the workspace's own working label from
