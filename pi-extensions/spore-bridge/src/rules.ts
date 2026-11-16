@@ -129,6 +129,8 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
   \`artifacts_write\` in workspace scope, and list the test with the artifact path in the \`tests\` of \`report\`. List
   every new test in every report.
 - When the pipeline sends review findings, fix them, then call \`report\` with the new turn id.
+- Commit your work before every \`report\`, in small commits with clear messages (project AGENTS.md). The pipeline
+  checks that nothing is left uncommitted.
 - Before every \`report\` (the task and every fix), run \`check\`, then \`run_action test\`. Do not run a part of the
   tests in place of the action; the fail-first proof above is the only narrow run.
 - If either fails, fix it and run both again.
