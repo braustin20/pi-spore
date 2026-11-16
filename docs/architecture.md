@@ -2158,14 +2158,17 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - The CLI (`pi-spore`) reads `~/.pi-spore/token` and calls the API. Agents use spore-bridge instead. Its server
   address is `PI_SPORE_URL`, else `http://127.0.0.1:$PI_SPORE_PORT`, else `http://127.0.0.1:7420`.
 - The CLI also runs the server (ADR 0184). These commands run local programs through `CliDeps.system.run`, with argv
-  and no shell; tests fake it.
+  and no shell; tests fake it. `CliDeps.system.capture` is the same with stdout and stderr captured into one string,
+  for the program whose output must not reach the terminal.
   - `pi-spore start [--open]`: the server in the foreground, with the CLI's Node.
   - `pi-spore service install [--yes]` writes `~/.config/systemd/user/pi-spore.service` after it shows the unit and
     the user says yes, then runs `systemctl --user daemon-reload` and `enable --now pi-spore`. The unit has the
     absolute path of a Node 26 (`.nvmrc`), a PATH with the folders of that Node, `pi` (required), `git`, `gh`, and
     `unity`, the `PI_SPORE_HOME` and `PI_SPORE_PORT` of the shell, and an optional
     `EnvironmentFile=-%h/.config/pi-spore/service.env`. `service uninstall [--yes]` disables and removes it.
-  - `pi-spore open` (`xdg-open`), `pi-spore logs [-f]` (`journalctl --user -u pi-spore`).
+  - `pi-spore open` (`xdg-open`), `pi-spore logs [-f]` (`journalctl --user -u pi-spore`). The opener runs through
+    `capture`: its output is dropped on success and the last five non-empty lines go in the error when it fails,
+    because desktop openers such as KDE's log noise that reads like a pi-spore failure.
   - `pi-spore restart` and `pi-spore rebuild [--install]`: before `systemctl --user restart pi-spore`, they read
     `GET /api/agents` and ask y/N when a chat is busy, starting, or has helpers running. `rebuild` runs `npm ci`
     (only with `--install`) and `npm run build` first, with the npm of the unit's Node; a failed build stops before
