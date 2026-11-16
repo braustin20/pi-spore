@@ -4,15 +4,19 @@ import { ApiError } from "@pi-spore/module-api";
 import type { RoleModel } from "@pi-spore/shared";
 import { piSettingsPath, readPiSettings } from "./launch.js";
 
-/** The roles pi-spore starts agents for, in the order the list shows them (ADR 0181). */
-const SPORE_ROLES: readonly string[] = [
-  "orchestrator",
-  "planner",
-  "coordinator",
-  "worker",
-  "reviewer",
-  "adversarial-reviewer",
-];
+/**
+ * The roles pi-spore starts agents for, in the order the list shows them, each with the one line the list says about
+ * it (ADR 0181, R3.1, R6.3, R7.1). These win over an agent file of the same name.
+ */
+const ROLE_NOTES: Readonly<Record<string, string>> = {
+  orchestrator: "The chat that plans a workspace's work and checks it.",
+  planner: "The read-only chat that plans a project and adds its cards.",
+  coordinator: "The chat that runs a run: its lanes, questions, and gates.",
+  worker: "The agent that writes the code, in a workspace or a pipeline stage.",
+  reviewer: "Reviews a pipeline stage's change with a verdict and findings.",
+  "adversarial-reviewer": "Looks for what a change breaks.",
+};
+const SPORE_ROLES: readonly string[] = Object.keys(ROLE_NOTES);
 /** Roles with no model of their own run on the orchestrator's (ADR 0175, ADR 0181). */
 export const FALLBACK_ROLES: ReadonlySet<string> = new Set(["planner", "coordinator"]);
 
@@ -24,11 +28,15 @@ const notJson = (error: Error) => new ApiError(409, "pi_settings_not_json", erro
 const shapeError = (path: string, message: string) =>
   new ApiError(409, "pi_settings_shape", `${path}: ${message}`);
 
+/** An agent file: its name, and its one-line description when the file has one. */
+type AgentFile = { name: string; description?: string };
+
 /**
- * The name of an agent file from its YAML frontmatter `name` and `package`. No YAML parser: only these lines matter.
- * Without a closing `---` there is no frontmatter, and pi-subagents does not find the agent either.
+ * An agent file's name and description from its YAML frontmatter (`name`, `package`, `description`). No YAML
+ * parser: only these lines matter. Without a closing `---` there is no frontmatter, and pi-subagents does not find
+ * the agent either. A `description` that is empty or a block (`>`, `|`) has no single line to show.
  */
-function frontmatterName(text: string): string | undefined {
+function frontmatter(text: string): AgentFile | undefined {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
   if (lines[0]?.trim() !== "---") return undefined;
   const fields: Record<string, string> = {};
@@ -38,15 +46,20 @@ function frontmatterName(text: string): string | undefined {
       closed = true;
       break;
     }
-    const match = /^(name|package):\s*(.*?)\s*$/.exec(line);
+    const match = /^(name|package|description):\s*(.*?)\s*$/.exec(line);
     if (match) fields[match[1] as string] = (match[2] as string).replace(/^(["'])(.*)\1$/, "$2");
   }
   if (!closed || !fields.name) return undefined;
-  return fields.package ? `${fields.package}.${fields.name}` : fields.name;
+  const file: AgentFile = {
+    name: fields.package ? `${fields.package}.${fields.name}` : fields.name,
+  };
+  const description = fields.description;
+  if (description && !/^[|>]/.test(description)) file.description = description;
+  return file;
 }
 
-/** The names of the agent files in a folder. A missing folder has none. A file with no `name` is skipped. */
-async function agentNames(dir: string, recursive: boolean): Promise<string[]> {
+/** The agent files in a folder. A missing folder has none. A file with no `name` is skipped. */
+async function agentFiles(dir: string, recursive: boolean): Promise<AgentFile[]> {
   let entries: string[];
   try {
     entries = await readdir(dir, { recursive });
@@ -54,7 +67,7 @@ async function agentNames(dir: string, recursive: boolean): Promise<string[]> {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return [];
     throw error;
   }
-  const names: string[] = [];
+  const files: AgentFile[] = [];
   for (const entry of entries) {
     if (!entry.endsWith(".md") || entry.endsWith(".chain.md")) continue;
     let text: string;
@@ -65,10 +78,10 @@ async function agentNames(dir: string, recursive: boolean): Promise<string[]> {
       if ((error as NodeJS.ErrnoException).code === "EISDIR") continue;
       throw error;
     }
-    const name = frontmatterName(text);
-    if (name) names.push(name);
+    const file = frontmatter(text);
+    if (file) files.push(file);
   }
-  return names;
+  return files;
 }
 
 /**
@@ -96,9 +109,9 @@ async function loadSettings(agentDir: string) {
 }
 
 /**
- * Every name that can have a default model, with its model (ADR 0181): the pi-spore roles, pi-subagents' built-in
- * agents, the user's agents, and every name already in `agentOverrides`. Project agents and other packages' agents
- * are not listed.
+ * Every name that can have a default model, with its model and a one-line description (ADR 0181): the pi-spore
+ * roles, pi-subagents' built-in agents, the user's agents, and every name already in `agentOverrides`. Project
+ * agents and other packages' agents are not listed.
  */
 export async function listRoleModels(
   agentDir: string,
@@ -106,11 +119,16 @@ export async function listRoleModels(
 ): Promise<RoleModel[]> {
   const { overrides = {} } = await loadSettings(agentDir);
   const others = new Set<string>(Object.keys(overrides));
+  const notes = new Map<string, string>();
   const found = [
-    ...(builtinAgentsDir ? await agentNames(builtinAgentsDir, false) : []),
-    ...(await agentNames(join(agentDir, "agents"), true)),
+    ...(builtinAgentsDir ? await agentFiles(builtinAgentsDir, false) : []),
+    ...(await agentFiles(join(agentDir, "agents"), true)),
   ];
-  for (const name of found) others.add(name);
+  for (const file of found) {
+    others.add(file.name);
+    // The user's files come last, so their description wins over a built-in file of the same name.
+    if (file.description) notes.set(file.name, file.description);
+  }
   for (const role of SPORE_ROLES) others.delete(role);
 
   const names = [...SPORE_ROLES, ...[...others].sort()];
@@ -118,6 +136,8 @@ export async function listRoleModels(
     const override = overrides[name];
     const model = isObject(override) ? override.model : undefined;
     const entry: RoleModel = { name, kind: SPORE_ROLES.includes(name) ? "role" : "subagent" };
+    const note = ROLE_NOTES[name] ?? notes.get(name);
+    if (note) entry.description = note;
     if (typeof model === "string") entry.model = model;
     if (FALLBACK_ROLES.has(name)) entry.fallback = "orchestrator";
     return entry;

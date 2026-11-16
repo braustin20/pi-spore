@@ -86,6 +86,8 @@ export type ModelRef = Static<typeof ModelRef>;
 export const RoleModel = Type.Object({
   name: Type.String(),
   kind: Type.Union([Type.Literal("role"), Type.Literal("subagent")]),
+  /** One line on what the role or agent does, for the Settings page. Missing when none is known (ADR 0181). */
+  description: Type.Optional(Type.String()),
   /** The raw `model` of the override. Missing when none is set. */
   model: Type.Optional(Type.String()),
   /** The role whose model this one runs on when it has none (ADR 0175, ADR 0181). */
