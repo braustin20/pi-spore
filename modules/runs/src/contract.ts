@@ -4,6 +4,7 @@ import type {
   Approval,
   AskCoordinatorRequest,
   CreateRunRequest,
+  DeclineLaneRequest,
   Lane,
   MergeLaneRequest,
   OpenRunPrRequest,
@@ -16,8 +17,8 @@ import type {
 } from "@pi-spore/shared";
 
 /**
- * Runs for the bridge (R7). `startLane`, `reviseLane`, and `mergeLane` answer 403 `not_coordinator` when the caller's workspace is not
- * a run workspace.
+ * Runs for the bridge (R7). `startLane`, `reviseLane`, `mergeLane`, and `declineLane` answer 403 `not_coordinator`
+ * when the caller's workspace is not a run workspace.
  */
 export interface Runs {
   /** Creates a run, the same as POST /api/runs. The model is the coordinator chat's. */
@@ -41,6 +42,14 @@ export interface Runs {
    * `lane_not_mergeable` for a lane that is not `passed`.
    */
   mergeLane(caller: BridgeCaller, request: MergeLaneRequest): Promise<Lane>;
+  /**
+   * Drops a lane of the caller's run that will not be merged, with the reason as its message (ADR 0183). Only a
+   * `waiting`, `passed`, or `failed` lane: anything else answers 409 `lane_not_declinable` naming the state. A
+   * `waiting` lane's lane job is cancelled, and lanes that waited on the declined lane wake. It merges and deletes
+   * nothing: the lane's workspace and branch stay. 404 `lane_not_found` for a lane outside the run; 409
+   * `run_cancelled` for a cancelled run.
+   */
+  declineLane(caller: BridgeCaller, request: DeclineLaneRequest): Lane;
   /**
    * Files a question of the caller's lane for its run's coordinator and delivers it to the coordinator chat in the
    * same transaction (R7.5, ADR 0008). 403 `not_in_lane` when the caller's workspace is not a lane.

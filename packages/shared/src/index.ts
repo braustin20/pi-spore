@@ -213,6 +213,8 @@ export {
   AnswerLaneRequest,
   AskCoordinatorRequest,
   CreateRunRequest,
+  DeclineLaneBody,
+  DeclineLaneRequest,
   Lane,
   LaneState,
   LaneStatus,

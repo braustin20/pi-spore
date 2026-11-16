@@ -80,16 +80,36 @@ function byWave(lanes: readonly Lane[]): [number, Lane[]][] {
   return [...waves].sort(([a], [b]) => a - b);
 }
 
-function LaneRow({ lane }: { lane: Lane }) {
+/** A lane the user can drop (ADR 0183): one that is waiting, passed, or failed, in a run not cancelled. */
+const canDecline = (runState: RunState, laneState: LaneState) =>
+  runState !== "cancelled" &&
+  (laneState === "waiting" || laneState === "passed" || laneState === "failed");
+
+function LaneRow({ runId, runState, lane }: { runId: string; runState: RunState; lane: Lane }) {
   const api = useApi();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  const [declining, setDeclining] = useState(false);
+  const [reason, setReason] = useState("");
   const shown = STATES[lane.state];
+  const declineable = canDecline(runState, lane.state);
   const retry = async () => {
     setBusy(true);
     setError(undefined);
     try {
       await api.send("POST", `pipelines/runs/${lane.pipelineRunId}/retry`);
+    } catch (caught) {
+      setError(message(caught));
+    }
+    setBusy(false);
+  };
+  const decline = async () => {
+    setBusy(true);
+    setError(undefined);
+    try {
+      await api.send("POST", `runs/${runId}/lanes/${lane.id}/decline`, { reason: reason.trim() });
+      setDeclining(false);
+      setReason("");
     } catch (caught) {
       setError(message(caught));
     }
@@ -108,6 +128,11 @@ function LaneRow({ lane }: { lane: Lane }) {
         <Chip tone={shown.tone}>{shown.text}</Chip>
         {lane.blocked && <Chip tone="warn">Blocked</Chip>}
         {lane.model && <Chip mono>{lane.model}</Chip>}
+        {declineable && !declining && (
+          <Button variant="danger" size="sm" disabled={busy} onClick={() => setDeclining(true)}>
+            Decline
+          </Button>
+        )}
       </div>
       {lane.message && (
         <p className="m-0 text-xs text-muted [overflow-wrap:anywhere]">{lane.message}</p>
@@ -118,6 +143,39 @@ function LaneRow({ lane }: { lane: Lane }) {
           <Button size="sm" className="mt-2" disabled={busy} onClick={() => void retry()}>
             Retry
           </Button>
+        </Notice>
+      )}
+      {/* A snapshot can make the lane or the run ineligible while the confirm is open, so it goes away with them. */}
+      {declineable && declining && (
+        <Notice tone="warn">
+          <p className="m-0 [overflow-wrap:anywhere]">
+            Decline lane "{lane.name}"? It will not be merged. Nothing is deleted: its workspace and
+            branch stay. The coordinator is told.
+          </p>
+          <div className="mt-2">
+            <Field label="Reason">
+              <Textarea
+                rows={3}
+                maxLength={2000}
+                value={reason}
+                onChange={(event) => setReason(event.target.value)}
+              />
+            </Field>
+          </div>
+          <div className="mt-2 flex gap-2">
+            <Button
+              variant="danger"
+              size="sm"
+              disabled={busy || reason.trim() === ""}
+              onClick={() => void decline()}
+            >
+              {busy && <Spinner />}
+              Decline lane
+            </Button>
+            <Button size="sm" variant="ghost" disabled={busy} onClick={() => setDeclining(false)}>
+              Keep lane
+            </Button>
+          </div>
         </Notice>
       )}
       {error && <Notice tone="fail">{error}</Notice>}
@@ -195,7 +253,7 @@ function RunCard({ run }: { run: Run }) {
           <SectionLabel>Wave {wave}</SectionLabel>
           <ul className="m-0 flex list-none flex-col gap-1.5 p-0">
             {lanes.map((lane) => (
-              <LaneRow key={lane.id} lane={lane} />
+              <LaneRow key={lane.id} runId={run.id} runState={run.state} lane={lane} />
             ))}
           </ul>
         </div>

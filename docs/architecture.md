@@ -841,8 +841,9 @@ See [ADR 0007](decisions/0007-coordinator-runs.md), [ADR 0008](decisions/0008-qu
 [ADR 0014](decisions/0014-lane-model-approval.md), [ADR 0017](decisions/0017-integration-branch.md),
 [ADR 0150](decisions/0150-run-worktree-and-green-merges.md), [ADR 0151](decisions/0151-run-cancel-handover-and-pr-approval.md),
 [ADR 0154](decisions/0154-coordinator-adds-cards.md), [ADR 0157](decisions/0157-finished-run-follows-the-active-chat.md), and
-[ADR 0165](decisions/0165-finished-run-pushes-each-merge.md), [ADR 0180](decisions/0180-lanes-name-their-card.md), and
-[ADR 0182](decisions/0182-revise-lane-moves-a-lane-to-a-new-model.md). Requirements R7, R4.8.
+[ADR 0165](decisions/0165-finished-run-pushes-each-merge.md), [ADR 0180](decisions/0180-lanes-name-their-card.md),
+[ADR 0182](decisions/0182-revise-lane-moves-a-lane-to-a-new-model.md), and
+[ADR 0183](decisions/0183-decline-a-lane.md). Requirements R7, R4.8.
 
 The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artifacts`, `attention`, `actions`,
 `pipelines`) owns `runs_runs`, `runs_lanes`, and `runs_questions`. The bridge requires it.
@@ -854,8 +855,8 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   the run's settings override (section 13); the run workspace and every lane workspace get it, with source `run`.
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
-  kanban_list_cards,kanban_read_card,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,
-  open_run_pr,run_status,start_helper`: no write or shell tools, and no `subagent` (ADR 0176). Its token is not read-only, so it writes artifacts and calls the
+  kanban_list_cards,kanban_read_card,kanban_add_card,start_lane,revise_lane,merge_lane,decline_lane,
+  answer_lane,open_run_pr,run_status,start_helper`: no write or shell tools, and no `subagent` (ADR 0176). Its token is not read-only, so it writes artifacts and calls the
   run routes. The hook also gives `role: "coordinator"` (`LaunchContext.role`, ADR 0181), so the coordinator starts
   on `subagents.agentOverrides.coordinator`, else `orchestrator`, else Pi's default. The chat row's role stays
   `orchestrator`. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
@@ -891,6 +892,12 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
     coordinator). The revise stores the model in `runs_lanes.new_model`. `launch` sees it, skips the reuse, and
     runs the lane's own pipeline from the first stage with a fresh worker on that model, in the same workspace.
     The commit that marks the lane `running` moves `new_model` into `model`. The coordinator is told.
+  - `decline_lane { laneId, reason }` (bridge `POST /api/bridge/lanes/decline`) and the user's
+    `POST /api/runs/:id/lanes/:laneId/decline` `{ reason }` (the Runs page's Decline button) drop a lane that will not
+    merge (ADR 0183). Only a `waiting`, `passed`, or `failed` lane (409 `lane_not_declinable` naming the state). The
+    lane becomes `declined` with the reason as its message, its waiting `runs.lane` job is cancelled, and waiting
+    lanes wake. Nothing is merged or deleted. A user decline tells the coordinator. A decline that leaves a `running`
+    run with every lane `merged` or `declined`, one merged, tells the coordinator to call `open_run_pr`.
   - States: `approval`, `waiting`, `starting`, `running`, `passed`, `failed`, `declined`, `merging`, `merged`,
     `cancelled`.
 - **Merge** (ADR 0150). `merge_lane` takes a `passed` lane (409 `lane_not_mergeable`), makes it `merging`, and
@@ -923,7 +930,7 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 - **Run PR** (ADR 0100, ADR 0130). `open_run_pr { title, body }` (bridge `POST /api/bridge/coordinator/pr`) needs
   every lane `merged` or `declined` and one `merged` (409 `run_not_finished` with the reason), no open request (409
   `run_pr_asked`), and a run that is not `finished` (409 `run_finished`). It files a `run-pr` approval with the
-  title, body, base, and head (the run line), and the tool ends the turn. On approve, where the user may edit the
+  title, body, base, and head (the run line); its reason names each declined lane and its reason, and the tool ends the turn. On approve, where the user may edit the
   title and body only (422 `approval_run_changed`), the runs module opens the PR through the opener the github-pr
   module sets with `RunsKey.setPrOpener`, the same path as the PR tab's publish, and the run becomes `finished`.
   Without that module the approve is 409 `pr_not_supported` and the approval stays open. The outcome or the
