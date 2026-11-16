@@ -960,6 +960,42 @@ describe("agents", () => {
       expect(roles.filter((role) => role.kind === "role" && !role.description)).toEqual([]);
     });
 
+    it("reads only the last file's description, so a user file clears a built-in one", async () => {
+      agentFile(builtinDir(), "plain.md", "name: plain\ndescription: The package note");
+      agentFile(builtinDir(), "blocked.md", "name: blocked\ndescription: The package note");
+      agentFile(builtinDir(), "blank.md", "name: blank\ndescription: The package note");
+      agentFile(agentDir(), "agents/plain.md", "name: plain");
+      agentFile(agentDir(), "agents/blocked.md", "name: blocked\ndescription: >-");
+      agentFile(agentDir(), "agents/blank.md", "name: blank\ndescription:");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const note = (name: string) => roles.find((role) => role.name === name)?.description;
+      // No description of its own, a block, and an empty value all give none, not the built-in file's note.
+      expect(note("plain")).toBeUndefined();
+      expect(note("blocked")).toBeUndefined();
+      expect(note("blank")).toBeUndefined();
+    });
+
+    it("keeps a quoted description that starts with a block indicator", async () => {
+      agentFile(builtinDir(), "arrow.md", 'name: arrow\ndescription: "> Summarizes changes"');
+      agentFile(agentDir(), "agents/bar.md", "name: bar\ndescription: '| Marks a note'");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const note = (name: string) => roles.find((role) => role.name === name)?.description;
+      expect(note("arrow")).toBe("> Summarizes changes");
+      expect(note("bar")).toBe("| Marks a note");
+    });
+
+    it("describes an agent named like an Object property, not that property", async () => {
+      agentFile(builtinDir(), "__proto__.md", "name: __proto__\ndescription: Reads the chain");
+      agentFile(builtinDir(), "toString.md", "name: toString\ndescription: Prints the object");
+      await start(JSON.stringify(original));
+      const { roles } = await json<Listed>(await get());
+      const note = (name: string) => roles.find((role) => role.name === name)?.description;
+      expect(note("__proto__")).toBe("Reads the chain");
+      expect(note("toString")).toBe("Prints the object");
+    });
+
     it("lists the roles when the settings file does not exist", async () => {
       await start(undefined);
       const { roles } = await json<Listed>(await get());

@@ -6,17 +6,18 @@ import { piSettingsPath, readPiSettings } from "./launch.js";
 
 /**
  * The roles pi-spore starts agents for, in the order the list shows them, each with the one line the list says about
- * it (ADR 0181, R3.1, R6.3, R7.1). These win over an agent file of the same name.
+ * it (ADR 0181, R3.1, R6.3, R7.1). These win over an agent file of the same name. A Map, so an agent named
+ * `__proto__` or `toString` cannot answer with an inherited `Object` property instead of its own description.
  */
-const ROLE_NOTES: Readonly<Record<string, string>> = {
-  orchestrator: "The chat that plans a workspace's work and checks it.",
-  planner: "The read-only chat that plans a project and adds its cards.",
-  coordinator: "The chat that runs a run: its lanes, questions, and gates.",
-  worker: "The agent that writes the code, in a workspace or a pipeline stage.",
-  reviewer: "Reviews a pipeline stage's change with a verdict and findings.",
-  "adversarial-reviewer": "Looks for what a change breaks.",
-};
-const SPORE_ROLES: readonly string[] = Object.keys(ROLE_NOTES);
+const ROLE_NOTES = new Map<string, string>([
+  ["orchestrator", "The chat that plans a workspace's work and checks it."],
+  ["planner", "The read-only chat that plans a project and adds its cards."],
+  ["coordinator", "The chat that runs a run: its lanes, questions, and gates."],
+  ["worker", "The agent that writes the code, in a workspace or a pipeline stage."],
+  ["reviewer", "Reviews a pipeline stage's change with a verdict and findings."],
+  ["adversarial-reviewer", "Looks for what a change breaks."],
+]);
+const SPORE_ROLES: readonly string[] = [...ROLE_NOTES.keys()];
 /** Roles with no model of their own run on the orchestrator's (ADR 0175, ADR 0181). */
 export const FALLBACK_ROLES: ReadonlySet<string> = new Set(["planner", "coordinator"]);
 
@@ -34,12 +35,14 @@ type AgentFile = { name: string; description?: string };
 /**
  * An agent file's name and description from its YAML frontmatter (`name`, `package`, `description`). No YAML
  * parser: only these lines matter. Without a closing `---` there is no frontmatter, and pi-subagents does not find
- * the agent either. A `description` that is empty or a block (`>`, `|`) has no single line to show.
+ * the agent either. A `description` with no value, or one that is an unquoted `|` or `>` (a block whose text is on
+ * the lines below), has no single line to show. A quoted value does, even when it starts with those characters.
  */
 function frontmatter(text: string): AgentFile | undefined {
   const lines = text.replace(/^\uFEFF/, "").split(/\r?\n/);
   if (lines[0]?.trim() !== "---") return undefined;
   const fields: Record<string, string> = {};
+  let block = false;
   let closed = false;
   for (const line of lines.slice(1)) {
     if (line.trim() === "---") {
@@ -47,14 +50,17 @@ function frontmatter(text: string): AgentFile | undefined {
       break;
     }
     const match = /^(name|package|description):\s*(.*?)\s*$/.exec(line);
-    if (match) fields[match[1] as string] = (match[2] as string).replace(/^(["'])(.*)\1$/, "$2");
+    if (!match) continue;
+    const value = match[2] as string;
+    if (match[1] === "description") block = /^[|>]/.test(value);
+    fields[match[1] as string] = value.replace(/^(["'])(.*)\1$/, "$2");
   }
   if (!closed || !fields.name) return undefined;
   const file: AgentFile = {
     name: fields.package ? `${fields.package}.${fields.name}` : fields.name,
   };
   const description = fields.description;
-  if (description && !/^[|>]/.test(description)) file.description = description;
+  if (description && !block) file.description = description;
   return file;
 }
 
@@ -126,8 +132,9 @@ export async function listRoleModels(
   ];
   for (const file of found) {
     others.add(file.name);
-    // The user's files come last, so their description wins over a built-in file of the same name.
+    // The user's files come last, so the last file read of a name decides, even when it has no description at all.
     if (file.description) notes.set(file.name, file.description);
+    else notes.delete(file.name);
   }
   for (const role of SPORE_ROLES) others.delete(role);
 
@@ -136,7 +143,7 @@ export async function listRoleModels(
     const override = overrides[name];
     const model = isObject(override) ? override.model : undefined;
     const entry: RoleModel = { name, kind: SPORE_ROLES.includes(name) ? "role" : "subagent" };
-    const note = ROLE_NOTES[name] ?? notes.get(name);
+    const note = ROLE_NOTES.get(name) ?? notes.get(name);
     if (note) entry.description = note;
     if (typeof model === "string") entry.model = model;
     if (FALLBACK_ROLES.has(name)) entry.fallback = "orchestrator";

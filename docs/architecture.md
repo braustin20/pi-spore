@@ -1882,7 +1882,7 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   `kind` (`role` or `subagent`), `model` when set, and `fallback: "orchestrator"` for `planner` and `coordinator`. Each
   also has `description`: one line on what the name does. A pi-spore role has a fixed note, even when pi-subagents has
   an agent of that name. Any other name has the frontmatter `description` of its file, the user's file winning over the
-  built-in one; a name with no file, or with an empty value or a YAML block (`>`, `|`), has none.
+  built-in one; a name with no file, or with an empty value or an unquoted YAML block (`>`, `|`), has none.
   `PUT /api/agents/role-models/:name` takes `{ model }` or `{ unset: true }` and answers the new list. The model must
   be in `GET /api/agents/models` (422 `unknown_model`); the name must be listed (404 `unknown_role`). It changes only
   that `model` key; unset also removes the name's object when it is left empty. Writes go to `<file>.tmp`, then a
