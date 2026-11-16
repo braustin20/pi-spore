@@ -122,7 +122,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   after side chats. A busy, starting, or waiting stage agent sets the workspace's status line (section 13).
   - `AgentsKey.createStage(workspaceId, { role, title, model? })` inserts the row and starts nothing, so the
     pipelines module commits it with the `deliver` that starts it. `roleDefaults(role)` reads
-    `subagents.agentOverrides.<role>`; `availableModels(callerAgentId?)` lists the models Pi can run (a busy
+    `subagents.agentOverrides.<role>`, with `planner` and `coordinator` falling back to `orchestrator` when they
+    have no entry (ADR 0175, ADR 0181); `availableModels(callerAgentId?)` lists the models Pi can run (a busy
     caller's own process answers, so it does not wait for a slot it holds); `modelsUsed(agentId)` lists the physical
     models Pi recorded on the agent's assistant messages; `sessionRoles(workspaceId)` lists the session file and role of each agent that has a session,
     so the `usage` module can split token use per role.
@@ -855,7 +856,9 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
   kanban_list_cards,kanban_read_card,kanban_add_card,start_lane,revise_lane,merge_lane,answer_lane,
   open_run_pr,run_status,start_helper`: no write or shell tools, and no `subagent` (ADR 0176). Its token is not read-only, so it writes artifacts and calls the
-  run routes. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
+  run routes. The hook also gives `role: "coordinator"` (`LaunchContext.role`, ADR 0181), so the coordinator starts
+  on `subagents.agentOverrides.coordinator`, else `orchestrator`, else Pi's default. The chat row's role stays
+  `orchestrator`. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
 - **Follow-up cards** (ADR 0154). The coordinator adds a card for follow-up work out of the lanes' scope; it never
   changes or starts one. A card added from a run workspace goes to `backlog` with the label
   `from-run:<slug of the run name, up to 31 characters>`; the bridge sets both. A card change or start from a run
@@ -1857,6 +1860,19 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   `server.allowedLogins` asks first ("Change remote access?"), because a wrong value can lock you out. The
   "Workspace settings" panel stays read-only.
 
+- Role models (ADR 0181) live in Pi's own file, not in pi-spore's: `<agentDir>/settings.json` (`PI_CODING_AGENT_DIR`,
+  else `~/.pi/agent`), key `subagents.agentOverrides.<name>.model`. pi-subagents reads the same key for its helpers.
+  `GET /api/agents/role-models` lists the pi-spore roles (`orchestrator`, `planner`, `coordinator`, `worker`,
+  `reviewer`, `adversarial-reviewer`), pi-subagents' built-in agents (the `agents/` folder of the installed package),
+  the user's agents (`<agentDir>/agents/**/*.md`), and every name already in `agentOverrides`. Each entry has `name`,
+  `kind` (`role` or `subagent`), `model` when set, and `fallback: "orchestrator"` for `planner` and `coordinator`.
+  `PUT /api/agents/role-models/:name` takes `{ model }` or `{ unset: true }` and answers the new list. The model must
+  be in `GET /api/agents/models` (422 `unknown_model`); the name must be listed (404 `unknown_role`). It changes only
+  that `model` key; unset also removes the name's object when it is left empty. Writes go to `<file>.tmp`, then a
+  rename, one at a time. A file that is not plain JSON answers 409 `pi_settings_not_json`, and a container that is
+  not an object 409 `pi_settings_shape`; neither is rewritten. Agent tokens cannot reach these routes. The code is
+  `modules/agents/src/role-models.ts`.
+
 Declared keys (`GET /api/projects/settings` lists them all with their source, plus the router keys of section 10;
 the Settings page, `#/settings`, shows that list):
 
@@ -2118,6 +2134,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
   | Route | Does |
   |---|---|
   | `GET /api/agents/models` | The models Pi offers, `{ models }`, for the start dropdowns when no chat runs (ADR 0120). Starts a short-lived Pi process that counts against `agents.maxLive`; cached for 60 s. 502 `models_unavailable` if Pi fails or answers badly. A model listed in `tiers` in `settings.json` has its router `tier`. The tiers are read on each call, not cached. If `settings.json` is bad, the models still list without tiers, and `tierError` names the problem. |
+  | `GET /api/agents/role-models` | Each role and subagent type with its default model from Pi's `settings.json` (ADR 0181, section 13). 409 `pi_settings_not_json` or `pi_settings_shape` for a file pi-spore cannot read. |
+  | `PUT /api/agents/role-models/:name` | Sets `{ model }` or removes `{ unset: true }` that name's `agentOverrides.<name>.model`, and answers the new list (ADR 0181). 422 `unknown_model`, 404 `unknown_role`. |
   | `GET /api/agents/:id/models` | The chat's models and thinking levels, `{ models, thinkingLevels }`, asked of its Pi process. Models get `tier` and the answer gets `tierError` the same way as above. |
   | `GET /api/agents?workspaceId=` | The workspace's chats: the active orchestrator chat, side chats, then older orchestrator chats, newest first in each group. |
   | `POST /api/agents` `{ workspaceId, model? }` | The active orchestrator chat; the first call creates it (201), on `model` when given (ADR 0120). |
