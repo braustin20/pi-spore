@@ -65,6 +65,7 @@ import { ago, groupByProject, type ProjectGroup, reduceWorkspaceList } from "./l
 import { defaultWidths, layoutPanels, type PanelSize, phonePane } from "./panel-layout.js";
 import {
   type CreateWorkspaceFormProps,
+  type LandingButton,
   type UseWorkspaceStatus,
   type WorkspacePanel,
   type WorkspaceStatus,
@@ -88,7 +89,9 @@ const stepNote = (step: StepReport): Note => ({
 const panels: WorkspacePanel[] = [];
 const tabs: WorkspaceTab[] = [];
 let Main: ComponentType<{ workspace: Workspace; chatId?: string }> | undefined;
-let Landing: ComponentType<{ projectId?: string | undefined }> | undefined;
+let landing:
+  | (LandingButton & { component: ComponentType<{ projectId?: string | undefined }> })
+  | undefined;
 const NO_STATUS: ReadonlyMap<string, WorkspaceStatus> = new Map();
 const noStatus: UseWorkspaceStatus = () => NO_STATUS;
 let useStatus = noStatus;
@@ -451,6 +454,7 @@ function WorkspaceListColumn({
   selectedId,
   chatId,
   projectId,
+  landingOpen,
   error,
   size,
   phone,
@@ -464,6 +468,7 @@ function WorkspaceListColumn({
   selectedId: string | undefined;
   chatId: string | undefined;
   projectId: string | undefined;
+  landingOpen: boolean;
   error: string | undefined;
   size: PanelSize;
   phone: boolean;
@@ -498,6 +503,30 @@ function WorkspaceListColumn({
       )}
       <div className="flex h-11 shrink-0 items-center gap-1 border-b border-line pr-2 pl-4">
         <SectionLabel className="flex-1">Workspaces</SectionLabel>
+        {landing && (
+          // No closePane on a phone: it calls history.back(), which would undo this link's hash. The new hash has
+          // no ?pane=list, so the list closes by itself. The lit classes go through Button: its cn lets them beat the
+          // ghost defaults, while Slot only joins the child's classes.
+          <Tooltip label={landing.label} side="bottom">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label={landing.label}
+              className={cn(
+                landingOpen &&
+                  "relative bg-raised text-accent-strong hover:text-accent-strong before:absolute before:inset-x-2 before:bottom-0 before:h-0.5 before:rounded-full before:bg-accent",
+              )}
+              asChild
+            >
+              <a
+                href={projectId ? `#/workspaces/in/${projectId}` : "#/workspaces"}
+                aria-current={landingOpen ? "page" : undefined}
+              >
+                <landing.icon />
+              </a>
+            </Button>
+          </Tooltip>
+        )}
         <Tooltip label="New workspace" side="bottom">
           <Button variant="ghost" size="icon-sm" aria-label="New workspace" asChild>
             <a href={projectId ? `#/workspaces/new/in/${projectId}` : "#/workspaces/new"}>
@@ -983,6 +1012,7 @@ function WorkspacesView({
   });
 
   let middle: ReactNode;
+  let landingOpen = false;
   if (selectedId && workspaces && !workspace) {
     middle = (
       <EmptyState icon={Layers} title="No such workspace">
@@ -1013,7 +1043,7 @@ function WorkspacesView({
         A workspace is a copy of a project for one piece of work. Add a project first.
       </EmptyState>
     );
-  } else if (create || Landing === undefined) {
+  } else if (create || landing === undefined) {
     // The module that sets the landing is optional (ADR 0176), so the landing routes keep the create form without it.
     middle = (
       <div className="flex h-full items-start justify-center overflow-y-auto px-6 py-10">
@@ -1029,7 +1059,9 @@ function WorkspacesView({
       </div>
     );
   } else {
+    const Landing = landing.component;
     middle = <Landing projectId={projectId} />;
+    landingOpen = true;
   }
 
   const listColumn = (
@@ -1039,6 +1071,7 @@ function WorkspacesView({
       selectedId={selectedId}
       chatId={params.chatId}
       projectId={projectId}
+      landingOpen={landingOpen}
       error={error}
       size={layout.list}
       phone={phone}
@@ -1195,9 +1228,9 @@ export const workspacesWeb: WebModule = {
         if (Main) throw new Error("The workspace main pane is set twice");
         Main = component;
       },
-      setLanding: (component) => {
-        if (Landing) throw new Error("The workspaces landing page is set twice");
-        Landing = component;
+      setLanding: (component, button) => {
+        if (landing) throw new Error("The workspaces landing page is set twice");
+        landing = { component, ...button };
       },
       setStatus: (hook) => {
         if (useStatus !== noStatus) throw new Error("The workspace status source is set twice");
