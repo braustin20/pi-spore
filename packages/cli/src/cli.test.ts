@@ -13,6 +13,18 @@ interface Sent {
 
 const NOW = 1_000_000_000;
 
+type System = CliDeps["system"];
+
+/** A system fake whose unset parts throw, so a test must set every part the command uses. */
+function fakeSystem(parts: Partial<System> = {}): System {
+  return new Proxy(parts as System, {
+    get: (target, key) => {
+      if (!(key in target)) throw new Error(`The test did not set system.${String(key)}`);
+      return target[key as keyof System];
+    },
+  });
+}
+
 /** A fake server: `answer` maps "METHOD /path" to a response. Every request is recorded. */
 function fakeDeps(
   answer: (key: string, sent: Sent) => Response | Promise<Response>,
@@ -43,6 +55,7 @@ function fakeDeps(
     resolvePath: (path) => (path.startsWith("/") ? path : `/home/me/${path}`),
     newKey: () => `key-${++keys}`,
     now: () => NOW,
+    system: fakeSystem(),
     ...overrides,
   };
   return { deps, out, written, err, sent };
@@ -113,6 +126,485 @@ describe("pi-spore health", () => {
     const { deps, err } = fakeDeps(() => Response.json({ status: "ok" }));
     expect(await run(["health"], deps)).toBe(1);
     expect(err[0]).toContain("sent a bad health response");
+  });
+});
+
+const UNIT = "/home/me/.config/systemd/user/pi-spore.service";
+const NODE = "/home/me/.nvm/versions/node/v26.1.0/bin/node";
+const noServer = () => Promise.reject(new TypeError("fetch failed"));
+
+/** A Linux machine with Node 26, pi, and git. `calls` records runs, writes, removes, and questions in order. */
+function linux(
+  options: {
+    files?: Record<string, string>;
+    exes?: string[];
+    answer?: boolean;
+    /** The exit code of a run, by its command line. Default 0. */
+    code?: (command: string) => number;
+  } = {},
+  parts: Partial<System> = {},
+) {
+  const files: Record<string, string> = { "/repo/.nvmrc": "26\n", ...options.files };
+  const exes = new Set(options.exes ?? ["/home/me/.local/bin/pi", "/usr/bin/git"]);
+  const calls: string[] = [];
+  const system = fakeSystem({
+    run: async (file, args, runOptions) => {
+      const command = [file, ...args].join(" ");
+      // The npm calls must carry the node folder on PATH, so a test can check what a run got.
+      calls.push(
+        `${command}${runOptions?.env?.PATH === undefined ? "" : ` PATH=${runOptions.env.PATH}`}`,
+      );
+      return options.code?.(command) ?? 0;
+    },
+    readFile: (path) => files[path],
+    writeFile: (path, text) => {
+      calls.push(`write ${path}`);
+      files[path] = text;
+    },
+    removeFile: (path) => {
+      calls.push(`remove ${path}`);
+      delete files[path];
+    },
+    isExecutable: (path) => exes.has(path),
+    ask: async (question) => {
+      calls.push(`ask ${question}`);
+      return options.answer ?? true;
+    },
+    node: { path: NODE, version: "v26.1.0" },
+    platform: "linux",
+    repoRoot: "/repo",
+    configHome: "/home/me/.config",
+    delay: async () => {},
+    ...parts,
+  });
+  return { system, files, calls };
+}
+
+const PATH_ENV = "/home/me/.local/bin::/usr/bin:/opt/unity/bin";
+
+describe("pi-spore service commands", () => {
+  it("install writes the unit with absolute paths, then reloads and enables, in that order", async () => {
+    const { system, files, calls } = linux({
+      exes: ["/home/me/.local/bin/pi", "/usr/bin/git", "/opt/unity/bin/unity"],
+    });
+    const { deps, out, sent } = fakeDeps(noServer, {
+      system,
+      env: { PATH: PATH_ENV, PI_SPORE_HOME: "/home/me/spore", PI_SPORE_PORT: "7421" },
+    });
+
+    expect(await run(["service", "install", "--yes"], deps)).toBe(0);
+    expect(sent.map((request) => request.url)).toEqual(["http://127.0.0.1:7421/api/health"]);
+    expect(calls).toEqual([
+      `write ${UNIT}`,
+      "systemctl --user daemon-reload",
+      "systemctl --user enable --now pi-spore",
+    ]);
+    expect(files[UNIT]).toBe(
+      [
+        "[Unit]",
+        "Description=pi-spore agent workbench",
+        "",
+        "[Service]",
+        `ExecStart=${NODE} /repo/packages/server/dist/main.js`,
+        "WorkingDirectory=/repo",
+        "Environment=PATH=/home/me/.nvm/versions/node/v26.1.0/bin:/home/me/.local/bin:/usr/bin:/opt/unity/bin:/usr/local/bin:/bin",
+        "Environment=PI_SPORE_HOME=/home/me/spore",
+        "Environment=PI_SPORE_PORT=7421",
+        "EnvironmentFile=-%h/.config/pi-spore/service.env",
+        "Restart=on-failure",
+        "RestartSec=2",
+        "",
+        "[Install]",
+        "WantedBy=default.target",
+        "",
+      ].join("\n"),
+    );
+    expect(out.join("\n")).toContain(UNIT);
+    expect(out.join("\n")).toContain("pi-spore open");
+    expect(out.join("\n")).not.toContain("pi-spore restart");
+  });
+
+  it("install refuses when pi is not on PATH", async () => {
+    const { system, calls } = linux({ exes: ["/usr/bin/git"] });
+    const { deps, err } = fakeDeps(noServer, { system, env: { PATH: PATH_ENV } });
+
+    expect(await run(["service", "install", "--yes"], deps)).toBe(1);
+    expect(err).toEqual(["pi is not on PATH. Install Pi and make sure `pi` runs in this shell."]);
+    expect(calls).toEqual([]);
+  });
+
+  it("install refuses when the CLI does not run on the Node version of .nvmrc", async () => {
+    const { system, calls } = linux({}, { node: { path: "/usr/bin/node", version: "v22.1.0" } });
+    const { deps, err } = fakeDeps(noServer, { system, env: { PATH: PATH_ENV } });
+
+    expect(await run(["service", "install", "--yes"], deps)).toBe(1);
+    expect(err).toEqual([
+      "The service needs Node 26 (.nvmrc); this CLI runs on Node v22.1.0 at /usr/bin/node. Run `nvm use`, then try again.",
+    ]);
+    expect(calls).toEqual([]);
+  });
+
+  it("install asks first: no writes nothing, and --yes does not ask", async () => {
+    const no = linux({ answer: false });
+    const first = fakeDeps(noServer, { system: no.system, env: { PATH: PATH_ENV } });
+    expect(await run(["service", "install"], first.deps)).toBe(0);
+    expect(no.calls).toEqual(["ask Write this unit and start the service?"]);
+    expect(no.files[UNIT]).toBeUndefined();
+    expect(first.out).toContain("Nothing changed.");
+
+    const yes = linux({}, { ask: () => Promise.reject(new Error("asked")) });
+    const second = fakeDeps(noServer, { system: yes.system, env: { PATH: PATH_ENV } });
+    expect(await run(["service", "install", "--yes"], second.deps)).toBe(0);
+    expect(yes.calls[0]).toBe(`write ${UNIT}`);
+  });
+
+  it("install refuses a path with a space", async () => {
+    const { system, calls } = linux(
+      { files: { "/home/me/my repo/.nvmrc": "26" } },
+      { repoRoot: "/home/me/my repo" },
+    );
+    const { deps, err } = fakeDeps(noServer, { system, env: { PATH: PATH_ENV } });
+
+    expect(await run(["service", "install", "--yes"], deps)).toBe(1);
+    expect(err[0]).toContain('"/home/me/my repo"');
+    expect(calls).toEqual([]);
+  });
+
+  it("install refuses while a server answers and no unit exists, and rewrites an existing unit", async () => {
+    const fresh = linux();
+    const first = fakeDeps(healthy, { system: fresh.system, env: { PATH: PATH_ENV } });
+    expect(await run(["service", "install", "--yes"], first.deps)).toBe(1);
+    expect(first.err).toEqual([
+      "A pi-spore server already runs at http://127.0.0.1:7420. Stop it (Ctrl+C in its terminal), then run this again.",
+    ]);
+    expect(fresh.calls).toEqual([]);
+
+    const installed = linux({ files: { [UNIT]: "old" } });
+    const second = fakeDeps(healthy, { system: installed.system, env: { PATH: PATH_ENV } });
+    expect(await run(["service", "install", "--yes"], second.deps)).toBe(0);
+    expect(installed.files[UNIT]).toContain("ExecStart=");
+    expect(second.out.join("\n")).toContain("Run pi-spore restart to use the new unit.");
+  });
+
+  it("install names a non-zero systemctl command and a missing systemctl", async () => {
+    const failing = linux({}, { run: async () => 1 });
+    const first = fakeDeps(noServer, { system: failing.system, env: { PATH: PATH_ENV } });
+    expect(await run(["service", "install", "--yes"], first.deps)).toBe(1);
+    expect(first.err[0]).toContain("systemctl --user daemon-reload");
+
+    const missing = linux({}, { run: () => Promise.reject(new Error("systemctl not found")) });
+    const second = fakeDeps(noServer, { system: missing.system, env: { PATH: PATH_ENV } });
+    expect(await run(["service", "install", "--yes"], second.deps)).toBe(1);
+    expect(second.err).toEqual(["systemctl not found"]);
+  });
+
+  it("uninstall disables, removes, and reloads; without a unit it changes nothing", async () => {
+    const installed = linux({ files: { [UNIT]: "unit" } });
+    const first = fakeDeps(noServer, { system: installed.system });
+    expect(await run(["service", "uninstall", "--yes"], first.deps)).toBe(0);
+    expect(installed.calls).toEqual([
+      "systemctl --user disable --now pi-spore",
+      `remove ${UNIT}`,
+      "systemctl --user daemon-reload",
+    ]);
+
+    const none = linux();
+    const second = fakeDeps(noServer, { system: none.system });
+    expect(await run(["service", "uninstall"], second.deps)).toBe(0);
+    expect(second.out).toEqual(["The pi-spore service is not installed."]);
+    expect(none.calls).toEqual([]);
+  });
+
+  it("logs -f follows the journal; open opens the PI_SPORE_PORT address", async () => {
+    const logs = linux();
+    const first = fakeDeps(noServer, { system: logs.system });
+    expect(await run(["logs", "-f"], first.deps)).toBe(0);
+    expect(await run(["logs", "--follow"], first.deps)).toBe(0);
+    expect(await run(["logs"], first.deps)).toBe(0);
+    expect(logs.calls).toEqual([
+      "journalctl --user -u pi-spore -f",
+      "journalctl --user -u pi-spore -f",
+      "journalctl --user -u pi-spore",
+    ]);
+
+    const calls: string[] = [];
+    const run_ = async (file: string, args: readonly string[]) => {
+      calls.push([file, ...args].join(" "));
+      return 0;
+    };
+    const second = fakeDeps(noServer, {
+      system: fakeSystem({ run: run_ }),
+      env: { PI_SPORE_PORT: "7421" },
+    });
+    expect(await run(["open"], second.deps)).toBe(0);
+    expect(calls).toEqual(["xdg-open http://127.0.0.1:7421"]);
+  });
+
+  it("start --open runs the server with the node path, then opens the UI once health answers", async () => {
+    const calls: string[] = [];
+    let stop: (code: number) => void = () => {};
+    let delays = 0;
+    const system = fakeSystem({
+      run: (file, args, options) => {
+        calls.push(`${[file, ...args].join(" ")} in ${options?.cwd}`);
+        if (file === "xdg-open") {
+          stop(0);
+          return Promise.resolve(0);
+        }
+        return new Promise((resolve) => {
+          stop = resolve;
+        });
+      },
+      node: { path: NODE, version: "v26.1.0" },
+      repoRoot: "/repo",
+      delay: async () => {
+        delays++;
+      },
+    });
+    let polls = 0;
+    const { deps } = fakeDeps(() => (++polls === 1 ? noServer() : healthy()), { system });
+
+    expect(await run(["start", "--open"], deps)).toBe(0);
+    expect(calls).toEqual([
+      `${NODE} /repo/packages/server/dist/main.js in /repo`,
+      "xdg-open http://127.0.0.1:7420 in undefined",
+    ]);
+    expect(delays).toBe(1);
+  });
+
+  /** A server that ends with `code` during the first health request, which stays pending until `answer`. */
+  function endsWhileHealthWaits(code: number) {
+    const calls: string[] = [];
+    let stop: (code: number) => void = () => {};
+    let answer: (response: Response) => void = () => {};
+    const system = fakeSystem({
+      run: (file, args) => {
+        calls.push([file, ...args].join(" "));
+        if (file === "xdg-open") return Promise.resolve(0);
+        return new Promise((resolve) => {
+          stop = resolve;
+        });
+      },
+      node: { path: NODE, version: "v26.1.0" },
+      repoRoot: "/repo",
+      delay: async () => {},
+    });
+    const { deps, err } = fakeDeps(
+      () => {
+        stop(code);
+        return new Promise<Response>((resolve) => {
+          answer = resolve;
+        });
+      },
+      { system },
+    );
+    return { deps, err, calls, answer: (response: Response) => answer(response) };
+  }
+
+  /** Lets every pending promise settle; no clock. */
+  const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+  it("start --open returns when the server ends while a health request is pending", async () => {
+    const { deps, err, calls } = endsWhileHealthWaits(2);
+    let exit: number | undefined;
+    void run(["start", "--open"], deps).then((code) => {
+      exit = code;
+    });
+
+    await settle();
+    expect(exit).toBe(1);
+    expect(err).toEqual(["pi-spore server exited with code 2"]);
+    expect(calls).toEqual([`${NODE} /repo/packages/server/dist/main.js`]);
+  });
+
+  it("start --open does not open the browser when health answers after the server ended", async () => {
+    const { deps, calls, answer } = endsWhileHealthWaits(3);
+    const exit = run(["start", "--open"], deps);
+
+    await settle();
+    answer(healthy());
+    expect(await exit).toBe(1);
+    await settle();
+    expect(calls).toEqual([`${NODE} /repo/packages/server/dist/main.js`]);
+  });
+
+  it("start fails with the server's exit code", async () => {
+    const system = fakeSystem({
+      run: async () => 3,
+      node: { path: NODE, version: "v26.1.0" },
+      repoRoot: "/repo",
+    });
+    const { deps, err } = fakeDeps(noServer, { system });
+
+    expect(await run(["start"], deps)).toBe(1);
+    expect(err).toEqual(["pi-spore server exited with code 3"]);
+  });
+
+  it("service commands and logs fail on a system other than Linux", async () => {
+    const { system, calls } = linux({}, { platform: "darwin" });
+    const { deps, err } = fakeDeps(noServer, { system, env: { PATH: PATH_ENV } });
+
+    expect(await run(["service", "install", "--yes"], deps)).toBe(1);
+    expect(await run(["service", "uninstall", "--yes"], deps)).toBe(1);
+    expect(await run(["logs"], deps)).toBe(1);
+    expect(err).toEqual(Array(3).fill("pi-spore service needs Linux with systemd"));
+    expect(calls).toEqual([]);
+  });
+});
+
+/** A unit that runs a different Node than the CLI, to prove the build uses the unit's. */
+const UNIT_TEXT = `ExecStart=/opt/node/26/bin/node /repo/packages/server/dist/main.js
+WorkingDirectory=/repo
+`;
+const UNIT_NODE_DIR = "/opt/node/26/bin";
+const UNIT_NPM = `${UNIT_NODE_DIR}/npm`;
+const CLI_NODE_DIR = NODE.slice(0, NODE.lastIndexOf("/"));
+const npmLine = (dir: string, ...args: string[]) =>
+  `${[`${dir}/npm`, ...args].join(" ")} PATH=${dir}:${PATH_ENV}`;
+
+/** A server that answers health, then lists these chats and the one test workspace. */
+const serverWith = (agents: readonly Record<string, unknown>[]) => (key: string) => {
+  if (key === "GET /api/health") return healthy();
+  if (key === "GET /api/agents") return Response.json({ agents });
+  if (key === "GET /api/workspaces") return Response.json({ workspaces: [workspace] });
+  throw new Error(`unexpected request: ${key}`);
+};
+
+const chat = (id: string, extra: Record<string, unknown> = {}) => ({
+  id,
+  workspaceId: "W1",
+  role: "worker",
+  kind: "worker",
+  active: true,
+  status: "busy",
+  statusSince: 1,
+  createdAt: 1,
+  ...extra,
+});
+
+describe("pi-spore restart and rebuild", () => {
+  it("rebuild builds with the unit's npm, its folder first on PATH, then restarts with no busy agent", async () => {
+    const { system, calls } = linux({ files: { [UNIT]: UNIT_TEXT }, answer: false });
+    const { deps, out } = fakeDeps(serverWith([]), { system, env: { PATH: PATH_ENV } });
+
+    expect(await run(["rebuild"], deps)).toBe(0);
+    expect(calls).toEqual([
+      npmLine(UNIT_NODE_DIR, "run", "build"),
+      "systemctl --user restart pi-spore",
+    ]);
+    expect(out).toContain("pi-spore restarted. Read the log: pi-spore logs -f");
+  });
+
+  it("rebuild stops at a failed build and leaves the running server alone", async () => {
+    const { system, calls } = linux({
+      files: { [UNIT]: UNIT_TEXT },
+      code: (command) => (command === `${UNIT_NPM} run build` ? 1 : 0),
+    });
+    const { deps, err } = fakeDeps(serverWith([chat("A1")]), { system, env: { PATH: PATH_ENV } });
+
+    expect(await run(["rebuild"], deps)).toBe(1);
+    expect(err).toEqual(["The build failed (exit 1). The running server was not touched."]);
+    expect(calls).toEqual([npmLine(UNIT_NODE_DIR, "run", "build")]);
+  });
+
+  it("rebuild with busy agents and a no answer does not restart", async () => {
+    const { system, calls } = linux({ files: { [UNIT]: UNIT_TEXT }, answer: false });
+    const { deps, out } = fakeDeps(serverWith([chat("A1", { title: "Fix the HUD" })]), {
+      system,
+      env: { PATH: PATH_ENV },
+    });
+
+    expect(await run(["rebuild"], deps)).toBe(0);
+    expect(calls).toEqual([npmLine(UNIT_NODE_DIR, "run", "build"), "ask Restart pi-spore anyway?"]);
+    expect(out).toContain("Not restarted.");
+  });
+
+  it("rebuild runs npm ci only with --install, before the build", async () => {
+    const plain = linux({ files: { [UNIT]: UNIT_TEXT } });
+    const first = fakeDeps(serverWith([]), { system: plain.system, env: { PATH: PATH_ENV } });
+    expect(await run(["rebuild"], first.deps)).toBe(0);
+    expect(plain.calls).toEqual([
+      npmLine(UNIT_NODE_DIR, "run", "build"),
+      "systemctl --user restart pi-spore",
+    ]);
+
+    const withInstall = linux({ files: { [UNIT]: UNIT_TEXT } });
+    const second = fakeDeps(serverWith([]), {
+      system: withInstall.system,
+      env: { PATH: PATH_ENV },
+    });
+    expect(await run(["rebuild", "--install"], second.deps)).toBe(0);
+    expect(withInstall.calls).toEqual([
+      npmLine(UNIT_NODE_DIR, "ci"),
+      npmLine(UNIT_NODE_DIR, "run", "build"),
+      "systemctl --user restart pi-spore",
+    ]);
+  });
+
+  it("rebuild without a unit, or off Linux, builds and says to restart by hand", async () => {
+    const { system, calls } = linux();
+    const { deps, out } = fakeDeps(noServer, { system, env: { PATH: PATH_ENV } });
+    expect(await run(["rebuild"], deps)).toBe(0);
+    expect(calls).toEqual([npmLine(CLI_NODE_DIR, "run", "build")]);
+    expect(out).toEqual([
+      "Build done. The service is not installed; restart the server in its terminal.",
+    ]);
+
+    const mac = linux({}, { platform: "darwin" });
+    const second = fakeDeps(noServer, { system: mac.system, env: { PATH: PATH_ENV } });
+    expect(await run(["rebuild"], second.deps)).toBe(0);
+    expect(mac.calls).toEqual([npmLine(CLI_NODE_DIR, "run", "build")]);
+  });
+
+  it("restart lists the busy agents before it asks, and restarts on yes", async () => {
+    const { system, calls } = linux({ files: { [UNIT]: UNIT_TEXT } });
+    const busy = [
+      chat("A1", { title: "Fix the HUD" }),
+      chat("A2", { status: "idle", helpersRunning: 2 }),
+      chat("A3", { status: "idle" }),
+      chat("A4", { status: "starting", workspaceId: "W9" }),
+    ];
+    const { deps, out } = fakeDeps(serverWith(busy), { system, env: { PATH: PATH_ENV } });
+    // One log of printed lines and questions, so the order is checked.
+    deps.out = (line) => {
+      out.push(line);
+      calls.push(`out ${line}`);
+    };
+
+    expect(await run(["restart"], deps)).toBe(0);
+    expect(calls).toEqual([
+      "out These agents are busy. A restart stops their turns:",
+      "out   A1  worker  Fix UI  Fix the HUD",
+      "out   A2  worker  Fix UI  (no messages yet)",
+      "out   A4  worker  W9  (no messages yet)",
+      "ask Restart pi-spore anyway?",
+      "systemctl --user restart pi-spore",
+      "out pi-spore restarted. Read the log: pi-spore logs -f",
+    ]);
+    expect(out.at(-1)).toBe("pi-spore restarted. Read the log: pi-spore logs -f");
+  });
+
+  it("restart without a unit says to install the service or restart by hand", async () => {
+    const { system, calls } = linux();
+    const { deps, err } = fakeDeps(noServer, { system });
+
+    expect(await run(["restart"], deps)).toBe(1);
+    expect(err).toEqual([
+      "The pi-spore service is not installed. Run pi-spore service install, or restart the server in its terminal.",
+    ]);
+    expect(calls).toEqual([]);
+  });
+
+  it("restart does not ask when the server does not answer", async () => {
+    const { system, calls } = linux({ files: { [UNIT]: UNIT_TEXT }, answer: false });
+    const { deps, out } = fakeDeps(noServer, { system });
+
+    expect(await run(["restart"], deps)).toBe(0);
+    expect(out).toEqual([
+      "The pi-spore server does not answer, so no agent is busy.",
+      "pi-spore restarted. Read the log: pi-spore logs -f",
+    ]);
+    expect(calls).toEqual(["systemctl --user restart pi-spore"]);
   });
 });
 
