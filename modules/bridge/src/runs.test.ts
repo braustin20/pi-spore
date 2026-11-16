@@ -1100,6 +1100,103 @@ describe("decline_lane (ADR 0181)", () => {
     expect(laneJob(server, later.id).state).toBe("cancelled");
   });
 
+  it("refuses a user decline of a lane that a cancel never saw", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "decline-after-cancel");
+    const { run, coordinator } = await createRun(server, projectId, "decline-after-cancel");
+    await startLane(run, coordinator, "first");
+    const later = await startLane(run, coordinator, "later", { wave: 2 });
+    await until(() => laneJob(server, later.id).state === "waiting");
+    // `startLane` checks the run before it reads the brief, so a start still in flight when the user cancels
+    // lands a lane that the cancel never saw: `waiting`, in a cancelled run (ADR 0181). The cancel knows only
+    // the lanes it read, so the row is put back by hand rather than raced.
+    await json(await server.request("POST", `/api/runs/${run.id}/cancel`));
+    server.store.run(
+      "UPDATE runs_lanes SET state = 'waiting', message = NULL WHERE id = ?",
+      later.id,
+    );
+
+    const response = await server.request("POST", `/api/runs/${run.id}/lanes/${later.id}/decline`, {
+      reason: "dropped",
+    });
+
+    expect(response.status).toBe(409);
+    expect(await response.json()).toMatchObject({ error: { code: "run_cancelled" } });
+    const kept = await laneOf(server, run.id, later.id);
+    expect(kept.state).toBe("waiting");
+    expect(kept.message).toBeUndefined();
+    // A cancelled run's coordinator is told nothing: its pending deliveries went with the cancel.
+    expect(
+      server.store.all(
+        "SELECT 1 FROM agents_deliveries WHERE agent_id = ? AND message LIKE ?",
+        run.coordinatorAgentId,
+        "%declined lane%",
+      ),
+    ).toEqual([]);
+  });
+
+  it("refuses a revise whose brief was read before the lane was declined, and keeps it declined", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "decline-revise");
+    const { run, coordinator } = await createRun(server, projectId, "decline-revise");
+    const lane = await startLane(run, coordinator, "twice");
+    await laneChanges(server, run, lane.id, "feature.txt", "x\n");
+    await artifacts.write({ scope: "workspace", id: run.workspaceId }, "briefs/fix.md", "Fix it");
+
+    // A revise reads the brief first, so a decline can land in that read (ADR 0181). The decline is the
+    // later word on the lane, and the revise must lose.
+    const revising = runs.reviseLane(coordinator, { laneId: lane.id, brief: "briefs/fix.md" });
+    const declined = runs.declineLane(coordinator, {
+      laneId: lane.id,
+      reason: "dropped instead",
+    });
+
+    expect(declined.state).toBe("declined");
+    await expect(revising).rejects.toMatchObject({
+      status: 409,
+      code: "lane_not_revisable",
+      message: expect.stringContaining("is declined"),
+    });
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({
+      brief: `briefs/${lane.name}.md`,
+      state: "declined",
+      message: "dropped instead",
+    });
+    // No new lane job: the revise never took the lane.
+    expect(server.services.jobs.list({ kind: "runs.lane", key: lane.id })).toHaveLength(1);
+  });
+
+  it("wakes a retried build that yields to the lane it waits for", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "decline-retry-wake");
+    const { run, coordinator } = await createRun(server, projectId, "decline-retry-wake");
+    writeFileSync(join(folder, ".pi-spore", "config.toml"), "[actions\n");
+    const later = await startLane(run, coordinator, "later", { wave: 2 });
+    await until(() => {
+      const job = laneJob(server, later.id);
+      return job.state === "waiting" && job.error !== null;
+    });
+    writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+    // A wave-1 lane appears after the build failed, so the retry now yields to it.
+    const first = await startLane(run, coordinator, "first", { wave: 1 });
+    await until(async () => (await laneOf(server, run.id, first.id)).state === "running");
+
+    server.services.jobs.retry(laneJob(server, later.id).id);
+
+    // The build yielded: the job is parked again, with its error cleared.
+    await until(() => {
+      const job = laneJob(server, later.id);
+      return job.state === "waiting" && job.error === null;
+    });
+
+    // The wave-1 lane's work is then dropped, and that wake must reach the build that yielded (ADR 0181).
+    await laneChanges(server, run, first.id, "feature.txt", "x\n");
+    runs.declineLane(coordinator, { laneId: first.id, reason: "not needed" });
+
+    await until(async () => (await laneOf(server, run.id, later.id)).state === "running");
+    expect((await laneOf(server, run.id, later.id)).workspaceId).toBeDefined();
+  });
+
   it("refuses a decline while the lane's workspace build is under way, and builds it once the cause is fixed", async () => {
     const server = await start();
     const { projectId, folder } = await project(server, "decline-building");

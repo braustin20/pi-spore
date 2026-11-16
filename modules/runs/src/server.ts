@@ -304,6 +304,9 @@ const HAS_LANE_DIFF: readonly LaneState[] = ["passed", "merging", "merged"];
 /** The states a lane can be declined from (ADR 0181). The others are asked about, at work, merging, or over. */
 const DECLINABLE: readonly LaneState[] = ["waiting", "passed", "failed"];
 
+/** The states a lane can be revised from: a revise sends a lane that finished its run back for one more turn. */
+const REVISABLE: readonly LaneState[] = ["passed", "failed"];
+
 const handoverMessage = (
   run: RunRow,
   runName: string,
@@ -614,26 +617,33 @@ export const runsModule: ServerModule = {
       return laneView(loadLane(laneId) as LaneRow);
     };
 
+    /** A lane that is not in a state a revise accepts, named as it is now. */
+    const notRevisable = (lane: LaneRow) =>
+      new ApiError(
+        409,
+        "lane_not_revisable",
+        `Lane ${lane.id} is ${lane.state}; only a passed or failed lane can be revised`,
+      );
+
     const reviseLane = async (caller: BridgeCaller, request: ReviseLaneRequest): Promise<Lane> => {
       const run = runOfCaller(caller);
       const lane = loadLane(request.laneId);
       if (lane?.run_id !== run.id) {
         throw new ApiError(404, "lane_not_found", `No lane ${request.laneId} in run ${run.id}`);
       }
-      if (lane.state !== "passed" && lane.state !== "failed") {
-        throw new ApiError(
-          409,
-          "lane_not_revisable",
-          `Lane ${lane.id} is ${lane.state}; only a passed or failed lane can be revised`,
-        );
-      }
+      if (!REVISABLE.includes(lane.state)) throw notRevisable(lane);
       await readBrief(run, request.brief);
       host.store.transaction(() => {
-        host.store.run(
-          "UPDATE runs_lanes SET brief = ?, state = 'starting', message = NULL WHERE id = ?",
+        // The brief is read outside the transaction, so the lane may have been declined or cancelled during
+        // that read, and a revise must not bring it back: only a lane still waiting for its revise starts.
+        const { changes } = host.store.run(
+          `UPDATE runs_lanes SET brief = ?, state = 'starting', message = NULL
+           WHERE id = ? AND state IN (${REVISABLE.map(() => "?").join(", ")})`,
           request.brief,
           lane.id,
+          ...REVISABLE,
         );
+        if (changes === 0) throw notRevisable(loadLane(lane.id) as LaneRow);
         startLaneJob(lane.id);
       });
       publish();
@@ -664,15 +674,13 @@ export const runsModule: ServerModule = {
       return laneView(loadLane(lane.id) as LaneRow);
     };
 
-    /** The ADR 0181 refusals: a cancelled run first, then a lane in a state that is not declinable. */
-    const declineRefusal = (run: RunRow, lane: LaneRow) =>
-      run.state === "cancelled"
-        ? new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`)
-        : new ApiError(
-            409,
-            "lane_not_declinable",
-            `Lane ${lane.id} is ${lane.state}; only a waiting, passed, or failed lane can be declined`,
-          );
+    /** A lane that is not in a state a decline accepts, named as it is now (ADR 0181). */
+    const notDeclinable = (lane: LaneRow) =>
+      new ApiError(
+        409,
+        "lane_not_declinable",
+        `Lane ${lane.id} is ${lane.state}; only a waiting, passed, or failed lane can be declined`,
+      );
 
     /**
      * Drops a lane that will not merge (ADR 0181). It merges and deletes nothing: the lane's workspace and branch
@@ -684,10 +692,13 @@ export const runsModule: ServerModule = {
       if (lane?.run_id !== run.id) {
         throw new ApiError(404, "lane_not_found", `No lane ${laneId} in run ${run.id}`);
       }
+      if (run.state === "cancelled") {
+        throw new ApiError(409, "run_cancelled", `Run ${run.id} is cancelled`);
+      }
       host.store.transaction(() => {
-        // The compare-and-set holds the rule, and it is what settles the race with the lane job: only a step
-        // that has not taken the lane for building yet can be declined here, and one that has is refused with
-        // the state it has now, so a decline never overtakes a workspace build that is already under way.
+        // The compare-and-set is what settles the race with the lane job: only a step that has not taken the
+        // lane for building yet can be declined here, and one that has is refused with the state it has now, so
+        // a decline never overtakes a workspace build that is already under way.
         const { changes } = host.store.run(
           `UPDATE runs_lanes SET state = 'declined', message = ?
            WHERE id = ? AND state IN (${DECLINABLE.map(() => "?").join(", ")})`,
@@ -695,9 +706,7 @@ export const runsModule: ServerModule = {
           lane.id,
           ...DECLINABLE,
         );
-        if (changes === 0) {
-          throw declineRefusal(requireRun(run.id), loadLane(lane.id) as LaneRow);
-        }
+        if (changes === 0) throw notDeclinable(loadLane(lane.id) as LaneRow);
         cancelJobs(LANE_JOB, lane.id);
         wakeWaiting(run.id);
         const lanes = lanesOf(run.id);
@@ -916,7 +925,16 @@ export const runsModule: ServerModule = {
       // A revise keeps the lane's workspace; a build a restart cut short has none, so it builds one again.
       if (lane?.state === "starting" && lane.workspace_id !== null) return {};
       if (lane?.state !== "waiting" && lane?.state !== "starting") return { next: null };
-      if (waitsFor(lane)) return { wait: true };
+      if (waitsFor(lane)) {
+        // A build that failed, or that a restart cut short, holds the lane as `starting`, and only a
+        // `waiting` lane is woken: give it back the state that a merged or declined lane can release, so a
+        // lane that arrives later in that wave cannot strand it (ADR 0181).
+        host.store.run(
+          "UPDATE runs_lanes SET state = 'waiting' WHERE id = ? AND state = 'starting' AND workspace_id IS NULL",
+          lane.id,
+        );
+        return { wait: true };
+      }
       const run = requireRun(lane.run_id);
       // Take the lane for building before the build starts (ADR 0181): the build is the step's async work, so
       // a decline cannot be undone once it is under way, and a declined lane must never get a workspace. From
