@@ -46,6 +46,8 @@ const STEP = 72;
 export const HELPER_ROW = 26;
 const PAD = 18;
 const HEADER = 44;
+/** The `merging: <step>` line under a merging group's name: its steps move down by this, so it covers none. */
+const MERGING_ROW = 18;
 const TREE_GAP = 22;
 /** A step node's box: the pod's center sits at (STAGE_R, STEP_CY), the text to its right. */
 const STEP_W = GROUP_W - 26;
@@ -133,7 +135,7 @@ function layoutTree(
   for (let row = 0; row < tree.groups.length; row += perRow) {
     // Each pod's center y in its group, then the row's height from the tallest group.
     const placed = tree.groups.slice(row, row + perRow).map((group) => {
-      let podY = 56;
+      let podY = 56 + (group.merging === undefined ? 0 : MERGING_ROW);
       const ys = group.steps.map((step) => {
         const at = podY;
         podY += STEP + rows(stepNodeId(step)) * HELPER_ROW;
@@ -154,6 +156,8 @@ function layoutTree(
         ...sized(GROUP_W, rowH),
       });
       // The route: from the root through every step before the running one, to it.
+      // A merging lane's run has ended, but the coordinator works on it: its first thread is live.
+      const merging = group.merging !== undefined;
       const active = group.live ? group.steps.findIndex((each) => each.state === "running") : -1;
       let previous = id;
       group.steps.forEach((step, index) => {
@@ -167,7 +171,7 @@ function layoutTree(
           handles: stepHandles,
           ...sized(STEP_W, STEP_H),
         });
-        const onRoute = index <= active;
+        const onRoute = index <= active || (index === 0 && merging);
         edges.push({
           id: `thread:${stepId}`,
           type: "thread",
@@ -178,7 +182,7 @@ function layoutTree(
           data: {
             tone: onRoute || index === 0 ? tone : "muted",
             live: onRoute,
-            dim: index === 0 ? !group.live : step.state === "waiting",
+            dim: index === 0 ? !group.live && !merging : step.state === "waiting",
             stacked: index === 0 && stacked,
           },
         });
@@ -203,7 +207,7 @@ function layoutTree(
       root: { x: rx, y: ry, r: rootR },
       live:
         rootState(tree.root, waits.get(tree.root.agentId)) === "work" ||
-        tree.groups.some((group) => group.live),
+        tree.groups.some((group) => group.live || group.merging !== undefined),
     },
     handles: rootHandles({ x: rx, y: ry, r: rootR }),
     ...sized(width, height),

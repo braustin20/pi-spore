@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -29,6 +29,9 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { agentGraphModule, GRAPH_TOPIC } from "./server.js";
 
 const FAKE_PI = fileURLToPath(new URL("../../agents/test-fixtures/fake-pi.mjs", import.meta.url));
+const GATE_ACTION = fileURLToPath(
+  new URL("../../bridge/test-fixtures/gate-action.mjs", import.meta.url),
+);
 
 let scratch: string;
 let servers: { server: TestServer; agents: ReturnType<typeof createAgentsModule> }[];
@@ -178,11 +181,22 @@ async function workspace(server: TestServer, name: string) {
   return { workspaceId: workspace.id, agentId: agent.id };
 }
 
-/** A git project on `main` with one commit, for a run and its lane worktrees. */
-async function gitProject(server: TestServer, name: string) {
+/**
+ * A git project on `main` with one commit, for a run and its lane worktrees. Each gate is the gate-action fixture in
+ * the given mode (see gate-action.mjs).
+ */
+async function gitProject(server: TestServer, name: string, gates: Record<string, string> = {}) {
   const folder = join(scratch, name);
   mkdirSync(join(folder, ".pi-spore"), { recursive: true });
-  writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+  writeFileSync(
+    join(folder, ".pi-spore", "config.toml"),
+    Object.entries(gates)
+      .map(
+        ([gate, mode]) =>
+          `[actions.${gate}]\nrun = ${JSON.stringify([process.execPath, GATE_ACTION, join(scratch, "counter.txt"), gate, mode])}\n`,
+      )
+      .join("\n"),
+  );
   writeFileSync(join(folder, "a.txt"), "one\n");
   const git = (...args: string[]) =>
     execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", ...args], { cwd: folder });
@@ -273,6 +287,48 @@ describe("the agent graph (ADR 0176)", () => {
       { laneId: one.id, workspaceId: lanes[0]?.workspaceId, stage: "implement" },
       { laneId: two.id, workspaceId: lanes[1]?.workspaceId, stage: "implement" },
     ]);
+  });
+
+  it("marks a lane's group as merging with the merge step while its gate runs, and clears it when the merge ends", async () => {
+    const server = await start({ worker: [DONE, "hang"] });
+    const projectId = await gitProject(server, "graph-merge", {
+      check: "hang-first",
+      test: "pass",
+    });
+    const { run, coordinator } = await createRun(server, projectId, "graph-merge");
+    const merged = await startLane(run, coordinator, "merged");
+    await until(async () => (await getRun(server, run.id)).lanes[0]?.state === "passed");
+    const other = await startLane(run, coordinator, "other");
+    await until(async () =>
+      (await getRun(server, run.id)).lanes.every((lane) => lane.pipelineRunId !== undefined),
+    );
+    const merging = async () =>
+      ((await graph(server))[0]?.groups ?? []).map(({ laneId, merging }) => ({ laneId, merging }));
+
+    await runs.mergeLane(coordinator, { laneId: merged.id });
+
+    await until(async () => (await graph(server))[0]?.groups[0]?.merging === "gate check");
+    expect(await merging()).toEqual([
+      { laneId: merged.id, merging: "gate check" },
+      { laneId: other.id, merging: undefined },
+    ]);
+    // The event the canvas gets says the same.
+    expect(events(server).at(-1)?.trees[0]?.groups[0]?.merging).toBe("gate check");
+
+    // Cancelling the hung gate ends the merge as a failed gate: the lane is `passed` again.
+    await until(() => existsSync(join(scratch, "counter.txt")));
+    const { runs: gateRuns } = await json<{ runs: { id: string; action: string }[] }>(
+      await server.request("GET", `/api/actions/workspaces/${run.workspaceId}/runs`),
+    );
+    const gate = gateRuns.find((entry) => entry.action === "check") as { id: string };
+    await server.request("POST", `/api/actions/runs/${gate.id}/cancel`);
+    await until(async () => (await getRun(server, run.id)).lanes[0]?.state === "passed");
+
+    expect(await merging()).toEqual([
+      { laneId: merged.id, merging: undefined },
+      { laneId: other.id, merging: undefined },
+    ]);
+    expect(events(server).at(-1)?.trees[0]?.groups[0]).not.toHaveProperty("merging");
   });
 
   it("gives a workspace its worker chat and a run in review with a done and a running step", async () => {
