@@ -6,7 +6,7 @@ import type { GraphAgent, GraphGroup, GraphHelper, GraphStep, GraphTree } from "
 import { TooltipProvider } from "@pi-spore/ui";
 import { act, type ComponentType } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { layoutGraph } from "./layout.js";
 import { agentGraphWeb } from "./web.js";
 
@@ -112,6 +112,8 @@ function unmount() {
   container?.remove();
   container = undefined;
 }
+// The legend choice lives in localStorage, so one test must not leak it to the next.
+beforeEach(() => localStorage.clear());
 afterEach(unmount);
 
 /** Renders the landing with a fake api; `send` pushes a topic event, as the server does. */
@@ -595,7 +597,38 @@ describe("the agent graph canvas", () => {
 
     it("names the wait in the legend", async () => {
       const { scope } = await render([runTree]);
+      await click(button(scope, "Show legend"));
       expect(scope.querySelector(".ag-legend")?.textContent).toContain("waits for you");
+    });
+  });
+
+  describe("the color legend", () => {
+    it("is hidden by default, behind a button", async () => {
+      const { scope } = await render([runTree]);
+      expect(scope.querySelector(".ag-legend")).toBeNull();
+      const show = button(scope, "Show legend");
+      expect(show).not.toBeNull();
+      expect(show?.getAttribute("aria-expanded")).toBe("false");
+    });
+
+    it("shows and hides the legend with the button", async () => {
+      const { scope } = await render([runTree]);
+      await click(button(scope, "Show legend"));
+      expect(scope.querySelector(".ag-legend")?.textContent).toContain("waits for you");
+      const hide = button(scope, "Hide legend");
+      expect(hide?.getAttribute("aria-expanded")).toBe("true");
+      await click(hide);
+      expect(scope.querySelector(".ag-legend")).toBeNull();
+      expect(button(scope, "Show legend")).not.toBeNull();
+    });
+
+    it("remembers the choice when the page comes back", async () => {
+      const first = await render([runTree]);
+      await click(button(first.scope, "Show legend"));
+      // `render` unmounts the first page, so this is a fresh mount, as coming back to the page is.
+      const second = await render([runTree]);
+      expect(second.scope.querySelector(".ag-legend")).not.toBeNull();
+      expect(button(second.scope, "Hide legend")).not.toBeNull();
     });
   });
 
