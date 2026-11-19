@@ -3,7 +3,7 @@ import "./graph.css";
 import type { UseUserWaits } from "@pi-spore/mod-agents/web";
 import { useApi } from "@pi-spore/module-api";
 import type { AgentGraphEvent, GraphAgent, GraphStep, GraphTree } from "@pi-spore/shared";
-import { Button, cn, EmptyState, Notice, SporeLogo, usePhone } from "@pi-spore/ui";
+import { Button, cn, EmptyState, Notice, SporeLogo, usePhone, useStoredFlag } from "@pi-spore/ui";
 import {
   Background,
   type EdgeProps,
@@ -470,6 +470,8 @@ export function AgentGraph({
 }) {
   const api = useApi();
   const waits = useUserWaits();
+  // The legend is reference, not content: show it only to the reader who asked, and remember that they did.
+  const [legend, setLegend] = useStoredFlag("pi-spore.agent-graph.legend", false);
   const [all, setAll] = useState<readonly GraphTree[]>();
   useEffect(
     () => api.subscribe("agent-graph:trees", (event) => setAll((event as AgentGraphEvent).trees)),
@@ -488,22 +490,34 @@ export function AgentGraph({
           <SporeLogo className="size-6 text-accent" />
           <h1 className="m-0 text-lg font-semibold">Agents</h1>
           {trees && <span className="text-[13px] text-muted">{summary(trees, waits)}</span>}
+          <Button
+            className="ml-auto"
+            size="sm"
+            variant="ghost"
+            aria-expanded={legend}
+            aria-controls="ag-legend"
+            onClick={() => setLegend(!legend)}
+          >
+            {legend ? "Hide legend" : "Show legend"}
+          </Button>
         </div>
-        <div className="ag-legend">
-          {LEGEND_TYPES.map(([tone, label]) => (
-            <span key={label} className={tone}>
-              <i />
-              {label}
-            </span>
-          ))}
-          <span className="ag-sep" />
-          {LEGEND_STATES.map(([state, label]) => (
-            <span key={label}>
-              <i className={cn("st", state)} />
-              {label}
-            </span>
-          ))}
-        </div>
+        {legend && (
+          <div id="ag-legend" className="ag-legend">
+            {LEGEND_TYPES.map(([tone, label]) => (
+              <span key={label} className={tone}>
+                <i />
+                {label}
+              </span>
+            ))}
+            <span className="ag-sep" />
+            {LEGEND_STATES.map(([state, label]) => (
+              <span key={label}>
+                <i className={cn("st", state)} />
+                {label}
+              </span>
+            ))}
+          </div>
+        )}
       </header>
       {trees?.length === 0 && (
         <EmptyState
