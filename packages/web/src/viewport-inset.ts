@@ -1,4 +1,6 @@
 const KEYBOARD_MIN_PX = 100;
+const TEXT_FIELD =
+  'textarea, input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"])';
 
 /**
  * Keeps `--app-height` and `--app-top` in step with the visual viewport on phones (ADR 0159). On resume the
@@ -15,13 +17,20 @@ export function followVisualViewport(win: Window): () => void {
     const keyboardOpen = viewport.height < doc.documentElement.clientHeight - KEYBOARD_MIN_PX;
     root.setProperty("--app-height", `${viewport.height}px`);
     root.setProperty("--app-top", keyboardOpen ? `${viewport.offsetTop}px` : "0px");
+    doc.documentElement.toggleAttribute("data-keyboard-open", keyboardOpen);
   };
+  let frame = 0;
   const onResume = () => {
     update();
+    // The viewport height can still be stale right at resume, so read it once more after the next frame.
+    win.cancelAnimationFrame(frame);
+    frame = win.requestAnimationFrame(update);
     if (win.scrollX !== 0 || win.scrollY !== 0) win.scrollTo(0, 0);
   };
   const onVisibility = () => {
-    if (doc.visibilityState === "visible") onResume();
+    if (doc.visibilityState === "visible") return onResume();
+    // iOS keeps a field focused on resume with no keyboard, which would hide the top bar (ADR 0190).
+    if (doc.activeElement?.matches(TEXT_FIELD)) (doc.activeElement as HTMLElement).blur();
   };
   update();
   viewport.addEventListener("resize", update);
@@ -33,6 +42,8 @@ export function followVisualViewport(win: Window): () => void {
     viewport.removeEventListener("scroll", update);
     doc.removeEventListener("visibilitychange", onVisibility);
     win.removeEventListener("pageshow", onResume);
+    win.cancelAnimationFrame(frame);
+    doc.documentElement.removeAttribute("data-keyboard-open");
     root.removeProperty("--app-height");
     root.removeProperty("--app-top");
   };

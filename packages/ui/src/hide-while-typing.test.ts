@@ -9,7 +9,8 @@ function findRule(css: string, marker: string) {
     const char = css[at];
     if (char === "{") {
       const prelude = css.slice(start, at).trim();
-      if (prelude.includes(marker)) return { outer, body: css.slice(at + 1, css.indexOf("}", at)) };
+      if (prelude.includes(marker))
+        return { outer, prelude, body: css.slice(at + 1, css.indexOf("}", at)) };
       outer.push(prelude);
     } else if (char === "}") outer.pop();
     if (char === "{" || char === "}" || char === ";") start = at + 1;
@@ -26,4 +27,7 @@ it("hides the marked rows on phones, over the Tailwind display utilities", () =>
   // Inside any @layer, the rule would lose to `.flex` in the utilities layer, so it must be unlayered.
   expect(rule.outer).toEqual(["@media (width < 48rem)"]);
   expect(rule.body).toContain("display: none");
+  // iOS keeps a field focused on resume with no keyboard, so focus alone must not hide the top bar (ADR 0190).
+  expect(rule.prelude.startsWith("html[data-keyboard-open]")).toBe(true);
+  expect(rule.prelude).toContain(":focus");
 });
