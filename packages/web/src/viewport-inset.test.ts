@@ -9,6 +9,21 @@ class FakeViewport extends EventTarget {
 
 let viewport: FakeViewport;
 let unfollow: (() => void) | undefined;
+const appended: HTMLElement[] = [];
+
+function append<T extends HTMLElement>(el: T): T {
+  document.body.append(el);
+  appended.push(el);
+  return el;
+}
+
+/** Stubs the frame API; returns the stored callbacks and the cancel spy. */
+function stubFrames() {
+  const frames: FrameRequestCallback[] = [];
+  vi.spyOn(window, "requestAnimationFrame").mockImplementation((cb) => frames.push(cb));
+  const cancel = vi.spyOn(window, "cancelAnimationFrame").mockImplementation(() => {});
+  return { frames, cancel };
+}
 
 function setClientHeight(px: number) {
   Object.defineProperty(document.documentElement, "clientHeight", {
@@ -50,6 +65,8 @@ afterEach(() => {
   delete (document as unknown as Record<string, unknown>).visibilityState;
   setScroll(0, 0);
   document.documentElement.style.cssText = "";
+  document.documentElement.removeAttribute("data-keyboard-open");
+  for (const el of appended.splice(0)) el.remove();
 });
 
 describe("followVisualViewport", () => {
@@ -176,5 +193,72 @@ describe("followVisualViewport", () => {
     expect(prop("--app-height")).toBe("");
     expect(prop("--app-top")).toBe("");
     expect(scrollTo).not.toHaveBeenCalled();
+  });
+
+  it("on visibilitychange (hidden) blurs a focused text field", () => {
+    follow();
+    const textarea = append(document.createElement("textarea"));
+    textarea.focus();
+    expect(document.activeElement).toBe(textarea);
+    setVisibility("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(document.activeElement).not.toBe(textarea);
+  });
+
+  it("on visibilitychange (hidden) leaves a focused checkbox alone", () => {
+    follow();
+    const box = append(document.createElement("input"));
+    box.type = "checkbox";
+    box.focus();
+    setVisibility("hidden");
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(document.activeElement).toBe(box);
+  });
+
+  it("marks <html> with data-keyboard-open while the keyboard is open", () => {
+    const html = document.documentElement;
+    viewport.height = 400;
+    follow();
+    expect(html.hasAttribute("data-keyboard-open")).toBe(true);
+    viewport.height = 800;
+    viewport.dispatchEvent(new Event("resize"));
+    expect(html.hasAttribute("data-keyboard-open")).toBe(false);
+    viewport.height = 400;
+    viewport.dispatchEvent(new Event("resize"));
+    unfollow?.();
+    unfollow = undefined;
+    expect(html.hasAttribute("data-keyboard-open")).toBe(false);
+  });
+
+  it("on resume updates again on the next frame", () => {
+    const { frames } = stubFrames();
+    follow();
+    viewport.height = 600;
+    document.dispatchEvent(new Event("visibilitychange"));
+    expect(prop("--app-height")).toBe("600px");
+    viewport.height = 500;
+    expect(frames).toHaveLength(1);
+    frames[0]?.(0);
+    expect(prop("--app-height")).toBe("500px");
+  });
+
+  it("on pageshow updates again on the next frame", () => {
+    const { frames } = stubFrames();
+    follow();
+    window.dispatchEvent(new Event("pageshow"));
+    viewport.height = 500;
+    frames[0]?.(0);
+    expect(prop("--app-height")).toBe("500px");
+  });
+
+  it("cancels a pending frame before a new one and in the cleanup", () => {
+    const { frames, cancel } = stubFrames();
+    follow();
+    document.dispatchEvent(new Event("visibilitychange"));
+    window.dispatchEvent(new Event("pageshow"));
+    expect(cancel).toHaveBeenCalledWith(1);
+    unfollow?.();
+    unfollow = undefined;
+    expect(cancel).toHaveBeenLastCalledWith(frames.length);
   });
 });

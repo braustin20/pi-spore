@@ -114,10 +114,12 @@
   }
 }
 
-/* Phones only. The on-screen keyboard leaves too little height, so the top rows step aside while the user types
-   (ADR 0159). Unlayered on purpose: a rule in any @layer loses to the `flex` utility these rows carry. */
+/* Phones only. The on-screen keyboard leaves too little height, so the top rows step aside while it is open and a
+   text field has focus (ADR 0159, ADR 0190). Unlayered on purpose: a rule in any @layer loses to the `flex`
+   utility these rows carry. */
 @media (width < 48rem) {
-  body:has(
+  html[data-keyboard-open]
+    body:has(
       :is(
           textarea,
           input:not([type="checkbox"], [type="radio"], [type="file"], [type="range"])

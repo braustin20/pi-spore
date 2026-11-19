@@ -369,9 +369,11 @@ export interface ServerHost {
   `switchPane`, and `closePane` change it, and Back closes a pane. The root follows `visualViewport` so the
   composer stays above the on-screen keyboard; its top follows `offsetTop` only while the keyboard is open. The
   document never scrolls: `html` and `body` hide overflow, and `lockDocumentScroll` cancels a one-finger drag that
-  no inner scroller can use (ADR 0185). While a text field has focus, rows marked `data-hide-while-typing`
-  (the top bar and the workspace pane row) are hidden by one CSS `:has()` rule in `packages/ui/src/styles.css`;
-  they come back on blur. The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
+  no inner scroller can use (ADR 0185). `followVisualViewport` sets `data-keyboard-open` on `<html>` while the
+  keyboard is open. While it is set and a text field has focus, rows marked `data-hide-while-typing` (the top bar
+  and the workspace pane row) are hidden by one CSS `:has()` rule in `packages/ui/src/styles.css`; they come back
+  when the keyboard closes or the field loses focus. When the page is hidden, the focused text field is blurred;
+  on resume the viewport is read now and again on the next frame (ADR 0190). The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
   and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,
   Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
   the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
