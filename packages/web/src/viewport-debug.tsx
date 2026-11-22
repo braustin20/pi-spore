@@ -26,7 +26,7 @@ function eventLines(name: string): string {
   return `${name} ${clockTime()}\n  vv ${round(vv?.height)}/${round(vv?.offsetTop)} sY ${round(window.scrollY)} root ${rootTop()}`;
 }
 
-function numbers(): string {
+function numbers(lastHeal: string): string {
   const vv = window.visualViewport;
   const html = document.documentElement;
   const root = document.getElementById("root");
@@ -55,6 +55,7 @@ function numbers(): string {
     `--app-height ${html.style.getPropertyValue("--app-height") || "-"}`,
     `keyboard-open ${html.hasAttribute("data-keyboard-open") ? "yes" : "no"}`,
     `active: ${document.activeElement?.tagName.toLowerCase() ?? "none"}`,
+    `heals ${html.getAttribute("data-viewport-heals") ?? "0"}, last ${lastHeal}`,
     `scrolled:${scrolled.length > 0 ? `\n${scrolled.join("\n")}` : " none"}`,
   ]
     .filter((line) => line !== "")
@@ -64,6 +65,7 @@ function numbers(): string {
 export function ViewportDebug() {
   const on = useViewportDebug();
   const events = useRef<string[]>([]);
+  const lastHeal = useRef("-");
   const [text, setText] = useState("");
 
   useEffect(() => {
@@ -71,7 +73,7 @@ export function ViewportDebug() {
     const read = (name: string) => {
       events.current = [eventLines(name), ...events.current].slice(0, MAX_EVENTS);
       setText(
-        `${numbers()}\nevents: vv h/offTop, scrollY, #root top\n${events.current.join("\n")}`,
+        `${numbers(lastHeal.current)}\nevents: vv h/offTop, scrollY, #root top\n${events.current.join("\n")}`,
       );
     };
     const onResize = () => read("vv.resize");
@@ -87,6 +89,11 @@ export function ViewportDebug() {
     document.addEventListener("focusin", onFocusIn);
     document.addEventListener("focusout", onFocusOut);
     window.addEventListener("pageshow", onPageShow);
+    const heals = new MutationObserver(() => {
+      lastHeal.current = clockTime();
+      read("heal");
+    });
+    heals.observe(document.documentElement, { attributeFilter: ["data-viewport-heals"] });
     read("mount");
     return () => {
       vv?.removeEventListener("resize", onResize);
@@ -95,6 +102,7 @@ export function ViewportDebug() {
       document.removeEventListener("focusin", onFocusIn);
       document.removeEventListener("focusout", onFocusOut);
       window.removeEventListener("pageshow", onPageShow);
+      heals.disconnect();
     };
   }, [on]);
 
@@ -106,7 +114,7 @@ export function ViewportDebug() {
       className="font-mono"
       style={{
         position: "fixed",
-        top: "env(safe-area-inset-top)",
+        top: "calc(env(safe-area-inset-top) + 120px)",
         right: 0,
         zIndex: 2147483647,
         pointerEvents: "none",
