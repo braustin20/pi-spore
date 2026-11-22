@@ -1,6 +1,7 @@
 import { Check, Palette } from "lucide-react";
 import { DropdownMenu } from "radix-ui";
 import { setTheme, THEMES, useTheme } from "../themes.js";
+import { setViewportDebug, useViewportDebug } from "../viewport-debug.js";
 import { Button } from "./button.js";
 
 /** Four swatches of a theme. They sit inside the theme's own data-theme scope, so they show its real colors. */
@@ -22,6 +23,7 @@ function Swatches({ id }: { id: string }) {
 /** Lists the themes with a color preview. A choice applies at once and is remembered. */
 export function ThemeMenu() {
   const current = useTheme();
+  const viewportDebug = useViewportDebug();
   return (
     <DropdownMenu.Root>
       <DropdownMenu.Trigger asChild>
@@ -53,6 +55,17 @@ export function ThemeMenu() {
               </DropdownMenu.RadioItem>
             ))}
           </DropdownMenu.RadioGroup>
+          <DropdownMenu.Separator className="my-1 h-px bg-line" />
+          <DropdownMenu.CheckboxItem
+            checked={viewportDebug}
+            onCheckedChange={(on) => setViewportDebug(on === true)}
+            className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 outline-none data-[highlighted]:bg-raised"
+          >
+            <span className="flex-1">Show viewport numbers</span>
+            <DropdownMenu.ItemIndicator>
+              <Check aria-hidden="true" className="size-4 text-accent-strong" />
+            </DropdownMenu.ItemIndicator>
+          </DropdownMenu.CheckboxItem>
         </DropdownMenu.Content>
       </DropdownMenu.Portal>
     </DropdownMenu.Root>

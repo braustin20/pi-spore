@@ -45,3 +45,4 @@ export {
 } from "./phone.js";
 export { readFlag, useStoredFlag } from "./stored-flag.js";
 export { initTheme, readTheme, setTheme, THEMES, type Theme, useTheme } from "./themes.js";
+export { setViewportDebug, useViewportDebug } from "./viewport-debug.js";
