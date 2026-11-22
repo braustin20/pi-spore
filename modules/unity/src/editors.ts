@@ -159,6 +159,8 @@ export interface EditorsDeps {
   now: () => number;
   projects: Projects;
   workspaces: Workspaces;
+  /** The environment checked for a display before `unity open`. */
+  env: Record<string, string | undefined>;
 }
 
 export interface EditorsOptions {
@@ -320,6 +322,14 @@ export function createEditors(deps: EditorsDeps): UnityEditors & {
       if (state.editors.some((editor) => editor.path === target)) {
         // Already open here: keep the holder, or record the user as the holder of an editor opened outside pi-spore.
         return { lease: state.lease ?? save(leaseRow(deps.now())), alreadyOpen: true };
+      }
+      // Without a display Unity starts, dies on "cannot open display", and the lease would wait 10 minutes.
+      if (!deps.env.DISPLAY && !deps.env.WAYLAND_DISPLAY) {
+        throw new ApiError(
+          503,
+          "no_display",
+          "The pi-spore server has no DISPLAY or WAYLAND_DISPLAY, so Unity cannot open a window. In a desktop terminal, run `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY`, then `pi-spore restart`.",
+        );
       }
       const result = await runUnity(["open", target], project.path, 60_000);
       if (result.code !== 0) {

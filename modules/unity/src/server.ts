@@ -72,6 +72,8 @@ export interface UnityModuleOptions {
   testDeadlineMs?: number;
   /** Where test reports are written before they move into the artifacts. Default: the temp folder. */
   reportDir?: string;
+  /** The environment checked for a display before `unity open`. Default: `process.env`. */
+  env?: Record<string, string | undefined>;
 }
 
 export function createUnityModule(options: UnityModuleOptions = {}): ServerModule {
@@ -93,6 +95,7 @@ export function createUnityModule(options: UnityModuleOptions = {}): ServerModul
         now: host.now,
         projects,
         workspaces,
+        env: options.env ?? process.env,
       });
       host.provide(UnityEditorsKey, editors);
       const actions = host.use(ActionsKey);
