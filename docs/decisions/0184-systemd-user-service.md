@@ -1,6 +1,6 @@
 # 0184. pi-spore runs as a systemd user service
 
-- Status: Accepted
+- Status: Accepted; amended by [0191](0191-service-starts-with-the-graphical-session.md)
 - Date: 2026-11-15
 - Requirements: R1.1, R1.2, R1.6
 
@@ -29,7 +29,8 @@ restart in the middle of a turn lost that turn.
      sets, such as API keys. pi-spore never reads or writes that file.
    - A path with whitespace, `"`, `\`, `$`, or `%` is refused, because systemd would split or expand it.
    - The repo folder comes from the CLI's own file (`import.meta.url`), not from the current folder.
-   - `Restart=on-failure`, `RestartSec=2`, `WantedBy=default.target`.
+   - `Restart=on-failure`, `RestartSec=2`, `After=graphical-session.target`, `WantedBy=graphical-session.target`
+     (ADR 0191), so the server gets the desktop's display.
 3. **The user sees the unit first.** Install prints the unit and asks y/N; `--yes` skips the question. Install
    refuses while a foreground server answers, since that server holds the lock and the service could not start.
 4. **`rebuild` builds first, then asks before it restarts.** It runs `npm run build` while the server keeps running.
@@ -44,8 +45,8 @@ restart in the middle of a turn lost that turn.
 
 ## Consequences
 
-- Closing a terminal does not stop pi-spore. A user service still stops at logout unless the user runs
-  `loginctl enable-linger` once. pi-spore does not run that for them.
+- Closing a terminal does not stop pi-spore. The service starts with the desktop session and stops at logout. It
+  does not start on a login with no desktop, and `loginctl enable-linger` does not start it at boot (ADR 0191).
 - A new Node version means `pi-spore service install` again, so the unit points at the new Node.
 - `npm start` still works for a plain foreground run.
 - Variables from the shell's rc files do not reach agents of the service unless the user copies them to
