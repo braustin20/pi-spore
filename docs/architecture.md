@@ -364,7 +364,9 @@ export interface ServerHost {
   `rail: { order, icon }` gets a rail icon, lit on its path and every path below it. Full pages wrap their content
   in `Page` from `@pi-spore/ui`; the workspace view fills the area itself.
 - Phones (ADR 0159): below 768 px (`max-md:`; `usePhone()` in `packages/ui/src/phone.ts` for JS) the rail links
-  move into the top bar, controls are at least 44 px tall, and fields use 16 px text. A page that shows one pane
+  move into the top bar, controls are at least 44 px tall, and fields use 16 px text, so iOS does not zoom on focus.
+  The 16 px rule in `packages/ui/src/styles.css` is unlayered, so it beats the `text-sm` and `text-[15px]`
+  utilities; a zoom that starts on focus stays after a return to the app. A page that shows one pane
   at a time keeps the open pane in the hash, `#/<path>?pane=<name>`; the router ignores the query. `openPane`,
   `switchPane`, and `closePane` change it, and Back closes a pane. The root follows `visualViewport` so the
   composer stays above the on-screen keyboard; its top follows `offsetTop` only while the keyboard is open. The
@@ -376,7 +378,8 @@ export interface ServerHost {
   on resume the viewport is read now and again on the next frame (ADR 0190). If the viewport is then more than
   4 px shorter than the largest height seen with no focused field, iOS has kept a stale height: `#root` is set to
   `display: none` and back, with a forced reflow between, so WebKit measures again; scroll positions are kept. The
-  same heal runs a frame after a `visualViewport` resize with no focused field (ADR 0192). The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
+  same heal runs a frame after a `visualViewport` resize with no focused field (ADR 0192). The heal skips a zoomed
+  page (`scale > 1`). The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
   and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,
   Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
   the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
