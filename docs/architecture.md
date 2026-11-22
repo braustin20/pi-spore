@@ -2254,7 +2254,10 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
     the user says yes, then runs `systemctl --user daemon-reload` and `enable --now pi-spore`. The unit has the
     absolute path of a Node 26 (`.nvmrc`), a PATH with the folders of that Node, `pi` (required), `git`, `gh`, and
     `unity`, the `PI_SPORE_HOME` and `PI_SPORE_PORT` of the shell, and an optional
-    `EnvironmentFile=-%h/.config/pi-spore/service.env`. `service uninstall [--yes]` disables and removes it.
+    `EnvironmentFile=-%h/.config/pi-spore/service.env`. It has `After=` and `WantedBy=graphical-session.target`, so
+    the server gets the desktop's `DISPLAY` and the Unity editor can open a window (ADR 0191). Over an existing unit,
+    install runs `systemctl --user disable pi-spore` first, to drop the old enable link. `service uninstall [--yes]`
+    disables and removes it.
   - `pi-spore open` (`xdg-open`), `pi-spore logs [-f]` (`journalctl --user -u pi-spore`). The opener runs through
     `capture`: its output is dropped on success and the last five non-empty lines go in the error when it fails,
     because desktop openers such as KDE's log noise that reads like a pi-spore failure.

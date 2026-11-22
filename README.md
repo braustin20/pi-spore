@@ -92,8 +92,8 @@ pi-spore rebuild --install    # runs npm ci first, when dependencies changed
 ```
 
 `pi-spore start --open` runs the server in this terminal instead. `pi-spore service uninstall` removes the service.
-systemd does not read your shell files: put variables such as API keys in `~/.config/pi-spore/service.env`. A user
-service stops when you log out, unless you run `loginctl enable-linger` once.
+systemd does not read your shell files: put variables such as API keys in `~/.config/pi-spore/service.env`. The
+service starts when your desktop session starts and stops when you log out (ADR 0191).
 
 ## Docs
 
