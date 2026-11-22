@@ -6,6 +6,8 @@ import { createPortal } from "react-dom";
 
 const MAX_EVENTS = 8;
 
+// Each line stays under about 40 characters: at 9px monospace that is all that fits in 60vw of a phone.
+
 function round(n: number | undefined): string {
   return n === undefined ? "?" : String(Math.round(n * 10) / 10);
 }
@@ -19,9 +21,9 @@ function rootTop(): string {
   return round(document.getElementById("root")?.getBoundingClientRect().top);
 }
 
-function eventLine(name: string): string {
+function eventLines(name: string): string {
   const vv = window.visualViewport;
-  return `${name} ${clockTime()} vvh ${round(vv?.height)} vvTop ${round(vv?.offsetTop)} sY ${round(window.scrollY)} root ${rootTop()}`;
+  return `${name} ${clockTime()}\n  vv ${round(vv?.height)}/${round(vv?.offsetTop)} sY ${round(window.scrollY)} root ${rootTop()}`;
 }
 
 function numbers(): string {
@@ -39,22 +41,24 @@ function numbers(): string {
         )
     : [];
   return [
-    vv
-      ? `vv h ${round(vv.height)} offTop ${round(vv.offsetTop)} pageTop ${round(vv.pageTop)} scale ${round(vv.scale)}`
-      : "vv: none",
-    `innerH ${window.innerHeight} clientH ${html.clientHeight} screenH ${screen.height}`,
-    `scrollY ${round(window.scrollY)} scrollEl ${round(document.scrollingElement?.scrollTop)} body ${round(document.body.scrollTop)}`,
-    root
-      ? `#root top ${round(rootRect?.top)} h ${round(rootRect?.height)} scrollTop ${round(root.scrollTop)}`
-      : "#root: none",
-    header
-      ? `header top ${round(headerRect?.top)} h ${round(headerRect?.height)} display ${getComputedStyle(header).display}`
-      : "header: none",
-    `--app-top ${html.style.getPropertyValue("--app-top") || "-"} --app-height ${html.style.getPropertyValue("--app-height") || "-"}`,
+    vv ? `vv h ${round(vv.height)} scale ${round(vv.scale)}` : "vv: none",
+    vv ? `vv offTop ${round(vv.offsetTop)} pageTop ${round(vv.pageTop)}` : "",
+    `innerH ${window.innerHeight} clientH ${html.clientHeight}`,
+    `screenH ${screen.height}`,
+    `scrollY ${round(window.scrollY)} scrollEl ${round(document.scrollingElement?.scrollTop)}`,
+    `body.scrollTop ${round(document.body.scrollTop)}`,
+    root ? `#root top ${round(rootRect?.top)} h ${round(rootRect?.height)}` : "#root: none",
+    root ? `#root scrollTop ${round(root.scrollTop)}` : "",
+    header ? `header top ${round(headerRect?.top)} h ${round(headerRect?.height)}` : "header: none",
+    header ? `header display ${getComputedStyle(header).display}` : "",
+    `--app-top ${html.style.getPropertyValue("--app-top") || "-"}`,
+    `--app-height ${html.style.getPropertyValue("--app-height") || "-"}`,
     `keyboard-open ${html.hasAttribute("data-keyboard-open") ? "yes" : "no"}`,
     `active: ${document.activeElement?.tagName.toLowerCase() ?? "none"}`,
     `scrolled:${scrolled.length > 0 ? `\n${scrolled.join("\n")}` : " none"}`,
-  ].join("\n");
+  ]
+    .filter((line) => line !== "")
+    .join("\n");
 }
 
 export function ViewportDebug() {
@@ -65,8 +69,10 @@ export function ViewportDebug() {
   useEffect(() => {
     if (!on) return;
     const read = (name: string) => {
-      events.current = [eventLine(name), ...events.current].slice(0, MAX_EVENTS);
-      setText(`${numbers()}\nevents:\n${events.current.join("\n")}`);
+      events.current = [eventLines(name), ...events.current].slice(0, MAX_EVENTS);
+      setText(
+        `${numbers()}\nevents: vv h/offTop, scrollY, #root top\n${events.current.join("\n")}`,
+      );
     };
     const onResize = () => read("vv.resize");
     const onScroll = () => read("vv.scroll");
