@@ -1754,7 +1754,7 @@ See [ADR 0011](decisions/0011-unity-support.md).
   - Opening from the UI takes the lease for the user. Opening a folder fails with 409 `editor_open` while an editor
     has another folder of the project open. The UI then offers "Close without saving" with a confirm that says
     unsaved changes are lost. The close request must carry `confirm: true`.
-  - Opening a folder that needs an editor fails with 503 `no_display` when the server's environment has neither
+  - Opening a folder with no editor open yet fails with 503 `no_display` when the server's environment has neither
     `DISPLAY` nor `WAYLAND_DISPLAY`. No lease is saved. The message names the fix: run
     `systemctl --user import-environment DISPLAY WAYLAND_DISPLAY XAUTHORITY` in a desktop terminal, then
     `pi-spore restart`.
