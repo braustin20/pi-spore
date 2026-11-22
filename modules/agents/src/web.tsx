@@ -7,6 +7,7 @@ import {
   CommandList,
   MODEL_TIERS,
   ModelList,
+  orderChats,
   parse,
   type Workspace,
 } from "@pi-spore/shared";
@@ -135,15 +136,20 @@ function ChatPane({ workspace, chatId }: { workspace: Workspace; chatId?: string
     return () => window.removeEventListener("focus", load);
   }, [load]);
 
-  // The tabs' working dots follow live statuses. Only chats already in the list change, so their order stays the
-  // server's; new and closed chats come with the next load.
+  // The tabs follow agents:list: live statuses, and chats the server starts or closes while the page is open, such
+  // as a pipeline's stage agents. The first load still decides the list, so an event before it changes nothing.
   useEffect(
     () =>
       api.subscribe("agents:list", (event) => {
-        const fresh = new Map(reduceAgentList([], event).map((agent) => [agent.id, agent]));
-        setChats((current) => current?.map((chat) => fresh.get(chat.id) ?? chat));
+        setChats(
+          (current) =>
+            current &&
+            orderChats(
+              reduceAgentList(current, event).filter((agent) => agent.workspaceId === workspaceId),
+            ),
+        );
       }),
-    [api],
+    [api, workspaceId],
   );
 
   const selected =

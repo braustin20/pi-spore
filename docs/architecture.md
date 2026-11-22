@@ -114,8 +114,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Title: the first user message, cut to 60 characters, set on the first prompt. Chats from before titles take it
     from their history when first read; side chats never take it from the copied history. The user can rename.
   - Chat bar: the tab of a working chat (busy, starting, or waiting) shows a pulsing dot that screen readers read as
-    "working", and the selected tab scrolls into view when the selection changes. The chat pane takes live statuses
-    for the tabs from `agents:list`, and keeps the server's order. One "+" button after the tabs ("New chat or side
+    "working", and the selected tab scrolls into view when the selection changes. The chat pane keeps its tabs in step
+    with `agents:list` after its first load: live statuses, new chats of the workspace (such as a stage agent that a
+    pipeline or Retry starts), and closed chats. It sorts them with `orderChats`, the server's order. One "+" button after the tabs ("New chat or side
     chat") opens a `Menu` with New chat, Side chat, and Side chat with context, each with a one-line hint. It is
     disabled while the workspace is not active. The rename pencil follows it. `NEW_CHATS` in
     `modules/agents/src/chats.tsx` lists these items for this menu and for the phone row's "Chat actions" menu.
