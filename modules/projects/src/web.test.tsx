@@ -295,6 +295,24 @@ describe("the global settings panel", () => {
     expect(value?.className).toContain("[overflow-wrap:anywhere]");
   });
 
+  it("stacks the row into a block below md", async () => {
+    const { get } = start([{ key: "retention.days", value: 5, source: "global" }]);
+    const root = await render("/settings", {}, get, vi.fn());
+    // Below 768 px the row is a stacked block, so every cell takes the full width (ADR 0159).
+    const tokens = (element: Element) => (element.getAttribute("class") ?? "").split(" ");
+    const row = rowOf(root, "retention.days");
+    expect(tokens(row)).toContain("max-md:flex");
+    expect(tokens(row)).toContain("max-md:flex-wrap");
+    const key = row.querySelector("th") as HTMLElement;
+    expect(tokens(key)).toContain("md:w-72");
+    expect(tokens(key)).toContain("max-md:w-full");
+    expect(tokens(key)).not.toContain("w-72");
+    const cells = [...row.querySelectorAll("td")];
+    expect(cells.some((cell) => tokens(cell).includes("md:w-32"))).toBe(true);
+    expect(cells.some((cell) => tokens(cell).includes("md:w-40"))).toBe(true);
+    for (const cell of cells) expect(tokens(cell)).toContain("max-md:block");
+  });
+
   it("resets a key and shows the value and source from the next load", async () => {
     const { state, get } = start([{ key: "retention.days", value: 5, source: "global" }]);
     const send = vi.fn(async () => {
