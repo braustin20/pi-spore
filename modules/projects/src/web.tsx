@@ -394,9 +394,12 @@ function SettingRow({
     }));
 
   return (
-    <tr>
-      <TableHead className="w-72">{label ?? <code>{settingKey}</code>}</TableHead>
-      <TableCell>
+    // Below md the row is a stacked block: key, value, then chip and buttons on a wrapping line (ADR 0159).
+    <tr className="max-md:flex max-md:flex-wrap max-md:items-center max-md:gap-2 max-md:border-b max-md:border-line max-md:py-2">
+      <TableHead className="md:w-72 max-md:block max-md:w-full max-md:border-0 max-md:p-0">
+        {label ?? <code>{settingKey}</code>}
+      </TableHead>
+      <TableCell className="max-md:block max-md:w-full max-md:border-0 max-md:p-0">
         <div className="flex flex-col gap-2">
           {/* JSON values have no spaces; without this, one long value pushes Edit and Reset off screen. */}
           <code className="[overflow-wrap:anywhere]">{shown}</code>
@@ -430,11 +433,11 @@ function SettingRow({
           {restart && <p className="m-0 text-sm text-muted">Restart pi-spore to apply.</p>}
         </div>
       </TableCell>
-      <TableCell className="w-32 text-right">
+      <TableCell className="md:w-32 md:text-right max-md:block max-md:border-0 max-md:p-0">
         <Chip>{source}</Chip>
       </TableCell>
       {save && (
-        <TableCell className="w-40 text-right whitespace-nowrap">
+        <TableCell className="md:w-40 md:text-right whitespace-nowrap max-md:block max-md:border-0 max-md:p-0">
           {text === undefined && (
             <span className="inline-flex gap-1">
               <Button disabled={busy || stale} onClick={edit}>
