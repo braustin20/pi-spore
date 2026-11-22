@@ -14,7 +14,6 @@ import { MapPinOff } from "lucide-react";
 import { useEffect, useState } from "react";
 import { findPage, railActive, useHashPath } from "./router.js";
 import { lockDocumentScroll } from "./scroll-lock.js";
-import { ViewportDebug } from "./viewport-debug.js";
 import { followVisualViewport } from "./viewport-inset.js";
 
 const HEALTH_EVERY_MS = 30_000;
@@ -177,7 +176,6 @@ export function App({ pages }: { pages: readonly WebPage[] }) {
         </div>
       </div>
       <Toaster />
-      <ViewportDebug />
     </TooltipProvider>
   );
 }

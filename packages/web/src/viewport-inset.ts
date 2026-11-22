@@ -29,7 +29,6 @@ export function followVisualViewport(win: Window): () => void {
     root.setProperty("--app-top", keyboardOpen ? `${viewport.offsetTop}px` : "0px");
     doc.documentElement.toggleAttribute("data-keyboard-open", keyboardOpen);
   };
-  let heals = 0;
   const heal = () => {
     if (fieldFocused() || viewport.scale > 1 || viewport.height >= full - 4) return;
     const app = doc.getElementById("root");
@@ -42,8 +41,6 @@ export function followVisualViewport(win: Window): () => void {
     void app.offsetHeight;
     app.style.display = "";
     for (const [el, top] of scrolled) el.scrollTop = top;
-    heals++;
-    doc.documentElement.setAttribute("data-viewport-heals", String(heals));
     update();
   };
   let frame = 0;
@@ -82,7 +79,6 @@ export function followVisualViewport(win: Window): () => void {
     win.cancelAnimationFrame(healFrame);
     win.cancelAnimationFrame(frame);
     doc.documentElement.removeAttribute("data-keyboard-open");
-    doc.documentElement.removeAttribute("data-viewport-heals");
     root.removeProperty("--app-height");
     root.removeProperty("--app-top");
   };

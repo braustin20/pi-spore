@@ -28,7 +28,6 @@
   again.
 - It tries to heal in the second read on resume (ADR 0190), and on the next frame after a `visualViewport`
   `resize` with no focused field. There are no timers.
-- `<html>` carries `data-viewport-heals` with the count of heals, for the phone check.
 
 ## Consequences
 
