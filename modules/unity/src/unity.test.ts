@@ -50,6 +50,8 @@ let scratch: string;
 let stateFile: string;
 /** What the fake process list shows; tests add Unity processes here. */
 let processes: ProcessInfo[] | undefined;
+/** The environment the server checks for a display before `unity open`. */
+let env: Record<string, string | undefined>;
 
 interface FakeState {
   instances: { projectPath: string; pid: number; state: string }[];
@@ -101,6 +103,7 @@ async function start(unityCommand = process.execPath) {
     createUnityModule({
       unity: { command: unityCommand, args: [FAKE_UNITY, stateFile] },
       processes: async () => processes,
+      env,
       sleep: async () => onSleep(),
       reportDir: scratch,
       ...(testDeadlineMs === undefined ? {} : { testDeadlineMs }),
@@ -114,6 +117,7 @@ beforeEach(async () => {
   stateFile = join(scratch, "unity-state.json");
   writeFileSync(stateFile, JSON.stringify({ instances: [], calls: [] }));
   processes = [];
+  env = { DISPLAY: ":0" };
   testDeadlineMs = undefined;
   onSleep = async () => {
     throw new Error("The gate waited, but this test did not expect it to");
@@ -222,6 +226,31 @@ describe("Open in Unity", () => {
 
     // Asking again does not start a second editor.
     expect(parse(OpenUnityResponse, await json(await open(a)), "again").alreadyOpen).toBe(true);
+    expect(actions()).toEqual([`open ${a.path}`]);
+  });
+
+  it("refuses to open without DISPLAY or WAYLAND_DISPLAY, and saves no lease", async () => {
+    server.close();
+    env = {};
+    await start();
+    const { a } = await setup();
+
+    const refused = await errorOf(await open(a), 503);
+    expect(refused.code).toBe("no_display");
+    expect(refused.message).toContain("import-environment");
+    expect(actions()).toEqual([]);
+    const shown = await view(a);
+    expect(shown.unity && shown.editors.lease).toBeUndefined();
+  });
+
+  it("opens with only WAYLAND_DISPLAY set", async () => {
+    server.close();
+    env = { WAYLAND_DISPLAY: "wayland-0" };
+    await start();
+    const { a } = await setup();
+
+    const opened = parse(OpenUnityResponse, await json(await open(a)), "open");
+    expect(opened).toMatchObject({ alreadyOpen: false });
     expect(actions()).toEqual([`open ${a.path}`]);
   });
 
