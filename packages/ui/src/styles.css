@@ -54,14 +54,9 @@
   * {
     border-color: var(--line);
   }
-  /* Phones only. iOS zooms the page when a field under 16px gets focus. The app sets --app-height and --app-top to
-     the visual viewport, so the page shrinks above the on-screen keyboard. */
+  /* Phones only. The app sets --app-height and --app-top to the visual viewport, so the page shrinks above the
+     on-screen keyboard. */
   @media (width < 48rem) {
-    input,
-    select,
-    textarea {
-      font-size: 16px;
-    }
     /* The document never scrolls or bounces; scrolling happens inside the app. See lockDocumentScroll. */
     html,
     body {
@@ -111,6 +106,18 @@
       /* biome-ignore lint/complexity/noImportantStyles: must win over smooth scrolling */
       scroll-behavior: auto !important;
     }
+  }
+}
+
+/* Phones only. iOS zooms the page when a field under 16px gets focus, and it does not zoom back out if the field is
+   blurred while the app is in the background (ADR 0190). The 15px composer made iOS zoom by 16 / 15 and keep that
+   zoom after a return. Unlayered on purpose: a rule in any @layer loses to the `text-sm` and `text-[15px]`
+   utilities the fields carry (ADR 0159). */
+@media (width < 48rem) {
+  input,
+  select,
+  textarea {
+    font-size: 16px;
   }
 }
 
