@@ -203,6 +203,7 @@ describe("pi-spore service commands", () => {
       [
         "[Unit]",
         "Description=pi-spore agent workbench",
+        "After=graphical-session.target",
         "",
         "[Service]",
         `ExecStart=${NODE} /repo/packages/server/dist/main.js`,
@@ -215,7 +216,7 @@ describe("pi-spore service commands", () => {
         "RestartSec=2",
         "",
         "[Install]",
-        "WantedBy=default.target",
+        "WantedBy=graphical-session.target",
         "",
       ].join("\n"),
     );
@@ -283,6 +284,13 @@ describe("pi-spore service commands", () => {
     const second = fakeDeps(healthy, { system: installed.system, env: { PATH: PATH_ENV } });
     expect(await run(["service", "install", "--yes"], second.deps)).toBe(0);
     expect(installed.files[UNIT]).toContain("ExecStart=");
+    // disable reads the old [Install] and drops its link, such as default.target.wants (ADR 0191).
+    expect(installed.calls).toEqual([
+      "systemctl --user disable pi-spore",
+      `write ${UNIT}`,
+      "systemctl --user daemon-reload",
+      "systemctl --user enable --now pi-spore",
+    ]);
     expect(second.out.join("\n")).toContain("Run pi-spore restart to use the new unit.");
   });
 

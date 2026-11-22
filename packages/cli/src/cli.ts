@@ -501,6 +501,7 @@ async function serviceInstall(deps: CliDeps, base: string, yes: boolean): Promis
   const text = [
     "[Unit]",
     "Description=pi-spore agent workbench",
+    "After=graphical-session.target",
     "",
     "[Service]",
     `ExecStart=${system.node.path} ${system.repoRoot}/packages/server/dist/main.js`,
@@ -514,7 +515,7 @@ async function serviceInstall(deps: CliDeps, base: string, yes: boolean): Promis
     "RestartSec=2",
     "",
     "[Install]",
-    "WantedBy=default.target",
+    "WantedBy=graphical-session.target",
     "",
   ].join("\n");
   deps.out(`Unit file: ${unit}`);
@@ -524,6 +525,8 @@ async function serviceInstall(deps: CliDeps, base: string, yes: boolean): Promis
     deps.out("Nothing changed.");
     return;
   }
+  // disable reads the old [Install] and drops its link, such as default.target.wants; it does not stop the service.
+  if (existed) await mustRun(system, "systemctl", ["--user", "disable", "pi-spore"]);
   system.writeFile(unit, text);
   await mustRun(system, "systemctl", ["--user", "daemon-reload"]);
   await mustRun(system, "systemctl", ["--user", "enable", "--now", "pi-spore"]);
