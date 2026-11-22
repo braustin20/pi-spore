@@ -373,7 +373,10 @@ export interface ServerHost {
   keyboard is open. While it is set and a text field has focus, rows marked `data-hide-while-typing` (the top bar
   and the workspace pane row) are hidden by one CSS `:has()` rule in `packages/ui/src/styles.css`; they come back
   when the keyboard closes or the field loses focus. When the page is hidden, the focused text field is blurred;
-  on resume the viewport is read now and again on the next frame (ADR 0190). The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
+  on resume the viewport is read now and again on the next frame (ADR 0190). If the viewport is then more than
+  4 px shorter than the largest height seen with no focused field, iOS has kept a stale height: `#root` is set to
+  `display: none` and back, with a forced reflow between, so WebKit measures again; scroll positions are kept. The
+  same heal runs a frame after a `visualViewport` resize with no focused field (ADR 0192). The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
   and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,
   Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
   the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
