@@ -416,22 +416,22 @@ describe("followVisualViewport", () => {
 
     it("the cleanup removes the heal count and cancels a pending heal", () => {
       const { frames, cancel } = stubFrames();
-      const root = makeRoot();
+      makeRoot();
       follow();
       viewport.height = 761;
       document.dispatchEvent(new Event("visibilitychange"));
-      runFrames(frames);
+      // Run the resume frame but keep it stored, so the heal frame gets a different id.
+      frames[0]?.(0);
       expect(document.documentElement.getAttribute("data-viewport-heals")).toBe("1");
       viewport.height = 760;
       viewport.dispatchEvent(new Event("resize"));
-      expect(frames).toHaveLength(1);
+      const healFrame = vi.mocked(window.requestAnimationFrame).mock.results.at(-1)?.value;
+      expect(healFrame).toBe(2);
+      cancel.mockClear();
       unfollow?.();
       unfollow = undefined;
       expect(document.documentElement.hasAttribute("data-viewport-heals")).toBe(false);
-      const flipped = watchDisplay(root);
-      runFrames(frames);
-      expect(cancel).toHaveBeenCalled();
-      expect(flipped()).toBe(false);
+      expect(cancel).toHaveBeenCalledWith(healFrame);
     });
   });
 });

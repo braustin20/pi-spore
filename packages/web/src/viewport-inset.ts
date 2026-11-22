@@ -81,8 +81,6 @@ export function followVisualViewport(win: Window): () => void {
     win.removeEventListener("pageshow", onResume);
     win.cancelAnimationFrame(healFrame);
     win.cancelAnimationFrame(frame);
-    // A heal frame that runs anyway must not flip a page that no longer follows the viewport.
-    full = 0;
     doc.documentElement.removeAttribute("data-keyboard-open");
     doc.documentElement.removeAttribute("data-viewport-heals");
     root.removeProperty("--app-height");
