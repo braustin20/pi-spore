@@ -186,16 +186,15 @@ describe("the chat pane's tabs", () => {
     return main;
   }
 
-  it("follow live status changes from agents:list and keep their order", async () => {
-    const worker: Agent = { ...chat("worker", "idle"), kind: "worker", active: true };
-    const side = chat("side", "idle");
+  /** Renders the pane over a fake API that lists `agents`; returns a way to send `agents:list` events. */
+  async function renderPane(agents: Agent[]) {
     const listeners = new Map<string, (event: unknown) => void>();
     const api = {
-      get: async () => ({ agents: [worker, side] }),
+      get: async () => ({ agents }),
       send: async () => ({}),
       subscribe: (topic: string, onEvent: (event: unknown) => void) => {
         listeners.set(topic, onEvent);
-        if (topic === "agent:worker") onEvent({ type: "snapshot", agent: worker });
+        if (topic === "agent:worker") onEvent({ type: "snapshot", agent: agents[0] });
         return () => listeners.delete(topic);
       },
     } as unknown as ApiClient;
@@ -211,18 +210,54 @@ describe("the chat pane's tabs", () => {
         </ApiContext>,
       ),
     );
+    return (event: unknown) => act(async () => listeners.get("agents:list")?.(event));
+  }
+
+  const order = () =>
+    [...(container?.querySelectorAll('nav[aria-label="Chats"] a') ?? [])].map((a) =>
+      a.getAttribute("href"),
+    );
+  const worker: Agent = { ...chat("worker", "idle"), kind: "worker", active: true };
+  const side = chat("side", "idle");
+
+  it("follow live status changes from agents:list and keep their order", async () => {
+    const list = await renderPane([worker, side]);
     expect(tab("side")).not.toContain("working");
 
-    const list = (event: unknown) => act(async () => listeners.get("agents:list")?.(event));
     await list({ type: "agent", agent: { ...side, status: "busy" } });
     expect(tab("side")).toContain("working");
-    const order = () =>
-      [...(container?.querySelectorAll('nav[aria-label="Chats"] a') ?? [])].map((a) =>
-        a.getAttribute("href"),
-      );
     expect(order()).toEqual(["#/workspaces/w1/chats/worker", "#/workspaces/w1/chats/side"]);
 
     await list({ type: "agent", agent: { ...side, status: "idle" } });
     expect(tab("side")).not.toContain("working");
+  });
+
+  it("add a new chat of this workspace from agents:list, in the server's order", async () => {
+    const list = await renderPane([worker, side]);
+    const stage: Agent = {
+      ...chat("stage", "starting"),
+      kind: "stage",
+      role: "worker",
+      createdAt: 5,
+    };
+    await list({ type: "agent", agent: stage });
+    expect(order()).toEqual([
+      "#/workspaces/w1/chats/worker",
+      "#/workspaces/w1/chats/side",
+      "#/workspaces/w1/chats/stage",
+    ]);
+  });
+
+  it("add no tab for a chat of another workspace", async () => {
+    const list = await renderPane([worker, side]);
+    await list({ type: "agent", agent: { ...chat("other", "idle"), workspaceId: "w2" } });
+    expect(container?.querySelector('a[href$="/chats/other"]')).toBeNull();
+    expect(order()).toEqual(["#/workspaces/w1/chats/worker", "#/workspaces/w1/chats/side"]);
+  });
+
+  it("drop a closed chat's tab on a removed event", async () => {
+    const list = await renderPane([worker, side]);
+    await list({ type: "removed", id: "side" });
+    expect(order()).toEqual(["#/workspaces/w1/chats/worker"]);
   });
 });
