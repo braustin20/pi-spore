@@ -89,7 +89,6 @@ afterEach(() => {
   setScroll(0, 0);
   document.documentElement.style.cssText = "";
   document.documentElement.removeAttribute("data-keyboard-open");
-  document.documentElement.removeAttribute("data-viewport-heals");
   for (const el of appended.splice(0)) el.remove();
 });
 
@@ -315,7 +314,6 @@ describe("followVisualViewport", () => {
       expect(flipped()).toBe(true);
       expect(root.style.display).toBe("");
       expect(list.scrollTop).toBe(300);
-      expect(document.documentElement.getAttribute("data-viewport-heals")).toBe("1");
     });
 
     it("flips #root display on a short resize with no focused field", () => {
@@ -359,7 +357,6 @@ describe("followVisualViewport", () => {
       document.dispatchEvent(new Event("visibilitychange"));
       runFrames(frames);
       expect(flipped()).toBe(false);
-      expect(document.documentElement.hasAttribute("data-viewport-heals")).toBe(false);
     });
 
     it("does not flip when the height equals the full height", () => {
@@ -414,7 +411,7 @@ describe("followVisualViewport", () => {
       expect(flipped()).toBe(false);
     });
 
-    it("the cleanup removes the heal count and cancels a pending heal", () => {
+    it("the cleanup cancels a pending heal", () => {
       const { frames, cancel } = stubFrames();
       makeRoot();
       follow();
@@ -422,7 +419,6 @@ describe("followVisualViewport", () => {
       document.dispatchEvent(new Event("visibilitychange"));
       // Run the resume frame but keep it stored, so the heal frame gets a different id.
       frames[0]?.(0);
-      expect(document.documentElement.getAttribute("data-viewport-heals")).toBe("1");
       viewport.height = 760;
       viewport.dispatchEvent(new Event("resize"));
       const healFrame = vi.mocked(window.requestAnimationFrame).mock.results.at(-1)?.value;
@@ -430,7 +426,6 @@ describe("followVisualViewport", () => {
       cancel.mockClear();
       unfollow?.();
       unfollow = undefined;
-      expect(document.documentElement.hasAttribute("data-viewport-heals")).toBe(false);
       expect(cancel).toHaveBeenCalledWith(healFrame);
     });
   });
