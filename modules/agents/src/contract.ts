@@ -72,6 +72,16 @@ export interface LaunchContext {
 
 export type LaunchHook = (agent: Agent, workspace: Workspace) => LaunchContext | undefined;
 
+/** What a fresh agent needs to pick up this agent's work, read from its session file (ADR 0198). */
+export interface AgentHandoff {
+  /** The session file path, when the agent has one. */
+  sessionFile?: string;
+  /** The text blocks of the last assistant message that has text, cut to 1,500 characters. */
+  lastText?: string;
+  /** The last 15 tool calls, oldest first. `head` is the first line of JSON.stringify(arguments), cut to 120 characters. */
+  toolCalls: { name: string; head: string }[];
+}
+
 export interface Agents {
   /**
    * Queues a message for the agent as a durable delivery (architecture 6): a prompt when it is idle, a follow-up when
@@ -126,6 +136,12 @@ export interface Agents {
    * assistant message. Throws a 404 ApiError for an unknown id.
    */
   endedRun(agentId: string): Promise<boolean>;
+  /**
+   * What a fresh agent needs to pick up this agent's work (ADR 0198). Tool calls give their name and the start of their
+   * arguments, never tool results, since a result may hold secrets. Without a session it has no `lastText` and an empty
+   * `toolCalls`. Throws a 404 ApiError for an unknown id.
+   */
+  handoff(agentId: string): Promise<AgentHandoff>;
   /** Sets the agent's title. It joins the caller's `store.transaction`. Throws a 404 ApiError for an unknown id. */
   rename(agentId: string, title: string): void;
   /** One agent (chat). Throws a 404 ApiError for an unknown id. */

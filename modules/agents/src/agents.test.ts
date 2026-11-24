@@ -2674,6 +2674,42 @@ describe("stage agents (R6)", () => {
     expect(await api.modelsUsed(stage.id)).toEqual([]);
   });
 
+  it("hands a fresh agent the last tool calls and text, never a tool result (ADR 0198)", async () => {
+    await setupStages();
+    const { agentId } = await makeAgent();
+    const sessionFileOf = () =>
+      server.store.get<{ session_file: string | null }>(
+        "SELECT session_file FROM agents_agents WHERE id = ?",
+        agentId,
+      )?.session_file;
+    expect(await api.handoff(agentId)).toEqual({
+      sessionFile: sessionFileOf() ?? undefined,
+      toolCalls: [],
+    });
+
+    await json(await prompt(agentId, "bash:npm test"));
+    await until(async () => (await api.handoff(agentId)).toolCalls.length === 1);
+    await json(await prompt(agentId, "bash-done"));
+    await until(async () => (await api.handoff(agentId)).lastText !== undefined);
+
+    const handoff = await api.handoff(agentId);
+    expect(handoff.toolCalls.at(-1)).toEqual({ name: "bash", head: '{"command":"npm test"}' });
+    expect(handoff.lastText).toBe("echo: bash:npm test");
+    expect(handoff.sessionFile).toBe(sessionFileOf());
+    expect(JSON.stringify(handoff)).not.toContain("ran: npm test");
+    await expect(api.handoff("nope")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("cuts the handoff text to 1,500 characters and ends it with an ellipsis", async () => {
+    await setupStages();
+    const { agentId } = await makeAgent();
+    await json(await prompt(agentId, "x".repeat(1600)));
+    await until(async () => (await api.handoff(agentId)).lastText !== undefined);
+    const { lastText } = await api.handoff(agentId);
+    expect(lastText).toHaveLength(1500);
+    expect(lastText?.endsWith("…")).toBe(true);
+  });
+
   it("lists the session file and role of each agent that has a session, for one workspace", async () => {
     await setupStages();
     const { agentId, workspaceId } = await makeAgent();
