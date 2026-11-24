@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ProjectsKey } from "@pi-spore/mod-projects/server";
+import { ProjectsKey, type WorkspaceLocation } from "@pi-spore/mod-projects/server";
 import { ApiError, type ServerModule, type SettingsOverride } from "@pi-spore/module-api";
 import {
   ArchiveWorkspaceRequest,
@@ -315,12 +315,15 @@ export const workspacesModule: ServerModule = {
     const stateListeners: StateChangeListener[] = [];
     const retentionListeners: RetentionListener[] = [];
     const deleteListeners: DeleteListener[] = [];
+    /** The workspaces inside `archive`, so a reader of a worktree can tell a removal from a broken copy. */
+    const removingNow = new Set<string>();
     const workspaces: Workspaces = {
       get: (id) => toWorkspace(load(id)),
       list: (filter = {}) => listRows(filter).map(toWorkspace),
       create,
       planner,
       archive: (id, options) => archive(id, options),
+      archiving: () => removingNow,
       archiveOnMerge: async (id) => {
         const row = load(id);
         if (row.archive_on_merge !== null) return row.archive_on_merge === 1;
@@ -433,12 +436,11 @@ export const workspacesModule: ServerModule = {
       { type: "snapshot", workspaces: listRows({}).map(toWorkspace) },
     ]);
 
-    /** Why removing the copy without force would lose work, from the version control's own view of it. */
-    const copyHoldsWork = async (row: Row): Promise<boolean> => {
-      const changes = projects.vcsFor(await projects.get(row.project_id)).changes;
-      if (!changes) return false;
-      return (await changes.files({ path: row.path }, { kind: "uncommitted" }, 1)).files.length > 0;
-    };
+    /** The copy of a workspace as its version control sees it, or undefined when it works in the project folder. */
+    const copyOf = (row: Row): WorkspaceLocation | undefined =>
+      row.isolation === "in-place"
+        ? undefined
+        : { path: row.path, ...(row.line === null ? {} : { line: row.line }) };
 
     const archive = async (
       id: string,
@@ -447,39 +449,39 @@ export const workspacesModule: ServerModule = {
       const row = loadChangeable(id);
       if (row.state === "archived")
         throw new ApiError(409, "bad_state", "Workspace is already archived");
-      // A copy that still holds work is refused below, and leaving active cannot be undone: it stops the chats,
-      // terminals, and runs of the workspace. Ask the copy first, so a refused archive stops nothing.
-      if (!force && row.isolation !== "in-place" && (await copyHoldsWork(row)))
-        throw new ApiError(
-          409,
-          "uncommitted_work",
-          `${row.path} has uncommitted or untracked files. Commit them, or archive with force to remove the copy.`,
-        );
-      if (row.state === "active") await leaveActive(row, "archived");
-      const steps: StepReport[] = [];
-      if (row.isolation !== "in-place") {
-        for (const listener of removeListeners) {
-          const report = await listener(toWorkspace(row), { force });
-          if (!report) continue;
-          if (!report.ok && !force) {
-            throw new ApiError(
-              409,
-              `${report.name}_failed`,
-              `${report.message}. Archive with force to remove the copy anyway.`,
-            );
-          }
-          steps.push(report);
+      removingNow.add(id);
+      try {
+        const copy = copyOf(row);
+        // A copy that still holds work is refused by the removal below, and leaving active cannot be undone: it
+        // stops the chats, terminals, and runs of the workspace. Ask the copy first, in the same words the
+        // removal would use, so a refused archive stops nothing.
+        if (copy && !force) {
+          const project = await projects.get(row.project_id);
+          const reason = await projects.vcsFor(project).lostWork(project, copy);
+          if (reason) throw new ApiError(409, "uncommitted_work", reason);
         }
-        const project = await projects.get(row.project_id);
-        await projects
-          .vcsFor(project)
-          .removeCopy(
-            project,
-            { path: row.path, ...(row.line === null ? {} : { line: row.line }) },
-            { force },
-          );
+        if (row.state === "active") await leaveActive(row, "archived");
+        const steps: StepReport[] = [];
+        if (copy) {
+          for (const listener of removeListeners) {
+            const report = await listener(toWorkspace(row), { force });
+            if (!report) continue;
+            if (!report.ok && !force) {
+              throw new ApiError(
+                409,
+                `${report.name}_failed`,
+                `${report.message}. Archive with force to remove the copy anyway.`,
+              );
+            }
+            steps.push(report);
+          }
+          const project = await projects.get(row.project_id);
+          await projects.vcsFor(project).removeCopy(project, copy, { force });
+        }
+        return { workspace: setState(row, "archived"), steps };
+      } finally {
+        removingNow.delete(id);
       }
-      return { workspace: setState(row, "archived"), steps };
     };
 
     host.routes.get("/", (c) => {

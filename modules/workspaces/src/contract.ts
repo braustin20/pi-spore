@@ -70,6 +70,9 @@ export interface Workspaces {
    * 409 `bad_state` when it is archived already, and 409 `<step>_failed` when a step fails and `force` is false.
    */
   archive(id: string, options: { force: boolean }): Promise<ArchiveWorkspaceResponse>;
+  /** The workspaces whose copy an archive is removing right now. It matters to a reader of the worktree: a removal
+   * empties the folder before the folder is gone, so git stops working there first. */
+  archiving(): ReadonlySet<string>;
   /** Whether the workspace archives when its PR merges: its own value, else the setting. Throws ApiError 404. */
   archiveOnMerge(id: string): Promise<boolean>;
   beforeLeaveActive(listener: LeaveListener): void;

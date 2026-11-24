@@ -908,9 +908,8 @@ describe("the workspaces interface", () => {
     expect(workspaces.get(workspace.id).state).toBe("archived");
   });
 
-  it("does not tear a workspace down for an archive that the copy refuses", async () => {
-    // Leaving active is how an archive stops the chats, terminals, and runs of a workspace, and it cannot be
-    // undone. A copy that holds work is refused, so the refusal must come first.
+  /** A server whose probe module records every workspace that left active, which is how an archive stops things. */
+  async function withLeaveProbe(): Promise<string[]> {
     const left: string[] = [];
     const probe: ServerModule = {
       id: "leave-probe",
@@ -924,6 +923,13 @@ describe("the workspaces interface", () => {
     };
     server.close();
     server = await createTestServer([...ALL, probe]);
+    return left;
+  }
+
+  it("does not tear a workspace down for an archive that the copy refuses", async () => {
+    // Leaving active is how an archive stops the chats, terminals, and runs of a workspace, and it cannot be
+    // undone. A copy that holds work is refused, so the refusal must come first.
+    const left = await withLeaveProbe();
     const project = await addProject(makeUnityRepo());
     const { workspace } = await createWorkspace({
       projectId: project.id,
@@ -945,5 +951,30 @@ describe("the workspaces interface", () => {
     rmSync(join(workspace.path, "Assets", "New.cs"));
     await json(await server.request("POST", `/api/workspaces/${workspace.id}/archive`), 200);
     expect(left).toEqual(["WIP"]);
+  });
+
+  it("refuses an archive for work only the index shows, and stops nothing", async () => {
+    // The removal refuses on the whole dirty state, which covers an index that differs from HEAD even after the
+    // worktree was set back to HEAD. The look before leaving active must cover the same state.
+    const left = await withLeaveProbe();
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Staged",
+      isolation: "new",
+    });
+    const file = join(workspace.path, "Assets", "Player.cs");
+    const committed = readFileSync(file, "utf8");
+    writeFileSync(file, "class Player { int jumped; }\n");
+    git(workspace.path, "add", "Assets/Player.cs");
+    writeFileSync(file, committed); // the worktree matches HEAD again; the index does not
+
+    const refused = await server.request("POST", `/api/workspaces/${workspace.id}/archive`, {});
+    expect(await errorCode(refused, 409)).toBe("uncommitted_work");
+    expect(left).toEqual([]);
+
+    git(workspace.path, "reset", "-q");
+    await json(await server.request("POST", `/api/workspaces/${workspace.id}/archive`), 200);
+    expect(left).toEqual(["Staged"]);
   });
 });
