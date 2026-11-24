@@ -8,6 +8,7 @@ import {
   readRoleDefaults,
   resolveResourceArgs,
   SPORE_EXTENSIONS,
+  SPORE_SKILLS,
 } from "./launch.js";
 
 let root: string;
@@ -88,6 +89,69 @@ describe("pi-spore's own extensions", () => {
     const [router] = SPORE_EXTENSIONS;
     const manifest = JSON.parse(readFileSync(join(router as string, "package.json"), "utf8"));
     expect(manifest.pi.extensions).toEqual(["./src/index.ts"]);
+  });
+});
+
+describe("pi-spore's own skills", () => {
+  /** A skill folder to hand to `resolveResourceArgs` as an extra, like `SPORE_SKILLS`. */
+  function makeSkillDir(name: string): string {
+    const dir = join(root, "spore-skills", name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, "SKILL.md"),
+      `---\nname: ${name}\ndescription: A spore skill.\n---\nBody\n`,
+    );
+    return dir;
+  }
+
+  const skillArgs = (args: string[]) =>
+    args.flatMap((arg, i) => (args[i - 1] === "--skill" ? [arg] : []));
+
+  it("comes after the user's skills, last", async () => {
+    const tools = makePackage("tools");
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [tools] }));
+    const extra = makeSkillDir("project-wiki");
+
+    const args = await resolveResourceArgs(project, agentDir, [], [], [extra]);
+    const skills = skillArgs(args);
+    // pi-spore's skill is last, after every skill of the user's setup, including the package's.
+    const userSkill = skills.findIndex((path) => path.startsWith(join(tools, "skills")));
+    expect(userSkill).toBeGreaterThanOrEqual(0);
+    expect(skills.at(-1)).toBe(extra);
+    expect(userSkill).toBeLessThan(skills.length - 1);
+    // The other arguments keep their order: the extras sit between `--no-skills` and the templates.
+    expect(args.filter((arg) => arg.startsWith("--no-"))).toEqual([
+      "--no-extensions",
+      "--no-skills",
+      "--no-prompt-templates",
+    ]);
+    expect(args.indexOf("--no-skills")).toBeLessThan(args.lastIndexOf(extra));
+    expect(args.indexOf("--no-prompt-templates")).toBeGreaterThan(args.lastIndexOf(extra));
+  });
+
+  it("is not loaded twice when the user's setup loads that package", async () => {
+    const tools = makePackage("tools");
+    writeFileSync(join(agentDir, "settings.json"), JSON.stringify({ packages: [tools] }));
+
+    const args = await resolveResourceArgs(project, agentDir, [], [], [join(tools, "skills")]);
+    expect(skillArgs(args).filter((path) => path.startsWith(join(tools, "skills")))).toHaveLength(
+      1,
+    );
+  });
+
+  it("ships project-wiki as a skill with frontmatter Pi accepts", () => {
+    const [wiki] = SPORE_SKILLS;
+    const lines = readFileSync(join(wiki as string, "SKILL.md"), "utf8").split("\n");
+    expect(lines[0]).toBe("---");
+    const fields = new Map<string, string>();
+    for (const line of lines.slice(1, lines.indexOf("---", 1))) {
+      const colon = line.indexOf(":");
+      if (colon > 0) fields.set(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
+    }
+    expect(fields.get("name")).toBe("project-wiki");
+    const description = fields.get("description") ?? "";
+    expect(description.length).toBeGreaterThan(0);
+    expect(description.length).toBeLessThanOrEqual(1024);
   });
 });
 
