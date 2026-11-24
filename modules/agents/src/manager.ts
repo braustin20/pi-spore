@@ -538,19 +538,23 @@ export class AgentManager {
     return [...used];
   }
 
-  async turnError(id: string): Promise<string | undefined> {
-    const { status, error, record } = this.get(id);
-    if (status === "failed") return error;
+  async turnError(id: string): Promise<{ error: string; provider?: string } | undefined> {
+    const { status, error, record, unstarted } = this.get(id);
+    if (status === "failed") return error === undefined ? undefined : { error };
     if (status === "busy" || status === "starting" || status === "waiting") return undefined;
+    // A prompt Pi took but has not started is a new run, so the last one's failure no longer counts.
+    if (unstarted.size > 0) return undefined;
     const refused = this.options.deliveryError(id);
-    if (refused !== undefined) return refused;
+    if (refused !== undefined) return { error: refused };
     const last = (await writtenMessages(record.sessionFile)).findLast(
       (message) => message.role === "assistant",
     );
     if (last?.stopReason !== "error") return undefined;
-    return typeof last.errorMessage === "string"
-      ? last.errorMessage
-      : "the model returned an error";
+    return {
+      error:
+        typeof last.errorMessage === "string" ? last.errorMessage : "the model returned an error",
+      ...(typeof last.provider === "string" ? { provider: last.provider } : {}),
+    };
   }
 
   /** True when the agent is idle and its last assistant message ended on its own; see `Agents.endedRun`. */

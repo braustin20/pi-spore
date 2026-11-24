@@ -2723,11 +2723,14 @@ describe("stage agents (R6)", () => {
       expect(await api.turnError(agentId)).toBeUndefined();
     });
 
-    it("returns the error text of a turn the provider refused", async () => {
+    it("returns the error text and the provider of a turn the provider refused", async () => {
       const stage = await scripted([{ error: "usage limit reached" }]);
       // The first idle is the start-up one, so wait for the turn's own end.
       await until(async () => (await api.turnError(stage.id)) !== undefined);
-      expect(await api.turnError(stage.id)).toBe("usage limit reached");
+      expect(await api.turnError(stage.id)).toEqual({
+        error: "usage limit reached",
+        provider: "fake",
+      });
     });
 
     it("returns the error of a message Pi refused, shows it on the agent, and clears it once a message gets in", async () => {
@@ -2739,7 +2742,7 @@ describe("stage agents (R6)", () => {
       const stage = start(workspaceId, { role: "worker", title: "Implement" }, "go");
 
       await until(async () => (await api.turnError(stage.id)) !== undefined);
-      expect(await api.turnError(stage.id)).toBe(NO_KEY);
+      expect(await api.turnError(stage.id)).toEqual({ error: NO_KEY });
       expect(status(stage.id)).toBe("idle");
       expect(api.get(stage.id).deliveryError).toBe(NO_KEY);
       const { agent } = await json<{ agent: Agent }>(
@@ -2755,7 +2758,7 @@ describe("stage agents (R6)", () => {
     it("returns the status error after a crash", async () => {
       const stage = await scripted(["crash"]);
       await until(() => status(stage.id) === "failed");
-      expect(await api.turnError(stage.id)).toContain("boom: the fake agent crashed");
+      expect((await api.turnError(stage.id))?.error).toContain("boom: the fake agent crashed");
     });
 
     it("is undefined, and no models are used, while Pi has named a session file it has not written yet", async () => {
