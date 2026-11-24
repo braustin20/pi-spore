@@ -139,6 +139,14 @@ async function type(within: HTMLElement, text: string) {
   });
 }
 
+async function choose(within: HTMLElement, value: string) {
+  const field = within.querySelector("select") as HTMLSelectElement;
+  await act(async () => {
+    Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")?.set?.call(field, value);
+    field.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+}
+
 describe("the global settings panel", () => {
   const start = (entries: Entry[]) => {
     const state = { entries };
@@ -311,6 +319,44 @@ describe("the global settings panel", () => {
     expect(cells.some((cell) => tokens(cell).includes("md:w-32"))).toBe(true);
     expect(cells.some((cell) => tokens(cell).includes("md:w-40"))).toBe(true);
     for (const cell of cells) expect(tokens(cell)).toContain("max-md:block");
+  });
+
+  it("edits a boolean with a true or false choice instead of a text field", async () => {
+    const { get } = start([{ key: "workspaces.archiveOnMerge", value: false, source: "default" }]);
+    const root = await render("/settings", {}, get, vi.fn());
+    const row = rowOf(root, "workspaces.archiveOnMerge");
+    expect(row.querySelector("select")).toBeNull();
+    await click(row, "Edit");
+    const choice = row.querySelector(
+      "select[aria-label='workspaces.archiveOnMerge']",
+    ) as HTMLSelectElement;
+    expect([...choice.options].map((option) => option.value)).toEqual(["true", "false"]);
+    expect(choice.value).toBe("false");
+    // A text field would let someone type `yes`, which the server rejects.
+    expect(row.querySelector("input")).toBeNull();
+    expect(row.querySelector("textarea")).toBeNull();
+  });
+
+  it("saves a boolean choice as a JSON boolean", async () => {
+    const { state, get } = start([
+      { key: "workspaces.archiveOnMerge", value: false, source: "default" },
+    ]);
+    const send = vi.fn(async () => {
+      state.entries = [{ key: "workspaces.archiveOnMerge", value: true, source: "global" }];
+      return { setting: state.entries[0] };
+    });
+    const root = await render("/settings", {}, get, send);
+    const row = () => rowOf(root, "workspaces.archiveOnMerge");
+    await click(row(), "Edit");
+    await choose(row(), "true");
+    await click(row(), "Save");
+    expect(send).toHaveBeenCalledWith("PUT", "projects/settings", {
+      key: "workspaces.archiveOnMerge",
+      value: true,
+    });
+    expect(row().textContent).toContain("true");
+    expect(row().textContent).toContain("global");
+    expect(row().textContent).not.toContain("Restart pi-spore to apply");
   });
 
   it("resets a key and shows the value and source from the next load", async () => {

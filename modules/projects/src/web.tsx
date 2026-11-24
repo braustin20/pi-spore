@@ -365,6 +365,8 @@ function SettingRow({
   const [restart, setRestart] = useState(false);
   const [busy, setBusy] = useState(false);
   const multiline = typeof value === "object" && value !== null;
+  // A boolean is a choice between two values, so the row offers them instead of a text field someone could mistype.
+  const boolean = typeof value === "boolean";
 
   const run = async (body: () => SaveSettingRequest) => {
     if (!save) return;
@@ -405,7 +407,17 @@ function SettingRow({
           <code className="[overflow-wrap:anywhere]">{shown}</code>
           {text !== undefined && (
             <div className="flex flex-wrap items-start gap-2">
-              {multiline ? (
+              {boolean ? (
+                <Select
+                  value={text}
+                  onChange={(event) => setText(event.target.value)}
+                  aria-label={settingKey}
+                  className="min-w-48 flex-1 font-mono"
+                >
+                  <option value="true">true</option>
+                  <option value="false">false</option>
+                </Select>
+              ) : multiline ? (
                 <Textarea
                   value={text}
                   onChange={(event) => setText(event.target.value)}
