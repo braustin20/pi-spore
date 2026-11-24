@@ -325,6 +325,106 @@ describe("request_human_input", () => {
     expect((item as { question: Question }).question).not.toHaveProperty("recommended");
   });
 
+  // ADR 0200: a question can point at the files the user should read first.
+  it("files a question with artifact links and keeps them through the answer", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "ask-links");
+    const call = asAgent(server, agentId, workspaceId);
+    const { workspace: home } = await json<{ workspace: { projectId: string } }>(
+      await server.request("GET", `/api/workspaces/${workspaceId}`),
+    );
+    await json(
+      await call("POST", "artifacts", {
+        scope: "workspace",
+        path: "plans/auth.md",
+        content: "# Plan",
+      }),
+    );
+    await json(
+      await call("POST", "artifacts", {
+        scope: "project",
+        path: "decisions.md",
+        content: "shared",
+      }),
+    );
+
+    const linked = [
+      { scope: "workspace", path: "plans/auth.md", label: "plan", ownerId: workspaceId },
+      { scope: "project", path: "decisions.md", ownerId: home.projectId },
+    ];
+    const filed = await json<{ question: Question }>(
+      await call("POST", "questions", {
+        question: "Which way?",
+        artifacts: [
+          { scope: "workspace", path: "plans/auth.md", label: "plan" },
+          { scope: "project", path: "decisions.md" },
+        ],
+      }),
+      201,
+    );
+    expect(filed.question.artifacts).toEqual(linked);
+
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question.artifacts).toEqual(linked);
+    const stored = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${filed.question.id}`),
+    );
+    expect(stored.question.artifacts).toEqual(linked);
+
+    await json(
+      await server.request("POST", `/api/attention/questions/${filed.question.id}/answer`, {
+        answer: "The plan",
+      }),
+    );
+    const answered = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${filed.question.id}`),
+    );
+    expect(answered.question).toMatchObject({ state: "answered", answer: "The plan" });
+    expect(answered.question.artifacts).toEqual(linked);
+  });
+
+  it("refuses a question whose artifact file does not exist, and files nothing", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "ask-no-file");
+    const call = asAgent(server, agentId, workspaceId);
+    await json(
+      await call("POST", "artifacts", {
+        scope: "workspace",
+        path: "plans/here.md",
+        content: "# Here",
+      }),
+    );
+
+    const response = await call("POST", "questions", {
+      question: "Which way?",
+      artifacts: [{ scope: "project", path: "plans/gone.md" }],
+    });
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("artifact_not_found");
+    expect(body.error.message).toContain("plans/gone.md");
+    expect((await inbox(server)).items).toEqual([]);
+  });
+
+  it("lists a question with no artifacts key when the agent linked none", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "ask-plain");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", {
+        question: "Which color?",
+        choices: ["red", "blue"],
+      }),
+      201,
+    );
+    expect(question).not.toHaveProperty("artifacts");
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question).not.toHaveProperty("artifacts");
+    const stored = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${question.id}`),
+    );
+    expect(stored.question).not.toHaveProperty("artifacts");
+  });
+
   it.each([
     ["has no choices", { question: "Which?", recommended: 0 }],
     ["is past the last choice", { question: "Which?", choices: ["a", "b"], recommended: 5 }],

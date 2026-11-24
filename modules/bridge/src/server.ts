@@ -309,6 +309,23 @@ export const bridgeModule: ServerModule = {
           "Agents in a run ask their coordinator: use ask_coordinator",
         );
       }
+      // ADR 0200: every Read button on the question must open a real file, so a stale path is the agent's
+      // mistake, not the user's. One listing per scope the request uses.
+      const listed = new Map<string, Set<string>>();
+      for (const artifact of request.artifacts ?? []) {
+        let paths = listed.get(artifact.scope);
+        if (paths === undefined) {
+          const files = await artifacts.list(artifactOwner(caller, artifact.scope));
+          paths = new Set(files.map((file) => file.path));
+          listed.set(artifact.scope, paths);
+        }
+        if (!paths.has(artifact.path))
+          throw new ApiError(
+            400,
+            "artifact_not_found",
+            `No ${artifact.scope} artifact ${artifact.path}`,
+          );
+      }
       return c.json({ question: questions.file(caller, request) }, 201);
     });
 
