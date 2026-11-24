@@ -109,7 +109,10 @@ const Finding = Type.Object(
   { additionalProperties: false },
 );
 
-/** A test the worker added, and the workspace artifact path that proves it failed before the code (ADR 0016). */
+/**
+ * A test the worker added, and the workspace artifact path of a run that shows it can fail: before the code, or
+ * with the code broken on purpose (ADR 0016, ADR 0199).
+ */
 export const TestProof = Type.Object(
   { name: Type.String({ minLength: 1 }), proof: Type.String({ minLength: 1 }) },
   { additionalProperties: false },

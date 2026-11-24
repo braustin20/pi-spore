@@ -278,6 +278,11 @@ const getPipelineRun = async (server: TestServer, id: string) =>
 const graph = async (server: TestServer) =>
   (await json<AgentGraph>(await server.request("GET", "/api/agent-graph"))).trees;
 const events = (server: TestServer) => server.events.eventsOf(GRAPH_TOPIC) as AgentGraphEvent[];
+/**
+ * The first group of the newest event. The graph publishes one tick after a change, so the newest event can
+ * trail what GET reads live: wait for the event instead of reading it once.
+ */
+const lastGroup = (server: TestServer) => events(server).at(-1)?.trees[0]?.groups[0];
 const startRun = async (server: TestServer, workspaceId: string) =>
   (
     await json<{ run: PipelineRun }>(
@@ -369,7 +374,8 @@ describe("the agent graph (ADR 0176)", () => {
       { laneId: other.id, merging: undefined },
     ]);
     // The event the canvas gets says the same.
-    expect(events(server).at(-1)?.trees[0]?.groups[0]?.merging).toBe("gate check");
+    await until(() => lastGroup(server)?.merging === "gate check");
+    expect(lastGroup(server)?.merging).toBe("gate check");
 
     // Cancelling the hung gate ends the merge as a failed gate: the lane is `passed` again.
     await until(() => existsSync(join(scratch, "counter.txt")));
@@ -384,7 +390,12 @@ describe("the agent graph (ADR 0176)", () => {
       { laneId: merged.id, merging: undefined },
       { laneId: other.id, merging: undefined },
     ]);
-    expect(events(server).at(-1)?.trees[0]?.groups[0]).not.toHaveProperty("merging");
+    const cleared = () => {
+      const group = lastGroup(server);
+      return group !== undefined && !("merging" in group);
+    };
+    await until(cleared);
+    expect(lastGroup(server)).not.toHaveProperty("merging");
   });
 
   it("gives a workspace its worker chat and a run in review with a done and a running step", async () => {

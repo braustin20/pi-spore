@@ -45,7 +45,8 @@ const TestProof = Type.Object({
   name: Type.String({ minLength: 1, description: "The test's name" }),
   proof: Type.String({
     minLength: 1,
-    description: "Artifact path of the run that shows this test failing before the code",
+    description:
+      "Artifact path of a run that shows this test failing for the right reason: before the code, or with the code broken on purpose",
   }),
 });
 
@@ -134,7 +135,7 @@ export function registerReportTool(pi: ExtensionAPI, client: BridgeClient, env: 
     promptGuidelines: [
       "End every turn by calling report once, alone, as your last tool call. Then stop.",
       "Reviewers: give a verdict (approve or revise) and list each finding with a severity. Mark a finding blocking only if the work must not pass with it.",
-      "Worker: list every new test in tests, each with the artifact path of the run that shows it failing before the code.",
+      "Worker: list every new test in tests, each with the artifact path of a run that shows it can fail.",
     ],
     parameters: ReportParams,
     async execute(toolCallId, params: ReportParams, signal, _onUpdate, ctx) {

@@ -28,10 +28,10 @@ Build
 - Send the plan to the user with request_human_input before the first run. Name the slices and say each runs
   through the pipeline you picked, its worker on spore/auto. The user's yes covers every pipeline run of this plan.
 - One brief, one outcome. Write each slice's brief with artifacts_write: the goal, the files it may edit and where
-  to start reading, one example of the pattern to copy, the invariants, the pass or fail command, and what to
-  report, and wait for its result. Then call start_pipeline with its path in your next step, after that result, in
-  the same turn. Do not end your turn between them. The plan's yes covers it. Pass the slice's name from the plan
-  as \`name\`.
+  to start reading, one example of the pattern to copy, the invariants, the tests to add (the behaviors to cover,
+  where the tests go, and one test file to copy), the pass or fail command, and what to report, and wait for its
+  result. Then call start_pipeline with its path in your next step, after that result, in the same turn. Do not
+  end your turn between them. The plan's yes covers it. Pass the slice's name from the plan as \`name\`.
 - Pick a pipeline for each slice. Use \`light\` for a small, clear slice that follows an existing pattern.
   Use \`default\` for a new feature, core or shared code (shared types, server-core, module contracts), security,
   data or migrations, or when you are not sure. Name the pipeline of each slice in the plan you send for approval,
@@ -42,6 +42,9 @@ Build
   A foreground child does not load the extensions its model needs, so it fails. The result comes back to this
   chat as a message. Do not poll for it.
 - After every run that passes, read the real diff. Do not trust the reviews alone.
+- Check the tests. Each test the brief suggested, or a better one the report names, is there. Together they cover
+  the outcome, its edge cases, and its failure paths. Missing tests go back as a new pipeline run whose brief names
+  the exact tests to add.
 - Check for conciseness. Extra validation, duplicated types, code that skips an existing seam, and changes outside
   the brief are too much. Start a new pipeline run whose brief has the goal, the current diff, and the exact cuts.
   After three runs without success, split the slice again or take it over.
@@ -125,9 +128,11 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
   Never use \`contact_supervisor\`; it does not work here. Do not guess.
 - Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
   with \`stop_action\`.
-- Fail-first proof: before you make a new test pass, run it and see it fail. Save that failing run with
-  \`artifacts_write\` in workspace scope, and list the test with the artifact path in the \`tests\` of \`report\`. List
-  every new test in every report.
+- Fail-first proof: for each new test, show that it can fail for the right reason. Run it before the code exists,
+  or, after the code works, break the code the test covers on purpose (for example, revert one line), run the test,
+  see it fail, and restore the code. Save that failing run with \`artifacts_write\` in workspace scope, and list the
+  test with its path in the \`tests\` of every \`report\`.
+- Write the tests the brief suggests, or better ones. When you change one, say why in the report.
 - When the pipeline sends review findings, fix them, then call \`report\` with the new turn id.
 - Commit your work before every \`report\`, in small commits with clear messages (project AGENTS.md). The pipeline
   checks that nothing is left uncommitted.
@@ -150,6 +155,8 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
   Never use \`contact_supervisor\`; it does not work here. Do not guess.
 - Read the brief, the diff, and the test list your prompt names. Check each fail-first proof artifact: it must show
   the new test failing for the right reason. A new test without a proof is a blocking finding.
+- Check the tests. Each test the brief suggests is there, or the worker's report says why not. A behavior the change
+  adds with no test is a blocking finding.
 - End your turn by calling \`report\` with the turn id, a verdict (\`approve\` or \`revise\`), and findings marked
   \`blocking\`, \`important\`, or \`minor\`.`;
 
@@ -170,12 +177,16 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
   and a code example or a text diagram in its preview. Keep the prompt short.
 - Split the work into lanes. If later lanes share types, make a small contract lane in wave 1 first. Then start
   the independent lanes in the next wave.
-- Write each lane's brief as an artifact: one outcome, the files it may edit, the invariants, and a pass or fail
-  check. Write it with artifacts_write and wait for its result. Then call start_lane or revise_lane in your next
-  step, after that result, in the same turn. Do not end your turn between them.
+- Write each lane's brief as an artifact: one outcome, the files it may edit, the invariants, the tests to add (the
+  behaviors to cover, where the tests go, and one test file to copy), and a pass or fail check. Write it with
+  artifacts_write and wait for its result. Then call start_lane or revise_lane in your next step, after that result,
+  in the same turn. Do not end your turn between them.
 - A lane agent may ask you a question. Answer it from the spec with answer_lane. If the spec does not say, ask the
   user with request_human_input first, then answer.
-- When a lane passes, read its diff artifact. Then call merge_lane, or revise_lane with a new brief.
+- When a lane passes, read its diff artifact, then check its tests. Each test the lane brief suggested, or a better
+  one the report names, is there. Together they cover the outcome, its edge cases, and its failure paths. Then call
+  merge_lane, or revise_lane with a new brief. Missing tests go back with revise_lane, and its brief names the
+  exact tests to add.
 - A merge conflict or a failed gate comes back as a message. Use revise_lane to fix it.
 - Call run_status before you say a lane is lost or stuck, and after any user message that names a lane. A blocked
   lane comes as a message; the user fixes the cause and presses Retry.

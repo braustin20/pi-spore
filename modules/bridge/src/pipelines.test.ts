@@ -334,6 +334,22 @@ describe("a pipeline run", () => {
     expect(prompt).toContain("## Brief\n\nBuild the thing");
   });
 
+  // ADR 0199: the worker may write the code first, so the prompt names both ways to a proof.
+  it("names both ways to prove a test can fail in the worker's task prompt", async () => {
+    const server = await start({ env: scriptEnv({ worker: [DONE] }) });
+    const { workspaceId } = await workspace(server, "proof-task");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+
+    const prompt = (await chat(server, (await getRun(server, run.id)).workerAgentId as string))[0];
+    expect(prompt).toContain("run it before the code exists");
+    expect(prompt).toContain("broken on purpose and then restored");
+    expect(prompt).toContain("as a workspace artifact");
+    expect(prompt).not.toContain("Write each new test first");
+  });
+
   it("keeps the route the worker ran on, taking only the record of its own agent", async () => {
     const home = join(scratch, "fake-home");
     const routing = { route: "local", model: "strata/qwen", reasons: ["bounded", "free quota"] };
@@ -735,6 +751,69 @@ describe("a review stage", () => {
     expect(committed).toContain("+edited line");
     expect(committed).toContain("+new line");
     expect(uncommitted).toContain("(no changes)");
+  });
+
+  // ADR 0199: a proof is a run that shows the test can fail, and the brief's tests are the reviewer's check.
+  it("asks the reviewer to check the brief's tests, and no longer says the proof came before the code", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+
+    const { run } = await runUntil(server, "proof-review", withReview(), "passed");
+
+    const prompt = (await chat(server, (run.turns[1] as PipelineTurn).agentId))[0];
+    expect(prompt).toContain("each with the artifact that shows it can fail");
+    expect(prompt).toContain("Check that each test the brief suggests is there");
+    expect(prompt).toContain("every test the change adds is in this list");
+    expect(prompt).not.toContain("failed before the code");
+    expect(prompt).not.toContain("no test covers");
+  });
+
+  // ADR 0199 follow-up: the brief's tests are the reviewer's check, so round 1 needs the worker's report too.
+  it("gives the round 1 reviewer the worker's task report", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+
+    const { run } = await runUntil(server, "task-report-review", withReview(), "passed");
+
+    const prompt = (await chat(server, (run.turns[1] as PipelineTurn).agentId))[0];
+    expect(prompt).toContain("The worker's report: Done");
+  });
+
+  it("gives the round 2 reviewer the fix report once, not the task report line", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        reviewer: [REVISE, { summary: "Good", verdict: "approve" }],
+      }),
+    });
+
+    const { run } = await runUntil(server, "task-report-fix", withReview("rounds = 2"), "passed");
+
+    const second = run.turns[3] as PipelineTurn;
+    const prompt = (await chat(server, second.agentId))[0];
+    expect(prompt).toContain("The worker's fix report: Fixed the findings");
+    expect(prompt).not.toContain("The worker's report: Done");
+  });
+
+  it("names both ways to prove a test can fail in the fix prompt", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        reviewer: [REVISE, { summary: "Good", verdict: "approve" }],
+      }),
+    });
+
+    const { run } = await runUntil(server, "proof-fix", withReview("rounds = 2"), "passed");
+
+    const fix = run.turns[2] as PipelineTurn;
+    const prompt = (await chat(server, fix.agentId)).find((message) =>
+      message.includes(`Turn: ${fix.id}`),
+    );
+    expect(prompt).toContain("a failing run before the code exists");
+    expect(prompt).toContain("broken on purpose and then restored");
+    expect(prompt).not.toContain("Write each new test first");
   });
 
   it("says there is no diff for a project without change support", async () => {
@@ -2544,6 +2623,27 @@ describe("an adversarial stage", () => {
     expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
     const stage = await stageAgent(server, (run.turns[1] as PipelineTurn).agentId);
     expect(stage.agent).toMatchObject({ role: "adversarial-reviewer", title: "Adversarial 1" });
+  });
+
+  // ADR 0199: only the adversarial reviewer names the paths no test covers.
+  it("asks the adversarial reviewer for each edge case or failure path no test covers", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, DONE],
+        reviewer: [{ summary: "Good", verdict: "approve" }],
+        "adversarial-reviewer": [{ summary: "Good", verdict: "approve" }],
+      }),
+    });
+
+    const plain = await runUntil(server, "plain-paths", withReview(), "passed");
+    const adversarial = await runUntil(server, "adv-paths", withAdversarial(), "passed");
+
+    expect((await chat(server, (plain.run.turns[1] as PipelineTurn).agentId))[0]).not.toContain(
+      "no test covers",
+    );
+    const prompt = (await chat(server, (adversarial.run.turns[1] as PipelineTurn).agentId))[0];
+    expect(prompt).toContain("Name each edge case or failure path that no test covers.");
+    expect(prompt).toContain("Check that each test the brief suggests is there");
   });
 });
 

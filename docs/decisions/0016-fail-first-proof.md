@@ -1,6 +1,7 @@
 # 0016. Fail-first proof is a recorded artifact the reviewer checks
 
-- Status: Accepted
+- Status: Accepted; changed by [0199](0199-proof-by-breaking-the-code.md) (the proof may come from code broken on
+  purpose; the brief suggests the tests)
 - Date: 2026-11-06
 - Requirements: R6.5
 

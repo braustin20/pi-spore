@@ -407,7 +407,7 @@ const taskPrompt = (
     `Turn: ${turnId}`,
     "",
     `The brief is the workspace artifact ${briefPath}. Its text is below.`,
-    "Write each new test first and keep the output of its failing run as a workspace artifact: that is its proof.",
+    "For each new test, prove it can fail: run it before the code exists, or run it with the code it covers broken on purpose and then restored. Keep that failing run as a workspace artifact: that is its proof.",
     `When you are done, call report with turn ${turnId}, a short summary, and tests: one entry for each test you added, with its name and the artifact path of its proof.`,
     "Your turn ends only with that report.",
     "",
@@ -440,6 +440,7 @@ const reviewPrompt = (
   tests: readonly TestProof[],
   earlier?: { review: StageReport; fix: StageReport },
   fixPass?: FixPass,
+  taskReport?: string,
 ) =>
   [
     stage.role === "adversarial-reviewer"
@@ -451,9 +452,14 @@ const reviewPrompt = (
     "",
     `The brief is the workspace artifact ${paths.brief}.`,
     `The diff is the workspace artifact ${paths.diff}: the commits since the base, then the uncommitted and untracked files. A note marks any file whose diff is cut short; read that file.`,
-    "The worker listed these new tests, each with the artifact that proves it failed before the code:",
+    "The worker listed these new tests, each with the artifact that shows it can fail:",
     ...bullets(tests),
     "Open each proof and check that it shows the test failing for the right reason. Check that every test the change adds is in this list; a test that is not listed is a finding.",
+    "Check that each test the brief suggests is there, or that the worker's report says why it is not.",
+    ...(taskReport ? [`The worker's report: ${taskReport}`] : []),
+    ...(stage.role === "adversarial-reviewer"
+      ? ["Name each edge case or failure path that no test covers."]
+      : []),
     ...(earlier
       ? [
           `Round ${round - 1} reviewer summary: ${earlier.review.summary}`,
@@ -535,7 +541,7 @@ const fixPrompt = (
       ...(red.logPath ? [`Log: ${red.logPath}`] : []),
       "",
     ]),
-    "Fix what the findings ask for. Write each new test first and keep its failing run as a workspace artifact, as before.",
+    "Fix what the findings ask for. Prove each new test can fail, as before: a failing run before the code exists, or one with the code it covers broken on purpose and then restored. Keep that run as a workspace artifact.",
     gated
       ? last
         ? "This is the last fix: no review follows it. The gates run once more after it."
@@ -1466,6 +1472,16 @@ export const pipelinesModule: ServerModule = {
               .at(-1);
       const fix = round > 1 ? liveTurn(turns, "fix", round - 1) : undefined;
       const tests = JSON.parse(run.tests) as TestProof[];
+      // Round 1 has no fix report, so the worker's own report is what lets the reviewer check the brief's tests;
+      // round 2 and later read the fix report. The group's turns hold only this stage's turns, so read the run's.
+      // A fix pass run (a reused worker) keeps the prompt it had.
+      const taskReport =
+        round === 1 && run.previous_run_id === null
+          ? turnRows(run.id)
+              .filter((turn) => turn.kind === "task" && turn.error === null && turn.report !== null)
+              .map(reportOf)
+              .at(-1)?.summary
+          : undefined;
       const starts: { member: (typeof members)[number]; prompt: (turnId: string) => string }[] = [];
       for (const member of members) {
         const { stage, index } = member;
@@ -1491,7 +1507,8 @@ export const pipelinesModule: ServerModule = {
           : undefined;
         starts.push({
           member,
-          prompt: (turnId) => reviewPrompt(stage, round, turnId, paths, tests, earlier, fixPass),
+          prompt: (turnId) =>
+            reviewPrompt(stage, round, turnId, paths, tests, earlier, fixPass, taskReport),
         });
       }
       return {

@@ -704,6 +704,54 @@ describe("spore-bridge", () => {
     );
   });
 
+  // ADR 0199: a proof is a failing run for the right reason, made before the code or with it broken on purpose.
+  it("tells the implement worker to prove each test can fail, before the code or with it broken", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    expect(oneLine(STAGE_WORKER_RULES)).toContain(
+      "show that it can fail for the right reason. Run it before the code exists, or, after the code works, break the code the test covers on purpose (for example, revert one line), run the test, see it fail, and restore the code",
+    );
+    expect(oneLine(STAGE_WORKER_RULES)).toContain("the `tests` of every `report`");
+    expect(oneLine(STAGE_WORKER_RULES)).toContain(
+      "Write the tests the brief suggests, or better ones. When you change one, say why in the report.",
+    );
+    expect(STAGE_WORKER_RULES).not.toContain("before you make a new test pass");
+  });
+
+  // ADR 0199: a reviewer that finds an untested new behavior stops the run.
+  it("tells a reviewer that a behavior the change adds with no test is a blocking finding", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    expect(oneLine(STAGE_REVIEWER_RULES)).toContain(
+      "Each test the brief suggests is there, or the worker's report says why not",
+    );
+    expect(oneLine(STAGE_REVIEWER_RULES)).toContain(
+      "A behavior the change adds with no test is a blocking finding",
+    );
+    expect(oneLine(STAGE_REVIEWER_RULES)).toContain(
+      "A new test without a proof is a blocking finding",
+    );
+  });
+
+  // ADR 0199: the brief suggests the tests, and the work comes back only with them.
+  it("names the tests to add in the brief and checks them on return", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    const briefItem =
+      "the tests to add (the behaviors to cover, where the tests go, and one test file to copy)";
+    expect(oneLine(RULES)).toContain(briefItem);
+    expect(oneLine(RULES)).toContain(
+      "Each test the brief suggested, or a better one the report names, is there",
+    );
+    expect(oneLine(RULES)).toContain(
+      "Missing tests go back as a new pipeline run whose brief names the exact tests to add",
+    );
+    expect(oneLine(RULES)).toContain("You may write failing tests first");
+    expect(oneLine(RULES)).toContain("Prove each new test can fail");
+    expect(oneLine(COORDINATOR_RULES)).toContain(briefItem);
+    expect(oneLine(COORDINATOR_RULES)).toContain("read its diff artifact, then check its tests");
+    expect(oneLine(COORDINATOR_RULES)).toContain(
+      "Missing tests go back with revise_lane, and its brief names the exact tests to add",
+    );
+  });
+
   // A stage agent that guesses made a wrong turn on 2026-11-14; the plan's chat answers instead (ADR 0179).
   it.each([
     ["worker", STAGE_WORKER_RULES],
@@ -829,6 +877,18 @@ describe("spore-bridge report tool", () => {
       expect(fakePi().tools.has("report")).toBe(true);
     },
   );
+
+  // ADR 0199: a proof is a failing run for the right reason, not always a run before the code.
+  it("describes a proof as a run that shows the test can fail", () => {
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    const tool = fakePi().tool("report");
+
+    expect(JSON.stringify(tool.parameters ?? {})).toContain("with the code broken on purpose");
+    expect(JSON.stringify(tool.parameters ?? {})).not.toContain("failing before the code");
+    expect((tool.promptGuidelines ?? []).join(" ")).toContain(
+      "each with the artifact path of a run that shows it can fail",
+    );
+  });
 
   it("sends a worker report with the receipt, no earlyStop, and ends the turn", async () => {
     vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
