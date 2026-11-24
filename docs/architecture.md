@@ -500,6 +500,7 @@ export interface VcsProvider {
   root(path: string): Promise<string>;
   isolationModes: readonly Isolation[];                  // new, existing, in-place
   createCopy(project, request): Promise<WorkspaceLocation>;   // { path, line?, base? }
+  lostWork(project, location): Promise<string | undefined>; // why removeCopy would refuse; undefined for none
   removeCopy(project, location, { force }): Promise<void>;
   // Optional capabilities, detected by presence:
   lines?: { list(project) };                             // branches (git)
@@ -2133,9 +2134,13 @@ See [ADR 0161](decisions/0161-dev-server-for-the-user.md). pi-spore's own `[acti
 
 The workspaces module calls other modules around a copy through its contract: `afterCopyCreated` and
 `beforeRemoveCopy` return step reports, which the create and archive responses list in `steps`. A failed
-`beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced. `afterStateChange` runs after
-every park, resume, and archive; a listener that throws is logged and does not undo the change. `create` makes a
-workspace as `POST /api/workspaces` does, for modules that start work, such as kanban.
+`beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced. An archive asks the provider
+`lostWork` before it stops anything: a copy that holds work answers 409 `uncommitted_work`, and the chats,
+terminals, and runs of the workspace keep running, because the removal would refuse anyway and leaving active
+cannot be undone. While an archive runs, `archiving()` names the workspace, so a module that reads its worktree
+can tell a removal in progress from a broken copy. `afterStateChange` runs after every park, resume, and archive;
+a listener that throws is logged and does not undo the change. `create` makes a workspace as
+`POST /api/workspaces` does, for modules that start work, such as kanban.
 
 The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
 and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
