@@ -5,7 +5,7 @@
 import { type ExtensionAPI, getAgentDir } from "@earendil-works/pi-coding-agent";
 import Type from "typebox";
 import { registerArtifactTools } from "./artifacts.js";
-import { registerCardTools } from "./cards.js";
+import { registerCardTools, StringEnum } from "./cards.js";
 import {
   BridgeClient,
   type BridgeEnv,
@@ -73,6 +73,29 @@ const choiceStep = <T extends "select" | "multiselect">(type: T) =>
     },
     { additionalProperties: false },
   );
+
+/** One file to read before answering. Same shape and limits as shared's `QuestionArtifact` (ADR 0200). */
+const questionArtifact = Type.Object(
+  {
+    scope: StringEnum(["workspace", "project"], {
+      description:
+        "workspace: this workspace only. project: shared by all workspaces of this project",
+    }),
+    path: Type.String({
+      minLength: 1,
+      maxLength: 255,
+      description: "Relative path of a file you wrote with artifacts_write, such as briefs/auth.md",
+    }),
+    label: Type.Optional(
+      Type.String({
+        minLength: 1,
+        maxLength: 80,
+        description: "The button text after Read, such as brief. Default: the file name",
+      }),
+    ),
+  },
+  { additionalProperties: false },
+);
 
 /** One step of a multi-step question. Same shape and limits as shared's `QuestionStep`. */
 const questionStep = Type.Union([
@@ -172,7 +195,8 @@ export default function sporeBridge(pi: ExtensionAPI) {
         "can continue from the answer alone. Give choices when there are a few clear options; the user may still " +
         "answer in their own words. For several related decisions, use steps: each step is one question of type " +
         "text, select, multiselect, or confirm. Put each option's details in its description, and a code example " +
-        "or a text diagram in a code block in its preview. Keep each prompt short.",
+        "or a text diagram in a code block in its preview. Keep each prompt short. Pass the files the user should " +
+        "read first, such as a plan or a brief, in artifacts; each shows as a Read button on the question.",
       promptSnippet:
         "Ask the user a question that waits on Home; the answer arrives later as a message",
       promptGuidelines: [
@@ -207,6 +231,14 @@ export default function sporeBridge(pi: ExtensionAPI) {
               "Related decisions the user answers in order, instead of `question` and `choices`",
           }),
         ),
+        artifacts: Type.Optional(
+          Type.Array(questionArtifact, {
+            minItems: 1,
+            maxItems: 6,
+            description:
+              "Artifact files the user should read before answering, such as the plan or a brief. Each shows as a Read button",
+          }),
+        ),
       }),
       async execute(toolCallId, params, signal) {
         const { question } = await client.call(QuestionAnswer, "questions", {
@@ -215,6 +247,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
             ...(params.choices ? { choices: params.choices } : {}),
             ...(params.recommended !== undefined ? { recommended: params.recommended } : {}),
             ...(params.steps ? { steps: params.steps } : {}),
+            ...(params.artifacts ? { artifacts: params.artifacts } : {}),
           },
           receipt: toolCallId,
           ...(signal ? { signal } : {}),

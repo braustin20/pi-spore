@@ -231,6 +231,39 @@ describe("spore-bridge", () => {
     expect(seen[0]?.body).toEqual({ steps });
   });
 
+  // ADR 0200: the files the user should read ride along with the question.
+  it("sends the artifacts of a question, next to its steps", async () => {
+    reply("POST /api/bridge/questions", { status: 201, body: { question: { id: "q1" } } });
+    const steps = [{ type: "text", prompt: "Any notes?" }];
+    const artifacts = [
+      { scope: "workspace", path: "plans/auth.md", label: "plan" },
+      { scope: "project", path: "briefs/slice-1.md" },
+    ];
+    await fakePi().tool("request_human_input").execute("toolu_1", { steps, artifacts });
+
+    expect(seen[0]?.body).toEqual({ steps, artifacts });
+  });
+
+  it("takes only artifacts of a scope with a path, and at least one", () => {
+    const tool = fakePi().tool("request_human_input");
+    const parameters = {
+      name: "request_human_input",
+      parameters: tool.parameters,
+    } as unknown as PiTool;
+    const askWith = (artifacts: unknown) =>
+      validateToolArguments(parameters, {
+        type: "toolCall",
+        id: "t1",
+        name: "request_human_input",
+        arguments: { question: "Which way?", artifacts },
+      } as unknown as ToolCall);
+
+    expect(() => askWith([{ scope: "workspace", path: "plans/auth.md" }])).not.toThrow();
+    expect(() => askWith([{ scope: "global", path: "plans/auth.md" }])).toThrow();
+    expect(() => askWith([{ scope: "workspace" }])).toThrow();
+    expect(() => askWith([])).toThrow();
+  });
+
   it("runs check until it ends and returns the outcome with the log tail", async () => {
     reply("POST /api/bridge/runs", { status: 201, body: run("running") });
     reply(
@@ -572,6 +605,8 @@ describe("spore-bridge", () => {
 
   it("tells the orchestrator to ask related decisions in one call with steps", () => {
     expect(RULES).toContain("Ask related decisions in one request_human_input call with steps");
+    // ADR 0200: the plan and the briefs already written go with the question as Read buttons.
+    expect(RULES).toContain("pass it and each brief you already wrote in `artifacts`");
   });
 
   it("tells a run coordinator to ask related decisions in one call with steps", () => {
