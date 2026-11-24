@@ -61,6 +61,42 @@ describe("parseChildRuns", () => {
     ]);
   });
 
+  describe("order", () => {
+    const run = (id: string, startedAt?: number, updatedAt = 0) => ({
+      id,
+      label: id,
+      state: startedAt === undefined ? "queued" : "running",
+      ...(startedAt === undefined ? {} : { startedAt }),
+      updatedAt,
+    });
+    const ids = (runs: unknown[]) =>
+      parseChildRuns(widget({ ...snapshot, runs })).map((parsed) => parsed.id);
+
+    // pi-subagents sorts by last activity, newest first, so running helpers swap places.
+    it("lists runs in start order, not activity order", () => {
+      expect(ids([run("researcher", 200, 900), run("scout", 100, 800)])).toEqual([
+        "scout",
+        "researcher",
+      ]);
+    });
+
+    it("gives the same order whatever order the runs come in", () => {
+      expect(ids([run("scout", 100, 900), run("researcher", 200, 800)])).toEqual([
+        "scout",
+        "researcher",
+      ]);
+    });
+
+    it("puts queued runs last, and breaks ties by id", () => {
+      expect(ids([run("q2"), run("q1"), run("b", 100), run("a", 100)])).toEqual([
+        "a",
+        "b",
+        "q1",
+        "q2",
+      ]);
+    });
+  });
+
   it("treats a cleared widget as no runs", () => {
     expect(parseChildRuns(undefined)).toEqual([]);
   });

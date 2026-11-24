@@ -269,6 +269,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     agent, model, and thinking level. Only a change of these is published, as `{ type: "children", children }` on
     the `agent:<id>` topic; the snapshot event carries the list too. The list empties when the process exits.
     Foreground helpers run inside the worker's process and stay the worker's running `subagent` tool call.
+  - Helpers show in start order: oldest `startedAt` first, queued runs (no `startedAt`) last, ties by id.
+    pi-subagents sends them newest activity first, so running helpers would swap places. Steps keep their order.
   - Each run in state `running` counts against `agents.maxLive` with the agent processes. It makes a new agent wait
     for a slot but never stops a run that exists. A queued run counts nothing. An agent with a running helper does
     not stop for idleness, and the Stop button of the chat is disabled.
