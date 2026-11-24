@@ -1,6 +1,6 @@
 import { mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
-import { ProjectsKey } from "@pi-spore/mod-projects/server";
+import { ProjectsKey, type WorkspaceLocation } from "@pi-spore/mod-projects/server";
 import { ApiError, type ServerModule, type SettingsOverride } from "@pi-spore/module-api";
 import {
   ArchiveWorkspaceRequest,
@@ -29,6 +29,7 @@ import {
   WorkspacesKey,
 } from "./contract.js";
 import { copyIgnoredFiles } from "./copy.js";
+import { declareWorkspaceSettings } from "./settings.js";
 
 export * from "./contract.js";
 
@@ -54,6 +55,8 @@ const MIGRATIONS = [
   "ALTER TABLE workspaces_workspaces ADD COLUMN planner INTEGER NOT NULL DEFAULT 0",
   // ADR 0174: one planner workspace per project at most.
   "CREATE UNIQUE INDEX workspaces_one_planner ON workspaces_workspaces (project_id) WHERE planner = 1",
+  // NULL follows the `workspaces.archiveOnMerge` setting; 0 off, 1 on.
+  "ALTER TABLE workspaces_workspaces ADD COLUMN archive_on_merge INTEGER",
 ];
 
 const DAY_MS = 86_400_000;
@@ -75,6 +78,7 @@ interface Row {
   settings: string | null;
   settings_source: "workspace" | "run" | null;
   planner: number;
+  archive_on_merge: number | null;
 }
 
 const overrideOf = (row: Row): SettingsOverride | undefined =>
@@ -93,6 +97,7 @@ const toWorkspace = (row: Row): Workspace => ({
   ...(row.base === null ? {} : { base: row.base }),
   state: row.state,
   planner: row.planner === 1,
+  ...(row.archive_on_merge === null ? {} : { archiveOnMerge: row.archive_on_merge === 1 }),
   createdAt: row.created_at,
   updatedAt: row.updated_at,
 });
@@ -103,6 +108,7 @@ export const workspacesModule: ServerModule = {
   core: true,
   setup(host) {
     host.store.migrate("workspaces", MIGRATIONS);
+    const keys = declareWorkspaceSettings(host.settings);
     const projects = host.use(ProjectsKey);
 
     projects.addRemovalGuard((project) => {
@@ -242,6 +248,7 @@ export const workspacesModule: ServerModule = {
         settings: request.settings ? JSON.stringify(request.settings) : null,
         settings_source: request.settings ? source : null,
         planner: options.planner ? 1 : 0,
+        archive_on_merge: null,
       };
       host.store.run(
         `INSERT INTO workspaces_workspaces
@@ -308,11 +315,20 @@ export const workspacesModule: ServerModule = {
     const stateListeners: StateChangeListener[] = [];
     const retentionListeners: RetentionListener[] = [];
     const deleteListeners: DeleteListener[] = [];
+    /** The workspaces inside `archive`, so a reader of a worktree can tell a removal from a broken copy. */
+    const removingNow = new Set<string>();
     const workspaces: Workspaces = {
       get: (id) => toWorkspace(load(id)),
       list: (filter = {}) => listRows(filter).map(toWorkspace),
       create,
       planner,
+      archive: (id, options) => archive(id, options),
+      archiving: () => removingNow,
+      archiveOnMerge: async (id) => {
+        const row = load(id);
+        if (row.archive_on_merge !== null) return row.archive_on_merge === 1;
+        return (await host.settings.resolve()).get(keys.archiveOnMerge).value;
+      },
       beforeLeaveActive: (listener) => {
         leaveListeners.push(listener);
       },
@@ -420,6 +436,54 @@ export const workspacesModule: ServerModule = {
       { type: "snapshot", workspaces: listRows({}).map(toWorkspace) },
     ]);
 
+    /** The copy of a workspace as its version control sees it, or undefined when it works in the project folder. */
+    const copyOf = (row: Row): WorkspaceLocation | undefined =>
+      row.isolation === "in-place"
+        ? undefined
+        : { path: row.path, ...(row.line === null ? {} : { line: row.line }) };
+
+    const archive = async (
+      id: string,
+      { force }: { force: boolean },
+    ): Promise<ArchiveWorkspaceResponse> => {
+      const row = loadChangeable(id);
+      if (row.state === "archived")
+        throw new ApiError(409, "bad_state", "Workspace is already archived");
+      removingNow.add(id);
+      try {
+        const copy = copyOf(row);
+        // A copy that still holds work is refused by the removal below, and leaving active cannot be undone: it
+        // stops the chats, terminals, and runs of the workspace. Ask the copy first, in the same words the
+        // removal would use, so a refused archive stops nothing.
+        if (copy && !force) {
+          const project = await projects.get(row.project_id);
+          const reason = await projects.vcsFor(project).lostWork(project, copy);
+          if (reason) throw new ApiError(409, "uncommitted_work", reason);
+        }
+        if (row.state === "active") await leaveActive(row, "archived");
+        const steps: StepReport[] = [];
+        if (copy) {
+          for (const listener of removeListeners) {
+            const report = await listener(toWorkspace(row), { force });
+            if (!report) continue;
+            if (!report.ok && !force) {
+              throw new ApiError(
+                409,
+                `${report.name}_failed`,
+                `${report.message}. Archive with force to remove the copy anyway.`,
+              );
+            }
+            steps.push(report);
+          }
+          const project = await projects.get(row.project_id);
+          await projects.vcsFor(project).removeCopy(project, copy, { force });
+        }
+        return { workspace: setState(row, "archived"), steps };
+      } finally {
+        removingNow.delete(id);
+      }
+    };
+
     host.routes.get("/", (c) => {
       const projectId = c.req.query("projectId");
       const state = c.req.query("state");
@@ -458,16 +522,31 @@ export const workspacesModule: ServerModule = {
     });
 
     host.routes.patch("/:id", async (c) => {
-      const request = parseJsonBody(RenameWorkspaceRequest, await c.req.text(), "rename request");
+      const request = parseJsonBody(RenameWorkspaceRequest, await c.req.text(), "update request");
+      if (request.name === undefined && request.archiveOnMerge === undefined) {
+        throw new ApiError(400, "bad_request", "Give a name or archiveOnMerge to change");
+      }
       const row = loadChangeable(c.req.param("id"));
-      const now = host.now();
+      if (row.state === "archived") throw new ApiError(409, "bad_state", "Workspace is archived");
+      const next: Row = {
+        ...row,
+        name: request.name ?? row.name,
+        archive_on_merge:
+          request.archiveOnMerge === undefined
+            ? row.archive_on_merge
+            : request.archiveOnMerge === null
+              ? null
+              : Number(request.archiveOnMerge),
+        updated_at: host.now(),
+      };
       host.store.run(
-        "UPDATE workspaces_workspaces SET name = ?, updated_at = ? WHERE id = ?",
-        request.name,
-        now,
+        "UPDATE workspaces_workspaces SET name = ?, archive_on_merge = ?, updated_at = ? WHERE id = ?",
+        next.name,
+        next.archive_on_merge,
+        next.updated_at,
         row.id,
       );
-      const workspace = toWorkspace({ ...row, name: request.name, updated_at: now });
+      const workspace = toWorkspace(next);
       publish(workspace);
       return c.json({ workspace });
     });
@@ -491,36 +570,7 @@ export const workspacesModule: ServerModule = {
 
     host.routes.post("/:id/archive", async (c) => {
       const request = parseJsonBody(ArchiveWorkspaceRequest, await c.req.text(), "archive request");
-      const row = loadChangeable(c.req.param("id"));
-      if (row.state === "archived")
-        throw new ApiError(409, "bad_state", "Workspace is already archived");
-      if (row.state === "active") await leaveActive(row, "archived");
-      const steps: StepReport[] = [];
-      const force = request.force === true;
-      if (row.isolation !== "in-place") {
-        for (const listener of removeListeners) {
-          const report = await listener(toWorkspace(row), { force });
-          if (!report) continue;
-          if (!report.ok && !force) {
-            throw new ApiError(
-              409,
-              `${report.name}_failed`,
-              `${report.message}. Archive with force to remove the copy anyway.`,
-            );
-          }
-          steps.push(report);
-        }
-        const project = await projects.get(row.project_id);
-        await projects
-          .vcsFor(project)
-          .removeCopy(
-            project,
-            { path: row.path, ...(row.line === null ? {} : { line: row.line }) },
-            { force },
-          );
-      }
-      const body: ArchiveWorkspaceResponse = { workspace: setState(row, "archived"), steps };
-      return c.json(body);
+      return c.json(await archive(c.req.param("id"), { force: request.force === true }));
     });
   },
 };

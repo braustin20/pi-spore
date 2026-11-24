@@ -217,6 +217,8 @@ section, update this map in the same change.
   lane is not merged. Accepted. Renumbered from 0186.
 - [0196](decisions/0196-phone-web-push.md): Phone notifications through Web Push and a service worker. Accepted.
   Renumbered from 0187.
+- [0197](decisions/0197-auto-archive-on-merge.md): Archive a workspace when its PR merges, on by default, never
+  forced. Accepted.
 
 ## Spikes
 
