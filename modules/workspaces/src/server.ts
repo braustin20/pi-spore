@@ -433,6 +433,13 @@ export const workspacesModule: ServerModule = {
       { type: "snapshot", workspaces: listRows({}).map(toWorkspace) },
     ]);
 
+    /** Why removing the copy without force would lose work, from the version control's own view of it. */
+    const copyHoldsWork = async (row: Row): Promise<boolean> => {
+      const changes = projects.vcsFor(await projects.get(row.project_id)).changes;
+      if (!changes) return false;
+      return (await changes.files({ path: row.path }, { kind: "uncommitted" }, 1)).files.length > 0;
+    };
+
     const archive = async (
       id: string,
       { force }: { force: boolean },
@@ -440,6 +447,14 @@ export const workspacesModule: ServerModule = {
       const row = loadChangeable(id);
       if (row.state === "archived")
         throw new ApiError(409, "bad_state", "Workspace is already archived");
+      // A copy that still holds work is refused below, and leaving active cannot be undone: it stops the chats,
+      // terminals, and runs of the workspace. Ask the copy first, so a refused archive stops nothing.
+      if (!force && row.isolation !== "in-place" && (await copyHoldsWork(row)))
+        throw new ApiError(
+          409,
+          "uncommitted_work",
+          `${row.path} has uncommitted or untracked files. Commit them, or archive with force to remove the copy.`,
+        );
       if (row.state === "active") await leaveActive(row, "archived");
       const steps: StepReport[] = [];
       if (row.isolation !== "in-place") {

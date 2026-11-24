@@ -907,4 +907,43 @@ describe("the workspaces interface", () => {
     expect(existsSync(workspace.path)).toBe(false);
     expect(workspaces.get(workspace.id).state).toBe("archived");
   });
+
+  it("does not tear a workspace down for an archive that the copy refuses", async () => {
+    // Leaving active is how an archive stops the chats, terminals, and runs of a workspace, and it cannot be
+    // undone. A copy that holds work is refused, so the refusal must come first.
+    const left: string[] = [];
+    const probe: ServerModule = {
+      id: "leave-probe",
+      requires: ["workspaces"],
+      core: false,
+      setup(host) {
+        host.use(WorkspacesKey).beforeLeaveActive(async (workspace) => {
+          left.push(workspace.name);
+        });
+      },
+    };
+    server.close();
+    server = await createTestServer([...ALL, probe]);
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "WIP",
+      isolation: "new",
+    });
+    writeFileSync(join(workspace.path, "Assets", "New.cs"), "class New {}\n");
+
+    const refused = await server.request("POST", `/api/workspaces/${workspace.id}/archive`, {});
+    expect(await errorCode(refused, 409)).toBe("uncommitted_work");
+    expect(left).toEqual([]);
+    const stored = parse(
+      WorkspaceBody,
+      await json(await server.request("GET", `/api/workspaces/${workspace.id}`), 200),
+      "stored",
+    ).workspace;
+    expect(stored.state).toBe("active");
+
+    rmSync(join(workspace.path, "Assets", "New.cs"));
+    await json(await server.request("POST", `/api/workspaces/${workspace.id}/archive`), 200);
+    expect(left).toEqual(["WIP"]);
+  });
 });

@@ -1546,4 +1546,25 @@ describe("auto-archive after a merge", () => {
     expect((await workspaceOf(workspace.id)).state).toBe("active");
     expect(existsSync(workspace.path)).toBe(true);
   });
+
+  it("leaves a chat of the workspace running when the archive is refused", async () => {
+    const { workspace } = await setUp();
+    const agentId = await worker(workspace.id);
+    await publish(workspace);
+    writeFileSync(join(workspace.path, "notes.txt"), "half done\n");
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+
+    await until(async () => (await archiveItems()).length === 1);
+    // An archive that cannot remove the copy must not stop what runs in the workspace on the way to that answer.
+    const { agent } = await json<{ agent: { status: string } }>(
+      await server.request("GET", `/api/agents/${agentId}`),
+    );
+    // An archive that cannot remove the copy must not stop what runs in the workspace on the way to that answer.
+    expect(agent.status).toBe("idle");
+    expect((await workspaceOf(workspace.id)).state).toBe("active");
+    expect(existsSync(workspace.path)).toBe(true);
+  });
 });
