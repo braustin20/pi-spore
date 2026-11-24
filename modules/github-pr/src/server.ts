@@ -15,6 +15,7 @@ import {
 import {
   type AgentStatus,
   type Approval,
+  type HomeNotice,
   MergeRequest,
   type OpenWorkspacePrRequest,
   type PrCheckState,
@@ -76,6 +77,8 @@ const MIGRATIONS = [
   // ADR 0164: the user's choice on the approval, and the head whose conflicts went to the chat.
   "ALTER TABLE github_pr_prs ADD COLUMN merge_when_ready INTEGER NOT NULL DEFAULT 0",
   "ALTER TABLE github_pr_prs ADD COLUMN conflict_head TEXT",
+  // Why the workspace did not archive after its PR merged, for Home. Null when there is nothing to tell.
+  "ALTER TABLE github_pr_prs ADD COLUMN archive_message TEXT",
 ];
 
 interface PrRow {
@@ -95,6 +98,8 @@ interface PrRow {
   merge_when_ready: number;
   /** The head commit whose conflicts went to the worker already. */
   conflict_head: string | null;
+  /** Why the merged PR's workspace is not archived yet, shown on Home. Null when it is archived or not merged. */
+  archive_message: string | null;
   polled_at: number | null;
   next_poll_at: number | null;
   interval_ms: number;
@@ -105,6 +110,8 @@ interface PrRow {
 const WATCH_JOB = "github-pr.watch";
 /** The job kind that looks for PRs opened outside pi-spore: one job, key `all`, for every active workspace. */
 const DISCOVER_JOB = "github-pr.discover";
+/** The job kind that archives a workspace once its PR merges: key and subject are the workspace id. */
+const AUTO_ARCHIVE_JOB = "github-pr.auto-archive";
 const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
 const LOG_MESSAGE_CHARS = 200;
 /** The approval kind a chat files to ask the user to open its workspace's PR (ADR 0100). */
@@ -188,7 +195,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         const next = { ...row, ...fields };
         host.store.run(
           `UPDATE github_pr_prs SET view = ?, watch_state = ?, tries = ?, handled_head = ?, clean_head = ?,
-             message = ?, polled_at = ?, next_poll_at = ?, interval_ms = ?, merge_when_ready = ?, conflict_head = ?
+             message = ?, polled_at = ?, next_poll_at = ?, interval_ms = ?, merge_when_ready = ?, conflict_head = ?,
+             archive_message = ?
            WHERE workspace_id = ?`,
           next.view,
           next.watch_state,
@@ -201,27 +209,41 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           next.interval_ms,
           next.merge_when_ready,
           next.conflict_head,
+          next.archive_message,
           workspaceId,
         );
         homeItems.changed();
       };
 
-      // R9.2: a watch that gave up waits for the user. The PR tab explains why.
+      // R9.2: a watch that gave up waits for the user; a merged PR that could not archive waits for a hand.
+      // The PR tab explains the first, and Home's item says why the second is not done.
       homeItems.register("github-pr", () =>
         host.store
-          .all<PrRow>("SELECT * FROM github_pr_prs WHERE watch_state = 'waiting'")
+          .all<PrRow>(
+            "SELECT * FROM github_pr_prs WHERE watch_state = 'waiting' OR archive_message IS NOT NULL",
+          )
           .flatMap((row) => {
             const workspace = workspaces.list().find((entry) => entry.id === row.workspace_id);
-            if (workspace?.state !== "active") return [];
-            return [
-              {
+            const at = row.polled_at ?? row.created_at;
+            const href = `#/workspaces/${row.workspace_id}`;
+            const items: HomeNotice[] = [];
+            if (row.watch_state === "waiting" && workspace?.state === "active")
+              items.push({
                 id: row.workspace_id,
-                at: row.polled_at ?? row.created_at,
+                at,
                 title: `PR #${row.number} waits for you: ${workspace.name}`,
                 ...(row.message ? { detail: row.message } : {}),
-                href: `#/workspaces/${workspace.id}`,
-              },
-            ];
+                href,
+              });
+            if (row.archive_message !== null && workspace && workspace.state !== "archived")
+              items.push({
+                id: `archive:${row.workspace_id}`,
+                at,
+                title: `PR #${row.number} merged; archive ${workspace.name} by hand`,
+                detail: row.archive_message,
+                href,
+              });
+            return items;
           }),
       );
 
@@ -306,15 +328,14 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         host.events.publish(`${PR_TOPIC}${workspaceId}`, event);
       };
 
-      const cancelWatchJobs = (workspaceId: string) => {
-        for (const job of host.jobs.list({
-          kind: WATCH_JOB,
-          key: workspaceId,
-          states: NOT_ENDED,
-        })) {
+      /** Cancels the jobs of one kind and key that have not ended, so an older one cannot act later. */
+      const cancelJobs = (kind: string, workspaceId: string) => {
+        for (const job of host.jobs.list({ kind, key: workspaceId, states: NOT_ENDED })) {
           host.jobs.cancel(job.id);
         }
       };
+
+      const cancelWatchJobs = (workspaceId: string) => cancelJobs(WATCH_JOB, workspaceId);
 
       /** Starts the one watch job of the workspace, `after` ms from now, in place of any older one. */
       const startWatch = (workspaceId: string, after: number) => {
@@ -341,6 +362,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           if (!before && cards.forWorkspace(workspaceId).every((card) => card.column !== "done"))
             cards.workChanged(workspaceId, "review", `PR #${after.number} opened`);
           cards.workChanged(workspaceId, "done", `PR #${after.number} merged`);
+          // Inside a watch poll's commit, so the job starts with the poll's writes (ADR 0004).
+          host.jobs.start(AUTO_ARCHIVE_JOB, { workspaceId }, { key: workspaceId, after: 0 });
         }
       };
 
@@ -609,6 +632,54 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         }
       };
 
+      /** Why work in the workspace stops an archive, or undefined when nothing does. */
+      const workRunning = (workspaceId: string): string | undefined => {
+        if (
+          agents
+            .inWorkspace(workspaceId)
+            .some(
+              (agent) =>
+                agent.status === "busy" ||
+                agent.status === "starting" ||
+                agent.status === "waiting" ||
+                (agent.helpersRunning ?? 0) > 0,
+            )
+        )
+          return "A chat is still working in the workspace";
+        return agents.workspacesWorkingFor().get(workspaceId);
+      };
+
+      /**
+       * Archives the workspace of a merged PR, or leaves a Home item that says why it did not. It never forces, so
+       * uncommitted work stops it, and it looks for a working chat before it asks for the archive at all.
+       */
+      const autoArchiveStep = async (workspaceId: string): Promise<StepOutcome<never>> => {
+        const workspace = workspaces.list().find((entry) => entry.id === workspaceId);
+        const row = load(workspaceId);
+        if (
+          workspace === undefined ||
+          (workspace.state !== "active" && workspace.state !== "parked") ||
+          !(await workspaces.archiveOnMerge(workspaceId)) ||
+          row === undefined ||
+          viewOf(row).state !== "merged"
+        )
+          return { next: null };
+        const blocked = workRunning(workspaceId);
+        if (blocked !== undefined)
+          return { next: null, commit: () => update(workspaceId, { archive_message: blocked }) };
+        try {
+          await workspaces.archive(workspaceId, { force: false });
+        } catch (error) {
+          const message = (error as Error).message;
+          return { next: null, commit: () => update(workspaceId, { archive_message: message }) };
+        }
+        host.log.info("Workspace archived after its PR merged", {
+          workspace: workspaceId,
+          number: row.number,
+        });
+        return { next: null, commit: () => update(workspaceId, { archive_message: null }) };
+      };
+
       /**
        * Reads the PR and stores the view, and moves the card. It never sends feedback: only the watch job does.
        * Used by a refresh and a push.
@@ -855,6 +926,10 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         { name: "poll", run: ({ subject }) => runWatchStep(subject.workspaceId) },
       ]);
 
+      host.jobs.define<{ workspaceId: string }, never>(AUTO_ARCHIVE_JOB, [
+        { name: "archive", run: ({ subject }) => autoArchiveStep(subject.workspaceId) },
+      ]);
+
       host.jobs.define<Record<string, never>, never>(DISCOVER_JOB, [
         {
           name: "look",
@@ -916,6 +991,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
       // ADR 0121: the PR records of a deleted workspace go with it.
       workspaces.beforeDeleteWorkspace(async (workspace) => {
         cancelWatchJobs(workspace.id);
+        cancelJobs(AUTO_ARCHIVE_JOB, workspace.id);
         host.store.run("DELETE FROM github_pr_prs WHERE workspace_id = ?", workspace.id);
         host.store.run("DELETE FROM github_pr_sent WHERE workspace_id = ?", workspace.id);
         host.store.run("DELETE FROM github_pr_tries WHERE workspace_id = ?", workspace.id);

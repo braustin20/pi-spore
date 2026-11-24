@@ -253,6 +253,10 @@ async function setUp(
 const status = async (workspaceId: string) =>
   json<PrStatus>(await server.request("GET", `/api/github-pr/workspaces/${workspaceId}`));
 
+/** Turns archive-on-merge off for one workspace, for a test that ends at the merge. */
+const archiveOff = async (workspaceId: string) =>
+  json(await server.request("PATCH", `/api/workspaces/${workspaceId}`, { archiveOnMerge: false }));
+
 async function publish(workspace: Workspace) {
   const opened = await json<PrStatus>(
     await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/publish`, {
@@ -655,6 +659,7 @@ describe("watch", () => {
 
   it("ends when the PR is merged, and moves the card to Done", async () => {
     const { workspace, cardId } = await setUp();
+    await archiveOff(workspace.id);
     await publish(workspace);
     editGh((state) => {
       (state.prs[0] as Record<string, unknown>).state = "MERGED";
@@ -756,6 +761,7 @@ describe("merge (ADR 0142)", () => {
 
   it("merges with a merge commit, reads the PR at once, and the state moves the card to Done", async () => {
     const { workspace, cardId, headId } = await ready();
+    await archiveOff(workspace.id);
     const merged = await json<PrStatus>(await merge(workspace.id, { confirm: true, headId }));
     expect(mergeCalls()).toEqual([["pr", "merge", "1", "--merge", "--match-head-commit", headId]]);
     expect(merged).toMatchObject({ pr: { state: "merged" }, watch: { state: "done" } });
@@ -945,6 +951,7 @@ describe("merge when checks pass (ADR 0164)", () => {
 
   it("merges a ready PR once with the head the watch read, and the card moves to Done", async () => {
     const { workspace, cardId } = await setUp();
+    await archiveOff(workspace.id);
     const { outcome } = await openByApproval(workspace, true);
     expect(outcome).toContain("merges the PR when checks pass");
     expect((await status(workspace.id)).mergeWhenReady).toBe(true);
