@@ -99,7 +99,7 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN worker_model TEXT",
   // The router's newest decision for a worker turn's agent, as JSON (R4.7). Null for a stage on a fixed model.
   "ALTER TABLE pipelines_turns ADD COLUMN routing TEXT",
-  // Why the turn's agent failed, set by Retry when it starts a fresh agent for the turn.
+  // Why the turn's agent failed, set by Fresh agent when it starts a fresh agent for the turn.
   "ALTER TABLE pipelines_turns ADD COLUMN error TEXT",
   // Why a review turn's agent runs on another model than the role default: the default's plan was full (R4.10).
   "ALTER TABLE pipelines_turns ADD COLUMN model_note TEXT",
@@ -1655,6 +1655,9 @@ export const pipelinesModule: ServerModule = {
           : checkpoint.boot !== bootId
             ? restart(others)
             : undefined;
+        // Pause can land while the gates are read; `retry_error` then waits for Resume (ADR 0187).
+        const paused = holdIfPaused();
+        if (paused) return paused;
         return withGates({
           wait: true,
           checkpoint: { boot: bootId },

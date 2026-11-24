@@ -13,7 +13,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isDeepStrictEqual } from "node:util";
-import { actionsModule } from "@pi-spore/mod-actions/server";
+import { ActionsKey, actionsModule } from "@pi-spore/mod-actions/server";
 import {
   type AgentEvent,
   type AgentsModuleOptions,
@@ -2765,6 +2765,71 @@ describe("gates in a parallel group (ADR 0178)", () => {
     expect(review?.report).toBeUndefined();
     const passed = [{ stage: "gates", round: 1, state: "passed" }];
     await until(async () => isDeepStrictEqual((await getRun(server, runId)).gateRuns, passed));
+  });
+
+  it("sends no Retry continue message when Pause lands while a gate is read, and sends it after Resume", async () => {
+    // Holds the next gate start until `release`, so Pause can land while `await` reads the gates.
+    let hold = false;
+    let entered: () => void = () => {};
+    let release: () => void = () => {};
+    const holder: ServerModule = {
+      id: "gate-holder",
+      requires: ["actions"],
+      core: false,
+      setup(host) {
+        const actions = host.use(ActionsKey);
+        const real = actions.start.bind(actions);
+        actions.start = async (...args) => {
+          if (hold) {
+            hold = false;
+            entered();
+            await new Promise<void>((resolve) => {
+              release = resolve;
+            });
+          }
+          return real(...args);
+        };
+      },
+    };
+    const LIMIT = "The provider refused the turn";
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] }),
+      extraModules: [holder],
+    });
+    const { workspaceId, runId } = await startGates(server, "pausegate", gated(), {
+      check: "pass",
+      test: "hang-first",
+    });
+    await until(async () => (await getRun(server, runId)).blocked !== undefined);
+    const review = (await getRun(server, runId)).turns[1] as PipelineTurn;
+    const continues = async () =>
+      (await chat(server, review.agentId)).filter((message) =>
+        message.startsWith("user: Your last turn failed: "),
+      );
+    const stageJob = () =>
+      server.services.jobs.list({ kind: "pipelines.stage", key: workspaceId }).at(-1) as JobView;
+
+    const held = new Promise<void>((resolve) => {
+      entered = resolve;
+    });
+    // A stray wake may run the blocked step again; the hold must catch the step that Retry runs.
+    await until(() => stageJob().state === "waiting");
+    hold = true;
+    await json(await server.request("POST", `/api/pipelines/runs/${runId}/retry`));
+    await held;
+    await json(await server.request("POST", `/api/pipelines/runs/${runId}/pause`));
+    const before = stageJob().updatedAt;
+    release();
+    await until(() => stageJob().state === "waiting" && stageJob().updatedAt > before);
+
+    expect(await continues()).toEqual([]);
+    expect((await getRun(server, runId)).turns[1]?.attempts).toBeUndefined();
+
+    await json(await server.request("POST", `/api/pipelines/runs/${runId}/resume`));
+    await until(async () => (await getRun(server, runId)).turns[1]?.report !== undefined);
+
+    expect((await getRun(server, runId)).turns[1]).toMatchObject({ id: review.id, attempts: 2 });
+    expect(await continues()).toHaveLength(1);
   });
 
   it("shows a gate round as running while a gate action runs", async () => {
