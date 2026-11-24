@@ -80,8 +80,8 @@ export const STAGE_WORKER_TOOLS: readonly string[] = ["--exclude-tools", "contac
 export const WORKSPACE_CHAT_TOOLS: readonly string[] = ["--exclude-tools", "subagents_enable"];
 
 /**
- * The `extras` that `loaded` does not cover: an extra is dropped when `loaded` names its path, or names a folder
- * above it, so a package the user's setup already loads is not loaded a second time.
+ * The `extras` that `loaded` does not cover: an extra is dropped when `loaded` names its path, or a path inside it,
+ * so a package the user's setup already loads is not loaded a second time.
  */
 function notLoaded(loaded: readonly string[], extras: readonly string[]): string[] {
   return extras.filter(

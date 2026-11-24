@@ -143,8 +143,10 @@ describe("pi-spore's own skills", () => {
     const [wiki] = SPORE_SKILLS;
     const lines = readFileSync(join(wiki as string, "SKILL.md"), "utf8").split("\n");
     expect(lines[0]).toBe("---");
+    const end = lines.indexOf("---", 1);
+    expect(end).toBeGreaterThan(0);
     const fields = new Map<string, string>();
-    for (const line of lines.slice(1, lines.indexOf("---", 1))) {
+    for (const line of lines.slice(1, end)) {
       const colon = line.indexOf(":");
       if (colon > 0) fields.set(line.slice(0, colon).trim(), line.slice(colon + 1).trim());
     }
