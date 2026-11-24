@@ -146,7 +146,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     status, or the `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a
     provider that refused, such as a full usage window), with that message's `provider`. While the agent is not busy,
     starting, or waiting, it first returns the error of a pending delivery Pi refused (section 6). It is undefined
-    while a delivery waits with no error or a prompt Pi took has not started: a new run is on its way (ADR 0197). `rename(agentId, title)` sets the title.
+    while a delivery waits with no error or a prompt Pi took has not started: a new run is on its way (ADR 0198). `rename(agentId, title)` sets the title.
   - `endedRun(agentId)` says the agent's last run ended on its own and nothing new waits for it: the agent is
     `idle`, it has no pending delivery, and its last assistant message did not end with `stopReason` "error" or
     "aborted". A pending delivery counts because a process goes idle once at start-up, before Pi takes its prompt.
@@ -422,7 +422,7 @@ export interface ServerHost {
 | Entity | Meaning | Key fields |
 |---|---|---|
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
-| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card, planner (the project's planner workspace, ADR 0174) |
+| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card, planner (the project's planner workspace, ADR 0174), archive on merge (unset follows the setting, ADR 0197) |
 | Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`, `planner`, or a stage role), kind (worker, side, stage), active, closed, closed at, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, run workspace, run line (`run/<slug>-<id>`), base, gates, coordinator agent |
 | Lane | A workspace inside a run | id, run, name, wave, depends on, brief artifact, pipeline, model, state, workspace, approval, message |
@@ -501,6 +501,7 @@ export interface VcsProvider {
   root(path: string): Promise<string>;
   isolationModes: readonly Isolation[];                  // new, existing, in-place
   createCopy(project, request): Promise<WorkspaceLocation>;   // { path, line?, base? }
+  lostWork(project, location): Promise<string | undefined>; // why removeCopy would refuse; undefined for none
   removeCopy(project, location, { force }): Promise<void>;
   // Optional capabilities, detected by presence:
   lines?: { list(project) };                             // branches (git)
@@ -742,7 +743,7 @@ fail_first = "artifact"
   as `push_line tool - Review 1`. Without a name the titles stay `implement`, `Review 1`, ... A reused worker (`worker =
   "reuse"`) is renamed to the new run's slice name when the run has one, in the same commit that gives it the task, so
   its tab names the run that uses it now. Without a name it keeps its title. The `(failed)` suffix goes on the end.
-- **Failed turns** (ADR 0140, ADR 0197). The pipeline listens to the stage agents' status. When the open turn's agent
+- **Failed turns** (ADR 0140, ADR 0198). The pipeline listens to the stage agents' status. When the open turn's agent
   fails (`turnError`: a crash, a turn that ended with `stopReason: "error"`, or a task Pi refused to take), the `await`
   step throws `stage <name>: the <role> agent "<title>" failed: <error>. Retry tells the same agent to continue. Fresh
   agent starts a fresh <role> agent for this turn.` A failure with a `provider` says `the model server <provider>
@@ -857,7 +858,7 @@ fail_first = "artifact"
 | `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }` | Starts a run (201). |
 | `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
 | `GET /api/pipelines/runs/:id` | `{ run }` |
-| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed: the same agent continues (ADR 0197). |
+| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed: the same agent continues (ADR 0198). |
 | `POST /api/pipelines/runs/:id/fresh` | The same, but a turn whose agent failed gets a fresh agent (409 `run_not_waiting`). |
 | `POST /api/pipelines/runs/:id/pause` | Pauses a `running` run (409 `run_not_running`). A repeat does nothing. |
 | `POST /api/pipelines/runs/:id/resume` | Clears the pause and wakes the stage job (409 `run_not_paused`). |
@@ -1577,7 +1578,7 @@ Requirements R9.
   (no GitHub remote, no login) is logged once per workspace, in one line, and the look goes on.
 - Tables: `github_pr_prs` (one per workspace: number, the last view as JSON, watch state, tries, the head whose
   failures were sent, the last clean head, message, poll times, the merge-when-ready choice, the head whose
-  conflicts were sent), `github_pr_sent` (bot comments already sent), and
+  conflicts were sent, why an archive after the merge did not happen), `github_pr_sent` (bot comments already sent), and
   `github_pr_tries` (each automatic message, for the tab), and `github_pr_asks` (the open `workspace-pr` approval
   of a workspace).
 - Watch (R9.2), a `github-pr.watch` job per watched PR (section 6), keyed by the workspace, with one `poll` step.
@@ -1598,6 +1599,14 @@ Requirements R9.
   - A merged PR moves the card to Done; a merged or closed PR ends the watch (`done`). A PR first seen merged
     moves the card to Review (`PR #n opened`), then Done (`PR #n merged`), unless a card of the workspace is in
     Done already. A closed unmerged PR moves nothing.
+- Auto-archive (ADR 0197). When a PR becomes merged, wherever that was seen, the module starts a
+  `github-pr.auto-archive` job keyed by the workspace, in the same commit. Its one `archive` step does nothing when
+  the workspace is not active or parked, `WorkspacesKey.archiveOnMerge` is false, or the stored PR is not merged.
+  A chat that is busy, starting, or waiting, a chat with helpers running, or a workspace working label stops it.
+  Otherwise it calls `WorkspacesKey.archive(id, { force: false })` and logs one line. A stop or a refusal stores
+  the reason in `archive_message`; Home shows `PR #<n> merged; archive <workspace> by hand` until the workspace is
+  archived. It never retries. A status read that fails while `WorkspacesKey.archiving()` names the workspace, or
+  after its folder is gone, answers with no local state.
 - Topic `github-pr:<workspace id>` sends the status on subscribe and after each poll.
 
 | Route | Does |
@@ -2144,9 +2153,17 @@ See [ADR 0161](decisions/0161-dev-server-for-the-user.md). pi-spore's own `[acti
 
 The workspaces module calls other modules around a copy through its contract: `afterCopyCreated` and
 `beforeRemoveCopy` return step reports, which the create and archive responses list in `steps`. A failed
-`beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced. `afterStateChange` runs after
-every park, resume, and archive; a listener that throws is logged and does not undo the change. `create` makes a
-workspace as `POST /api/workspaces` does, for modules that start work, such as kanban.
+`beforeRemoveCopy` step answers 409 `<step>_failed` unless the archive is forced. An archive asks the provider
+`lostWork` before it stops anything: a copy that holds work answers 409 `uncommitted_work`, and the chats,
+terminals, and runs of the workspace keep running, because the removal would refuse anyway and leaving active
+cannot be undone. While an archive runs, `archiving()` names the workspace, so a module that reads its worktree
+can tell a removal in progress from a broken copy. `afterStateChange` runs after every park, resume, and archive;
+a listener that throws is logged and does not undo the change. `create` makes a workspace as
+`POST /api/workspaces` does, for modules that start work, such as kanban. `archive(id, { force })` is the archive
+route's body, with the same errors. `archiveOnMerge(id)` gives the workspace's own `archiveOnMerge`, else the
+global setting `workspaces.archiveOnMerge` (default `true`, ADR 0197). `PATCH /api/workspaces/:id` takes `name`,
+`archiveOnMerge` (`true`, `false`, or `null` to follow the setting), or both; an empty body is 400 and an archived
+workspace is 409 `bad_state`.
 
 The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
 and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module

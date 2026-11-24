@@ -1,6 +1,6 @@
 # 0169. Remind a stage agent once when it ends a turn without a report, then block
 
-- Status: Accepted; changed in part by [0197](0197-retry-continues-the-same-stage-agent.md) (Retry continues the
+- Status: Accepted; changed in part by [0198](0198-retry-continues-the-same-stage-agent.md) (Retry continues the
   same agent)
 - Date: 2026-11-10
 - Requirements: R6, R6.6

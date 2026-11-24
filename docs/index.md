@@ -123,7 +123,7 @@ section, update this map in the same change.
 - [0121](decisions/0121-retention.md): Delete the data of finished work after a retention time. Accepted.
 - [0130](decisions/0130-merge-on-the-users-word.md): An agent merges a PR only on the user's word. Accepted.
 - [0140](decisions/0140-pipeline-stage-agents.md): Pipeline stages run on stage agents; Jev answers inside the
-  report tool. Accepted; superseded in part by 0152 and 0169; changed in part by 0197.
+  report tool. Accepted; superseded in part by 0152 and 0169; changed in part by 0198.
 - [0141](decisions/0141-router-ladders.md): The router picks a rung on a ladder of cloud plans. Accepted.
 - [0142](decisions/0142-merge-button.md): pi-spore merges a PR only when the user clicks Merge and confirms.
   Accepted; superseded in part by 0164.
@@ -165,7 +165,7 @@ section, update this map in the same change.
 - [0168](decisions/0168-subagent-nesting-limit.md): The nesting limit is the pi-subagents depth, set by pi-spore.
   Accepted.
 - [0169](decisions/0169-remind-a-stage-agent-once-then-block.md): Remind a stage agent once when it ends a turn
-  without a report, then block. Accepted; changed in part by 0197.
+  without a report, then block. Accepted; changed in part by 0198.
 - [0170](decisions/0170-settings-edited-from-settings-page.md): Settings are edited from the Settings page.
   Accepted.
 - [0171](decisions/0171-built-in-themes-from-open-palettes.md): Built-in themes may use open palettes from other
@@ -217,7 +217,9 @@ section, update this map in the same change.
   lane is not merged. Accepted. Renumbered from 0186.
 - [0196](decisions/0196-phone-web-push.md): Phone notifications through Web Push and a service worker. Accepted.
   Renumbered from 0187.
-- [0197](decisions/0197-retry-continues-the-same-stage-agent.md): Retry continues the same stage agent; Fresh agent
+- [0197](decisions/0197-auto-archive-on-merge.md): Archive a workspace when its PR merges, on by default, never
+  forced. Accepted.
+- [0198](decisions/0198-retry-continues-the-same-stage-agent.md): Retry continues the same stage agent; Fresh agent
   replaces it. Accepted.
 
 ## Spikes

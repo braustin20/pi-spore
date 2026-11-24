@@ -91,6 +91,14 @@ async function startPoint(
 }
 
 export function createGitProvider(exec: Exec, worktrees: string): VcsProvider {
+  /** Why `git worktree remove` refuses without force: `status --porcelain` covers the index, the worktree, and
+   * untracked files, which is the whole state the removal looks at. */
+  const lostWorkMessage = async (path: string): Promise<string | undefined> => {
+    const status = await git(exec, path, ["status", "--porcelain"]);
+    return status.trim() === ""
+      ? undefined
+      : `${path} has uncommitted or untracked files. Commit them, or archive with force to delete them.`;
+  };
   return {
     kind: "git",
     priority: 10,
@@ -124,17 +132,14 @@ export function createGitProvider(exec: Exec, worktrees: string): VcsProvider {
       await git(exec, project.path, ["worktree", "add", request.path, request.line], 409);
       return { path: request.path, line: request.line };
     },
+    async lostWork(_project, location) {
+      return lostWorkMessage(location.path);
+    },
     async removeCopy(project, location, { force }) {
       assertInside(worktrees, location.path);
       if (!force) {
-        const status = await git(exec, location.path, ["status", "--porcelain"]);
-        if (status.trim() !== "") {
-          throw new ApiError(
-            409,
-            "uncommitted_work",
-            `${location.path} has uncommitted or untracked files. Commit them, or archive with force to delete them.`,
-          );
-        }
+        const reason = await lostWorkMessage(location.path);
+        if (reason) throw new ApiError(409, "uncommitted_work", reason);
       }
       // The branch stays, so committed work is never lost.
       await git(

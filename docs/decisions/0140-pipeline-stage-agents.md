@@ -2,7 +2,7 @@
 
 - Status: Accepted; superseded in part by [0152](0152-equal-tier-reviews.md); superseded in part by
   [0169](0169-remind-a-stage-agent-once-then-block.md); "Failed agents" changed by
-  [0197](0197-retry-continues-the-same-stage-agent.md)
+  [0198](0198-retry-continues-the-same-stage-agent.md)
 - Date: 2026-11-07
 - Requirements: R4.4, R4.9, R6.1 to R6.8
 
@@ -33,7 +33,7 @@ the prompt it answers.
   with the models it really used. A stage agent's model cannot change.
 - **Failed agents.** A stage agent whose turn fails (a crash, or a provider error such as a full usage window) blocks
   its stage, and the run stays `running`. Retry starts a fresh agent for the same turn, on the model the stage or
-  the role default gives at that moment. The failed agent keeps its tab and its model (2026-11-08). ADR 0197 changes
+  the role default gives at that moment. The failed agent keeps its tab and its model (2026-11-08). ADR 0198 changes
   this: Retry now continues the same agent, and Fresh agent does what is written here.
 - **Reviewer plan.** A reviewer role default whose plan is full is swapped, before the agent starts, for the first
   ladder model of the same or a higher tier whose plan has room. A pinned stage model is kept. The user approved

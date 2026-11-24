@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -14,7 +21,7 @@ import { projectsModule } from "@pi-spore/mod-projects/server";
 import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
-import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import { WorkspacesKey, workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { JobTimer, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type {
@@ -66,13 +73,38 @@ const scheduledDelays = () =>
     .filter((entry) => !entry.cancelled && !isDiscover(entry))
     .map((entry) => wholeSeconds(entry.ms));
 
-/** Keeps the interface the runs module will call. */
+/**
+ * A copy removal held open by a test, so it can read the PR while an archive has the worktree half gone.
+ * `entered` says the archive reached the removal.
+ */
+let hold: { entered: boolean; wait: Promise<void>; release: () => void } = {
+  entered: false,
+  wait: Promise.resolve(),
+  release: () => {},
+};
+
+/** Holds the next copy removal until the returned function runs. */
+function holdCopyRemoval(): () => void {
+  let release = () => {};
+  const wait = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  hold = { entered: false, wait, release };
+  return () => hold.release();
+}
+
+/** Keeps the interface the runs module will call, and holds copy removals when a test asks. */
 const probe: ServerModule = {
   id: "github-pr-probe",
-  requires: ["github-pr"],
+  requires: ["github-pr", "workspaces"],
   core: false,
   setup(host) {
     pullRequests = host.use(PullRequestsKey);
+    host.use(WorkspacesKey).beforeRemoveCopy(async () => {
+      hold.entered = true;
+      await hold.wait;
+      return undefined;
+    });
   },
 };
 
@@ -114,6 +146,7 @@ beforeEach(async () => {
   ghState = join(scratch, "gh.json");
   writeFileSync(ghState, JSON.stringify({ prs: [] }));
   timers = [];
+  hold = { entered: false, wait: Promise.resolve(), release: () => {} };
   server = await makeServer();
 });
 afterEach(async () => {
@@ -252,6 +285,15 @@ async function setUp(
 
 const status = async (workspaceId: string) =>
   json<PrStatus>(await server.request("GET", `/api/github-pr/workspaces/${workspaceId}`));
+
+/** Turns archive-on-merge off for one workspace, for a test that ends at the merge. */
+const archiveOff = async (workspaceId: string) =>
+  json(await server.request("PATCH", `/api/workspaces/${workspaceId}`, { archiveOnMerge: false }));
+
+const workspaceOf = async (id: string) =>
+  (await json<{ workspace: Workspace }>(await server.request("GET", `/api/workspaces/${id}`)))
+    .workspace;
+const archived = async (id: string) => (await workspaceOf(id)).state === "archived";
 
 async function publish(workspace: Workspace) {
   const opened = await json<PrStatus>(
@@ -655,6 +697,7 @@ describe("watch", () => {
 
   it("ends when the PR is merged, and moves the card to Done", async () => {
     const { workspace, cardId } = await setUp();
+    await archiveOff(workspace.id);
     await publish(workspace);
     editGh((state) => {
       (state.prs[0] as Record<string, unknown>).state = "MERGED";
@@ -756,6 +799,7 @@ describe("merge (ADR 0142)", () => {
 
   it("merges with a merge commit, reads the PR at once, and the state moves the card to Done", async () => {
     const { workspace, cardId, headId } = await ready();
+    await archiveOff(workspace.id);
     const merged = await json<PrStatus>(await merge(workspace.id, { confirm: true, headId }));
     expect(mergeCalls()).toEqual([["pr", "merge", "1", "--merge", "--match-head-commit", headId]]);
     expect(merged).toMatchObject({ pr: { state: "merged" }, watch: { state: "done" } });
@@ -765,6 +809,24 @@ describe("merge (ADR 0142)", () => {
     expect(card.column).toBe("done");
     expect(scheduledDelays()).toEqual([]);
     expectOnlyAllowedCalls();
+  });
+
+  it("answers the merge, then archives the workspace, with the setting at its default", async () => {
+    // The archive job starts inside this route, so the worktree can go while the route still reads it for its
+    // answer. The merge response and the status read after it must both still succeed.
+    const { workspace, cardId, headId } = await ready();
+    const merged = await json<PrStatus>(await merge(workspace.id, { confirm: true, headId }));
+    expect(merged).toMatchObject({ pr: { state: "merged" }, watch: { state: "done" } });
+    const { card } = await json<CardDetail>(
+      await server.request("GET", `/api/kanban/cards/${cardId}`),
+    );
+    expect(card.column).toBe("done");
+    // The worktree may go during these reads too: the job takes a moment to stop the chat and remove the copy.
+    for (let read = 0; read < 8; read++)
+      expect((await status(workspace.id)).pr?.state).toBe("merged");
+    await until(() => archived(workspace.id));
+    expect(existsSync(workspace.path)).toBe(false);
+    expect(await status(workspace.id)).toMatchObject({ pr: { state: "merged" } });
   });
 
   it("needs an explicit confirm and the head the user saw", async () => {
@@ -945,6 +1007,7 @@ describe("merge when checks pass (ADR 0164)", () => {
 
   it("merges a ready PR once with the head the watch read, and the card moves to Done", async () => {
     const { workspace, cardId } = await setUp();
+    await archiveOff(workspace.id);
     const { outcome } = await openByApproval(workspace, true);
     expect(outcome).toContain("merges the PR when checks pass");
     expect((await status(workspace.id)).mergeWhenReady).toBe(true);
@@ -1379,5 +1442,174 @@ describe("finding a PR by itself", () => {
     openOutside(workspace);
     await lookNow();
     expect((await detail(cardId)).card.column).toBe("review");
+  });
+});
+
+describe("auto-archive after a merge", () => {
+  const archiveItems = async () =>
+    (
+      await json<{
+        items: { kind: string; source: string; id: string; title: string; detail?: string }[];
+      }>(await server.request("GET", "/api/attention/inbox"))
+    ).items.filter((item) => item.kind === "notice" && item.source === "github-pr");
+  /** True once an auto-archive job has run and ended: proof a test that archives nothing waited for it. */
+  const archiveJobEnded = () =>
+    server.store.all(
+      "SELECT 1 FROM core_jobs WHERE kind = ? AND state = 'done'",
+      "github-pr.auto-archive",
+    ).length > 0;
+  const settingOff = () =>
+    writeFileSync(
+      join(server.paths.root, "settings.json"),
+      JSON.stringify({ workspaces: { archiveOnMerge: false } }),
+    );
+  /** Publishes, merges PR #1 on the fake GitHub, and polls until the watch sees it. */
+  async function merge(workspace: Workspace) {
+    await publish(workspace);
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+  }
+
+  it("archives the workspace and removes its folder", async () => {
+    const { workspace, cardId } = await setUp();
+    await merge(workspace);
+    await until(() => archived(workspace.id));
+    expect(existsSync(workspace.path)).toBe(false);
+    expect(await archiveItems()).toEqual([]);
+    const { card } = await json<CardDetail>(
+      await server.request("GET", `/api/kanban/cards/${cardId}`),
+    );
+    expect(card.column).toBe("done");
+  });
+
+  it("leaves the workspace active when the setting is off", async () => {
+    settingOff();
+    const { workspace } = await setUp();
+    await merge(workspace);
+    await until(archiveJobEnded);
+    expect(await archived(workspace.id)).toBe(false);
+    expect(existsSync(workspace.path)).toBe(true);
+    expect(await archiveItems()).toEqual([]);
+  });
+
+  it("archives with the workspace's archiveOnMerge true while the setting is off", async () => {
+    settingOff();
+    const { workspace } = await setUp();
+    await json(
+      await server.request("PATCH", `/api/workspaces/${workspace.id}`, { archiveOnMerge: true }),
+    );
+    await merge(workspace);
+    await until(() => archived(workspace.id));
+    expect(existsSync(workspace.path)).toBe(false);
+  });
+
+  it("leaves the workspace active with its archiveOnMerge false while the setting is on", async () => {
+    const { workspace } = await setUp();
+    await json(
+      await server.request("PATCH", `/api/workspaces/${workspace.id}`, { archiveOnMerge: false }),
+    );
+    await merge(workspace);
+    await until(archiveJobEnded);
+    expect(await archived(workspace.id)).toBe(false);
+    expect(existsSync(workspace.path)).toBe(true);
+  });
+
+  it("leaves uncommitted work, says why on Home, and clears the item on a forced archive", async () => {
+    const { workspace } = await setUp();
+    await publish(workspace);
+    writeFileSync(join(workspace.path, "notes.txt"), "half done\n");
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+
+    await until(async () => (await archiveItems()).length === 1);
+    expect(await archiveItems()).toMatchObject([
+      {
+        id: `archive:${workspace.id}`,
+        title: "PR #1 merged; archive Fix the jump by hand",
+        detail: expect.stringContaining("uncommitted or untracked files"),
+      },
+    ]);
+    expect((await workspaceOf(workspace.id)).state).toBe("active");
+    expect(readFileSync(join(workspace.path, "notes.txt"), "utf8")).toBe("half done\n");
+
+    await json(
+      await server.request("POST", `/api/workspaces/${workspace.id}/archive`, { force: true }),
+    );
+    expect(await archiveItems()).toEqual([]);
+  });
+
+  it("leaves the workspace active while a chat works in it, and says why on Home", async () => {
+    const { workspace } = await setUp();
+    const agentId = await worker(workspace.id);
+    await publish(workspace);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/prompt`, { message: "slow:60000" }),
+    );
+    await until(async () => {
+      const { agent } = await json<{ agent: { status: string } }>(
+        await server.request("GET", `/api/agents/${agentId}`),
+      );
+      return agent.status === "busy";
+    });
+
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+
+    await until(async () => (await archiveItems()).length === 1);
+    expect(await archiveItems()).toMatchObject([
+      {
+        id: `archive:${workspace.id}`,
+        title: "PR #1 merged; archive Fix the jump by hand",
+        detail: "A chat is still working in the workspace",
+      },
+    ]);
+    expect((await workspaceOf(workspace.id)).state).toBe("active");
+    expect(existsSync(workspace.path)).toBe(true);
+  });
+
+  it("leaves a chat of the workspace running when the archive is refused", async () => {
+    const { workspace } = await setUp();
+    const agentId = await worker(workspace.id);
+    await publish(workspace);
+    writeFileSync(join(workspace.path, "notes.txt"), "half done\n");
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+
+    await until(async () => (await archiveItems()).length === 1);
+    // An archive that cannot remove the copy must not stop what runs in the workspace on the way to that answer.
+    const { agent } = await json<{ agent: { status: string } }>(
+      await server.request("GET", `/api/agents/${agentId}`),
+    );
+    // An archive that cannot remove the copy must not stop what runs in the workspace on the way to that answer.
+    expect(agent.status).toBe("idle");
+    expect((await workspaceOf(workspace.id)).state).toBe("active");
+    expect(existsSync(workspace.path)).toBe(true);
+  });
+
+  it("answers a PR status read while the archive has the worktree half gone", async () => {
+    const release = holdCopyRemoval();
+    const { workspace } = await setUp();
+    await publish(workspace);
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+    await until(() => hold.entered); // the archive is inside the copy removal now
+
+    // `git worktree remove` empties the folder before the folder itself is gone, so git stops working here first.
+    rmSync(join(workspace.path, ".git"), { force: true, recursive: true });
+    expect(existsSync(workspace.path)).toBe(true);
+    expect(await status(workspace.id)).toMatchObject({ pr: { state: "merged" } });
+
+    release();
+    await until(archiveJobEnded); // the removal then failed on its own guard
   });
 });

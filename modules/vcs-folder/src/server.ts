@@ -5,6 +5,9 @@ import { ApiError, type Exec, type ServerModule } from "@pi-spore/module-api";
 
 /** Plain folders: a scratch copy or the folder itself. The fallback provider for anything without version control. */
 export function createFolderProvider(exec: Exec, worktrees: string): VcsProvider {
+  /** A scratch copy has no history, so removing it always loses its contents. */
+  const lostWorkMessage = (path: string): string =>
+    `${path} is a scratch copy without version control. Archive with force to delete it.`;
   return {
     kind: "folder",
     priority: 0,
@@ -35,6 +38,9 @@ export function createFolderProvider(exec: Exec, worktrees: string): VcsProvider
       }
       return { path: request.path };
     },
+    async lostWork(_project, location) {
+      return lostWorkMessage(location.path);
+    },
     async removeCopy(_project, location, { force }) {
       const rel = relative(worktrees, location.path);
       if (rel === "" || rel.startsWith("..") || rel.startsWith(sep)) {
@@ -44,13 +50,8 @@ export function createFolderProvider(exec: Exec, worktrees: string): VcsProvider
           `Refusing to remove ${location.path}: not inside ${worktrees}`,
         );
       }
-      // A scratch copy has no history, so removing it always loses its contents.
       if (!force) {
-        throw new ApiError(
-          409,
-          "uncommitted_work",
-          `${location.path} is a scratch copy without version control. Archive with force to delete it.`,
-        );
+        throw new ApiError(409, "uncommitted_work", lostWorkMessage(location.path));
       }
       await rm(location.path, { recursive: true, force: true });
     },

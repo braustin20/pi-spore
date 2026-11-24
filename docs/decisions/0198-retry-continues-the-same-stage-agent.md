@@ -1,4 +1,4 @@
-# 0197. Retry continues the same stage agent; Fresh agent replaces it
+# 0198. Retry continues the same stage agent; Fresh agent replaces it
 
 - Status: Accepted
 - Date: 2026-11-23

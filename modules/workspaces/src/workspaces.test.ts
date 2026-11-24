@@ -825,4 +825,156 @@ describe("the workspaces interface", () => {
       "Made: active -> archived",
     ]);
   });
+
+  /** A server with a probe module that holds the interface. */
+  async function withProbe(): Promise<Workspaces> {
+    let workspaces: Workspaces | undefined;
+    const probe: ServerModule = {
+      id: "probe",
+      requires: ["workspaces"],
+      core: false,
+      setup(host) {
+        workspaces = host.use(WorkspacesKey);
+      },
+    };
+    server.close();
+    server = await createTestServer([...ALL, probe]);
+    return workspaces as Workspaces;
+  }
+
+  it("stores an archive-on-merge override and falls back to the setting when it is cleared", async () => {
+    const workspaces = await withProbe();
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Merge",
+      isolation: "in-place",
+    });
+    const patch = async (body: unknown) =>
+      parse(
+        WorkspaceBody,
+        await json(await server.request("PATCH", `/api/workspaces/${workspace.id}`, body), 200),
+        "patch",
+      ).workspace;
+
+    expect(workspace.archiveOnMerge).toBeUndefined();
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(true);
+    expect((await patch({ archiveOnMerge: false })).archiveOnMerge).toBe(false);
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(false);
+
+    const cleared = await patch({ archiveOnMerge: null });
+    expect("archiveOnMerge" in cleared).toBe(false);
+    expect(cleared.name).toBe("Merge");
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(true);
+    writeFileSync(
+      join(server.paths.root, "settings.json"),
+      JSON.stringify({ workspaces: { archiveOnMerge: false } }),
+    );
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(false);
+    expect((await patch({ archiveOnMerge: true })).archiveOnMerge).toBe(true);
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(true);
+
+    await expect(workspaces.archiveOnMerge("nope")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("refuses an empty PATCH and a PATCH on an archived workspace", async () => {
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Done",
+      isolation: "in-place",
+    });
+    const url = `/api/workspaces/${workspace.id}`;
+    expect((await server.request("PATCH", url, {})).status).toBe(400);
+    await json(await server.request("POST", `${url}/archive`), 200);
+    expect(await errorCode(await server.request("PATCH", url, { name: "Later" }), 409)).toBe(
+      "bad_state",
+    );
+  });
+
+  it("archives a workspace and removes its copy through the interface", async () => {
+    const workspaces = await withProbe();
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Copy",
+      isolation: "new",
+    });
+    expect(existsSync(workspace.path)).toBe(true);
+
+    const { workspace: archived } = await workspaces.archive(workspace.id, { force: false });
+    expect(archived.state).toBe("archived");
+    expect(existsSync(workspace.path)).toBe(false);
+    expect(workspaces.get(workspace.id).state).toBe("archived");
+  });
+
+  /** A server whose probe module records every workspace that left active, which is how an archive stops things. */
+  async function withLeaveProbe(): Promise<string[]> {
+    const left: string[] = [];
+    const probe: ServerModule = {
+      id: "leave-probe",
+      requires: ["workspaces"],
+      core: false,
+      setup(host) {
+        host.use(WorkspacesKey).beforeLeaveActive(async (workspace) => {
+          left.push(workspace.name);
+        });
+      },
+    };
+    server.close();
+    server = await createTestServer([...ALL, probe]);
+    return left;
+  }
+
+  it("does not tear a workspace down for an archive that the copy refuses", async () => {
+    // Leaving active is how an archive stops the chats, terminals, and runs of a workspace, and it cannot be
+    // undone. A copy that holds work is refused, so the refusal must come first.
+    const left = await withLeaveProbe();
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "WIP",
+      isolation: "new",
+    });
+    writeFileSync(join(workspace.path, "Assets", "New.cs"), "class New {}\n");
+
+    const refused = await server.request("POST", `/api/workspaces/${workspace.id}/archive`, {});
+    expect(await errorCode(refused, 409)).toBe("uncommitted_work");
+    expect(left).toEqual([]);
+    const stored = parse(
+      WorkspaceBody,
+      await json(await server.request("GET", `/api/workspaces/${workspace.id}`), 200),
+      "stored",
+    ).workspace;
+    expect(stored.state).toBe("active");
+
+    rmSync(join(workspace.path, "Assets", "New.cs"));
+    await json(await server.request("POST", `/api/workspaces/${workspace.id}/archive`), 200);
+    expect(left).toEqual(["WIP"]);
+  });
+
+  it("refuses an archive for work only the index shows, and stops nothing", async () => {
+    // The removal refuses on the whole dirty state, which covers an index that differs from HEAD even after the
+    // worktree was set back to HEAD. The look before leaving active must cover the same state.
+    const left = await withLeaveProbe();
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Staged",
+      isolation: "new",
+    });
+    const file = join(workspace.path, "Assets", "Player.cs");
+    const committed = readFileSync(file, "utf8");
+    writeFileSync(file, "class Player { int jumped; }\n");
+    git(workspace.path, "add", "Assets/Player.cs");
+    writeFileSync(file, committed); // the worktree matches HEAD again; the index does not
+
+    const refused = await server.request("POST", `/api/workspaces/${workspace.id}/archive`, {});
+    expect(await errorCode(refused, 409)).toBe("uncommitted_work");
+    expect(left).toEqual([]);
+
+    git(workspace.path, "reset", "-q");
+    await json(await server.request("POST", `/api/workspaces/${workspace.id}/archive`), 200);
+    expect(left).toEqual(["Staged"]);
+  });
 });
