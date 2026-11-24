@@ -2007,8 +2007,8 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   sets only the router keys it lists, never a whole `router` section, and never the `actions` section.
   Idempotency keys work as for every PUT (R16.2).
 - The Settings page (`#/settings`) gives each global row Edit and Reset; the project page does the same for
-  `worktree.copy` and `worktree.branch_prefix`. Edit opens a field in the row: text for a string, JSON for a number
-  or boolean, a JSON text area for an array or object. Save sends `{ key, value }` and Reset sends
+  `worktree.copy` and `worktree.branch_prefix`. Edit opens a field in the row: text for a string, JSON for a number,
+  a `true`/`false` select for a boolean (Save sends a JSON boolean), a JSON text area for an array or object. Save sends `{ key, value }` and Reset sends
   `{ key, unset: true }` to the PUT route above. After it works, the panel loads again from its GET route, so the
   row shows the server's value and source. A failure shows the server's message in the row. After a save of an
   `agents.*` or `server.*` key, the row says "Restart pi-spore to apply". A change to `server.allowedHosts` or
@@ -2186,7 +2186,12 @@ browser stores the choice per project (`pi-spore.workspaces.collapsed.<projectId
 open chats shows a chevron toggle at the left of its name. It expands the row to a link per chat, to
 `#/workspaces/<id>/chats/<chat>`, in chat bar order, with older orchestrator chats left out. The link of the
 route's chat is marked current, and a working chat shows a pulsing dot. Rows start collapsed; the browser stores
-the choice per workspace (`pi-spore.workspaces.chats.<workspaceId>`). Other web modules
+the choice per workspace (`pi-spore.workspaces.chats.<workspaceId>`). The Details tab's "Workspace" section shows
+the name, state, line, project, and folder, with Rename, Park or Resume, and Archive. For a workspace that is not
+archived, it also has the select "Archive when the PR merges": "Use the setting (on)" or "(off)", read from
+`GET /api/projects/settings` when the section mounts, then "On" and "Off". A change sends
+`PATCH /api/workspaces/:id` with `archiveOnMerge` `null`, `true`, or `false`. The select shows the workspace from
+`workspaces:list`, so it follows changes made elsewhere. Other web modules
 fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so
