@@ -8,6 +8,7 @@ import {
   ProjectLines,
   ProjectList,
   parse,
+  SettingsView,
   type StepReport,
   Workspace,
 } from "@pi-spore/shared";
@@ -695,6 +696,8 @@ function Details({
   const [renaming, setRenaming] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
   const [busy, setBusy] = useState(false);
+  // The global `workspaces.archiveOnMerge`, the default a workspace with no override follows (ADR 0197).
+  const [setting, setSetting] = useState<boolean | undefined>();
   const { confirm, dialog } = useConfirm();
 
   const act = (promise: Promise<unknown>) => {
@@ -704,6 +707,17 @@ function Details({
       .catch((caught: unknown) => setError(message(caught)))
       .finally(() => setBusy(false));
   };
+
+  useEffect(() => {
+    api
+      .get("projects/settings")
+      .then((body) => parse(SettingsView, body, "settings"))
+      .then((view) => {
+        const entry = view.settings.find((each) => each.key === "workspaces.archiveOnMerge");
+        setSetting(typeof entry?.value === "boolean" ? entry.value : undefined);
+      })
+      .catch((caught: unknown) => setError(message(caught)));
+  }, [api]);
 
   const rename = (event: SubmitEvent) => {
     event.preventDefault();
@@ -732,6 +746,10 @@ function Details({
 
   const stateTone =
     workspace.state === "active" ? "ok" : workspace.state === "parked" ? "warn" : "neutral";
+  const archiveChoice =
+    workspace.archiveOnMerge === undefined ? "" : workspace.archiveOnMerge ? "on" : "off";
+  const followLabel =
+    setting === undefined ? "Use the setting" : `Use the setting (${setting ? "on" : "off"})`;
   return (
     <CollapsibleSection title="Workspace">
       {dialog}
@@ -766,6 +784,26 @@ function Details({
           <dd className="m-0 font-mono [overflow-wrap:anywhere]">{workspace.path}</dd>
         </dl>
         {error && <Notice tone="fail">{error}</Notice>}
+        {workspace.state !== "archived" && (
+          <Field label="Archive when the PR merges">
+            <Select
+              className="w-full"
+              disabled={busy}
+              value={archiveChoice}
+              onChange={(event) =>
+                void act(
+                  api.send("PATCH", `workspaces/${workspace.id}`, {
+                    archiveOnMerge: event.target.value === "" ? null : event.target.value === "on",
+                  }),
+                )
+              }
+            >
+              <option value="">{followLabel}</option>
+              <option value="on">On</option>
+              <option value="off">Off</option>
+            </Select>
+          </Field>
+        )}
         {workspace.state !== "archived" && (
           <div className="flex flex-wrap gap-1.5">
             {renaming === undefined ? (
