@@ -16,6 +16,14 @@ export const SPORE_EXTENSIONS: readonly string[] = [
 ];
 
 /**
+ * pi-spore's own Pi skills, loaded into every agent (ADR 0193). Each entry is a folder with a `SKILL.md`. Like
+ * `SPORE_EXTENSIONS`, the path works from `src/` and from `dist/`, which sit at the same depth.
+ */
+export const SPORE_SKILLS: readonly string[] = [
+  fileURLToPath(new URL("../../../pi-skills/project-wiki", import.meta.url)),
+];
+
+/**
  * The tools of a side chat (ADR 0033). `--tools` is an allowlist: Pi never registers a built-in or extension tool
  * that it does not name, so no extension can turn `edit`, `write`, `bash`, `codemode`, or a subagent tool back on, and
  * a forked session's recorded loadout cannot either. Pi keeps MCP tools (`mcp__*`) registered past an allowlist that
@@ -72,17 +80,29 @@ export const STAGE_WORKER_TOOLS: readonly string[] = ["--exclude-tools", "contac
 export const WORKSPACE_CHAT_TOOLS: readonly string[] = ["--exclude-tools", "subagents_enable"];
 
 /**
+ * The `extras` that `loaded` does not cover: an extra is dropped when `loaded` names its path, or a path inside it,
+ * so a package the user's setup already loads is not loaded a second time.
+ */
+function notLoaded(loaded: readonly string[], extras: readonly string[]): string[] {
+  return extras.filter(
+    (path) => !loaded.some((resource) => resource === path || resource.startsWith(`${path}/`)),
+  );
+}
+
+/**
  * The launch arguments that load the user's Pi setup minus excluded packages (ADR 0025): `--no-extensions`,
  * `--no-skills`, and `--no-prompt-templates`, then one explicit flag per remaining resource. Pi's own package
  * manager resolves the list from the user's and the project's settings without loading any extension code. Packages
- * that are configured but not installed are skipped, never installed. `extraExtensions` (pi-spore's own) come after the
- * user's, unless the user's setup already loads the same path.
+ * that are configured but not installed are skipped, never installed. `extraExtensions` (pi-spore's own) come after
+ * the user's extensions, and `extraSkills` (pi-spore's own) after the user's skills, each unless the user's setup
+ * already loads the same path.
  */
 export async function resolveResourceArgs(
   cwd: string,
   agentDir: string,
   excludeSources: readonly string[],
   extraExtensions: readonly string[] = [],
+  extraSkills: readonly string[] = [],
 ): Promise<string[]> {
   const manager = new DefaultPackageManager({
     cwd,
@@ -95,14 +115,12 @@ export async function resolveResourceArgs(
   const keep = (resource: { enabled: boolean; metadata: { source: string } }) =>
     resource.enabled && !excluded.has(resource.metadata.source);
   const extensions = resolved.extensions.filter(keep).map((resource) => resource.path);
-  const extra = extraExtensions.filter(
-    (path) => !extensions.some((loaded) => loaded === path || loaded.startsWith(`${path}/`)),
-  );
+  const skills = resolved.skills.filter(keep).map((resource) => resource.path);
   return [
     "--no-extensions",
-    ...[...extensions, ...extra].flatMap((path) => ["-e", path]),
+    ...[...extensions, ...notLoaded(extensions, extraExtensions)].flatMap((path) => ["-e", path]),
     "--no-skills",
-    ...resolved.skills.filter(keep).flatMap((resource) => ["--skill", resource.path]),
+    ...[...skills, ...notLoaded(skills, extraSkills)].flatMap((path) => ["--skill", path]),
     "--no-prompt-templates",
     ...resolved.prompts.filter(keep).flatMap((resource) => ["--prompt-template", resource.path]),
   ];

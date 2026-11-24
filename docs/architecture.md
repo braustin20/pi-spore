@@ -43,8 +43,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   for the first start of a side chat with the worker's context), `--model`, `--thinking`, `--tools` and
   `--exclude-tools` for side chats (below), `--no-extensions` plus one `-e` per extension from the user's setup minus
   `agents.excludeExtensions` (ADR 0025), `-e <repo>/pi-extensions/router` (section 10; skipped when the user's setup
-  already loads it), and `-e <repo>/pi-extensions/spore-bridge` (the same way). The cwd is the workspace directory.
-  pi-spore's rules come from spore-bridge, not from a prompt file (ADR 0031).
+  already loads it), and `-e <repo>/pi-extensions/spore-bridge` (the same way). After the user's skills comes
+  `--skill <repo>/pi-skills/project-wiki` (`SPORE_SKILLS`, ADR 0193; skipped the same way). The cwd is the
+  workspace directory. pi-spore's rules come from spore-bridge, not from a prompt file (ADR 0031).
 - Env given to each agent (the server's env minus `ORCA_*` and `HERDR_*`): `PI_SPORE_URL`, `PI_SPORE_TOKEN` (this
   process's agent token, ADR 0032), `PI_SPORE_SERVER_PID` (the server's pid, for the bash guard, ADR 0160), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker`,
   `side`, `planner`, or `stage`), `PI_SPORE_UNITY_PROJECT` (Unity projects), and from launch hooks `PI_SPORE_RUN_ID` and `PI_SPORE_RUN_ROLE`
@@ -199,6 +200,9 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     reviewers, not at the final gates. The orchestrator rules say to start
     every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120),
     and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162).
+    Every role's rules end with one docs paragraph (`DOCS_RULES`, ADR 0193): start with `docs/index.md` when the
+    project has one, update it in the same change as the docs, and use the project-wiki skill for the format, the
+    setup, and the lint.
   - `start_pipeline` `{ brief, pipeline?, name? }`, only in the orchestrator chat (`worker` kind, no run role; ADR 0162):
     posts `POST /api/bridge/pipelines` with the tool call id as receipt and ends the turn with `terminate: true`.
     The run's end arrives later as a message (section 8). `start_pipeline`, `start_lane`, and `revise_lane` read a
@@ -316,6 +320,8 @@ modules/<id>/   one npm package per module, @pi-spore/mod-<id>
 pi-extensions/
   spore-bridge/ workbench tools for agents (loaded with -e)
   router/       router virtual model; also installable into plain pi
+pi-skills/
+  project-wiki/ docs index and docs lint skill (loaded with --skill, ADR 0193)
 docs/           vision, architecture, decisions, open questions
 ```
 

@@ -200,6 +200,12 @@ purpose; these rules take its place. Project AGENTS.md files still apply.
 export const LANE_RULES = `You are in a lane of a run. Ask your coordinator with \`ask_coordinator\`, never the user. No lane talks to
 another lane.`;
 
+/** The docs paragraph every pi-spore role gets, appended last to its rules (ADR 0193). */
+export const DOCS_RULES = `Docs
+- When the project has \`docs/index.md\`, start there to find docs.
+- When you add, rename, or remove a doc, an ADR, or a top-level section, update the index in the same change.
+- The project-wiki skill has the index format, the setup for a project with no index, and the docs lint.`;
+
 /** The rules of a stage agent by its role. */
 const stageRules = (role: StageRole): string =>
   role === "worker" ? STAGE_WORKER_RULES : STAGE_REVIEWER_RULES;
@@ -211,7 +217,8 @@ export interface PromptOptions {
 
 type ChatRoles = Pick<BridgeEnv, "chatKind" | "stageRole" | "runRole">;
 
-function rulesFor({ chatKind, stageRole, runRole }: ChatRoles): string {
+/** The role's own rules, without the docs paragraph that `rulesFor` appends. */
+function roleRules({ chatKind, stageRole, runRole }: ChatRoles): string {
   if (chatKind === "side") return SIDE_RULES;
   if (chatKind === "planner") return PLANNER_RULES;
   if (runRole === "coordinator") return COORDINATOR_RULES;
@@ -221,6 +228,11 @@ function rulesFor({ chatKind, stageRole, runRole }: ChatRoles): string {
     rules = stageRules(stageRole);
   }
   return runRole === "lane" ? `${rules}\n\n${LANE_RULES}` : rules;
+}
+
+/** The rules section of a role: its own rules, then the docs paragraph, once (ADR 0193). */
+function rulesFor(chat: ChatRoles): string {
+  return `${roleRules(chat)}\n\n${DOCS_RULES}`;
 }
 
 /**

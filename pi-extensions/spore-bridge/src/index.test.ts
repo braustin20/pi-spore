@@ -13,6 +13,7 @@ import { STOP_REASON } from "./guard.js";
 import sporeBridge from "./index.js";
 import {
   COORDINATOR_RULES,
+  DOCS_RULES,
   LANE_RULES,
   PLANNER_RULES,
   RULES,
@@ -540,7 +541,7 @@ describe("spore-bridge", () => {
     };
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
     expect(options.contextFiles.map((file) => file.path)).toEqual(["/work/project/AGENTS.md"]);
-    expect(options.sections[RULES_SECTION]).toBe(RULES);
+    expect(options.sections[RULES_SECTION]).toBe(`${RULES}\n\n${DOCS_RULES}`);
   });
 
   it("gives the chat the orchestrator rules and keeps the pi-spore rules", async () => {
@@ -602,7 +603,7 @@ describe("spore-bridge", () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "side");
     const options = { contextFiles: [], sections: {} as Record<string, string> };
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
-    expect(options.sections[RULES_SECTION]).toBe(SIDE_RULES);
+    expect(options.sections[RULES_SECTION]).toBe(`${SIDE_RULES}\n\n${DOCS_RULES}`);
     expect(SIDE_RULES).toContain("next to the orchestrator");
     expect(SIDE_RULES).toContain("read-only");
   });
@@ -611,7 +612,7 @@ describe("spore-bridge", () => {
     vi.stubEnv("PI_SPORE_CHAT_KIND", "planner");
     const options = { contextFiles: [], sections: {} as Record<string, string> };
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
-    expect(options.sections[RULES_SECTION]).toBe(PLANNER_RULES);
+    expect(options.sections[RULES_SECTION]).toBe(`${PLANNER_RULES}\n\n${DOCS_RULES}`);
     expect(PLANNER_RULES).toContain("You are the planner chat of one project");
     expect(PLANNER_RULES).toContain("Cards are your only output");
     expect(PLANNER_RULES).toContain("kanban_list_cards");
@@ -658,9 +659,40 @@ describe("spore-bridge", () => {
     vi.stubEnv("PI_SPORE_STAGE_ROLE", role);
     const options = { contextFiles: [], sections: {} as Record<string, string> };
     await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
-    expect(options.sections[RULES_SECTION]).toBe(rules);
+    expect(options.sections[RULES_SECTION]).toBe(`${rules}\n\n${DOCS_RULES}`);
     expect(rules).toContain(phrase);
   });
+
+  // ADR 0193: every role gets the same docs paragraph, once, at the end of its rules.
+  const DOCS_RULE_CASES: [string, Record<string, string>][] = [
+    ["worker", {}],
+    ["side", { PI_SPORE_CHAT_KIND: "side" }],
+    ["planner", { PI_SPORE_CHAT_KIND: "planner" }],
+    ["coordinator", { PI_SPORE_RUN_ROLE: "coordinator", PI_SPORE_RUN_ID: "U1" }],
+    ["stage worker", { PI_SPORE_CHAT_KIND: "stage", PI_SPORE_STAGE_ROLE: "worker" }],
+    ["stage reviewer", { PI_SPORE_CHAT_KIND: "stage", PI_SPORE_STAGE_ROLE: "reviewer" }],
+    [
+      "lane",
+      {
+        PI_SPORE_CHAT_KIND: "stage",
+        PI_SPORE_STAGE_ROLE: "worker",
+        PI_SPORE_RUN_ROLE: "lane",
+        PI_SPORE_RUN_ID: "U1",
+      },
+    ],
+  ];
+
+  it.each(DOCS_RULE_CASES)(
+    "gives the %s rules the docs paragraph exactly once",
+    async (_role, env) => {
+      for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+      const options = { contextFiles: [], sections: {} as Record<string, string> };
+      await fakePi().handlers.get("before_agent_start")?.({ systemPromptOptions: options }, {});
+      const rules = options.sections[RULES_SECTION] ?? "";
+      expect(rules.endsWith(`\n\n${DOCS_RULES}`)).toBe(true);
+      expect(rules.split(DOCS_RULES)).toHaveLength(2);
+    },
+  );
 
   it("tells the implement worker never to stop the pi-spore server", () => {
     expect(STAGE_WORKER_RULES).toContain("Never stop the pi-spore server");
@@ -1007,7 +1039,7 @@ describe("spore-bridge run tools", () => {
     for (const name of RUN_TOOLS) expect(pi.tools.has(name)).toBe(true);
     expect(pi.tools.has("request_human_input")).toBe(true);
     expect(pi.tools.has("ask_coordinator")).toBe(false);
-    expect(await rulesOf(pi)).toBe(COORDINATOR_RULES);
+    expect(await rulesOf(pi)).toBe(`${COORDINATOR_RULES}\n\n${DOCS_RULES}`);
     expect(COORDINATOR_RULES).toContain("never edit files or run commands");
     expect(COORDINATOR_RULES).toContain("answer_lane");
     expect(COORDINATOR_RULES).toContain("open_run_pr");
@@ -1221,7 +1253,7 @@ describe("spore-bridge run tools", () => {
     ]);
     expect(result.terminate).toBe(true);
     expect(result.content[0]?.text).toContain("question q1");
-    expect(await rulesOf(pi)).toBe(`${STAGE_WORKER_RULES}\n\n${LANE_RULES}`);
+    expect(await rulesOf(pi)).toBe(`${STAGE_WORKER_RULES}\n\n${LANE_RULES}\n\n${DOCS_RULES}`);
     expect(LANE_RULES).toContain("never the user");
   });
 
@@ -1400,7 +1432,7 @@ describe("spore-bridge run tools", () => {
 
     expect(pi.tools.has("request_human_input")).toBe(true);
     for (const name of [...RUN_TOOLS, "ask_coordinator"]) expect(pi.tools.has(name)).toBe(false);
-    expect(await rulesOf(pi)).toBe(RULES);
+    expect(await rulesOf(pi)).toBe(`${RULES}\n\n${DOCS_RULES}`);
   });
 
   it.each(["coordinator", "lane"])(
