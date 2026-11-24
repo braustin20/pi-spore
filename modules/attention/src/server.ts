@@ -78,8 +78,6 @@ const MIGRATIONS = [
   "ALTER TABLE attention_questions ADD COLUMN recommended INTEGER",
   // A JSON array of QuestionStep. NULL for an old-form question: its one step comes from `question` and `choices`.
   "ALTER TABLE attention_questions ADD COLUMN steps TEXT",
-  // A JSON array of LinkedArtifact (ADR 0200). NULL for none, so the rows written before it still load.
-  "ALTER TABLE attention_questions ADD COLUMN artifacts TEXT",
   // ADR 0196: one row per browser that turned phone notifications on.
   `CREATE TABLE attention_push_subscriptions (
     id TEXT PRIMARY KEY,
@@ -90,6 +88,9 @@ const MIGRATIONS = [
     label TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  // A JSON array of LinkedArtifact (ADR 0200). NULL for none, so the rows written before it still load. Migrations
+  // go by position, so a new one always goes last; see the upgrade test in modules/bridge/src/bridge.test.ts.
+  "ALTER TABLE attention_questions ADD COLUMN artifacts TEXT",
 ];
 
 interface SubscriptionRow {

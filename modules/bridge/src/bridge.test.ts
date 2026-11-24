@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
@@ -423,6 +424,57 @@ describe("request_human_input", () => {
       await server.request("GET", `/api/attention/questions/${question.id}`),
     );
     expect(stored.question).not.toHaveProperty("artifacts");
+  });
+
+  // Migrations go by array position (store.ts), so a new one must go last. A store that already ran the push
+  // subscriptions migration must not run it again.
+  it("opens a store from before the artifacts column and files links into it", async () => {
+    const home = join(scratch, "ask-upgrade");
+    const server = await start({ home });
+    const { agentId, workspaceId } = await workspace(server, "upgrade");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", {
+        question: "Which color?",
+        choices: ["red", "blue"],
+      }),
+      201,
+    );
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    // Put the store back to the one of the release before this column: attention at version 7.
+    const db = new DatabaseSync(server.paths.database);
+    db.exec(`
+      ALTER TABLE attention_questions DROP COLUMN artifacts;
+      DELETE FROM core_migrations WHERE module = 'attention' AND version >= 8;
+    `);
+    db.close();
+
+    const upgraded = await start({ home, firstId: 1_000 });
+    const stored = await json<{ question: Question }>(
+      await upgraded.request("GET", `/api/attention/questions/${question.id}`),
+    );
+    expect(stored.question).toMatchObject({ id: question.id, state: "open" });
+    expect(stored.question).not.toHaveProperty("artifacts");
+
+    const call = asAgent(upgraded, agentId, workspaceId);
+    await json(
+      await call("POST", "artifacts", { scope: "project", path: "note.md", content: "shared" }),
+    );
+    const { workspace: parent } = await json<{ workspace: { projectId: string } }>(
+      await upgraded.request("GET", `/api/workspaces/${workspaceId}`),
+    );
+    const linked = await json<{ question: Question }>(
+      await call("POST", "questions", {
+        question: "Read the note?",
+        artifacts: [{ scope: "project", path: "note.md" }],
+      }),
+      201,
+    );
+    expect(linked.question.artifacts).toEqual([
+      { scope: "project", path: "note.md", ownerId: parent.projectId },
+    ]);
   });
 
   it.each([
