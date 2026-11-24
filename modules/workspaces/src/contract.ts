@@ -1,5 +1,6 @@
 import { defineInterface } from "@pi-spore/module-api";
 import type {
+  ArchiveWorkspaceResponse,
   CreateWorkspaceRequest,
   CreateWorkspaceResponse,
   StepReport,
@@ -64,6 +65,13 @@ export interface Workspaces {
    * call (ADR 0174). Throws ApiError as `create` does.
    */
   planner(projectId: string): Promise<Workspace>;
+  /**
+   * Archives a workspace as `POST /api/workspaces/:id/archive` does, with the same errors: 404, 409 for the planner,
+   * 409 `bad_state` when it is archived already, and 409 `<step>_failed` when a step fails and `force` is false.
+   */
+  archive(id: string, options: { force: boolean }): Promise<ArchiveWorkspaceResponse>;
+  /** Whether the workspace archives when its PR merges: its own value, else the setting. Throws ApiError 404. */
+  archiveOnMerge(id: string): Promise<boolean>;
   beforeLeaveActive(listener: LeaveListener): void;
   afterCopyCreated(listener: CopyCreatedListener): void;
   beforeRemoveCopy(listener: RemoveCopyListener): void;

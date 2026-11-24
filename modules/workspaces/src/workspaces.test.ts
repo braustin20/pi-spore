@@ -825,4 +825,86 @@ describe("the workspaces interface", () => {
       "Made: active -> archived",
     ]);
   });
+
+  /** A server with a probe module that holds the interface. */
+  async function withProbe(): Promise<Workspaces> {
+    let workspaces: Workspaces | undefined;
+    const probe: ServerModule = {
+      id: "probe",
+      requires: ["workspaces"],
+      core: false,
+      setup(host) {
+        workspaces = host.use(WorkspacesKey);
+      },
+    };
+    server.close();
+    server = await createTestServer([...ALL, probe]);
+    return workspaces as Workspaces;
+  }
+
+  it("stores an archive-on-merge override and falls back to the setting when it is cleared", async () => {
+    const workspaces = await withProbe();
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Merge",
+      isolation: "in-place",
+    });
+    const patch = async (body: unknown) =>
+      parse(
+        WorkspaceBody,
+        await json(await server.request("PATCH", `/api/workspaces/${workspace.id}`, body), 200),
+        "patch",
+      ).workspace;
+
+    expect(workspace.archiveOnMerge).toBeUndefined();
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(true);
+    expect((await patch({ archiveOnMerge: false })).archiveOnMerge).toBe(false);
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(false);
+
+    const cleared = await patch({ archiveOnMerge: null });
+    expect("archiveOnMerge" in cleared).toBe(false);
+    expect(cleared.name).toBe("Merge");
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(true);
+    writeFileSync(
+      join(server.paths.root, "settings.json"),
+      JSON.stringify({ workspaces: { archiveOnMerge: false } }),
+    );
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(false);
+    expect((await patch({ archiveOnMerge: true })).archiveOnMerge).toBe(true);
+    expect(await workspaces.archiveOnMerge(workspace.id)).toBe(true);
+
+    await expect(workspaces.archiveOnMerge("nope")).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("refuses an empty PATCH and a PATCH on an archived workspace", async () => {
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Done",
+      isolation: "in-place",
+    });
+    const url = `/api/workspaces/${workspace.id}`;
+    expect((await server.request("PATCH", url, {})).status).toBe(400);
+    await json(await server.request("POST", `${url}/archive`), 200);
+    expect(await errorCode(await server.request("PATCH", url, { name: "Later" }), 409)).toBe(
+      "bad_state",
+    );
+  });
+
+  it("archives a workspace and removes its copy through the interface", async () => {
+    const workspaces = await withProbe();
+    const project = await addProject(makeUnityRepo());
+    const { workspace } = await createWorkspace({
+      projectId: project.id,
+      name: "Copy",
+      isolation: "new",
+    });
+    expect(existsSync(workspace.path)).toBe(true);
+
+    const { workspace: archived } = await workspaces.archive(workspace.id, { force: false });
+    expect(archived.state).toBe("archived");
+    expect(existsSync(workspace.path)).toBe(false);
+    expect(workspaces.get(workspace.id).state).toBe("archived");
+  });
 });
