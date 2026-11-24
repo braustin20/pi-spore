@@ -152,6 +152,22 @@ describe("Timeline", () => {
     expect(root.textContent).not.toContain("second line");
   });
 
+  it("shows how many times Retry sent the turn back, and nothing on a first try", async () => {
+    const retried = turn({
+      id: "t-retry",
+      createdAt: 200_000,
+      reportedAt: 260_000,
+      attempts: 3,
+      report: { turn: "t-retry", summary: "Passed on the third try" },
+    });
+    const root = await mount(
+      <Timeline run={run({ turns: [TASK, retried] })} workspaceId="w1" now={600_000} />,
+    );
+    expect(rows(root)[1]?.textContent).toContain("attempt 3");
+    // A turn that was never retried says nothing about attempts.
+    expect(rows(root)[0]?.textContent).not.toContain("attempt");
+  });
+
   it("keeps minor findings in a closed group and shows blocking ones", async () => {
     const root = await mount(
       <Timeline run={run({ turns: [REVIEW1] })} workspaceId="w1" now={600_000} />,
