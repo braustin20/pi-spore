@@ -1,9 +1,22 @@
 // @vitest-environment happy-dom
 import { AgentsWebKey } from "@pi-spore/mod-agents/web";
-import { type ArtifactLink, AttentionWebKey } from "@pi-spore/mod-attention/web";
+import {
+  type ArtifactLink,
+  type AttentionWeb,
+  AttentionWebKey,
+  attentionWeb,
+} from "@pi-spore/mod-attention/web";
 import { type WorkspaceTab, WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { type ApiClient, ApiContext, ApiRequestError, type WebHost } from "@pi-spore/module-api";
-import type { ArtifactInfo, ArtifactsEvent, LinkedArtifact, Workspace } from "@pi-spore/shared";
+import type {
+  ArtifactInfo,
+  ArtifactsEvent,
+  Inbox,
+  LinkedArtifact,
+  Workspace,
+} from "@pi-spore/shared";
+import { TooltipProvider } from "@pi-spore/ui";
+import type { ComponentType } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -293,5 +306,118 @@ describe("a file a question links", () => {
   it("opens a workspace file over the page", async () => {
     const getBlob = await open({ scope: "workspace", ownerId: "w1", path: "briefs/a.md" });
     expect(getBlob).toHaveBeenCalledWith("artifacts/workspaces/w1/file?path=briefs%2Fa.md");
+  });
+});
+
+const DialogCard = () => null;
+
+describe("a linked file on a question on Home", () => {
+  /** Home of the real attention module, with the real artifact link the artifacts module sets on it. */
+  function home(api: Partial<ApiClient>): ComponentType {
+    let page: ComponentType | undefined;
+    let attention: AttentionWeb | undefined;
+    attentionWeb.setup({
+      api,
+      use: () => ({
+        DialogCard,
+        addChatPanel: () => {},
+        setUserWaits: () => {},
+        shownChat: () => undefined,
+      }),
+      provide: (_key: unknown, impl: AttentionWeb) => (attention = impl),
+      addPage: (added: { path: string; component: ComponentType }) => {
+        if (added.path === "/") page = added.component;
+      },
+    } as unknown as WebHost);
+    artifactsWeb.setup({
+      use: (key: unknown) => {
+        if (key === WorkspaceViewKey) return { addTab: () => {} };
+        if (key === AgentsWebKey) return { setFileLink: () => {} };
+        if (key === AttentionWebKey) return attention;
+        throw new Error("unexpected interface");
+      },
+    } as unknown as WebHost);
+    if (!page) throw new Error("the attention module did not add its Home page");
+    return page;
+  }
+
+  const inbox: Inbox = {
+    items: [
+      {
+        kind: "question",
+        at: 1,
+        agentId: "A1",
+        workspace: { id: "w1", name: "work", projectName: "proj", state: "active" },
+        chat: { id: "C1", kind: "worker", active: true },
+        question: {
+          id: "Q1",
+          agentId: "A1",
+          workspaceId: "w1",
+          question: "First?",
+          steps: [
+            { type: "text", prompt: "First?" },
+            { type: "text", prompt: "Second?" },
+          ],
+          artifacts: [{ scope: "project", ownerId: "p1", path: "plans/a.md", label: "plan" }],
+          state: "open",
+          createdAt: 1,
+        },
+      },
+    ],
+    interrupted: [],
+    running: [],
+  };
+
+  const answerBox = (root: HTMLElement) =>
+    root.querySelector<HTMLTextAreaElement>('textarea[aria-label="Your answer"]');
+
+  async function type(box: HTMLTextAreaElement | null, value: string) {
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")?.set?.call(
+        box,
+        value,
+      );
+      box?.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+  }
+
+  const button = (root: HTMLElement, name: string) =>
+    [...root.querySelectorAll("button")].find((each) => each.textContent?.includes(name));
+
+  it("closes on Escape and leaves the question on its step with the draft", async () => {
+    const api: Partial<ApiClient> = {
+      get: async () => undefined,
+      send: async () => undefined,
+      subscribe: (_topic, onEvent) => {
+        onEvent({ type: "inbox", inbox });
+        return () => {};
+      },
+      getBlob: async () => new Blob(["# Plan A"]),
+    };
+    const Home = home(api);
+    const root = await render(
+      <TooltipProvider>
+        <Home />
+      </TooltipProvider>,
+      api,
+    );
+    await type(answerBox(root), "red");
+    await act(async () => button(root, "Next")?.click());
+    await type(answerBox(root), "blue");
+    expect(root.textContent).toContain("Step 2 of 2");
+
+    await act(async () => button(root, "Read plan")?.click());
+    const heading = document.querySelector("[role=dialog] h1");
+    expect(heading?.textContent).toBe("Plan A");
+    await act(async () => {
+      heading?.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    });
+
+    expect(document.querySelector("[role=dialog]")).toBeNull();
+    expect(root.textContent).toContain("Step 2 of 2");
+    expect(answerBox(root)?.value).toBe("blue");
+    expect(button(root, "Read plan")).toBeDefined();
+    await act(async () => button(root, "Back")?.click());
+    expect(answerBox(root)?.value).toBe("red");
   });
 });

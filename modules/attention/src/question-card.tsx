@@ -144,7 +144,8 @@ export function QuestionCard({
     <div
       className="flex flex-col gap-2.5"
       onKeyDown={(event) => {
-        if (event.key === "Escape") back();
+        // A dialog the card opens, such as a linked file, sits in a portal; its Escape only closes it.
+        if (event.key === "Escape" && event.currentTarget.contains(event.target as Node)) back();
       }}
     >
       {steps.length > 1 && (
