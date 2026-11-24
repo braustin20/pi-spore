@@ -781,6 +781,7 @@ fail_first = "artifact"
   a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
   from the provider's `changes`). The prompt asks for each test the brief suggests, and for a proof that shows each
   listed test can fail; the adversarial prompt also asks for each edge case or failure path no test covers (ADR 0199).
+  Round 1 also gets the worker's task report summary, so the reviewer can read why a suggested test changed.
   From round 2 on, the prompt also has the previous round's summary and findings and
   the worker's fix report. It tells the reviewer to check each earlier finding first, to answer REVISE only for a
   bug, a missing or wrong test, a regression, or a break of the brief, to list style, naming, wording, and taste as
