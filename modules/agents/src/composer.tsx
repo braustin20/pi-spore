@@ -1,6 +1,6 @@
 import { type AgentDialog, IMAGE_TYPES, type PromptImage } from "@pi-spore/shared";
-import { Button, cn, Notice, Select, Textarea, usePhone } from "@pi-spore/ui";
-import { ArrowUp, ImagePlus, Square, X } from "lucide-react";
+import { Button, cn, Menu, MenuItem, Notice, Textarea, usePhone } from "@pi-spore/ui";
+import { ArrowUp, Check, ChevronDown, ImagePlus, Square, X } from "lucide-react";
 import {
   type ClipboardEvent,
   type DragEvent,
@@ -41,6 +41,12 @@ function readBase64(file: File): Promise<string> {
   });
 }
 
+/** Where a message sent while the agent works goes (R5.2). */
+const MODES = [
+  { value: "steer", label: "Steer", hint: "after this turn" },
+  { value: "followUp", label: "Follow up", hint: "after the run" },
+] as const;
+
 function loadDraft(chatId: string): string {
   try {
     return readDraft(localStorage, chatId);
@@ -53,9 +59,10 @@ function loadDraft(chatId: string): string {
 /**
  * The message box. Enter sends, Shift+Enter adds a line. Images come in by paste, drag and drop, or the image button
  * (PNG, JPEG, WebP, GIF); the server checks their size. While the agent works, a message goes in as a steer
- * (after the current turn) or a follow-up (after the run). Typing `/` lists slash commands. `controls` (model and
- * thinking) sit in the row under the text. A phone keeps one button row, so while the agent works the busy controls
- * take the place of `controls` there.
+ * (after the current turn) or a follow-up (after the run): the send button is then a split button whose arrow menu
+ * picks the one, and its main part says which is chosen. Typing `/` lists slash commands. `controls` (model and
+ * thinking) sit in the row under the text. A phone keeps one button row, so while the agent works Stop takes the
+ * place of `controls` there.
  */
 export function Composer({
   chatId,
@@ -210,21 +217,10 @@ export function Composer({
   };
 
   const busyControls = (
-    <>
-      <Select
-        value={whileBusy}
-        onChange={(event) => setWhileBusy(event.target.value as "steer" | "followUp")}
-        aria-label="When a message sent now goes in"
-        className="max-md:min-w-0 max-md:flex-1"
-      >
-        <option value="steer">Steer: after this turn</option>
-        <option value="followUp">Follow up: after the run</option>
-      </Select>
-      <Button variant="secondary" onClick={onAbort} className="max-md:min-w-11 max-md:px-0">
-        <Square />
-        <span className="max-md:sr-only">Stop</span>
-      </Button>
-    </>
+    <Button variant="secondary" onClick={onAbort} className="max-md:min-w-11 max-md:px-0">
+      <Square />
+      <span className="max-md:sr-only">Stop</span>
+    </Button>
   );
 
   return (
@@ -302,7 +298,7 @@ export function Composer({
           aria-label="Message the agent"
           placeholder={
             busy
-              ? "The agent is working. Your message goes in as chosen below."
+              ? "The agent is working. Pick Steer or Follow up on the send button."
               : "Message the agent"
           }
           // Fewer rows on a phone leave more of the chat above the on-screen keyboard.
@@ -338,15 +334,60 @@ export function Composer({
               <ImagePlus />
             </Button>
             {busy && phone ? busyControls : controls}
-            <Button
-              variant="primary"
-              className="ml-auto shrink-0 max-md:px-4"
-              onClick={send}
-              disabled={disabled || sending || empty}
-            >
-              <ArrowUp />
-              {busy ? "Queue" : "Send"}
-            </Button>
+            {busy ? (
+              // Two buttons that read as one: the main part sends, the arrow picks when it goes in.
+              <div className="ml-auto flex shrink-0">
+                <Button
+                  variant="primary"
+                  className="rounded-r-none max-md:px-4"
+                  onClick={send}
+                  disabled={disabled || sending || empty}
+                >
+                  <ArrowUp />
+                  <span className="max-md:sr-only">
+                    {whileBusy === "steer" ? "Steer" : "Follow up"}
+                  </span>
+                </Button>
+                <Menu
+                  align="end"
+                  trigger={
+                    <Button
+                      variant="primary"
+                      aria-label="Choose when the message goes in"
+                      // Never disabled: the choice can be made before there is any text.
+                      className="rounded-l-none border-l border-l-on-accent/40 max-md:min-w-11"
+                    >
+                      <ChevronDown />
+                    </Button>
+                  }
+                >
+                  {MODES.map((mode) => (
+                    <MenuItem key={mode.value} onSelect={() => setWhileBusy(mode.value)}>
+                      {whileBusy === mode.value ? (
+                        // The chosen one gets the check; the other keeps its space, so the text lines up.
+                        <Check aria-hidden="true" className="size-3.5 shrink-0" />
+                      ) : (
+                        <span className="size-3.5 shrink-0" />
+                      )}
+                      <span className="flex flex-col">
+                        {mode.label}
+                        <span className="text-xs text-muted">{mode.hint}</span>
+                      </span>
+                    </MenuItem>
+                  ))}
+                </Menu>
+              </div>
+            ) : (
+              <Button
+                variant="primary"
+                className="ml-auto shrink-0 max-md:px-4"
+                onClick={send}
+                disabled={disabled || sending || empty}
+              >
+                <ArrowUp />
+                Send
+              </Button>
+            )}
           </div>
         </div>
       </div>
