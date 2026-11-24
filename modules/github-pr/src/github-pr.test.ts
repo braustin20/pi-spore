@@ -1,5 +1,12 @@
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  realpathSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -1386,5 +1393,138 @@ describe("finding a PR by itself", () => {
     openOutside(workspace);
     await lookNow();
     expect((await detail(cardId)).card.column).toBe("review");
+  });
+});
+
+describe("auto-archive after a merge", () => {
+  const workspaceOf = async (id: string) =>
+    (await json<{ workspace: Workspace }>(await server.request("GET", `/api/workspaces/${id}`)))
+      .workspace;
+  const archived = async (id: string) => (await workspaceOf(id)).state === "archived";
+  const archiveItems = async () =>
+    (
+      await json<{
+        items: { kind: string; source: string; id: string; title: string; detail?: string }[];
+      }>(await server.request("GET", "/api/attention/inbox"))
+    ).items.filter((item) => item.kind === "notice" && item.source === "github-pr");
+  /** True once an auto-archive job has run and ended: proof a test that archives nothing waited for it. */
+  const archiveJobEnded = () =>
+    server.store.all(
+      "SELECT 1 FROM core_jobs WHERE kind = ? AND state = 'done'",
+      "github-pr.auto-archive",
+    ).length > 0;
+  const settingOff = () =>
+    writeFileSync(
+      join(server.paths.root, "settings.json"),
+      JSON.stringify({ workspaces: { archiveOnMerge: false } }),
+    );
+  /** Publishes, merges PR #1 on the fake GitHub, and polls until the watch sees it. */
+  async function merge(workspace: Workspace) {
+    await publish(workspace);
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+  }
+
+  it("archives the workspace and removes its folder", async () => {
+    const { workspace, cardId } = await setUp();
+    await merge(workspace);
+    await until(() => archived(workspace.id));
+    expect(existsSync(workspace.path)).toBe(false);
+    expect(await archiveItems()).toEqual([]);
+    const { card } = await json<CardDetail>(
+      await server.request("GET", `/api/kanban/cards/${cardId}`),
+    );
+    expect(card.column).toBe("done");
+  });
+
+  it("leaves the workspace active when the setting is off", async () => {
+    settingOff();
+    const { workspace } = await setUp();
+    await merge(workspace);
+    await until(archiveJobEnded);
+    expect(await archived(workspace.id)).toBe(false);
+    expect(existsSync(workspace.path)).toBe(true);
+    expect(await archiveItems()).toEqual([]);
+  });
+
+  it("archives with the workspace's archiveOnMerge true while the setting is off", async () => {
+    settingOff();
+    const { workspace } = await setUp();
+    await json(
+      await server.request("PATCH", `/api/workspaces/${workspace.id}`, { archiveOnMerge: true }),
+    );
+    await merge(workspace);
+    await until(() => archived(workspace.id));
+    expect(existsSync(workspace.path)).toBe(false);
+  });
+
+  it("leaves the workspace active with its archiveOnMerge false while the setting is on", async () => {
+    const { workspace } = await setUp();
+    await json(
+      await server.request("PATCH", `/api/workspaces/${workspace.id}`, { archiveOnMerge: false }),
+    );
+    await merge(workspace);
+    await until(archiveJobEnded);
+    expect(await archived(workspace.id)).toBe(false);
+    expect(existsSync(workspace.path)).toBe(true);
+  });
+
+  it("leaves uncommitted work, says why on Home, and clears the item on a forced archive", async () => {
+    const { workspace } = await setUp();
+    await publish(workspace);
+    writeFileSync(join(workspace.path, "notes.txt"), "half done\n");
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+
+    await until(async () => (await archiveItems()).length === 1);
+    expect(await archiveItems()).toMatchObject([
+      {
+        id: `archive:${workspace.id}`,
+        title: "PR #1 merged; archive Fix the jump by hand",
+        detail: expect.stringContaining("uncommitted or untracked files"),
+      },
+    ]);
+    expect((await workspaceOf(workspace.id)).state).toBe("active");
+    expect(readFileSync(join(workspace.path, "notes.txt"), "utf8")).toBe("half done\n");
+
+    await json(
+      await server.request("POST", `/api/workspaces/${workspace.id}/archive`, { force: true }),
+    );
+    expect(await archiveItems()).toEqual([]);
+  });
+
+  it("leaves the workspace active while a chat works in it, and says why on Home", async () => {
+    const { workspace } = await setUp();
+    const agentId = await worker(workspace.id);
+    await publish(workspace);
+    await json(
+      await server.request("POST", `/api/agents/${agentId}/prompt`, { message: "slow:60000" }),
+    );
+    await until(async () => {
+      const { agent } = await json<{ agent: { status: string } }>(
+        await server.request("GET", `/api/agents/${agentId}`),
+      );
+      return agent.status === "busy";
+    });
+
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+
+    await until(async () => (await archiveItems()).length === 1);
+    expect(await archiveItems()).toMatchObject([
+      {
+        id: `archive:${workspace.id}`,
+        title: "PR #1 merged; archive Fix the jump by hand",
+        detail: "A chat is still working in the workspace",
+      },
+    ]);
+    expect((await workspaceOf(workspace.id)).state).toBe("active");
+    expect(existsSync(workspace.path)).toBe(true);
   });
 });
