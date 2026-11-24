@@ -51,9 +51,6 @@ section, update this map in the same change.
 
 [0000-template.md](decisions/0000-template.md) is the template for a new ADR.
 
-Three numbers are used by two ADRs each: 0176, 0186, and 0187. Both files are listed under each number. Docs, code,
-and commits cite them by number, so they are not renumbered.
-
 - [0001](decisions/0001-full-workbench.md): Full workbench with a browser UI that replaces Orca. Accepted.
 - [0002](decisions/0002-agent-runtime-pi-rpc.md): Agents run as `pi --mode rpc` processes, not Pi Durable.
   Accepted.
@@ -148,7 +145,7 @@ and commits cite them by number, so they are not renumbered.
 - [0157](decisions/0157-finished-run-follows-the-active-chat.md): A finished run follows the active chat too.
   Accepted; changed by 0165.
 - [0158](decisions/0158-revise-lane-is-a-fix-pass.md): revise_lane is a short fix pass. Accepted.
-- [0159](decisions/0159-phone-layout.md): A phone layout below 768 px. Accepted; changed in part by 0187.
+- [0159](decisions/0159-phone-layout.md): A phone layout below 768 px. Accepted; changed in part by 0196.
 - [0160](decisions/0160-guard-the-server-from-agents.md): Agents cannot stop the pi-spore server, and get a dev
   server instead. Accepted.
 - [0161](decisions/0161-dev-server-for-the-user.md): The dev server keeps its home and has a sample project.
@@ -177,14 +174,11 @@ and commits cite them by number, so they are not renumbered.
   Accepted.
 - [0173](decisions/0173-explore-visual-tasks.md): Explore also sends visual pipeline worker tasks local. Accepted.
 - [0174](decisions/0174-project-planner-chat.md): Each project has a planner chat that reads and adds cards.
-  Accepted; superseded in part by 0175 and 0176.
+  Accepted; superseded in part by 0175 and 0194.
 - [0175](decisions/0175-planner-model-and-early-picks.md): The planner falls back to the orchestrator model, and a
   pick before the first message is kept. Accepted.
-- 0176 (two files):
-  - [0176-live-agent-graph](decisions/0176-live-agent-graph.md): The workspaces landing page is a live graph of all
-    agents. Accepted; extended by 0188.
-  - [0176-read-only-helpers-for-planner-and-coordinator](decisions/0176-read-only-helpers-for-planner-and-coordinator.md):
-    The planner and the coordinator start read-only helpers with `start_helper`. Accepted.
+- [0176](decisions/0176-live-agent-graph.md): The workspaces landing page is a live graph of all agents. Accepted;
+  extended by 0188.
 - [0177](decisions/0177-unity-worktree-library-drops-bee.md): A Unity worktree gets a copied Library without
   `Library/Bee`. Accepted.
 - [0178](decisions/0178-parallel-reviews-and-early-gates.md): Read-only stages of a pipeline run together in a
@@ -202,16 +196,9 @@ and commits cite them by number, so they are not renumbered.
 - [0184](decisions/0184-systemd-user-service.md): pi-spore runs as a systemd user service. Accepted; amended by
   0191.
 - [0185](decisions/0185-the-phone-document-never-scrolls.md): The phone document never scrolls. Accepted.
-- 0186 (two files):
-  - [0186-changed-file-content](decisions/0186-changed-file-content.md): One side of a changed file, and images in
-    the Changes tab. Accepted.
-  - [0186-uncommitted-work-never-passes](decisions/0186-uncommitted-work-never-passes.md): Uncommitted work never
-    passes a pipeline, and an empty lane is not merged. Accepted.
-- 0187 (two files):
-  - [0187-pause-and-resume-a-pipeline-run](decisions/0187-pause-and-resume-a-pipeline-run.md): Pause and resume a
-    pipeline run. Accepted.
-  - [0187-phone-web-push](decisions/0187-phone-web-push.md): Phone notifications through Web Push and a service
-    worker. Accepted.
+- [0186](decisions/0186-changed-file-content.md): One side of a changed file, and images in the Changes tab.
+  Accepted.
+- [0187](decisions/0187-pause-and-resume-a-pipeline-run.md): Pause and resume a pipeline run. Accepted.
 - [0188](decisions/0188-agent-graph-step-outcome.md): An agent graph step says how it ended, or why it waits.
   Accepted.
 - [0189](decisions/0189-workspace-chat-starts-with-subagent-active.md): A workspace chat starts with `subagent`
@@ -224,6 +211,12 @@ and commits cite them by number, so they are not renumbered.
   flip on the root. Accepted.
 - [0193](decisions/0193-project-wiki-skill-and-docs-rule.md): pi-spore ships a project-wiki skill and a docs rule
   to every agent. Accepted.
+- [0194](decisions/0194-read-only-helpers-for-planner-and-coordinator.md): The planner and the coordinator start
+  read-only helpers with `start_helper`. Accepted. Renumbered from 0176.
+- [0195](decisions/0195-uncommitted-work-never-passes.md): Uncommitted work never passes a pipeline, and an empty
+  lane is not merged. Accepted. Renumbered from 0186.
+- [0196](decisions/0196-phone-web-push.md): Phone notifications through Web Push and a service worker. Accepted.
+  Renumbered from 0187.
 
 ## Spikes
 
@@ -239,4 +232,4 @@ and commits cite them by number, so they are not renumbered.
 - [q17-unity-close.md](spikes/q17-unity-close.md): whether `unity close` works without the Pipeline package, or
   needs `--force`. (ADR 0156)
 - [readonly-helpers.md](spikes/readonly-helpers.md): how the planner and the coordinator start `scout` and
-  `researcher` without the raw `subagent` tool. (ADR 0176, read-only helpers)
+  `researcher` without the raw `subagent` tool. (ADR 0194)

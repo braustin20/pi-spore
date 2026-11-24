@@ -77,7 +77,7 @@ const MIGRATIONS = [
   "ALTER TABLE attention_questions ADD COLUMN recommended INTEGER",
   // A JSON array of QuestionStep. NULL for an old-form question: its one step comes from `question` and `choices`.
   "ALTER TABLE attention_questions ADD COLUMN steps TEXT",
-  // ADR 0187: one row per browser that turned phone notifications on.
+  // ADR 0196: one row per browser that turned phone notifications on.
   `CREATE TABLE attention_push_subscriptions (
     id TEXT PRIMARY KEY,
     endpoint TEXT NOT NULL UNIQUE,
@@ -98,9 +98,9 @@ interface SubscriptionRow {
   subject: string;
 }
 
-/** A desktop page's focus report counts this long, so a closed tab stops counting by itself (ADR 0187). */
+/** A desktop page's focus report counts this long, so a closed tab stops counting by itself (ADR 0196). */
 const FOCUS_MS = 60_000;
-/** The push service shows these, so cut them to what fits a lock screen (ADR 0187). */
+/** The push service shows these, so cut them to what fits a lock screen (ADR 0196). */
 const PUSH_TEXT = 200;
 
 interface ApprovalRow {
@@ -305,7 +305,7 @@ export interface AttentionModuleOptions {
 /**
  * Home (R15): questions from agents, and what needs the user across workspaces, built from the agents module's
  * state. Browsers follow topic `attention:inbox`, which sends the whole inbox after every change. A new chat item
- * also goes to every phone that subscribed, as a Web Push (ADR 0187).
+ * also goes to every phone that subscribed, as a Web Push (ADR 0196).
  */
 export const createAttentionModule = ({
   sendPush = sendWebPush,
@@ -512,7 +512,7 @@ export const createAttentionModule = ({
           host.log.info("Removed a push subscription that is gone", { subscription: row.id });
           return;
         }
-        // Never the endpoint, keys, or payload (ADR 0187).
+        // Never the endpoint, keys, or payload (ADR 0196).
         host.log.warn("Push failed", { subscription: row.id, status });
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;

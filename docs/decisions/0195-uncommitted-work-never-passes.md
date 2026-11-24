@@ -1,7 +1,8 @@
-# 0186. Uncommitted work never passes a pipeline, and an empty lane is not merged
+# 0195. Uncommitted work never passes a pipeline, and an empty lane is not merged
 
 - Status: Accepted; touches [0169](0169-remind-a-stage-agent-once-then-block.md),
   [0150](0150-run-worktree-and-green-merges.md), and [0158](0158-revise-lane-is-a-fix-pass.md)
+- Renumbered from 0186 on 2026-11-23; old commits cite the old number.
 - Date: 2026-11-16
 - Requirements: R6, R7.4
 

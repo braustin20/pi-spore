@@ -1,4 +1,4 @@
-// Home's push switch for a phone (ADR 0187). iOS gives a web app notifications only through Web
+// Home's push switch for a phone (ADR 0196). iOS gives a web app notifications only through Web
 // Push, and only when the app runs from the Home Screen, so this button is for that one case: a
 // desktop browser keeps the plain permission button in `web.tsx`.
 import { useApi } from "@pi-spore/module-api";
@@ -16,7 +16,7 @@ const PushKey = Type.Object({ publicKey: Type.String({ minLength: 1, maxLength: 
 
 const message = (error: unknown) => (error instanceof Error ? error.message : String(error));
 
-/** iOS has push only in a Home Screen web app, never in a Safari tab (ADR 0187). */
+/** iOS has push only in a Home Screen web app, never in a Safari tab (ADR 0196). */
 function isStandalone(): boolean {
   return (
     window.matchMedia(STANDALONE_QUERY).matches ||
@@ -68,7 +68,7 @@ export function BlockedChip() {
   );
 }
 
-/** Turns phone push on and off with one tap, which is what iOS needs for permission (ADR 0187). */
+/** Turns phone push on and off with one tap, which is what iOS needs for permission (ADR 0196). */
 export function PhonePushButton() {
   const api = useApi();
   const phone = usePhone();

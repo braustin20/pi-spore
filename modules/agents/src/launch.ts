@@ -40,7 +40,7 @@ export const SIDE_CHAT_TOOLS: readonly string[] = [
 
 /**
  * The tools of a planner chat (ADR 0174): the side chat's tools, plus the kanban tools to write the plan as cards,
- * the web tools to research it, and `start_helper` (ADR 0176) for read-only scouts and researchers. Built like
+ * the web tools to research it, and `start_helper` (ADR 0194) for read-only scouts and researchers. Built like
  * `SIDE_CHAT_TOOLS`, so nothing that edits files or runs commands loads. Not `subagent`: that could start a worker.
  */
 export const PLANNER_CHAT_TOOLS: readonly string[] = [

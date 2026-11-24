@@ -42,7 +42,7 @@ import { type Runs, RunsKey } from "./contract.js";
 export * from "./contract.js";
 
 /**
- * The coordinator's tools (ADR 0150, ADR 0154, ADR 0176): read tools, artifacts, questions, the run tools, the
+ * The coordinator's tools (ADR 0150, ADR 0154, ADR 0194): read tools, artifacts, questions, the run tools, the
  * kanban tools that list, read, and add cards, and `start_helper` for read-only scouts and researchers. No write or
  * shell tool, no tool that changes or starts a card, and no `subagent`: that could start a writing `worker`.
  */

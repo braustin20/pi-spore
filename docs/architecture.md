@@ -105,7 +105,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     worker-kind chats with role `planner`: they start on `subagents.agentOverrides.planner`, else
     `agentOverrides.orchestrator` (ADR 0175), launch with
     `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_read_card`, `kanban_add_card`,
-    `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`, `start_helper` (ADR 0176); no
+    `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`, `start_helper` (ADR 0194); no
     `subagent`; `--exclude-tools 'mcp__*'`), a read-only
     token, and `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
     `planner_no_side_chats`. The bridge lets a planner token add and edit cards, and move them only between
@@ -230,7 +230,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     gets `ask_coordinator` `{ question }` in place of `request_human_input`; it files the question and ends the turn
     with `terminate: true`. Lane agents get one more paragraph of rules: ask the coordinator, never the user.
   - `start_helper` `{ agent: "scout" | "researcher", task }`, only in the planner chat and the coordinator
-    (`pi-extensions/spore-bridge/src/helpers.ts`, ADR 0176). These chats have no `subagent` tool, which could start a
+    (`pi-extensions/spore-bridge/src/helpers.ts`, ADR 0194). These chats have no `subagent` tool, which could start a
     writing `worker`. The tool sends the pi-subagents event-bus RPC request `spawn`
     `{ agent, task, context: "fresh", cwd }` on `subagents:rpc:v1:request` and waits up to 10 s for
     `subagents:rpc:v1:reply:<requestId>`. `spawn` starts only background runs. It answers
@@ -255,7 +255,7 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   (ADR 0034).
 - **Helpers** (child runs, R3.3, ADR 0034, [spike Q5](spikes/q5-subagent-child-runs.md)). A worker's pi-subagents
   helpers show under it in the chat. So do the scouts and researchers that a planner chat or a coordinator starts
-  with `start_helper` (ADR 0176), from the same widget.
+  with `start_helper` (ADR 0194), from the same widget.
   - Source: the `subagent-async` widget that pi-subagents sets in RPC mode, a `PI_SUBAGENT_ASYNC_JSON:` line with a
     version 1 snapshot of the agent's own session. `modules/agents/src/child-runs.ts` validates it (the one place
     that knows its format). A payload it does not understand is logged, shown as one chat notice, and the list stays
@@ -391,7 +391,7 @@ export interface ServerHost {
   Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
   the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
   Hover-only controls also show with `touch:` (`@media (hover: none)`). `packages/web/public` holds the web app
-  manifest, the icons, and the service worker `sw.js` (ADR 0187; push and notification taps only, no `fetch`
+  manifest, the icons, and the service worker `sw.js` (ADR 0196; push and notification taps only, no `fetch`
   handler, no cache). At 768 px and above nothing changes.
 - Confirmations use `useConfirm()` from `@pi-spore/ui`, never `window.confirm`. It returns `{ confirm, dialog }`:
   render `dialog` once, and `await confirm({ message, title?, confirmLabel?, tone?: "danger" })` for a boolean.
@@ -698,7 +698,7 @@ fail_first = "artifact"
   round do not close a turn). Reviewers
   must give a verdict and no tests; the worker gives no verdict. Worker tests join the run's manifest by name, so a
   later report never drops a test.
-- **Uncommitted work** (ADR 0186). A worker's report is checked against the workspace's uncommitted, staged, and
+- **Uncommitted work** (ADR 0195). A worker's report is checked against the workspace's uncommitted, staged, and
   untracked files, read through `ChangeOps.files` (gitignored files do not count; a project without `ChangeOps` skips
   the check). The first report of a turn with such files is refused with 409 `uncommitted_changes`, which names the
   paths and says to commit, then report again. Column `commit_reminded` on the turn records it, also across a
@@ -901,7 +901,7 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
 - **Coordinator.** A launch hook gives a `worker`-kind chat in a run workspace `PI_SPORE_RUN_ROLE=coordinator` and
   the allowlist `read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,artifacts_write,
   kanban_list_cards,kanban_read_card,kanban_add_card,start_lane,revise_lane,merge_lane,decline_lane,
-  answer_lane,open_run_pr,run_status,start_helper`: no write or shell tools, and no `subagent` (ADR 0176). Its token is not read-only, so it writes artifacts and calls the
+  answer_lane,open_run_pr,run_status,start_helper`: no write or shell tools, and no `subagent` (ADR 0194). Its token is not read-only, so it writes artifacts and calls the
   run routes. The hook also gives `role: "coordinator"` (`LaunchContext.role`, ADR 0181), so the coordinator starts
   on `subagents.agentOverrides.coordinator`, else `orchestrator`, else Pi's default. The chat row's role stays
   `orchestrator`. Every agent in a lane workspace gets `PI_SPORE_RUN_ROLE=lane`.
@@ -950,7 +950,7 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   then merges the lane line into the run worktree without a commit. A lane line that adds nothing to the run line
   (an empty `integrate.diff`) is not merged: the lane goes back to `passed` with the message
   `empty lane: its branch adds no commits`, and the coordinator is told that its worker may have left work
-  uncommitted (ADR 0186). `finish` still skips the commit when the diff is empty, because then a restart already made
+  uncommitted (ADR 0195). `finish` still skips the commit when the diff is empty, because then a restart already made
   it. A conflict aborts, puts the lane back to
   `passed`, and sends the files to the coordinator. `gate` runs each run gate on the merged tree through
   `ActionsKey.start` with a key per merge job and attempt. `finish` commits when all passed (`merged`, wakes waiting
@@ -1331,7 +1331,7 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   a service worker, so this button hides on phones (ADR 0159); phones use Web Push (below). A notification that
   fails to show logs one warning and the inbox goes on. The browser's permission is the only switch; pi-spore has
   no notification setting (ADR 0167).
-- **Phone push** (ADR 0187): on a phone that runs the app from the Home Screen (`display-mode: standalone`) and has
+- **Phone push** (ADR 0196): on a phone that runs the app from the Home Screen (`display-mode: standalone`) and has
   `serviceWorker`, `PushManager`, and `Notification`, Home shows "Turn on notifications" (`PhonePushButton` in
   `phone-push.tsx`). The tap asks for permission first, then registers `/sw.js`, subscribes with the VAPID public
   key (`GET /api/attention/push/key`), and sends the subscription (`POST /api/attention/push/subscriptions`, an

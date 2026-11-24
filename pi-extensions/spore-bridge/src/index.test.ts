@@ -580,14 +580,14 @@ describe("spore-bridge", () => {
     );
   });
 
-  // ADR 0176: the planner may start read-only helpers, so "you cannot start agents" is no longer true.
+  // ADR 0194: the planner may start read-only helpers, so "you cannot start agents" is no longer true.
   it("tells the planner to start read-only helpers with start_helper", () => {
     expect(PLANNER_RULES).toContain("Start helpers with start_helper before you read deeply");
     expect(PLANNER_RULES).toContain("Do not poll for it");
     expect(PLANNER_RULES).not.toContain("start agents");
   });
 
-  // ADR 0176: the coordinator gets the same helpers, and still never edits files or runs commands.
+  // ADR 0194: the coordinator gets the same helpers, and still never edits files or runs commands.
   it("tells the coordinator to start read-only helpers with start_helper", () => {
     expect(COORDINATOR_RULES).toContain("Start helpers with start_helper before you read deeply");
     expect(COORDINATOR_RULES).toContain("Do not poll for it");
@@ -1501,7 +1501,7 @@ describe("spore-bridge run tools", () => {
   });
 });
 
-// ADR 0176: a planner chat and a run coordinator start read-only scouts and researchers with start_helper,
+// ADR 0194: a planner chat and a run coordinator start read-only scouts and researchers with start_helper,
 // through pi-subagents' event-bus RPC. A fake bus stands in for pi-subagents; no helper runs here (AGENTS.md).
 describe("start_helper", () => {
   const READY = "subagents:rpc:v1:ready";
@@ -1584,7 +1584,7 @@ describe("start_helper", () => {
       arguments: { agent: "worker", task: TASK },
     } as unknown as ToolCall;
 
-    // The message a model gets from Pi's own argument check (ADR 0176, Errors).
+    // The message a model gets from Pi's own argument check (ADR 0194, Errors).
     expect(() => validateToolArguments(parameters, toolCall)).toThrow(
       'agent: expected one of ["scout","researcher"]',
     );

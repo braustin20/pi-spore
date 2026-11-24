@@ -340,7 +340,7 @@ describe("the agent graph (ADR 0176)", () => {
     const { run, coordinator } = await createRun(server, projectId, "graph-merge");
     const merged = await startLane(run, coordinator, "merged");
     await until(async () => (await getRun(server, run.id)).lanes[0]?.state === "passed");
-    // ADR 0186: a lane that adds no commits is not merged, so the lane gets one.
+    // ADR 0195: a lane that adds no commits is not merged, so the lane gets one.
     const laneWorkspace = (await getRun(server, run.id)).lanes[0]?.workspaceId as string;
     const { workspace: lanePlace } = await json<{ workspace: { path: string } }>(
       await server.request("GET", `/api/workspaces/${laneWorkspace}`),

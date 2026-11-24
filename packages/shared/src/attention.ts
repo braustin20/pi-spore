@@ -273,7 +273,7 @@ export function itemKey(item: InboxItem): string {
   }
 }
 
-/** The title and body of a notification for an item (R15.2): a desktop one, or a phone push (ADR 0187). */
+/** The title and body of a notification for an item (R15.2): a desktop one, or a phone push (ADR 0196). */
 export function notification(item: InboxItem): { title: string; body: string } {
   if (item.kind === "notice") return { title: item.title, body: item.detail ?? "" };
   const chat = item.chat.title ? `, ${item.chat.title}` : "";
@@ -301,7 +301,7 @@ export const itemHref = (item: InboxItem): string =>
 
 const pushKey = Type.String({ minLength: 1, maxLength: 512 });
 
-/** A browser's push subscription (ADR 0187), as `PushSubscription.toJSON()` gives it. */
+/** A browser's push subscription (ADR 0196), as `PushSubscription.toJSON()` gives it. */
 export const PushSubscriptionRequest = Type.Object({
   // A whole https URL: a host of letters, digits, dots, and dashes, an optional port, then an optional path.
   endpoint: Type.String({
@@ -318,14 +318,14 @@ export const PushUnsubscribeRequest = Type.Object(
 );
 export type PushUnsubscribeRequest = Static<typeof PushUnsubscribeRequest>;
 
-/** A desktop page reports its focus; while one has focus, no push goes out (ADR 0187). */
+/** A desktop page reports its focus; while one has focus, no push goes out (ADR 0196). */
 export const PushFocusRequest = Type.Object(
   { page: Type.String({ minLength: 1, maxLength: 64 }), focused: Type.Boolean() },
   { additionalProperties: false },
 );
 export type PushFocusRequest = Static<typeof PushFocusRequest>;
 
-/** All a push carries (ADR 0187). `badge`: the Home count. */
+/** All a push carries (ADR 0196). `badge`: the Home count. */
 export interface PushPayload {
   title: string;
   body: string;

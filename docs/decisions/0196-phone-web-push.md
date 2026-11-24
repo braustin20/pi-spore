@@ -1,7 +1,8 @@
-# 0187. Phone notifications through Web Push and a service worker
+# 0196. Phone notifications through Web Push and a service worker
 
 - Status: Accepted; changes the "No service worker ... Push is out of scope" line of [0159](0159-phone-layout.md);
   extends [0167](0167-browser-permission-is-the-notification-switch.md)
+- Renumbered from 0187 on 2026-11-23; old commits cite the old number.
 - Date: 2026-11-16
 - Requirements: R1.1, R15.2
 

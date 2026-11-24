@@ -9,7 +9,7 @@ export interface PushTarget {
 }
 
 export interface Vapid {
-  /** `https://<host>` or `mailto:`; Apple refuses a `localhost` subject (ADR 0187). */
+  /** `https://<host>` or `mailto:`; Apple refuses a `localhost` subject (ADR 0196). */
   subject: string;
   publicKey: string;
   privateKey: string;
@@ -18,7 +18,7 @@ export interface Vapid {
 /** Sends one encrypted push and answers the push service's HTTP status. */
 export type PushSender = (target: PushTarget, payload: string, vapid: Vapid) => Promise<number>;
 
-/** Apple's push service needs a TTL; `high` delivers at once (ADR 0187). */
+/** Apple's push service needs a TTL; `high` delivers at once (ADR 0196). */
 export const sendWebPush: PushSender = async (target, payload, vapid) => {
   try {
     const result = await sendNotification(target, payload, {

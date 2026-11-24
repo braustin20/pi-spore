@@ -191,7 +191,7 @@ describe("the phone push button", () => {
     expect(subscribe).toHaveBeenCalledTimes(1);
     const options = subscribe.mock.calls[0]?.[0];
     if (!options) throw new Error("the component never subscribed");
-    // iOS refuses a silent push, so every push must be visible (ADR 0187).
+    // iOS refuses a silent push, so every push must be visible (ADR 0196).
     expect(options.userVisibleOnly).toBe(true);
     expect(Buffer.from(options.applicationServerKey).toString("base64url")).toBe(PUBLIC_KEY);
     expect(send).toHaveBeenCalledWith("POST", "attention/push/subscriptions", {
@@ -236,7 +236,7 @@ describe("the phone push button", () => {
 
   it("shows an error text when the server will not take the stored subscription back", async () => {
     // The phone keeps its subscription across a server restart, so the POST on load is how a server
-    // that lost the row gets it back (ADR 0187). If that fails there is no push, and Home must say so.
+    // that lost the row gets it back (ADR 0196). If that fails there is no push, and Home must say so.
     const { container, send } = await renderButton(
       stubPhone({ subscription: fakeSubscription() }),
       { sendFails: true },

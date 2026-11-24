@@ -401,7 +401,7 @@ function NotificationButton() {
 
 /**
  * A desktop page with focus shows a toast for a new item, so the server sends no push while one has
- * focus (ADR 0187). The server keeps a report for 60 seconds, so a closed tab stops counting itself.
+ * focus (ADR 0196). The server keeps a report for 60 seconds, so a closed tab stops counting itself.
  */
 function reportFocus(api: ApiClient, page: string, focused: boolean): void {
   api.send("POST", "attention/push/focus", { page, focused }).catch(() => {});
@@ -415,7 +415,7 @@ function makeHomePage(store: InboxStore, DialogCard: AgentsWeb["DialogCard"]) {
     const inbox = useSyncExternalStore(store.subscribe, store.get);
     const [error, setError] = useState<string | undefined>();
     useEffect(() => {
-      // The badge on the app's icon counts what Home holds, so opening Home clears it (ADR 0187).
+      // The badge on the app's icon counts what Home holds, so opening Home clears it (ADR 0196).
       navigator.clearAppBadge?.().catch(() => {});
     }, []);
     return (
