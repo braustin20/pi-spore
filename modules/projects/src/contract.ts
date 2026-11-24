@@ -117,6 +117,9 @@ export interface VcsProvider {
     project: Project,
     request: CreateCopyRequest,
   ): Promise<WorkspaceLocation & { warnings?: string[] }>;
+  /** Why removing this copy without `force` would lose work, as a message for the user; undefined when it holds
+   * none. `removeCopy` refuses on exactly this, so a caller that must not pay for a refusal asks here first. */
+  lostWork(project: Project, location: WorkspaceLocation): Promise<string | undefined>;
   /** Removes a copy made by `createCopy`. Throws an ApiError 409 if it holds work that would be lost, unless
    * `force`. */
   removeCopy(

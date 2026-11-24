@@ -31,6 +31,7 @@ const testVcs: ServerModule = {
       root: async (path) => path,
       isolationModes: ["in-place"],
       createCopy: refuse,
+      lostWork: refuse,
       removeCopy: refuse,
     });
   },
