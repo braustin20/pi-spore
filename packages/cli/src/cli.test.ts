@@ -1895,7 +1895,10 @@ describe("pi-spore usage calibration", () => {
       { bar: 0.1, decisions: 34, wouldGoLocal: 34, localOutcomes: 30, passed: 23, enough: true },
       { bar: 0.9, decisions: 34, wouldGoLocal: 3, localOutcomes: 0, passed: 0, enough: false },
     ],
-    rungs: [{ rung: 1, place: "local", decisions: 30, outcomes: 30, passed: 23 }],
+    rungs: [
+      { rung: 1, place: "local", decisions: 30, outcomes: 30, passed: 23 },
+      { rung: 1, place: "claude", decisions: 4, outcomes: 3, passed: 3 },
+    ],
     skipped: 0,
   };
 
@@ -1910,6 +1913,12 @@ describe("pi-spore usage calibration", () => {
       "0.1  34/34 (100%)     23/30 (77%)",
       "0.9  3/34 (9%)        0/0  too little data",
     ]);
+    expect(out.slice(5, 8)).toEqual([
+      "rung place       decisions  passed",
+      "1    local       30         23/30 (77%)",
+      "1    claude      4          3/3 (100%)  too little data",
+    ]);
+    expect(out[8]).toBe("bounded");
     expect(out).toContain("straightforward");
     expect(out).toContain("  0.0-0.1  answers 3   passed 0/0  too little data");
   });

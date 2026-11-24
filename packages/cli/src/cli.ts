@@ -1472,6 +1472,13 @@ async function usageCommand(api: Api, deps: CliDeps, args: string[], json: boole
       `${String(bar.bar).padEnd(5)}${share(bar.wouldGoLocal, bar.decisions).padEnd(17)}${passed}`,
     );
   }
+  deps.out(`${"rung".padEnd(5)}${"place".padEnd(12)}${"decisions".padEnd(11)}passed`);
+  for (const rung of report.rungs) {
+    const passed = `${share(rung.passed, rung.outcomes)}${rung.outcomes < report.minSample ? TOO_LITTLE : ""}`;
+    deps.out(
+      `${String(rung.rung).padEnd(5)}${rung.place.padEnd(12)}${String(rung.decisions).padEnd(11)}${passed}`,
+    );
+  }
   for (const [question, buckets] of Object.entries(report.buckets)) {
     deps.out(question);
     for (const bucket of buckets) {
