@@ -1677,8 +1677,15 @@ export const pipelinesModule: ServerModule = {
               other.round === turn.round,
           ),
       );
-      const failedFix = failed.find((turn) => turn.kind === "fix");
-      if (failedFix) return replaceFailed(run, group, failedFix);
+      // The last one: a fix that failed again after Fresh agent leaves both rows failed, and the newest has the work.
+      const failedFix = failed.findLast((turn) => turn.kind === "fix");
+      if (failedFix) {
+        const replaced = await replaceFailed(run, group, failedFix);
+        // Pause can land while the handoff note reads the session file and the worktree (ADR 0187).
+        return loadRun(run.id)?.paused_at == null
+          ? replaced
+          : { wait: true, checkpoint: { ...checkpoint, paused: true } };
+      }
       if (failed.length > 0) {
         return { next: "advance", commit: () => failed.forEach(renameFailed) };
       }
