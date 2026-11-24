@@ -3,7 +3,7 @@ import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { ApprovalsKey, HomeItemsKey } from "@pi-spore/mod-attention/server";
 import { BridgeKey } from "@pi-spore/mod-bridge/server";
 import { CardsKey } from "@pi-spore/mod-kanban/server";
-import { ProjectsKey } from "@pi-spore/mod-projects/server";
+import { ProjectsKey, type VcsProvider } from "@pi-spore/mod-projects/server";
 import { RunsKey } from "@pi-spore/mod-runs/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import {
@@ -265,6 +265,27 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
           await providerOf(workspace)
         ).changes?.defaultBase(await projects.get(workspace.projectId)));
 
+      /**
+       * The worktree's head and its uncommitted count, for the PR tab. The auto-archive job removes the worktree
+       * once a PR merges, so the folder can go while these reads run: a read that finds it gone saw the workspace
+       * archive mid-read, which is not a git failure. Any other failure stands.
+       */
+      const readWorktree = async (
+        changes: NonNullable<VcsProvider["changes"]>,
+        path: string,
+      ): Promise<{ headId: string | undefined; uncommitted: number }> => {
+        try {
+          return {
+            headId: await changes.head({ path }),
+            uncommitted: (await changes.files({ path }, { kind: "uncommitted" }, 1000)).files
+              .length,
+          };
+        } catch (error) {
+          if (!existsSync(path)) return { headId: undefined, uncommitted: 0 };
+          throw error;
+        }
+      };
+
       const status = async (workspaceId: string): Promise<PrStatus> => {
         const workspace = workspaces.get(workspaceId);
         const project = await projects.get(workspace.projectId);
@@ -278,15 +299,10 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         const row = load(workspace.id);
         const base = await baseOf(workspace);
         const folder = existsSync(workspace.path);
-        const location = { path: workspace.path };
         const local =
           provider.changes && folder
-            ? {
-                headId: await provider.changes.head(location),
-                uncommitted: (await provider.changes.files(location, { kind: "uncommitted" }, 1000))
-                  .files.length,
-              }
-            : { uncommitted: 0 };
+            ? await readWorktree(provider.changes, workspace.path)
+            : { headId: undefined, uncommitted: 0 };
         const tries = host.store
           .all<{ at: number; head_id: string; summary: string }>(
             "SELECT at, head_id, summary FROM github_pr_tries WHERE workspace_id = ? ORDER BY at DESC, id DESC LIMIT 10",

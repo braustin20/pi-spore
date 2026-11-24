@@ -264,6 +264,11 @@ const status = async (workspaceId: string) =>
 const archiveOff = async (workspaceId: string) =>
   json(await server.request("PATCH", `/api/workspaces/${workspaceId}`, { archiveOnMerge: false }));
 
+const workspaceOf = async (id: string) =>
+  (await json<{ workspace: Workspace }>(await server.request("GET", `/api/workspaces/${id}`)))
+    .workspace;
+const archived = async (id: string) => (await workspaceOf(id)).state === "archived";
+
 async function publish(workspace: Workspace) {
   const opened = await json<PrStatus>(
     await server.request("POST", `/api/github-pr/workspaces/${workspace.id}/publish`, {
@@ -778,6 +783,24 @@ describe("merge (ADR 0142)", () => {
     expect(card.column).toBe("done");
     expect(scheduledDelays()).toEqual([]);
     expectOnlyAllowedCalls();
+  });
+
+  it("answers the merge, then archives the workspace, with the setting at its default", async () => {
+    // The archive job starts inside this route, so the worktree can go while the route still reads it for its
+    // answer. The merge response and the status read after it must both still succeed.
+    const { workspace, cardId, headId } = await ready();
+    const merged = await json<PrStatus>(await merge(workspace.id, { confirm: true, headId }));
+    expect(merged).toMatchObject({ pr: { state: "merged" }, watch: { state: "done" } });
+    const { card } = await json<CardDetail>(
+      await server.request("GET", `/api/kanban/cards/${cardId}`),
+    );
+    expect(card.column).toBe("done");
+    // The worktree may go during these reads too: the job takes a moment to stop the chat and remove the copy.
+    for (let read = 0; read < 8; read++)
+      expect((await status(workspace.id)).pr?.state).toBe("merged");
+    await until(() => archived(workspace.id));
+    expect(existsSync(workspace.path)).toBe(false);
+    expect(await status(workspace.id)).toMatchObject({ pr: { state: "merged" } });
   });
 
   it("needs an explicit confirm and the head the user saw", async () => {
@@ -1397,10 +1420,6 @@ describe("finding a PR by itself", () => {
 });
 
 describe("auto-archive after a merge", () => {
-  const workspaceOf = async (id: string) =>
-    (await json<{ workspace: Workspace }>(await server.request("GET", `/api/workspaces/${id}`)))
-      .workspace;
-  const archived = async (id: string) => (await workspaceOf(id)).state === "archived";
   const archiveItems = async () =>
     (
       await json<{
