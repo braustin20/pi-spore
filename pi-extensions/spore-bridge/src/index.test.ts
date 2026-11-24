@@ -878,6 +878,18 @@ describe("spore-bridge report tool", () => {
     },
   );
 
+  // ADR 0199: a proof is a failing run for the right reason, not always a run before the code.
+  it("describes a proof as a run that shows the test can fail", () => {
+    vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
+    const tool = fakePi().tool("report");
+
+    expect(JSON.stringify(tool.parameters ?? {})).toContain("with the code broken on purpose");
+    expect(JSON.stringify(tool.parameters ?? {})).not.toContain("failing before the code");
+    expect((tool.promptGuidelines ?? []).join(" ")).toContain(
+      "each with the artifact path of a run that shows it can fail",
+    );
+  });
+
   it("sends a worker report with the receipt, no earlyStop, and ends the turn", async () => {
     vi.stubEnv("PI_SPORE_STAGE_ROLE", "worker");
     const { ctx, calls } = context(jev(0.99));
