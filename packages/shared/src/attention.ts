@@ -1,6 +1,7 @@
 import Type, { type Static } from "typebox";
 import { ActionRun } from "./actions.js";
 import { AgentDialog, AgentStatus, ChatKind } from "./agents.js";
+import { ArtifactScope } from "./artifacts.js";
 import { Job } from "./jobs.js";
 import { WorkspaceState } from "./workspaces.js";
 
@@ -48,6 +49,27 @@ export const QuestionStep = Type.Union([
 ]);
 export type QuestionStep = Static<typeof QuestionStep>;
 
+/**
+ * A file the user should read before answering (ADR 0200): the same scope and relative path `artifacts_write`
+ * takes. `label` is the text of its Read button; the UI falls back to the file name.
+ */
+export const QuestionArtifact = Type.Object(
+  {
+    scope: ArtifactScope,
+    path: Type.String({ minLength: 1, maxLength: 255 }),
+    label: Type.Optional(Type.String({ minLength: 1, maxLength: 80 })),
+  },
+  { additionalProperties: false },
+);
+export type QuestionArtifact = Static<typeof QuestionArtifact>;
+
+/** A {@link QuestionArtifact} on a stored question, with the folder that owns the file: a workspace or project id. */
+export const LinkedArtifact = Type.Object(
+  { ...QuestionArtifact.properties, ownerId: Type.String() },
+  { additionalProperties: false },
+);
+export type LinkedArtifact = Static<typeof LinkedArtifact>;
+
 const answerText = Type.String({ minLength: 1, maxLength: 20_000 });
 
 /** The user's answer to one step. The server checks it against the step (exactly one of `label` and `other`). */
@@ -90,6 +112,8 @@ export const Question = Type.Object({
   /** Index into `choices` of the choice the agent recommends. Advice only. */
   recommended: Type.Optional(Type.Integer({ minimum: 0 })),
   steps: Type.Array(QuestionStep),
+  /** Files to read first, each with its owner id (ADR 0200). Absent for a question that links none. */
+  artifacts: Type.Optional(Type.Array(LinkedArtifact)),
   state: Type.Union([Type.Literal("open"), Type.Literal("answered"), Type.Literal("closed")]),
   answer: Type.Optional(Type.String()),
   createdAt: Type.Integer(),
@@ -110,6 +134,8 @@ export const FileQuestionRequest = Type.Object(
     /** Index into `choices` of the choice the agent recommends. Advice only. */
     recommended: Type.Optional(Type.Integer({ minimum: 0 })),
     steps: Type.Optional(Type.Array(QuestionStep, { minItems: 1, maxItems: 6 })),
+    /** Files the user should read first. The bridge checks they exist before it files the question. */
+    artifacts: Type.Optional(Type.Array(QuestionArtifact, { minItems: 1, maxItems: 6 })),
   },
   { additionalProperties: false },
 );
