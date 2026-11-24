@@ -769,6 +769,34 @@ describe("a review stage", () => {
     expect(prompt).not.toContain("no test covers");
   });
 
+  // ADR 0199 follow-up: the brief's tests are the reviewer's check, so round 1 needs the worker's report too.
+  it("gives the round 1 reviewer the worker's task report", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ summary: "Good", verdict: "approve" }] }),
+    });
+
+    const { run } = await runUntil(server, "task-report-review", withReview(), "passed");
+
+    const prompt = (await chat(server, (run.turns[1] as PipelineTurn).agentId))[0];
+    expect(prompt).toContain("The worker's report: Done");
+  });
+
+  it("gives the round 2 reviewer the fix report once, not the task report line", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, FIX],
+        reviewer: [REVISE, { summary: "Good", verdict: "approve" }],
+      }),
+    });
+
+    const { run } = await runUntil(server, "task-report-fix", withReview("rounds = 2"), "passed");
+
+    const second = run.turns[3] as PipelineTurn;
+    const prompt = (await chat(server, second.agentId))[0];
+    expect(prompt).toContain("The worker's fix report: Fixed the findings");
+    expect(prompt).not.toContain("The worker's report: Done");
+  });
+
   it("names both ways to prove a test can fail in the fix prompt", async () => {
     const server = await start({
       env: scriptEnv({

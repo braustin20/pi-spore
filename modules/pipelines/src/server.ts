@@ -440,6 +440,7 @@ const reviewPrompt = (
   tests: readonly TestProof[],
   earlier?: { review: StageReport; fix: StageReport },
   fixPass?: FixPass,
+  taskReport?: string,
 ) =>
   [
     stage.role === "adversarial-reviewer"
@@ -455,6 +456,7 @@ const reviewPrompt = (
     ...bullets(tests),
     "Open each proof and check that it shows the test failing for the right reason. Check that every test the change adds is in this list; a test that is not listed is a finding.",
     "Check that each test the brief suggests is there, or that the worker's report says why it is not.",
+    ...(taskReport ? [`The worker's report: ${taskReport}`] : []),
     ...(stage.role === "adversarial-reviewer"
       ? ["Name each edge case or failure path that no test covers."]
       : []),
@@ -1470,6 +1472,16 @@ export const pipelinesModule: ServerModule = {
               .at(-1);
       const fix = round > 1 ? liveTurn(turns, "fix", round - 1) : undefined;
       const tests = JSON.parse(run.tests) as TestProof[];
+      // Round 1 has no fix report, so the worker's own report is what lets the reviewer check the brief's tests;
+      // round 2 and later read the fix report. The group's turns hold only this stage's turns, so read the run's.
+      // A fix pass run (a reused worker) keeps the prompt it had.
+      const taskReport =
+        round === 1 && run.previous_run_id === null
+          ? turnRows(run.id)
+              .filter((turn) => turn.kind === "task" && turn.error === null && turn.report !== null)
+              .map(reportOf)
+              .at(-1)?.summary
+          : undefined;
       const starts: { member: (typeof members)[number]; prompt: (turnId: string) => string }[] = [];
       for (const member of members) {
         const { stage, index } = member;
@@ -1495,7 +1507,8 @@ export const pipelinesModule: ServerModule = {
           : undefined;
         starts.push({
           member,
-          prompt: (turnId) => reviewPrompt(stage, round, turnId, paths, tests, earlier, fixPass),
+          prompt: (turnId) =>
+            reviewPrompt(stage, round, turnId, paths, tests, earlier, fixPass, taskReport),
         });
       }
       return {
