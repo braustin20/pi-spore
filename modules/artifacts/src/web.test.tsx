@@ -1,10 +1,11 @@
 // @vitest-environment happy-dom
 import { AgentsWebKey } from "@pi-spore/mod-agents/web";
+import { type ArtifactLink, AttentionWebKey } from "@pi-spore/mod-attention/web";
 import { type WorkspaceTab, WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { type ApiClient, ApiContext, ApiRequestError, type WebHost } from "@pi-spore/module-api";
-import type { ArtifactInfo, ArtifactsEvent, Workspace } from "@pi-spore/shared";
+import type { ArtifactInfo, ArtifactsEvent, LinkedArtifact, Workspace } from "@pi-spore/shared";
 import { act } from "react";
-import { createRoot } from "react-dom/client";
+import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ArtifactView } from "./viewer.js";
 import { artifactsWeb } from "./web.js";
@@ -34,11 +35,15 @@ const info = (scope: ArtifactInfo["scope"], path: string, more: Partial<Artifact
 });
 
 let container: HTMLElement | undefined;
+let root: Root | undefined;
 beforeEach(() => {
   URL.createObjectURL = () => "blob:fake";
   URL.revokeObjectURL = () => {};
 });
-afterEach(() => {
+afterEach(async () => {
+  // Unmount, so a dialog in the document body does not stay for the next test.
+  await act(async () => root?.unmount());
+  root = undefined;
   container?.remove();
   vi.restoreAllMocks();
 });
@@ -46,9 +51,8 @@ afterEach(() => {
 async function render(node: React.ReactNode, api: Partial<ApiClient>) {
   container = document.body.appendChild(document.createElement("div"));
   await act(async () => {
-    createRoot(container as HTMLElement).render(
-      <ApiContext value={api as ApiClient}>{node}</ApiContext>,
-    );
+    root = createRoot(container as HTMLElement);
+    root.render(<ApiContext value={api as ApiClient}>{node}</ApiContext>);
   });
   return container;
 }
@@ -114,6 +118,7 @@ describe("the Artifacts tab", () => {
       use: (key: unknown) => {
         if (key === WorkspaceViewKey) return { addTab: (each: WorkspaceTab) => (added = each) };
         if (key === AgentsWebKey) return { setFileLink: () => {} };
+        if (key === AttentionWebKey) return { setArtifactLink: () => {} };
         throw new Error("unexpected interface");
       },
     } as unknown as WebHost);
@@ -249,5 +254,44 @@ describe("the Artifacts tab", () => {
       get: local(false),
     });
     expect(root.textContent).toContain("No artifacts yet");
+  });
+});
+
+describe("a file a question links", () => {
+  function link(): ArtifactLink {
+    let set: ArtifactLink | undefined;
+    artifactsWeb.setup({
+      use: (key: unknown) => {
+        if (key === WorkspaceViewKey) return { addTab: () => {} };
+        if (key === AgentsWebKey) return { setFileLink: () => {} };
+        if (key === AttentionWebKey)
+          return { setArtifactLink: (component: ArtifactLink) => (set = component) };
+        throw new Error("unexpected interface");
+      },
+    } as unknown as WebHost);
+    if (!set) throw new Error("the artifacts module did not set the question's artifact link");
+    return set;
+  }
+
+  async function open(artifact: LinkedArtifact) {
+    const getBlob = vi.fn(async () => new Blob(["# Plan A"]));
+    const Link = link();
+    const root = await render(<Link artifact={artifact}>Read a.md</Link>, { getBlob });
+    const button = root.querySelector("button");
+    expect(button?.textContent).toBe("Read a.md");
+    await act(async () => button?.click());
+    // The dialog sits in the document body, outside the card.
+    expect(document.querySelector("[role=dialog] h1")?.textContent).toBe("Plan A");
+    return getBlob;
+  }
+
+  it("opens a project file over the page", async () => {
+    const getBlob = await open({ scope: "project", ownerId: "p1", path: "plans/a.md" });
+    expect(getBlob).toHaveBeenCalledWith("artifacts/projects/p1/file?path=plans%2Fa.md");
+  });
+
+  it("opens a workspace file over the page", async () => {
+    const getBlob = await open({ scope: "workspace", ownerId: "w1", path: "briefs/a.md" });
+    expect(getBlob).toHaveBeenCalledWith("artifacts/workspaces/w1/file?path=briefs%2Fa.md");
   });
 });

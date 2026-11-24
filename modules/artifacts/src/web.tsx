@@ -1,10 +1,12 @@
 import { AgentsWebKey } from "@pi-spore/mod-agents/web";
+import { AttentionWebKey } from "@pi-spore/mod-attention/web";
 import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
   type ArtifactInfo,
   ArtifactsEvent,
   ArtifactsLocal,
+  type LinkedArtifact,
   parse,
   type Workspace,
 } from "@pi-spore/shared";
@@ -21,7 +23,7 @@ function formatBytes(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
-const fileUrl = (artifact: ArtifactInfo) =>
+const fileUrl = (artifact: Pick<ArtifactInfo, "scope" | "ownerId" | "path">) =>
   `artifacts/${artifact.scope === "workspace" ? "workspaces" : "projects"}/${artifact.ownerId}/file?path=${encodeURIComponent(artifact.path)}`;
 
 function ArtifactRow({
@@ -232,9 +234,31 @@ function FileLink({
   );
 }
 
+/** A file a question links (ADR 0200). A click opens it over the page, so the user keeps the question and the draft. */
+function QuestionArtifactLink({
+  artifact,
+  children,
+}: {
+  artifact: LinkedArtifact;
+  children: ReactNode;
+}) {
+  const [open, setOpen] = useState(false);
+  return (
+    <>
+      <Button size="sm" onClick={() => setOpen(true)} title={artifact.path}>
+        <FileText aria-hidden="true" className="size-3.5" />
+        {children}
+      </Button>
+      <ContentDialog open={open} onOpenChange={setOpen} title={artifact.path}>
+        <ArtifactView source={fileUrl(artifact)} name={artifact.path} />
+      </ContentDialog>
+    </>
+  );
+}
+
 export const artifactsWeb: WebModule = {
   id: "artifacts",
-  requires: ["workspaces", "agents"],
+  requires: ["workspaces", "agents", "attention"],
   core: true,
   setup(host) {
     host.use(WorkspaceViewKey).addTab({
@@ -245,5 +269,6 @@ export const artifactsWeb: WebModule = {
       component: ArtifactsTab,
     });
     host.use(AgentsWebKey).setFileLink(FileLink);
+    host.use(AttentionWebKey).setArtifactLink(QuestionArtifactLink);
   },
 };
