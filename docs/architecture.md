@@ -140,12 +140,13 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     only in a child pi-subagents started, so it always fails in a stage agent (ADR 0179).
   - The model cannot change (`POST /api/agents/:id/model` answers 409 `stage_model_fixed`; the chat has no model
     picker and shows the model read-only, with the routed model after `→`), because the pipeline judges a reviewer
-    by the model it ran on (R4.4). A stage whose agent failed gets a fresh agent on Retry instead (section 8,
-    "Failed turns").
-  - `turnError(agentId)` says why the agent's last run failed: the error of a `failed` status, or the
-    `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a provider that
-    refused, such as a full usage window). While the agent is not busy, starting, or waiting, it first returns the
-    error of a pending delivery Pi refused (section 6). `rename(agentId, title)` sets the title.
+    by the model it ran on (R4.4). A stage whose agent failed continues on Retry, or gets a fresh agent on Fresh
+    agent (section 8, "Failed turns").
+  - `turnError(agentId)` says why the agent's last run failed, as `{ error, provider? }`: the error of a `failed`
+    status, or the `errorMessage` of the last assistant message when Pi ended the turn with `stopReason: "error"` (a
+    provider that refused, such as a full usage window), with that message's `provider`. While the agent is not busy,
+    starting, or waiting, it first returns the error of a pending delivery Pi refused (section 6). It is undefined
+    while a delivery waits with no error or a prompt Pi took has not started: a new run is on its way (ADR 0197). `rename(agentId, title)` sets the title.
   - `endedRun(agentId)` says the agent's last run ended on its own and nothing new waits for it: the agent is
     `idle`, it has no pending delivery, and its last assistant message did not end with `stopReason` "error" or
     "aborted". A pending delivery counts because a process goes idle once at start-up, before Pi takes its prompt.
@@ -741,13 +742,22 @@ fail_first = "artifact"
   as `push_line tool - Review 1`. Without a name the titles stay `implement`, `Review 1`, ... A reused worker (`worker =
   "reuse"`) is renamed to the new run's slice name when the run has one, in the same commit that gives it the task, so
   its tab names the run that uses it now. Without a name it keeps its title. The `(failed)` suffix goes on the end.
-- **Failed turns** (ADR 0140). The pipeline listens to the stage agents' status. When the open turn's agent fails
-  (`turnError`: a crash, a turn that ended with `stopReason: "error"`, or a task Pi refused to take), the `await` step throws
-  `stage <name>: the <role> agent "<title>" failed: <error>. Retry starts a fresh <role> agent for this turn.` The job
-  waits with that error, so the run stays `running` and shows it as `blocked`. A turn that ended twice without a report
-  blocks the same way (`... ended its turn twice without a report ...`, ADR 0169), and Retry covers it. The old agent
-  may still report while the run is blocked. Retry (`POST /api/pipelines/runs/:id/retry`) writes the error on the turn,
-  and `await` then replaces it in one commit: the old agent is renamed `<title> (failed)`, keeps its tab, and loses its
+- **Failed turns** (ADR 0140, ADR 0197). The pipeline listens to the stage agents' status. When the open turn's agent
+  fails (`turnError`: a crash, a turn that ended with `stopReason: "error"`, or a task Pi refused to take), the `await`
+  step throws `stage <name>: the <role> agent "<title>" failed: <error>. Retry tells the same agent to continue. Fresh
+  agent starts a fresh <role> agent for this turn.` A failure with a `provider` says `the model server <provider>
+  failed for the <role> agent "<title>": <error>` instead. The job waits with that error, so the run stays `running`
+  and shows it as `blocked`. A turn that ended twice without a report blocks the same way (`... ended its turn twice
+  without a report ...`, ADR 0169), and both choices cover it. The old agent may still report while the run is
+  blocked.
+  Retry (`POST /api/pipelines/runs/:id/retry`) writes the raw failure on the turn's `retry_error`. The next `await`
+  that is not paused sends the same agent one message, `Your last turn failed: <failure>. This is attempt <N> of this
+  turn.`, a line that tells it to check where it stopped and finish the turn, and the `Turn:` line. In the same commit
+  it raises `attempts`, sets `reminded` to 0, and clears `retry_error`. The other open turns get what the step gives
+  them then (the resume or the restart message). A Pi process that exited starts again on its session file. The turn
+  view has `attempts` from 2.
+  Fresh agent (`POST /api/pipelines/runs/:id/fresh`) writes the error on the turn, and `await` then replaces it in
+  one commit: the old agent is renamed `<title> (failed)`, keeps its tab, and loses its
   pending deliveries, and a fresh
   agent takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
   is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The fresh
@@ -847,7 +857,8 @@ fail_first = "artifact"
 | `POST /api/pipelines/workspaces/:id/runs` `{ pipeline, brief, name? }` | Starts a run (201). |
 | `GET /api/pipelines/workspaces/:id/runs` | `{ runs }`, newest first, each with its turns and `blocked`. |
 | `GET /api/pipelines/runs/:id` | `{ run }` |
-| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed gets a fresh agent. |
+| `POST /api/pipelines/runs/:id/retry` | Runs the run's waiting step now (409 `run_not_waiting`). A turn whose agent failed: the same agent continues (ADR 0197). |
+| `POST /api/pipelines/runs/:id/fresh` | The same, but a turn whose agent failed gets a fresh agent (409 `run_not_waiting`). |
 | `POST /api/pipelines/runs/:id/pause` | Pauses a `running` run (409 `run_not_running`). A repeat does nothing. |
 | `POST /api/pipelines/runs/:id/resume` | Clears the pause and wakes the stage job (409 `run_not_paused`). |
 | `POST /api/pipelines/runs/:id/cancel` | Stops a run. |
@@ -858,10 +869,10 @@ fail_first = "artifact"
   shows a header line (the name, then the pipeline id as a chip, or the pipeline id alone; source, state, elapsed
   time, Pause or Resume on a `running` run, Cancel; a paused run's chip says `Paused`), a step bar with each stage's state and counts (a click scrolls to the stage; a parallel group is one box with its
   members side by side, each with its own state), the notices
-  (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry),
+  (message up to `GATE_LOG_HEADING`, so a gate failure shows its headline and failed tests; `blocked` with Retry, and Fresh agent when the run has an open turn),
   and a numbered timeline: every turn by `createdAt`, plus a Gates row that holds a failed gate's log in a closed
   block, ANSI codes removed. A fix row belongs to the worker stage and names the stages it fixes. Each row is one line (kind and
-  round, verdict, finding counts, `model`, duration) and opens to the summary, findings by severity (minor closed),
+  round, verdict, finding counts, `model`, duration, `attempt N` from 2) and opens to the summary, findings by severity (minor closed),
   tests with proofs, the route, Jev's answer, and a link to the agent's chat. Only the newest or running row is open
   at first; the user's open and close choices stay when new data comes. A Details panel shows the latest run and its
   open findings. The current stage of a paused run shows a pause icon, not a spinner. A chat panel shows, above a
