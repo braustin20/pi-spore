@@ -192,7 +192,7 @@ function RunCard({
     setPendingStep(undefined);
   }, [pendingStep, run.id]);
 
-  const act = async (action: "retry" | "cancel" | "pause" | "resume") => {
+  const act = async (action: "retry" | "fresh" | "cancel" | "pause" | "resume") => {
     setBusy(true);
     setError(undefined);
     try {
@@ -263,9 +263,17 @@ function RunCard({
       {open && run.blocked && (
         <Notice tone="warn">
           <p className="m-0">The run is stuck: {run.blocked}</p>
-          <Button size="sm" className="mt-2" disabled={busy} onClick={() => void act("retry")}>
-            Retry
-          </Button>
+          <div className="mt-2 flex gap-2">
+            <Button size="sm" disabled={busy} onClick={() => void act("retry")}>
+              Retry
+            </Button>
+            {/* A block with no open turn (a gate action, uncommitted files) has no agent to replace. */}
+            {run.turns.some((turn) => turn.reportedAt === undefined && !turn.error) && (
+              <Button size="sm" variant="ghost" disabled={busy} onClick={() => void act("fresh")}>
+                Fresh agent
+              </Button>
+            )}
+          </div>
         </Notice>
       )}
       {error && <Notice tone="fail">{error}</Notice>}

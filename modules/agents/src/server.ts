@@ -507,10 +507,19 @@ export function createAgentsModule(
         roleDefaults: (role) => agents.roleDefaults(role),
         availableModels: (callerAgentId) => agents.availableModels(callerAgentId),
         modelsUsed: (agentId) => agents.modelsUsed(agentId),
-        turnError: (agentId) => agents.turnError(agentId),
+        // A delivery that waits with no error starts a new run, such as the continue message of a pipeline Retry, so
+        // the last run's failure no longer counts. A refused one keeps its error.
+        turnError: async (agentId) => {
+          if (queue.hasPending(agentId) && queue.failure(agentId) === undefined) return undefined;
+          return agents.turnError(agentId);
+        },
         // The pending row covers the idle of a process that starts before its prompt is sent; the manager's
-        // `unstarted` covers the gap from Pi taking the prompt until its `agent_start`.
-        endedRun: async (agentId) => (await agents.endedRun(agentId)) && !queue.hasPending(agentId),
+        // `unstarted` covers the gap from Pi taking the prompt until its `agent_start`. The check before the read keeps a
+        // short turn that runs while the session file is read from looking like the old one that ended.
+        endedRun: async (agentId) =>
+          !queue.hasPending(agentId) &&
+          (await agents.endedRun(agentId)) &&
+          !queue.hasPending(agentId),
         rename: (agentId, title) => agents.rename(agentId, title),
         activeWorker: async (workspaceId, options) =>
           (await ensureWorker(workspaceId, options?.model)).agent,

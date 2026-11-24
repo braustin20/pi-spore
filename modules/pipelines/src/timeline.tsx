@@ -232,6 +232,9 @@ function TurnHead({ turn, running, now }: { turn: PipelineTurn; running: boolean
       <Counts turn={turn} />
       {turn.model && <Chip mono>{turn.model}</Chip>}
       {duration && <span className="text-xs text-muted">{duration}</span>}
+      {turn.attempts !== undefined && (
+        <span className="text-xs text-muted">attempt {turn.attempts}</span>
+      )}
       {turn.error && <Chip tone="fail">Failed</Chip>}
     </>
   );

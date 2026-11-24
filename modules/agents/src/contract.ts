@@ -110,15 +110,18 @@ export interface Agents {
   modelsUsed(agentId: string): Promise<string[]>;
   /**
    * Why the agent's last run failed. For a `failed` agent it is the status error. While the run is not over (`busy`,
-   * `starting`, `waiting`) it is undefined. Otherwise it is the `errorMessage` of the last assistant message in the
+   * `starting`, `waiting`), while a prompt Pi took has not started, and while a delivery waits with no error, it is
+   * undefined: a new run is on its way. Otherwise it is the `errorMessage` of the last assistant message in the
    * session file when Pi ended that turn with `stopReason: "error"` (a provider that refused), or a fixed text when
-   * the message has none. Before the session file, it returns the error of a pending delivery Pi refused. Undefined
-   * without a session. Throws a 404 ApiError for an unknown id.
+   * the message has none; `provider` is that message's provider, the model server that failed. Before the session
+   * file, it returns the error of a pending delivery Pi refused; that error counts even while another prompt waits to
+   * start. Only the assistant error has a `provider`. Undefined without a session. Throws a 404 ApiError for an unknown
+   * id.
    */
-  turnError(agentId: string): Promise<string | undefined>;
+  turnError(agentId: string): Promise<{ error: string; provider?: string } | undefined>;
   /**
-   * True when the agent's last run ended on its own and nothing new waits for it: the agent is `idle`, it has no
-   * pending delivery, and the last assistant message in its session ended with a `stopReason` other than "error"
+   * True when the agent's last run ended on its own and nothing new waits for it: the agent is `idle`, it had no
+   * pending delivery when asked and has none when the answer comes, and the last assistant message in its session ended with a `stopReason` other than "error"
    * or "aborted". A prompt Pi took but has not started counts as not ended. False without a session or an
    * assistant message. Throws a 404 ApiError for an unknown id.
    */

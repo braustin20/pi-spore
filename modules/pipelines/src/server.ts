@@ -99,7 +99,7 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN worker_model TEXT",
   // The router's newest decision for a worker turn's agent, as JSON (R4.7). Null for a stage on a fixed model.
   "ALTER TABLE pipelines_turns ADD COLUMN routing TEXT",
-  // Why the turn's agent failed, set by Retry when it starts a fresh agent for the turn.
+  // Why the turn's agent failed, set by Fresh agent when it starts a fresh agent for the turn.
   "ALTER TABLE pipelines_turns ADD COLUMN error TEXT",
   // Why a review turn's agent runs on another model than the role default: the default's plan was full (R4.10).
   "ALTER TABLE pipelines_turns ADD COLUMN model_note TEXT",
@@ -142,6 +142,10 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_runs ADD COLUMN gate_runs TEXT NOT NULL DEFAULT '[]'",
   // When the user paused the run (ADR 0187). The run stays `running`; the stage job's steps wait while this is set.
   "ALTER TABLE pipelines_runs ADD COLUMN paused_at INTEGER",
+  // How often Retry sent the turn back to its agent, counting the first try: the turn view shows it.
+  "ALTER TABLE pipelines_turns ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1",
+  // Retry asked the turn's agent to continue; the failure text waits here until `await` sends the continue message.
+  "ALTER TABLE pipelines_turns ADD COLUMN retry_error TEXT",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -218,6 +222,8 @@ interface TurnRow {
   fix_for: string | null;
   reminded: number;
   commit_reminded: number;
+  attempts: number;
+  retry_error: string | null;
   model: string | null;
   created_at: number;
   reported_at: number | null;
@@ -330,6 +336,7 @@ const turnToView = (
     createdAt: row.created_at,
     ...(row.reported_at === null ? {} : { reportedAt: row.reported_at }),
     ...(row.error === null ? {} : { error: row.error }),
+    ...(row.attempts > 1 ? { attempts: row.attempts } : {}),
     ...(row.model_note === null ? {} : { modelNote: row.model_note }),
     ...(row.fix_for === null ? {} : { fixFor: JSON.parse(row.fix_for) as string[] }),
     ...(question ? { question } : {}),
@@ -540,6 +547,14 @@ const fixPrompt = (
 
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
+
+const continueMessage = (turnId: string, attempt: number, failure: string) =>
+  [
+    `Your last turn failed: ${failure}. This is attempt ${attempt} of this turn.`,
+    "Check where you stopped (git status, your last tool results), then finish the turn and call report with this turn as before.",
+    "",
+    `Turn: ${turnId}`,
+  ].join("\n");
 
 const resumedMessage = (turnId: string) =>
   `The user resumed the pipeline. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
@@ -1527,8 +1542,15 @@ export const pipelinesModule: ServerModule = {
       return { places, reds, done };
     };
 
-    const failedMessage = (turn: TurnRow, problem: string) =>
-      `stage ${turn.stage}: the ${turn.role} agent "${agents.get(turn.agent_id).title}" ${problem}. Retry starts a fresh ${turn.role} agent for this turn.`;
+    /** `problem` follows the agent's name; a failed `provider` names the model server instead. */
+    const failedMessage = (turn: TurnRow, problem: string, provider?: string) => {
+      const agent = `the ${turn.role} agent "${agents.get(turn.agent_id).title}"`;
+      const what =
+        provider === undefined
+          ? `${agent} ${problem}`
+          : `the model server ${provider} failed for ${agent}: ${problem}`;
+      return `stage ${turn.stage}: ${what}. Retry tells the same agent to continue. Fresh agent starts a fresh ${turn.role} agent for this turn.`;
+    };
 
     /**
      * Waits until no turn of the group is open and every gate member of the round is green or red. Each open turn
@@ -1606,36 +1628,79 @@ export const pipelinesModule: ServerModule = {
         loadRun(run.id)?.paused_at == null
           ? undefined
           : withGates({ wait: true, checkpoint: { paused: true } });
+      // An agent that asked its asking chat waits for the answer, whose delivery starts it again (ADR 0179).
+      const waitingOf = (turns: readonly TurnRow[]) =>
+        turns.filter((turn) => !openQuestionOf(turn));
+      // The resume message covers the restart reminder. A busy agent reports when its turn ends.
+      const resume = (turns: readonly TurnRow[]) => {
+        const resumed = turns.filter((turn) => agents.get(turn.agent_id).status !== "busy");
+        return () => {
+          for (const turn of resumed) {
+            host.store.run("UPDATE pipelines_turns SET reminded = 0 WHERE id = ?", turn.id);
+            agents.deliver(turn.agent_id, resumedMessage(turn.id));
+          }
+        };
+      };
+      // The server restarted while the agents worked. Their processes are gone, so each gets one reminder (R6.6).
+      const restart = (turns: readonly TurnRow[]) => () => {
+        for (const turn of turns) agents.deliver(turn.agent_id, restartMessage(turn.id));
+      };
+      // Retry asked these agents to continue their failed turns: each gets one continue message, and the other turns
+      // what this step would give them now.
+      const continued = open.filter((turn) => turn.retry_error !== null);
+      if (continued.length > 0) {
+        const others = waitingOf(open.filter((turn) => turn.retry_error === null));
+        const wake = wasPaused
+          ? resume(others)
+          : checkpoint.boot !== bootId
+            ? restart(others)
+            : undefined;
+        // Pause can land while the gates are read; `retry_error` then waits for Resume (ADR 0187).
+        const paused = holdIfPaused();
+        if (paused) return paused;
+        return withGates({
+          wait: true,
+          checkpoint: { boot: bootId },
+          commit: () => {
+            for (const turn of continued) {
+              host.store.run(
+                "UPDATE pipelines_turns SET attempts = attempts + 1, reminded = 0, retry_error = NULL WHERE id = ?",
+                turn.id,
+              );
+              agents.deliver(
+                turn.agent_id,
+                continueMessage(turn.id, turn.attempts + 1, turn.retry_error as string),
+              );
+            }
+            wake?.();
+          },
+        });
+      }
       for (const turn of open) {
         const failure = await agents.turnError(turn.agent_id);
         const paused = holdIfPaused();
         if (paused) return paused;
-        if (failure !== undefined) throw new Error(failedMessage(turn, `failed: ${failure}`));
+        if (failure !== undefined) {
+          throw new Error(
+            failure.provider === undefined
+              ? failedMessage(turn, `failed: ${failure.error}`)
+              : failedMessage(turn, failure.error, failure.provider),
+          );
+        }
       }
-      // An agent that asked its asking chat waits for the answer, whose delivery starts it again (ADR 0179).
-      const waiting = open.filter((turn) => !openQuestionOf(turn));
+      const waiting = waitingOf(open);
       if (wasPaused) {
-        // The resume message covers the restart reminder. A busy agent reports when its turn ends.
-        const resumed = waiting.filter((turn) => agents.get(turn.agent_id).status !== "busy");
         return withGates({
           wait: true,
           checkpoint: { boot: bootId },
-          commit: () => {
-            for (const turn of resumed) {
-              host.store.run("UPDATE pipelines_turns SET reminded = 0 WHERE id = ?", turn.id);
-              agents.deliver(turn.agent_id, resumedMessage(turn.id));
-            }
-          },
+          commit: resume(waiting),
         });
       }
       if (checkpoint.boot !== bootId) {
-        // The server restarted while the agents worked. Their processes are gone, so each gets one reminder (R6.6).
         return withGates({
           wait: true,
           checkpoint: { boot: bootId },
-          commit: () => {
-            for (const turn of waiting) agents.deliver(turn.agent_id, restartMessage(turn.id));
-          },
+          commit: restart(waiting),
         });
       }
       // The agent that ends its turn without a report gets one reminder, then the stage blocks (ADR 0169). An agent
@@ -2364,10 +2429,14 @@ export const pipelinesModule: ServerModule = {
 
     host.routes.get("/runs/:id", (c) => c.json({ run: viewOf(requireRun(c.req.param("id"))) }));
 
-    // Runs the waiting stage job's step now: the way to continue after the user fixed what blocked it. A stray wake may
-    // be running a blocked job's step again, with its error kept; the run shows `blocked` then too, so Retry takes it.
-    host.routes.post("/runs/:id/retry", async (c) => {
-      const run = requireRun(c.req.param("id"));
+    /**
+     * Runs the waiting stage job's step now: the way to continue after the user fixed what blocked it. A stray wake may
+     * be running a blocked job's step again, with its error kept; the run shows `blocked` then too, so both take it.
+     * `column` says what happens to a failed open turn: `retry_error` asks its agent to continue, `error` gives the
+     * turn to a fresh agent.
+     */
+    const retryRun = async (runId: string, column: "retry_error" | "error") => {
+      const run = requireRun(runId);
       const job = host.jobs
         .list({ kind: STAGE_JOB, key: run.workspace_id, states: ["running", "waiting"] })
         .find(
@@ -2376,35 +2445,47 @@ export const pipelinesModule: ServerModule = {
             (found.state === "waiting" || found.error !== null),
         );
       if (!job) throw new ApiError(409, "run_not_waiting", "The run has no waiting job to retry");
-      // A restart or a stray wake re-runs `await` without this mark, so the turn only blocks again. Only Retry starts
-      // a fresh agent. It marks the open turns `await` blocks on: a failed agent, or one reminded that ended again.
+      // A restart or a stray wake re-runs `await` without this mark, so the turn only blocks again. Only Retry and
+      // Fresh agent act on a failed turn. They mark the open turns `await` blocks on: a failed agent, or one reminded
+      // that ended again. Retry keeps the raw failure for the continue message; Fresh agent keeps the block message.
       if (job.step === "await" && job.error !== null) {
-        const failed: string[] = [];
+        const failed: { id: string; failure: string }[] = [];
         for (const turn of turnRows(run.id)) {
           if (turn.error !== null || turn.report !== null) continue;
-          if (
-            (await agents.turnError(turn.agent_id)) !== undefined ||
-            (turn.reminded === 1 && (await agents.endedRun(turn.agent_id)))
-          ) {
-            failed.push(turn.id);
+          const failure = await agents.turnError(turn.agent_id);
+          if (failure !== undefined) failed.push({ id: turn.id, failure: failure.error });
+          else if (turn.reminded === 1 && (await agents.endedRun(turn.agent_id))) {
+            failed.push({ id: turn.id, failure: "you ended your turn twice without a report" });
           }
         }
         host.store.transaction(() => {
-          for (const id of failed) {
+          for (const { id, failure } of failed) {
             host.store.run(
-              "UPDATE pipelines_turns SET error = ? WHERE id = ? AND report IS NULL",
-              job.error,
+              `UPDATE pipelines_turns SET ${column} = ? WHERE id = ? AND report IS NULL`,
+              column === "error" ? job.error : failure,
               id,
             );
           }
         });
       }
-      // A wake during a running step applies when it settles, so a step that read the turn before the mark runs again.
-      if (job.state === "waiting") host.jobs.retry(job.id);
-      else host.jobs.wake(STAGE_JOB, run.workspace_id);
+      // `retry` runs a waiting job. A report during the reads above may have started the step again, and `retry` skips
+      // a running job, so the wake covers it: a wake during a running step applies when it settles, and a step that
+      // read the turn before the mark runs again. Each call does nothing in the other case.
+      host.jobs.retry(job.id);
+      host.jobs.wake(STAGE_JOB, run.workspace_id);
       publish(run.workspace_id);
-      return c.json({ run: viewOf(requireRun(run.id)) });
-    });
+      return viewOf(requireRun(run.id));
+    };
+
+    // Retry: the failed turn's agent continues it (the turn stays open and counts one attempt more).
+    host.routes.post("/runs/:id/retry", async (c) =>
+      c.json({ run: await retryRun(c.req.param("id"), "retry_error") }),
+    );
+
+    // Fresh agent: the failed turn gets `error`, and a fresh agent of its role takes it over (ADR 0140).
+    host.routes.post("/runs/:id/fresh", async (c) =>
+      c.json({ run: await retryRun(c.req.param("id"), "error") }),
+    );
 
     // The user steps away (ADR 0187). The open turn goes on; the stage job starts nothing until Resume.
     host.routes.post("/runs/:id/pause", (c) => {

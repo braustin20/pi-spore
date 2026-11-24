@@ -2723,11 +2723,14 @@ describe("stage agents (R6)", () => {
       expect(await api.turnError(agentId)).toBeUndefined();
     });
 
-    it("returns the error text of a turn the provider refused", async () => {
+    it("returns the error text and the provider of a turn the provider refused", async () => {
       const stage = await scripted([{ error: "usage limit reached" }]);
       // The first idle is the start-up one, so wait for the turn's own end.
       await until(async () => (await api.turnError(stage.id)) !== undefined);
-      expect(await api.turnError(stage.id)).toBe("usage limit reached");
+      expect(await api.turnError(stage.id)).toEqual({
+        error: "usage limit reached",
+        provider: "fake",
+      });
     });
 
     it("returns the error of a message Pi refused, shows it on the agent, and clears it once a message gets in", async () => {
@@ -2739,7 +2742,7 @@ describe("stage agents (R6)", () => {
       const stage = start(workspaceId, { role: "worker", title: "Implement" }, "go");
 
       await until(async () => (await api.turnError(stage.id)) !== undefined);
-      expect(await api.turnError(stage.id)).toBe(NO_KEY);
+      expect(await api.turnError(stage.id)).toEqual({ error: NO_KEY });
       expect(status(stage.id)).toBe("idle");
       expect(api.get(stage.id).deliveryError).toBe(NO_KEY);
       const { agent } = await json<{ agent: Agent }>(
@@ -2752,10 +2755,66 @@ describe("stage agents (R6)", () => {
       await until(() => api.get(stage.id).deliveryError === undefined);
     });
 
+    const pendingOf = (agentId: string) =>
+      server.store.get<{ count: number }>(
+        "SELECT COUNT(*) AS count FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
+        agentId,
+      )?.count;
+
+    it("keeps the error of a message Pi refused while an earlier prompt Pi took has not started", async () => {
+      const NO_KEY = "No API key found for anthropic.";
+      const refuse = join(scratch, "refuse");
+      await setup({}, { FAKE_PI_REFUSE_FILE: refuse }, {}, [probe]);
+      const { workspaceId, folder } = await makeAgent();
+      const gate = join(folder, ".fake-pi-hold-turn");
+      writeFileSync(gate, "");
+      // Pi takes the task and holds it before its run starts.
+      const stage = start(workspaceId, { role: "worker", title: "Implement" }, "go");
+      await until(() => pendingOf(stage.id) === 0);
+
+      writeFileSync(refuse, NO_KEY);
+      api.deliver(stage.id, "next");
+      await until(() => api.get(stage.id).deliveryError !== undefined);
+
+      expect(await api.turnError(stage.id)).toEqual({ error: NO_KEY });
+      rmSync(gate);
+    });
+
+    it("is undefined while a prompt Pi took after a refused turn has not started", async () => {
+      const stage = await scripted([{ error: "usage limit reached" }, "silent"]);
+      await until(async () => (await api.turnError(stage.id)) !== undefined);
+      const gate = join(scratch, "notes", ".fake-pi-hold-turn");
+      writeFileSync(gate, "");
+
+      api.deliver(stage.id, "next");
+      await until(() => pendingOf(stage.id) === 0);
+
+      expect(status(stage.id)).toBe("idle");
+      expect(await api.turnError(stage.id)).toBeUndefined();
+      rmSync(gate);
+    });
+
+    it("is undefined while a delivery waits with no error after a refused turn", async () => {
+      const stage = await scripted([{ error: "usage limit reached" }]);
+      await until(async () => (await api.turnError(stage.id)) !== undefined);
+      const { workspaceId } = api.get(stage.id);
+      // A parked workspace keeps the delivery pending.
+      await json(await server.request("POST", `/api/workspaces/${workspaceId}/park`));
+      expect(await api.turnError(stage.id)).toEqual({
+        error: "usage limit reached",
+        provider: "fake",
+      });
+
+      api.deliver(stage.id, "next");
+
+      expect(pendingOf(stage.id)).toBe(1);
+      expect(await api.turnError(stage.id)).toBeUndefined();
+    });
+
     it("returns the status error after a crash", async () => {
       const stage = await scripted(["crash"]);
       await until(() => status(stage.id) === "failed");
-      expect(await api.turnError(stage.id)).toContain("boom: the fake agent crashed");
+      expect((await api.turnError(stage.id))?.error).toContain("boom: the fake agent crashed");
     });
 
     it("is undefined, and no models are used, while Pi has named a session file it has not written yet", async () => {
@@ -2898,6 +2957,42 @@ describe("stage agents (R6)", () => {
 
       rmSync(gate);
       await until(() => assistantReplies(stage.id) >= 2 && status(stage.id) === "idle");
+      expect(await api.endedRun(stage.id)).toBe(true);
+    });
+
+    it("is false when a delivery waited as the read began, even if it went in during the read", async () => {
+      const stage = await scripted(["silent", "silent"]);
+      await until(() => assistantReplies(stage.id) >= 1 && status(stage.id) === "idle");
+      const { workspaceId } = api.get(stage.id);
+      // A parked workspace keeps the delivery pending until resume.
+      await json(await server.request("POST", `/api/workspaces/${workspaceId}/park`));
+      api.deliver(stage.id, "next");
+      const manager = agentsModule.manager();
+      const read = manager.endedRun.bind(manager);
+      let release = () => {};
+      const held = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      // The session read waits while the delivery goes in and its whole turn runs.
+      manager.endedRun = async (id) => {
+        await held;
+        return read(id);
+      };
+
+      const answer = api.endedRun(stage.id);
+      await json(await server.request("POST", `/api/workspaces/${workspaceId}/resume`));
+      const pending = () =>
+        server.store.get<{ count: number }>(
+          "SELECT COUNT(*) AS count FROM agents_deliveries WHERE agent_id = ? AND state = 'pending'",
+          stage.id,
+        )?.count;
+      await until(
+        () => assistantReplies(stage.id) >= 2 && status(stage.id) === "idle" && pending() === 0,
+      );
+      release();
+
+      expect(await answer).toBe(false);
+      manager.endedRun = read;
       expect(await api.endedRun(stage.id)).toBe(true);
     });
 

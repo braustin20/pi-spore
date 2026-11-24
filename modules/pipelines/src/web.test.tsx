@@ -291,6 +291,34 @@ describe("Pause and Resume (ADR 0187)", () => {
   });
 });
 
+describe("Retry and Fresh agent", () => {
+  const buttons = (root: HTMLElement) =>
+    [...card(root, "default").querySelectorAll("button")].map((b) => b.textContent);
+  const click = (root: HTMLElement, text: string) =>
+    act(async () =>
+      (
+        [...root.querySelectorAll("button")].find((b) => b.textContent === text) as HTMLElement
+      ).click(),
+    );
+
+  it("shows Retry and Fresh agent on a blocked run with an open turn, and posts retry and fresh", async () => {
+    const open = turn({ id: "t-open" });
+    const { root, sent } = await mount([run({ blocked: "no report", turns: [TASK, open] })]);
+    expect(buttons(root)).toContain("Retry");
+    expect(buttons(root)).toContain("Fresh agent");
+    await click(root, "Retry");
+    expect(sent).toEqual([{ method: "POST", path: "pipelines/runs/r1/retry", body: undefined }]);
+    await click(root, "Fresh agent");
+    expect(sent[1]).toEqual({ method: "POST", path: "pipelines/runs/r1/fresh", body: undefined });
+  });
+
+  it("shows Retry but no Fresh agent on a blocked run whose turns all reported", async () => {
+    const { root } = await mount([run({ blocked: "uncommitted files", turns: [TASK] })]);
+    expect(buttons(root)).toContain("Retry");
+    expect(buttons(root)).not.toContain("Fresh agent");
+  });
+});
+
 describe("Stage chat note (ADR 0187)", () => {
   const NOTE = "The pipeline goes on after this turn. To stop it, use Pause on the Pipeline tab.";
   const OPEN = turn({ id: "t-open", agentId: "stage" });
