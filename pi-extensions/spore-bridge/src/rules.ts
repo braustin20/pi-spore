@@ -131,7 +131,7 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
 - Fail-first proof: for each new test, show that it can fail for the right reason. Run it before the code exists,
   or, after the code works, break the code the test covers on purpose (for example, revert one line), run the test,
   see it fail, and restore the code. Save that failing run with \`artifacts_write\` in workspace scope, and list the
-  test with its path in the \`tests\` of every \`report\`. List every new test in every report.
+  test with its path in the \`tests\` of every \`report\`.
 - Write the tests the brief suggests, or better ones. When you change one, say why in the report.
 - When the pipeline sends review findings, fix them, then call \`report\` with the new turn id.
 - Commit your work before every \`report\`, in small commits with clear messages (project AGENTS.md). The pipeline
