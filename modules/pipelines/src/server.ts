@@ -2468,9 +2468,11 @@ export const pipelinesModule: ServerModule = {
           }
         });
       }
-      // A wake during a running step applies when it settles, so a step that read the turn before the mark runs again.
-      if (job.state === "waiting") host.jobs.retry(job.id);
-      else host.jobs.wake(STAGE_JOB, run.workspace_id);
+      // `retry` runs a waiting job. A report during the reads above may have started the step again, and `retry` skips
+      // a running job, so the wake covers it: a wake during a running step applies when it settles, and a step that
+      // read the turn before the mark runs again. Each call does nothing in the other case.
+      host.jobs.retry(job.id);
+      host.jobs.wake(STAGE_JOB, run.workspace_id);
       publish(run.workspace_id);
       return viewOf(requireRun(run.id));
     };
