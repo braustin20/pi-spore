@@ -53,14 +53,16 @@ afterEach(() => {
   vi.restoreAllMocks();
 });
 
-async function render(workspaces: Workspace[], setting: boolean) {
+const settingsBody = (setting: boolean) => ({
+  settings: [{ key: "workspaces.archiveOnMerge", value: setting, source: "global" }],
+});
+
+async function render(workspaces: Workspace[], settings: unknown = settingsBody(true)) {
   const Page = workspacesPage();
   const send = vi.fn(async () => ({}));
   const api = {
     get: async (path: string) =>
-      path === "projects/settings"
-        ? { settings: [{ key: "workspaces.archiveOnMerge", value: setting, source: "global" }] }
-        : { projects: [project] },
+      path === "projects/settings" ? settings : { projects: [project] },
     send,
     subscribe: (_topic: string, onEvent: (event: unknown) => void) => {
       onEvent({ type: "snapshot", workspaces });
@@ -90,6 +92,8 @@ const archiveSelect = (details: Element) =>
     .map((label) => label.querySelector("select"))
     .find((select) => select !== null) ?? undefined;
 
+const notice = (details: Element) => details.querySelector('[role="alert"]')?.textContent ?? "";
+
 const chosen = (select: HTMLSelectElement) => select.options[select.selectedIndex]?.textContent;
 
 const pick = async (select: HTMLSelectElement, value: string) => {
@@ -101,32 +105,44 @@ const pick = async (select: HTMLSelectElement, value: string) => {
 
 describe("the archive-on-merge select", () => {
   it("follows the setting when the workspace has no override", async () => {
-    const { details } = await render([workspace("w1")], true);
+    const { details } = await render([workspace("w1")]);
     const select = archiveSelect(details);
     expect(select).toBeDefined();
     expect(chosen(select as HTMLSelectElement)).toBe("Use the setting (on)");
   });
 
   it("names the loaded setting when it is off", async () => {
-    const { details } = await render([workspace("w1")], false);
+    const { details } = await render([workspace("w1")], settingsBody(false));
     expect(chosen(archiveSelect(details) as HTMLSelectElement)).toBe("Use the setting (off)");
   });
 
   it("sends false when picking Off", async () => {
-    const { details, send } = await render([workspace("w1")], true);
+    const { details, send } = await render([workspace("w1")]);
     await pick(archiveSelect(details) as HTMLSelectElement, "off");
     expect(send).toHaveBeenCalledWith("PATCH", "workspaces/w1", { archiveOnMerge: false });
   });
 
   it("clears the override when picking the setting again", async () => {
-    const { details, send } = await render([workspace("w1", { archiveOnMerge: false })], true);
+    const { details, send } = await render([workspace("w1", { archiveOnMerge: false })]);
     expect(chosen(archiveSelect(details) as HTMLSelectElement)).toBe("Off");
     await pick(archiveSelect(details) as HTMLSelectElement, "");
     expect(send).toHaveBeenCalledWith("PATCH", "workspaces/w1", { archiveOnMerge: null });
   });
 
+  it("names the setting when the response has no such entry", async () => {
+    const { details } = await render([workspace("w1")], { settings: [] });
+    expect(notice(details)).toContain("Invalid workspaces.archiveOnMerge");
+  });
+
+  it("names the setting when its value is not a boolean", async () => {
+    const { details } = await render([workspace("w1")], {
+      settings: [{ key: "workspaces.archiveOnMerge", value: "yes", source: "global" }],
+    });
+    expect(notice(details)).toContain("Invalid workspaces.archiveOnMerge");
+  });
+
   it("is not on an archived workspace", async () => {
-    const { details } = await render([workspace("w1", { state: "archived" })], true);
+    const { details } = await render([workspace("w1", { state: "archived" })]);
     expect(details.textContent).toContain("Work w1");
     expect(archiveSelect(details)).toBeUndefined();
   });

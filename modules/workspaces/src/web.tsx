@@ -714,7 +714,7 @@ function Details({
       .then((body) => parse(SettingsView, body, "settings"))
       .then((view) => {
         const entry = view.settings.find((each) => each.key === "workspaces.archiveOnMerge");
-        setSetting(typeof entry?.value === "boolean" ? entry.value : undefined);
+        setSetting(parse(Type.Boolean(), entry?.value, "workspaces.archiveOnMerge"));
       })
       .catch((caught: unknown) => setError(message(caught)));
   }, [api]);
