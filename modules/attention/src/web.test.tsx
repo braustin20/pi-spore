@@ -83,7 +83,7 @@ async function render(shown: Question) {
 async function renderInbox(shownInbox: Inbox) {
   let page: ComponentType | undefined;
   const send = vi.fn(async (_method: string, _path: string, _body?: unknown) => undefined);
-  // A focused desktop page reports itself so the server sends no push (ADR 0187). These tests ask
+  // A focused desktop page reports itself so the server sends no push (ADR 0196). These tests ask
   // about answers and approvals, so the focus reports go to their own mock.
   const focus = vi.fn(async (_method: string, _path: string, _body?: unknown) => undefined);
   const sendToServer = async (method: string, path: string, body?: unknown) => {

@@ -237,7 +237,7 @@ export default function sporeBridge(pi: ExtensionAPI) {
   registerReportTool(pi, client, env);
   registerRunTools(pi, client, env);
   registerPipelineTools(pi, client, env);
-  // ADR 0176: the planner chat and the coordinator start read-only helpers, and only these two get the ceiling.
+  // ADR 0194: the planner chat and the coordinator start read-only helpers, and only these two get the ceiling.
   registerHelperTool(pi, env);
 
   pi.registerTool({

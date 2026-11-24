@@ -1,6 +1,7 @@
-# 0176. The planner and the coordinator start read-only helpers with `start_helper`
+# 0194. The planner and the coordinator start read-only helpers with `start_helper`
 
 - Status: Accepted; changes [0174](0174-project-planner-chat.md) in part
+- Renumbered from 0176 on 2026-11-23; old commits cite the old number.
 - Date: 2026-11-14
 - Requirements: R3.3, R3.6, R3.9, R7.1
 

@@ -1,4 +1,4 @@
-// pi-spore's service worker: pushes and the taps on them, and nothing else (ADR 0187).
+// pi-spore's service worker: pushes and the taps on them, and nothing else (ADR 0196).
 //
 // The page at `/` carries the API token in a meta tag (ADR 0143), so this worker must not intercept
 // or store any request: a cached copy of that page would keep the token where pi-spore cannot revoke
@@ -18,7 +18,7 @@ function payloadOf(event) {
 
 const text = (value) => (typeof value === "string" ? value : "");
 
-/** The app badge is best effort: it must never stop a notification (ADR 0187). */
+/** The app badge is best effort: it must never stop a notification (ADR 0196). */
 function setBadge(badge) {
   if (typeof badge !== "number" || typeof self.navigator?.setAppBadge !== "function") return;
   try {
@@ -31,7 +31,7 @@ function setBadge(badge) {
 
 self.addEventListener("push", (event) => {
   const payload = payloadOf(event);
-  // iOS drops a subscription after three silent pushes, so every push shows something (ADR 0187).
+  // iOS drops a subscription after three silent pushes, so every push shows something (ADR 0196).
   event.waitUntil(
     self.registration.showNotification(text(payload?.title) || "pi-spore", {
       body: text(payload?.body),

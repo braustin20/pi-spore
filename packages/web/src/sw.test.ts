@@ -1,6 +1,6 @@
 /// <reference types="node" />
 // The service worker is a plain script for the browser, so the test runs it in a vm with one fake
-// `self` and nothing else in its global scope (ADR 0187).
+// `self` and nothing else in its global scope (ADR 0196).
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { runInNewContext } from "node:vm";
@@ -144,7 +144,7 @@ describe("the service worker", () => {
   });
 
   it("shows a notification for a push with no payload", async () => {
-    // iOS drops a subscription after silent pushes, so a push always shows something (ADR 0187).
+    // iOS drops a subscription after silent pushes, so a push always shows something (ADR 0196).
     const showNotification = vi.fn(async () => undefined);
     const worker = loadWorker({ registration: { showNotification } });
     await Promise.all(worker.fire("push", {}));

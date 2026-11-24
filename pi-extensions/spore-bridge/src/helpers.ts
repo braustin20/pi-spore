@@ -1,5 +1,5 @@
 /**
- * The planner chat and the run coordinator start read-only helpers (ADR 0176). They have no `subagent` tool, which
+ * The planner chat and the run coordinator start read-only helpers (ADR 0194). They have no `subagent` tool, which
  * could start a writing `worker`, so this file gives them one narrow tool, `start_helper`, built on pi-subagents'
  * in-process RPC, and a capability ceiling that keeps those helpers and their children read-only.
  */
@@ -13,7 +13,7 @@ import Type from "typebox";
 import { Check, Errors } from "typebox/value";
 import type { BridgeEnv } from "./client.js";
 
-/** The only agents these chats may start. A `worker` writes files, so it stays out (ADR 0176). */
+/** The only agents these chats may start. A `worker` writes files, so it stays out (ADR 0194). */
 const HELPERS = ["scout", "researcher"] as const;
 
 /**
@@ -150,7 +150,7 @@ export function registerHelperTool(pi: ExtensionAPI, env: BridgeEnv): void {
         version: 1,
         requestId,
         method: "spawn",
-        // `spawn` starts a background run only, so a helper never holds this chat's turn open (ADR 0176).
+        // `spawn` starts a background run only, so a helper never holds this chat's turn open (ADR 0194).
         params: { agent: params.agent, task: params.task, context: "fresh", cwd: ctx.cwd },
       });
 
