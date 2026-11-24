@@ -730,6 +730,28 @@ describe("spore-bridge", () => {
       "A new test without a proof is a blocking finding",
     );
   });
+
+  // ADR 0199: the brief suggests the tests, and the work comes back only with them.
+  it("names the tests to add in the brief and checks them on return", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    const briefItem =
+      "the tests to add (the behaviors to cover, where the tests go, and one test file to copy)";
+    expect(oneLine(RULES)).toContain(briefItem);
+    expect(oneLine(RULES)).toContain(
+      "Each test the brief suggested, or a better one the report names, is there",
+    );
+    expect(oneLine(RULES)).toContain(
+      "Missing tests go back as a new pipeline run whose brief names the exact tests to add",
+    );
+    expect(oneLine(RULES)).toContain("You may write failing tests first");
+    expect(oneLine(RULES)).toContain("Prove each new test can fail");
+    expect(oneLine(COORDINATOR_RULES)).toContain(briefItem);
+    expect(oneLine(COORDINATOR_RULES)).toContain("read its diff artifact, then check its tests");
+    expect(oneLine(COORDINATOR_RULES)).toContain(
+      "Missing tests go back with revise_lane, and its brief names the exact tests to add",
+    );
+  });
+
   // A stage agent that guesses made a wrong turn on 2026-11-14; the plan's chat answers instead (ADR 0179).
   it.each([
     ["worker", STAGE_WORKER_RULES],
