@@ -36,6 +36,10 @@ to the same agent would have finished the turn. Retry threw that work away.
   Resume (ADR 0187). After Resume, a turn with the mark gets the continue message and not the resume message.
 - **No second block.** `turnError` is undefined while the agent has a delivery that waits with no error, or a prompt
   Pi took that has not started. So the old failure does not block the stage again before the agent runs.
+- **Handoff note.** A fresh worker that takes a failed task or fix turn over first reads a note built by code, with
+  no model call: the attempt N (its turn row has `attempts` N), the failed agent's failure without the choices
+  sentence, its session file, last message, and last tool calls (never results), and the worktree's files from the
+  provider's `changes`. A failed task of a reuse stage gets a fresh worker too. Reviewers get no note.
 - Both buttons work on task, fix, and review turns. The lanes card and `pi-spore pipeline retry` call Retry.
 
 ## Consequences

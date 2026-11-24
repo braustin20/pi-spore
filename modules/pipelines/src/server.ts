@@ -26,6 +26,7 @@ import {
 import {
   type AnswerStageRequest,
   type AskStageRequest,
+  type ChangedFileList,
   GATE_LOG_HEADING,
   logTail,
   type PipelineEvent,
@@ -389,15 +390,17 @@ function mergeTests(manifest: readonly TestProof[], reported: readonly TestProof
   return [...byName.values()];
 }
 
+/** `reused` says the worker made the change this brief revises. */
 const taskPrompt = (
   stage: PipelineStage,
   pipeline: string,
   turnId: string,
   briefPath: string,
   brief: string,
+  reused: boolean,
 ) =>
   [
-    stage.worker === "reuse"
+    reused
       ? `Your change came back with a new brief. You are the "${stage.name}" stage of pipeline "${pipeline}". Do what the brief asks.`
       : `You are the "${stage.name}" stage of pipeline "${pipeline}". Implement the brief.`,
     "",
@@ -544,6 +547,13 @@ const fixPrompt = (
     "Your turn ends only with that report.",
   ].join("\n");
 };
+
+/** The last sentence of a block message: what Retry and Fresh agent do. */
+const choicesOf = (role: StageRole) =>
+  `Retry tells the same agent to continue. Fresh agent starts a fresh ${role} agent for this turn.`;
+
+/** How many files of each scope the handoff note lists. */
+const HANDOFF_FILES = 30;
 
 const restartMessage = (turnId: string) =>
   `pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
@@ -1110,15 +1120,40 @@ export const pipelinesModule: ServerModule = {
     ): Promise<StepOutcome<StageCheckpoint>> => {
       const briefPath = `pipelines/${run.id}/brief.md`;
       await artifacts.write({ scope: "workspace", id: run.workspace_id }, briefPath, run.brief);
-      const giveTask = (agentId: string) => {
-        const turnId = insertTurn(run, stageIndex, stage, 1, "task", "worker", agentId);
+      const failed = turnRows(run.id)
+        .filter(
+          (turn) => turn.kind === "task" && turn.stage_index === stageIndex && turn.error !== null,
+        )
+        .at(-1);
+      const note = failed ? await handoffNote(run, failed) : "";
+      const giveTask = (agentId: string, reused: boolean) => {
+        const turnId = insertTurn(run, stageIndex, stage, 1, "task", "worker", agentId, {
+          attempts: failed && failed.attempts + 1,
+        });
         host.store.run(
           "UPDATE pipelines_runs SET worker_agent_id = ? WHERE id = ?",
           agentId,
           run.id,
         );
-        agents.deliver(agentId, taskPrompt(stage, run.pipeline_id, turnId, briefPath, run.brief));
+        agents.deliver(
+          agentId,
+          note + taskPrompt(stage, run.pipeline_id, turnId, briefPath, run.brief, reused),
+        );
       };
+      const giveFresh = (model: string | undefined): StepOutcome<StageCheckpoint> => ({
+        checkpoint: { boot: bootId },
+        commit: () => {
+          const agent = agents.createStage(run.workspace_id, {
+            role: "worker",
+            title: stageTitle(run, stage.name),
+            ...(model ? { model } : {}),
+          });
+          giveTask(agent.id, false);
+        },
+      });
+      // Fresh agent replaced the failed task, on a reuse stage too: that worker is the one that failed. As in
+      // `replaceFailed`, the local-implementer question is not asked again.
+      if (failed) return giveFresh(run.worker_model ?? modelOf(stage));
       // The reused worker keeps its model, so there is no pin to question.
       if (stage.worker === "reuse") {
         const worker = requireRun(run.previous_run_id as string).worker_agent_id as string;
@@ -1127,7 +1162,7 @@ export const pipelinesModule: ServerModule = {
           commit: () => {
             // The tab names the slice that uses the chat now, not the run that made it.
             if (run.name !== null) agents.rename(worker, stageTitle(run, stage.name));
-            giveTask(worker);
+            giveTask(worker, true);
           },
         };
       }
@@ -1156,18 +1191,7 @@ export const pipelinesModule: ServerModule = {
           },
         };
       }
-      const model = run.worker_model ?? modelOf(stage);
-      return {
-        checkpoint: { boot: bootId },
-        commit: () => {
-          const agent = agents.createStage(run.workspace_id, {
-            role: "worker",
-            title: stageTitle(run, stage.name),
-            ...(model ? { model } : {}),
-          });
-          giveTask(agent.id);
-        },
-      };
+      return giveFresh(run.worker_model ?? modelOf(stage));
     };
 
     const insertTurn = (
@@ -1178,13 +1202,20 @@ export const pipelinesModule: ServerModule = {
       kind: PipelineTurnKind,
       role: StageRole,
       agentId: string,
-      modelNote?: string,
-      fixFor?: readonly string[],
+      {
+        modelNote,
+        fixFor,
+        attempts = 1,
+      }: {
+        modelNote?: string | undefined;
+        fixFor?: readonly string[];
+        attempts?: number | undefined;
+      } = {},
     ): string => {
       const turnId = host.newId();
       host.store.run(
-        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, model_note, fix_for, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        `INSERT INTO pipelines_turns (id, run_id, stage_index, stage, round, kind, role, agent_id, model_note, fix_for, attempts, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         turnId,
         run.id,
         stageIndex,
@@ -1195,6 +1226,7 @@ export const pipelinesModule: ServerModule = {
         agentId,
         modelNote ?? null,
         fixFor === undefined ? null : JSON.stringify(fixFor),
+        attempts,
         host.now(),
       );
       return turnId;
@@ -1202,7 +1234,8 @@ export const pipelinesModule: ServerModule = {
 
     /**
      * Starts the worker's one fix turn of a group round (ADR 0178 rule 8). Each member in `members` brings its part of
-     * `round`: a reviewer its review, a gate member its red. `last` tells the worker no review follows.
+     * `round`: a reviewer its review, a gate member its red. `last` tells the worker no review follows. `fresh` is the
+     * handoff note and attempt of a fresh worker that takes a failed fix turn over.
      */
     const startFix = (
       run: RunRow,
@@ -1210,6 +1243,7 @@ export const pipelinesModule: ServerModule = {
       round: number,
       members: readonly number[],
       last: boolean,
+      fresh?: { note: string; attempts: number },
     ) => {
       const worker = run.worker_agent_id as string;
       const turns = turnRows(run.id);
@@ -1230,11 +1264,10 @@ export const pipelinesModule: ServerModule = {
         "fix",
         "worker",
         worker,
-        undefined,
-        members.map((index) => stageOf(run, index).name),
+        { fixFor: members.map((index) => stageOf(run, index).name), attempts: fresh?.attempts },
       );
       const gated = gateMembers(run, groupOf(run, groupStart)).length > 0;
-      agents.deliver(worker, fixPrompt(reviews, reds, turnId, last, gated));
+      agents.deliver(worker, (fresh?.note ?? "") + fixPrompt(reviews, reds, turnId, last, gated));
     };
 
     /** The workspace's change operations (none when its project has no version control that shows them). */
@@ -1277,6 +1310,66 @@ export const pipelinesModule: ServerModule = {
           ? (workspace.base ?? (await ops?.defaultBase(project)))
           : (fixBase ?? undefined);
       return ops ? renderDiff(ops, location, base) : NO_DIFF;
+    };
+
+    /**
+     * The note that starts a fresh worker's first message when it takes a failed turn over (ADR 0198): what the failed
+     * agent did, from its session file, and the worktree now. Tool results stay out, since a result may hold secrets.
+     */
+    const handoffNote = async (run: RunRow, failed: TurnRow): Promise<string> => {
+      const handoff = await agents.handoff(failed.agent_id);
+      const error = failed.error as string;
+      const choices = `. ${choicesOf(failed.role)}`;
+      const failure = error.endsWith(choices) ? error.slice(0, -choices.length) : error;
+      const { workspace, project, ops, location } = await changesOf(run.workspace_id);
+      const list = (heading: string, { files, truncated }: ChangedFileList) => [
+        heading,
+        ...(files.length === 0 ? ["(none)"] : []),
+        ...files.map(
+          (file) => `- ${file.status} ${file.path} (+${file.additions} -${file.deletions})`,
+        ),
+        ...(truncated ? ["(more files)"] : []),
+      ];
+      const worktree: string[] = [];
+      if (!ops) worktree.push("(no version control shows the changes)");
+      else {
+        const base = workspace.base ?? (await ops.defaultBase(project));
+        worktree.push(
+          ...list(
+            "Uncommitted:",
+            await ops.files(location, { kind: "uncommitted" }, HANDOFF_FILES),
+          ),
+        );
+        if (base) {
+          worktree.push(
+            ...list(
+              `Committed since ${base}:`,
+              await ops.files(location, { kind: "line", base }, HANDOFF_FILES),
+            ),
+          );
+        }
+      }
+      return [
+        `This is attempt ${failed.attempts + 1} of this turn. The last agent "${agents.get(failed.agent_id).title}" failed: ${failure}.`,
+        ...(handoff.sessionFile ? [`Its session file: ${handoff.sessionFile}`] : []),
+        ...(handoff.lastText ? ["", "Its last message:", handoff.lastText] : []),
+        ...(handoff.toolCalls.length > 0
+          ? [
+              "",
+              "Its last tool calls, oldest first:",
+              ...handoff.toolCalls.map((call) => `- ${call.name} ${call.head}`),
+            ]
+          : []),
+        "",
+        "The worktree now:",
+        ...worktree,
+        "",
+        "Check this work before you redo it. Keep what is right.",
+        "",
+        "---",
+        "",
+        "",
+      ].join("\n");
     };
     const writeArtifact = (run: RunRow, path: string, text: string) =>
       artifacts.write({ scope: "workspace", id: run.workspace_id }, path, text);
@@ -1422,7 +1515,7 @@ export const pipelinesModule: ServerModule = {
               "review",
               role,
               agent.id,
-              member.note,
+              { modelNote: member.note },
             );
             agents.deliver(agent.id, prompt(turnId));
           }
@@ -1549,7 +1642,7 @@ export const pipelinesModule: ServerModule = {
         provider === undefined
           ? `${agent} ${problem}`
           : `the model server ${provider} failed for ${agent}: ${problem}`;
-      return `stage ${turn.stage}: ${what}. Retry tells the same agent to continue. Fresh agent starts a fresh ${turn.role} agent for this turn.`;
+      return `stage ${turn.stage}: ${what}. ${choicesOf(turn.role)}`;
     };
 
     /**
@@ -1738,11 +1831,11 @@ export const pipelinesModule: ServerModule = {
     };
 
     /** Retry marked a fix turn failed: a fresh worker takes it over, with the same members' findings. */
-    const replaceFailed = (
+    const replaceFailed = async (
       run: RunRow,
       group: readonly number[],
       turn: TurnRow,
-    ): StepOutcome<StageCheckpoint> => {
+    ): Promise<StepOutcome<StageCheckpoint>> => {
       const groupStart = group[0] as number;
       const stage = stageOf(run, groupStart);
       const model = run.worker_model ?? modelOf(stage);
@@ -1750,6 +1843,7 @@ export const pipelinesModule: ServerModule = {
       const names = turn.fix_for === null ? [turn.stage] : (JSON.parse(turn.fix_for) as string[]);
       const members = group.filter((index) => names.includes(stageOf(run, index).name));
       const last = openMembers(run, group, groupTurns(run, group), turn.round + 1).length === 0;
+      const note = await handoffNote(run, turn);
       return {
         wait: true,
         checkpoint: { boot: bootId },
@@ -1765,7 +1859,10 @@ export const pipelinesModule: ServerModule = {
             worker.id,
             run.id,
           );
-          startFix({ ...run, worker_agent_id: worker.id }, groupStart, turn.round, members, last);
+          startFix({ ...run, worker_agent_id: worker.id }, groupStart, turn.round, members, last, {
+            note,
+            attempts: turn.attempts + 1,
+          });
         },
       };
     };
