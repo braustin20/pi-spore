@@ -388,8 +388,9 @@ export interface ServerHost {
   same heal runs a frame after a `visualViewport` resize with no focused field (ADR 0192). The heal skips a zoomed
   page (`scale > 1`). The chat header and the chat bar are one row on a phone: a chat picker, the state chip,
   and a "Chat actions" menu (`Menu` from `@pi-spore/ui`) with the context %, Compact, Stop agent, Rename, New chat,
-  Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row: while
-  the agent works, the Steer/Follow up select and Stop take the place of the model and thinking controls.
+  Side chat, Side chat with context, and Close this chat. The composer is shorter on a phone and keeps one button row:
+  while the agent works, Stop takes the place of the model and thinking controls, and the send button is a split
+  button whose arrow menu picks Steer (the default) or Follow up.
   Hover-only controls also show with `touch:` (`@media (hover: none)`). `packages/web/public` holds the web app
   manifest, the icons, and the service worker `sw.js` (ADR 0196; push and notification taps only, no `fetch`
   handler, no cache). At 768 px and above nothing changes.

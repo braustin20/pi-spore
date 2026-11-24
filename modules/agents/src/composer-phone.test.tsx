@@ -114,15 +114,19 @@ function row() {
 describe("the composer on a phone", () => {
   it("puts the busy controls in the one button row and leaves out the model and thinking", async () => {
     await render({ phone: true, agent: busy });
-    const select = labelled("When a message sent now goes in");
     const stop = button("Stop");
-    const queue = button("Queue");
-    expect(select).not.toBeNull();
+    const steer = button("Steer");
+    const arrow = button("Choose when the message goes in");
     expect(stop).toBeDefined();
-    expect(queue).toBeDefined();
-    for (const control of [select, stop, queue]) expect(row().contains(control as Node)).toBe(true);
-    // Stop shows as an icon only; its text stays for screen readers.
+    expect(steer).toBeDefined();
+    expect(arrow).toBeDefined();
+    for (const control of [stop, steer, arrow]) expect(row().contains(control as Node)).toBe(true);
+    // Stop and the send button show as icons only; their text stays for screen readers.
     expect(stop?.querySelector("span")?.classList).toContain("max-md:sr-only");
+    expect(steer?.querySelector("span")?.classList).toContain("max-md:sr-only");
+    expect(arrow?.classList).toContain("max-md:min-w-11");
+    // The Steer / Follow up choice is the arrow's menu, not a select.
+    expect(labelled("When a message sent now goes in")).toBeNull();
     expect(labelled("Model for the next message")).toBeNull();
     expect(labelled("Thinking level")).toBeNull();
   });
@@ -138,7 +142,8 @@ describe("the composer on a phone", () => {
 describe("the composer on a wide screen", () => {
   it("still shows the model and thinking controls while busy", async () => {
     await render({ phone: false, agent: busy });
-    expect(labelled("When a message sent now goes in")).not.toBeNull();
+    expect(button("Choose when the message goes in")).toBeDefined();
+    expect(labelled("When a message sent now goes in")).toBeNull();
     expect(button("Stop")).toBeDefined();
     expect(labelled("Model for the next message")).not.toBeNull();
     expect(labelled("Thinking level")).not.toBeNull();
