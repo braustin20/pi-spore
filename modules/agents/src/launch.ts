@@ -72,6 +72,16 @@ export const STAGE_WORKER_TOOLS: readonly string[] = ["--exclude-tools", "contac
 export const WORKSPACE_CHAT_TOOLS: readonly string[] = ["--exclude-tools", "subagents_enable"];
 
 /**
+ * The `extras` that `loaded` does not cover: an extra is dropped when `loaded` names its path, or names a folder
+ * above it, so a package the user's setup already loads is not loaded a second time.
+ */
+function notLoaded(loaded: readonly string[], extras: readonly string[]): string[] {
+  return extras.filter(
+    (path) => !loaded.some((resource) => resource === path || resource.startsWith(`${path}/`)),
+  );
+}
+
+/**
  * The launch arguments that load the user's Pi setup minus excluded packages (ADR 0025): `--no-extensions`,
  * `--no-skills`, and `--no-prompt-templates`, then one explicit flag per remaining resource. Pi's own package
  * manager resolves the list from the user's and the project's settings without loading any extension code. Packages
@@ -95,12 +105,9 @@ export async function resolveResourceArgs(
   const keep = (resource: { enabled: boolean; metadata: { source: string } }) =>
     resource.enabled && !excluded.has(resource.metadata.source);
   const extensions = resolved.extensions.filter(keep).map((resource) => resource.path);
-  const extra = extraExtensions.filter(
-    (path) => !extensions.some((loaded) => loaded === path || loaded.startsWith(`${path}/`)),
-  );
   return [
     "--no-extensions",
-    ...[...extensions, ...extra].flatMap((path) => ["-e", path]),
+    ...[...extensions, ...notLoaded(extensions, extraExtensions)].flatMap((path) => ["-e", path]),
     "--no-skills",
     ...resolved.skills.filter(keep).flatMap((resource) => ["--skill", resource.path]),
     "--no-prompt-templates",
