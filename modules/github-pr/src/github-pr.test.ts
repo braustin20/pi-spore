@@ -21,7 +21,7 @@ import { projectsModule } from "@pi-spore/mod-projects/server";
 import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
 import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
-import { workspacesModule } from "@pi-spore/mod-workspaces/server";
+import { WorkspacesKey, workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { JobTimer, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import type {
@@ -73,13 +73,38 @@ const scheduledDelays = () =>
     .filter((entry) => !entry.cancelled && !isDiscover(entry))
     .map((entry) => wholeSeconds(entry.ms));
 
-/** Keeps the interface the runs module will call. */
+/**
+ * A copy removal held open by a test, so it can read the PR while an archive has the worktree half gone.
+ * `entered` says the archive reached the removal.
+ */
+let hold: { entered: boolean; wait: Promise<void>; release: () => void } = {
+  entered: false,
+  wait: Promise.resolve(),
+  release: () => {},
+};
+
+/** Holds the next copy removal until the returned function runs. */
+function holdCopyRemoval(): () => void {
+  let release = () => {};
+  const wait = new Promise<void>((resolve) => {
+    release = () => resolve();
+  });
+  hold = { entered: false, wait, release };
+  return () => hold.release();
+}
+
+/** Keeps the interface the runs module will call, and holds copy removals when a test asks. */
 const probe: ServerModule = {
   id: "github-pr-probe",
-  requires: ["github-pr"],
+  requires: ["github-pr", "workspaces"],
   core: false,
   setup(host) {
     pullRequests = host.use(PullRequestsKey);
+    host.use(WorkspacesKey).beforeRemoveCopy(async () => {
+      hold.entered = true;
+      await hold.wait;
+      return undefined;
+    });
   },
 };
 
@@ -121,6 +146,7 @@ beforeEach(async () => {
   ghState = join(scratch, "gh.json");
   writeFileSync(ghState, JSON.stringify({ prs: [] }));
   timers = [];
+  hold = { entered: false, wait: Promise.resolve(), release: () => {} };
   server = await makeServer();
 });
 afterEach(async () => {
@@ -1566,5 +1592,24 @@ describe("auto-archive after a merge", () => {
     expect(agent.status).toBe("idle");
     expect((await workspaceOf(workspace.id)).state).toBe("active");
     expect(existsSync(workspace.path)).toBe(true);
+  });
+
+  it("answers a PR status read while the archive has the worktree half gone", async () => {
+    const release = holdCopyRemoval();
+    const { workspace } = await setUp();
+    await publish(workspace);
+    editGh((state) => {
+      (state.prs[0] as Record<string, unknown>).state = "MERGED";
+    });
+    await tick();
+    await until(() => hold.entered); // the archive is inside the copy removal now
+
+    // `git worktree remove` empties the folder before the folder itself is gone, so git stops working here first.
+    rmSync(join(workspace.path, ".git"), { force: true, recursive: true });
+    expect(existsSync(workspace.path)).toBe(true);
+    expect(await status(workspace.id)).toMatchObject({ pr: { state: "merged" } });
+
+    release();
+    await until(archiveJobEnded); // the removal then failed on its own guard
   });
 });

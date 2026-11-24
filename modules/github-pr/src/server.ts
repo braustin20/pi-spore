@@ -267,13 +267,15 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
 
       /**
        * The worktree's head and its uncommitted count, for the PR tab. The auto-archive job removes the worktree
-       * once a PR merges, so the folder can go while these reads run: a read that finds it gone saw the workspace
-       * archive mid-read, which is not a git failure. Any other failure stands.
+       * once a PR merges, and a removal empties the folder before the folder is gone, so git stops working there
+       * first. A read that fails on a workspace being archived, or on a folder that has gone, saw the archive and
+       * not a git problem. Any other failure stands.
        */
       const readWorktree = async (
         changes: NonNullable<VcsProvider["changes"]>,
-        path: string,
+        workspace: Workspace,
       ): Promise<{ headId: string | undefined; uncommitted: number }> => {
+        const path = workspace.path;
         try {
           return {
             headId: await changes.head({ path }),
@@ -281,7 +283,8 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
               .length,
           };
         } catch (error) {
-          if (!existsSync(path)) return { headId: undefined, uncommitted: 0 };
+          if (workspaces.archiving().has(workspace.id) || !existsSync(path))
+            return { headId: undefined, uncommitted: 0 };
           throw error;
         }
       };
@@ -301,7 +304,7 @@ export function createGithubPrModule(options: GithubPrModuleOptions = {}): Serve
         const folder = existsSync(workspace.path);
         const local =
           provider.changes && folder
-            ? await readWorktree(provider.changes, workspace.path)
+            ? await readWorktree(provider.changes, workspace)
             : { headId: undefined, uncommitted: 0 };
         const tries = host.store
           .all<{ at: number; head_id: string; summary: string }>(
