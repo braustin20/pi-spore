@@ -196,11 +196,15 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   - Every run of the agent replaces the global `AGENTS.md` in the prompt with pi-spore's rules (ADR 0031). Side
     chats (`PI_SPORE_CHAT_KIND=side`) get side chat rules instead (ADR 0033), and planner chats
     (`PI_SPORE_CHAT_KIND=planner`) get planner rules (ADR 0174). Stage agents get stage worker or stage
-    reviewer rules: end every turn with `report`, and record fail-first proofs. The stage worker runs `check`, then
+    reviewer rules: end every turn with `report`, and record fail-first proofs (ADR 0199: a failing run before the
+    code, or with the code broken on purpose and restored). The reviewers check that the brief's tests are there and
+    that each proof fails for the right reason. The stage worker runs `check`, then
     the full `run_action test`, before every `report`, and puts both results in it, so a break shows up before the
     reviewers, not at the final gates. The orchestrator rules say to start
     every subagent with `async: true`, because a foreground child does not load the chat's extensions (ADR 0120),
-    and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162).
+    and to send each slice of feature code through the workspace pipeline, not a `worker` subagent (ADR 0162). The
+    orchestrator and coordinator rules name the tests to add in each brief and check them when the work comes back
+    (ADR 0199).
     Every role's rules end with one docs paragraph (`DOCS_RULES`, ADR 0193): start with `docs/index.md` when the
     project has one, update it in the same change as the docs, and use the project-wiki skill for the format, the
     setup, and the lint.
@@ -561,7 +565,7 @@ interface ChangeOps {
 ## 8. Pipelines
 
 See [ADR 0006](decisions/0006-declared-pipelines.md), [ADR 0015](decisions/0015-review-rounds.md),
-[ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md),
+[ADR 0016](decisions/0016-fail-first-proof.md), [ADR 0199](decisions/0199-proof-by-breaking-the-code.md), [ADR 0140](decisions/0140-pipeline-stage-agents.md),
 [ADR 0158](decisions/0158-revise-lane-is-a-fix-pass.md), [ADR 0162](decisions/0162-orchestrator-starts-pipeline-runs.md),
 [ADR 0178](decisions/0178-parallel-reviews-and-early-gates.md), and [ADR 0187](decisions/0187-pause-and-resume-a-pipeline-run.md). Requirements R6, R4.4,
 R4.9.
@@ -600,7 +604,7 @@ fix_passes = 1            # a REVISE on the last round gets one fix, with no rev
 name = "gates"
 with_previous = true      # runs while the reviewers read; runs again after every fix
 gates = ["check", "test"] # action names from config.toml
-fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016)
+fail_first = "artifact"   # every new test needs its proof artifact (ADR 0016, ADR 0199)
 ```
 
 A built-in `light` is used the same way when no file has id `light`. It is `default` without the `adversarial`
@@ -775,7 +779,9 @@ fail_first = "artifact"
   rounds.
 - **Review rounds** (R6.3, R6.4). Round r starts a fresh reviewer with the brief, the manifest with proof paths, and
   a diff artifact `pipelines/<run>/<stage>-<r>.diff` (commits since the base, then uncommitted and untracked files,
-  from the provider's `changes`). From round 2 on, the prompt also has the previous round's summary and findings and
+  from the provider's `changes`). The prompt asks for each test the brief suggests, and for a proof that shows each
+  listed test can fail; the adversarial prompt also asks for each edge case or failure path no test covers (ADR 0199).
+  From round 2 on, the prompt also has the previous round's summary and findings and
   the worker's fix report. It tells the reviewer to check each earlier finding first, to answer REVISE only for a
   bug, a missing or wrong test, a regression, or a break of the brief, to list style, naming, wording, and taste as
   `minor`, and to rate a new finding the previous round could have raised `important` at most. APPROVE ends the
@@ -829,7 +835,7 @@ fail_first = "artifact"
   turn. A turn of a running run with no report and no error reads it live from `AgentsKey.liveState`: the model of
   the newest answer, else the model the stage started the agent on. A stage agent's `activity` change (each
   `message_end`) publishes the runs event, so the tab follows it without polling.
-- **Gates** (R6.5, ADR 0016, ADR 0178). A gate stage is a group member like a reviewer; a gate stage alone is a
+- **Gates** (R6.5, ADR 0016, ADR 0178, ADR 0199). A gate stage is a group member like a reviewer; a gate stage alone is a
   group of one. `advance` opens the group's gate round with the review round: the job checkpoint holds `round` and
   each gate member's place (`places`: gate and attempt, by stage name). With `fail_first = "artifact"`, each test in
   the manifest needs a non-empty proof artifact, checked every gate round because fixes add tests; a missing one

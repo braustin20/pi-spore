@@ -71,7 +71,7 @@ section, update this map in the same change.
   Accepted.
 - [0015](decisions/0015-review-rounds.md): Fixed review limits plus an early-stop Jev check. Accepted.
 - [0016](decisions/0016-fail-first-proof.md): Fail-first proof is a recorded artifact the reviewer checks.
-  Accepted.
+  Accepted; changed by 0199.
 - [0017](decisions/0017-integration-branch.md): One integration branch per run. Accepted.
 - [0018](decisions/0018-worktree-copy-list.md): Gitignored files reach new worktrees through a declared copy list.
   Accepted.
@@ -221,6 +221,8 @@ section, update this map in the same change.
   forced. Accepted.
 - [0198](decisions/0198-retry-continues-the-same-stage-agent.md): Retry continues the same stage agent; Fresh agent
   replaces it. Accepted.
+- [0199](decisions/0199-proof-by-breaking-the-code.md): A test's proof may come from code broken on purpose; the
+  brief suggests the tests. Accepted.
 
 ## Spikes
 

@@ -117,8 +117,9 @@ not built in v1.
   pass after its last round. A Jev check after each review round may stop early when the remaining findings are
   minor. It can never add rounds. A stage with no last fix pass asks the user at its limit: fix once, go on, or
   stop.
-- R6.5 Fail-first proof: the worker records the failing run of each new test as an artifact. The reviewer checks it.
-  The gate stage re-runs only the final passing suite.
+- R6.5 Fail-first proof: the worker records a failing run of each new test as an artifact: before the code, or with
+  the code broken on purpose. The brief suggests the tests. The reviewer checks the tests and the proofs. The gate
+  stage re-runs only the final passing suite.
 - R6.6 Stages survive a server restart and resume from their last committed step.
 - R6.7 Verdicts and findings (blocking, important, minor) are shown on the workspace.
 - R6.8 A workspace can run a pipeline without a run.

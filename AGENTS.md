@@ -32,8 +32,8 @@ agents across Git projects, with first-class Unity support. Read these before ch
   its worker on `spore/auto`. The chat may write failing tests first, edit docs, and make tiny corrections.
 - `scout`, `researcher`, and `reviewer` are always allowed. Ask the user before the first run, with the plan.
   That yes covers every pipeline run of the plan.
-- One brief per run: one outcome, the files it may edit, one example of the pattern, the invariants, one pass or
-  fail command. One run per workspace at a time; wait for its end message.
+- One brief per run: one outcome, the files it may edit, one example of the pattern, the invariants, the tests to
+  add, one pass or fail command. One run per workspace at a time; wait for its end message.
 - After each run that passes, read the real diff and check it for conciseness: extra validation, duplicated types,
   code that skips an existing seam, and changes outside the brief go back as a new run with the exact cuts. After
   three runs, re-split the task or take it over.
@@ -88,7 +88,7 @@ The script is not a test. It is not part of `npm test` or the pipeline gates.
 - Prove each new test can fail: break the code it covers, see the test fail, then restore. Say so in the handoff or
   PR description.
 - Test behavior through public interfaces, not private helpers.
-- A bug fix starts with a failing test that reproduces it.
+- A bug fix comes with a test that fails without the fix.
 
 ## Commit rules
 
