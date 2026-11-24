@@ -421,7 +421,7 @@ export interface ServerHost {
 | Entity | Meaning | Key fields |
 |---|---|---|
 | Project | A registered Git checkout or folder | id, name, path, vcs kind, detected traits (`unity`) |
-| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card, planner (the project's planner workspace, ADR 0174) |
+| Workspace | One piece of work | id, project, name, slug, isolation, path, branch, base (what a new branch started from), state (active, parked, archived), archived at, card, planner (the project's planner workspace, ADR 0174), archive on merge (unset follows the setting, ADR 0197) |
 | Agent | One Pi conversation (a chat) | id, workspace, role (`orchestrator`, `planner`, or a stage role), kind (worker, side, stage), active, closed, closed at, title, forked from, model selection, session path, process state, parent agent |
 | Run | A coordinator conversation that owns lanes | id, project, run workspace, run line (`run/<slug>-<id>`), base, gates, coordinator agent |
 | Lane | A workspace inside a run | id, run, name, wave, depends on, brief artifact, pipeline, model, state, workspace, approval, message |
@@ -1567,7 +1567,7 @@ Requirements R9.
   (no GitHub remote, no login) is logged once per workspace, in one line, and the look goes on.
 - Tables: `github_pr_prs` (one per workspace: number, the last view as JSON, watch state, tries, the head whose
   failures were sent, the last clean head, message, poll times, the merge-when-ready choice, the head whose
-  conflicts were sent), `github_pr_sent` (bot comments already sent), and
+  conflicts were sent, why an archive after the merge did not happen), `github_pr_sent` (bot comments already sent), and
   `github_pr_tries` (each automatic message, for the tab), and `github_pr_asks` (the open `workspace-pr` approval
   of a workspace).
 - Watch (R9.2), a `github-pr.watch` job per watched PR (section 6), keyed by the workspace, with one `poll` step.
@@ -1588,6 +1588,14 @@ Requirements R9.
   - A merged PR moves the card to Done; a merged or closed PR ends the watch (`done`). A PR first seen merged
     moves the card to Review (`PR #n opened`), then Done (`PR #n merged`), unless a card of the workspace is in
     Done already. A closed unmerged PR moves nothing.
+- Auto-archive (ADR 0197). When a PR becomes merged, wherever that was seen, the module starts a
+  `github-pr.auto-archive` job keyed by the workspace, in the same commit. Its one `archive` step does nothing when
+  the workspace is not active or parked, `WorkspacesKey.archiveOnMerge` is false, or the stored PR is not merged.
+  A chat that is busy, starting, or waiting, a chat with helpers running, or a workspace working label stops it.
+  Otherwise it calls `WorkspacesKey.archive(id, { force: false })` and logs one line. A stop or a refusal stores
+  the reason in `archive_message`; Home shows `PR #<n> merged; archive <workspace> by hand` until the workspace is
+  archived. It never retries. A status read that fails while `WorkspacesKey.archiving()` names the workspace, or
+  after its folder is gone, answers with no local state.
 - Topic `github-pr:<workspace id>` sends the status on subscribe and after each poll.
 
 | Route | Does |
@@ -2140,7 +2148,11 @@ terminals, and runs of the workspace keep running, because the removal would ref
 cannot be undone. While an archive runs, `archiving()` names the workspace, so a module that reads its worktree
 can tell a removal in progress from a broken copy. `afterStateChange` runs after every park, resume, and archive;
 a listener that throws is logged and does not undo the change. `create` makes a workspace as
-`POST /api/workspaces` does, for modules that start work, such as kanban.
+`POST /api/workspaces` does, for modules that start work, such as kanban. `archive(id, { force })` is the archive
+route's body, with the same errors. `archiveOnMerge(id)` gives the workspace's own `archiveOnMerge`, else the
+global setting `workspaces.archiveOnMerge` (default `true`, ADR 0197). `PATCH /api/workspaces/:id` takes `name`,
+`archiveOnMerge` (`true`, `false`, or `null` to follow the setting), or both; an empty body is 400 and an archived
+workspace is 409 `bad_state`.
 
 The workspace view has three panes: the workspace list (grouped by project, sorted by name, then active, parked,
 and archived behind a toggle, newest activity first), the selected workspace's middle pane, and a right column with workspace details and module
