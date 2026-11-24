@@ -29,7 +29,13 @@ import {
   parseInspectReply,
   runningCount,
 } from "./child-runs.js";
-import type { AgentAttention, AgentChange, AgentLiveState, LaunchContext } from "./contract.js";
+import type {
+  AgentAttention,
+  AgentChange,
+  AgentHandoff,
+  AgentLiveState,
+  LaunchContext,
+} from "./contract.js";
 import { ChatImages } from "./images.js";
 import {
   modelArgs,
@@ -269,6 +275,15 @@ const writtenMessages = async (file: string | null): Promise<Transcript["message
     throw error;
   }
 };
+
+/** The handoff limits: the last tool calls, the last text, and the start of each call's arguments (ADR 0198). */
+const HANDOFF_CALLS = 15;
+const HANDOFF_TEXT = 1_500;
+const HANDOFF_HEAD = 120;
+
+/** A text over `limit` keeps `limit - 1` characters and ends with an ellipsis, so the reader sees it was cut. */
+const cut = (text: string, limit: number): string =>
+  text.length > limit ? `${text.slice(0, limit - 1)}…` : text;
 
 export class AgentManager {
   private readonly agents = new Map<string, Live>();
@@ -571,6 +586,34 @@ export class AgentManager {
       last.stopReason !== "error" &&
       last.stopReason !== "aborted"
     );
+  }
+
+  /** What a fresh agent needs to pick up this agent's work; see `Agents.handoff`. Never reads tool results. */
+  async handoff(id: string): Promise<AgentHandoff> {
+    const { record } = this.get(id);
+    const calls: { name: string; head: string }[] = [];
+    let lastText: string | undefined;
+    for (const message of await writtenMessages(record.sessionFile)) {
+      if (message.role !== "assistant" || !Array.isArray(message.content)) continue;
+      const blocks = message.content as Record<string, unknown>[];
+      for (const block of blocks) {
+        if (block.type === "toolCall") {
+          // JSON.stringify writes no line break, so its whole text is the first line.
+          const args = JSON.stringify(block.arguments ?? {});
+          calls.push({ name: String(block.name ?? ""), head: cut(args, HANDOFF_HEAD) });
+        }
+      }
+      const text = blocks
+        .filter((block) => block.type === "text")
+        .map((block) => String(block.text ?? ""))
+        .join("\n");
+      if (text.trim() !== "") lastText = cut(text, HANDOFF_TEXT);
+    }
+    return {
+      ...(record.sessionFile ? { sessionFile: record.sessionFile } : {}),
+      ...(lastText === undefined ? {} : { lastText }),
+      toolCalls: calls.slice(-HANDOFF_CALLS),
+    };
   }
 
   async setModel(id: string, provider: string, modelId: string): Promise<AgentModel | undefined> {

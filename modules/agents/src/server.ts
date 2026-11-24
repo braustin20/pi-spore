@@ -507,6 +507,7 @@ export function createAgentsModule(
         roleDefaults: (role) => agents.roleDefaults(role),
         availableModels: (callerAgentId) => agents.availableModels(callerAgentId),
         modelsUsed: (agentId) => agents.modelsUsed(agentId),
+        handoff: (agentId) => agents.handoff(agentId),
         // A delivery that waits with no error starts a new run, such as the continue message of a pipeline Retry, so
         // the last run's failure no longer counts. A refused one keeps its error.
         turnError: async (agentId) => {

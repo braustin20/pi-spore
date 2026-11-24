@@ -32,7 +32,8 @@
 //   "silent"  replies with plain text, ends the turn with stopReason "stop", and sends no report
 //   "crash"   after Pi accepted the prompt, writes to stderr and exits with code 3, as the "crash" prompt does
 //   { "error": "<text>" }  ends the turn as Pi does when the provider refused it: the last assistant message has
-//             stopReason "error", errorMessage <text>, and no text. No report is sent.
+//             stopReason "error", errorMessage <text>, and no text. No report is sent. A field
+//             `calls: [{ "name", "arguments" }]` first writes one tool-call assistant message per call, oldest first.
 //   { "ask": "<text>" }  asks the run's asking chat, as ask_orchestrator does: the fake POSTs { question } to
 //             /api/bridge/stage-questions with its token and a receipt, replies with the server's answer, and ends
 //             the turn with stopReason "stop". No report is sent.
@@ -411,7 +412,12 @@ async function scripted(text) {
     process.stderr.write("boom: the fake agent crashed\n");
     process.exit(3);
   }
-  if (entry.error !== undefined) return { error: entry.error };
+  if (entry.error !== undefined) {
+    for (const [index, call] of (entry.calls ?? []).entries()) {
+      toolCallMessage({ type: "toolCall", id: `call-${role}-${position}-${index}`, ...call });
+    }
+    return { error: entry.error };
+  }
   if (entry.ask !== undefined || entry.askCoordinator !== undefined) {
     const lane = entry.askCoordinator !== undefined;
     const question = lane ? entry.askCoordinator : entry.ask;

@@ -762,7 +762,14 @@ fail_first = "artifact"
   pending deliveries, and a fresh
   agent takes the turn. A task or review turn goes back to `advance`, so the round number stays and `min_strength_over`
   is checked again; a fix turn goes to a fresh worker with the same findings, and the run's worker becomes it. The fresh
-  agent has the stage's or run's model, else the role default read when it starts, so a settings fix works. A restart or
+  agent has the stage's or run's model, else the role default read when it starts, so a settings fix works. A fresh
+  worker (task or fix turn) also gets a handoff note before its normal prompt, built by code from `agents.handoff`:
+  `This is attempt <N> of this turn.`, the failed agent's title and failure (the block message without its choices
+  sentence), its session file, its last message, its last tool calls (name and the start of the arguments, never
+  results), and the worktree now from the provider's `changes` (uncommitted files, then files committed since the
+  base, 30 each). The new turn row has `attempts` one more than the failed one, so the row and the note say the same
+  N. A failed task of a `worker = "reuse"` stage also goes to a fresh worker, whose prompt is the normal "Implement
+  the brief" one; the local-implementer question is not asked again. Reviewers get no note. A restart or
   another wake does not mark the turn, so it only blocks again. Retry also works while such a wake runs the blocked step
   again: it marks the turn and wakes the job, so the step runs once more after it settles. Failed turns do not count as
   rounds.

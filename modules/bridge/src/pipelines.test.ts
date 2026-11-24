@@ -1295,6 +1295,105 @@ describe("a stage agent whose turn failed", () => {
     expect(fix?.report?.summary).toBe(FIX.summary);
   });
 
+  const NPM_TEST = { error: LIMIT, calls: [{ name: "bash", arguments: { command: "npm test" } }] };
+  const firstMessage = async (server: TestServer, agentId: string) =>
+    (await chat(server, agentId)).find((message) => message.startsWith("user: ")) as string;
+  const sessionOf = (server: TestServer, agentId: string) =>
+    server.store.get<{ session_file: string }>(
+      "SELECT session_file FROM agents_agents WHERE id = ?",
+      agentId,
+    )?.session_file as string;
+
+  it("gives the fresh worker of a task turn a handoff note, and counts the attempt", async () => {
+    const server = await start({ env: scriptEnv({ worker: [NPM_TEST, DONE] }) });
+    const { workspaceId, folder } = await workspace(server, "handoff", { git: true });
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+    const failed = (await getRun(server, run.id)).turns[0] as PipelineTurn;
+
+    // Committed, so the uncommitted check (card 01M7G34F) lets the fresh worker's report through.
+    writeFileSync(join(folder, "half-done.txt"), "the failed agent's work\n");
+    execFileSync("git", ["add", "half-done.txt"], { cwd: folder });
+    execFileSync(
+      "git",
+      ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "half"],
+      { cwd: folder },
+    );
+    await freshAgent(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    const fresh = passed.turns[1] as PipelineTurn;
+    expect(fresh.agentId).not.toBe(failed.agentId);
+    expect(fresh.attempts).toBe(2);
+    const note = await firstMessage(server, fresh.agentId);
+    expect(note).toContain("This is attempt 2 of this turn.");
+    expect(note).toContain('The last agent "implement');
+    expect(note).toContain(`Its session file: ${sessionOf(server, failed.agentId)}`);
+    expect(note).toContain('- bash {"command":"npm test"}');
+    expect(note).toContain("Committed since main:\n- added half-done.txt (+1 -0)");
+    expect(note).toContain("Uncommitted:\n(none)");
+    expect(note).toContain("## Brief");
+    expect(note).not.toContain("Retry tells the same agent");
+  });
+
+  it("gives the fresh worker of a fix turn a handoff note before the findings", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, NPM_TEST, FIX],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
+      }),
+    });
+    const { run } = await blockedRun(server, "handoff-fix", withReview("rounds = 2"));
+
+    await freshAgent(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    const fix = passed.turns[3] as PipelineTurn;
+    expect(fix).toMatchObject({ kind: "fix", attempts: 2 });
+    const note = await firstMessage(server, fix.agentId);
+    expect(note).toContain("This is attempt 2 of this turn.");
+    expect(note).toContain('- bash {"command":"npm test"}');
+    expect(note).toContain("(no version control shows the changes)");
+    expect(note).toContain('The reviewer of stage "review" asked for changes.');
+    expect(note).toContain("1. [important] Missing null check (a.txt:2)");
+  });
+
+  it("hands the latest failed fix worker's work to the next fresh worker", async () => {
+    const CHECK = {
+      error: LIMIT,
+      calls: [{ name: "bash", arguments: { command: "npm run check" } }],
+    };
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, NPM_TEST, CHECK, FIX],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
+      }),
+    });
+    const { run } = await blockedRun(server, "handoff-fix-twice", withReview("rounds = 2"));
+    await freshAgent(server, run.id);
+    await until(async () => {
+      const again = await getRun(server, run.id);
+      return again.turns.length === 4 && again.blocked !== undefined;
+    });
+    const second = (await getRun(server, run.id)).turns[3] as PipelineTurn;
+
+    await freshAgent(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(kinds(passed)).toEqual(["task1", "review1", "fix1", "fix1", "fix1", "review2"]);
+    const fix = passed.turns[4] as PipelineTurn;
+    expect(fix).toMatchObject({ kind: "fix", attempts: 3 });
+    const note = await firstMessage(server, fix.agentId);
+    expect(note).toContain("This is attempt 3 of this turn.");
+    expect(note).toContain(`Its session file: ${sessionOf(server, second.agentId)}`);
+    expect(note).toContain('- bash {"command":"npm run check"}');
+    expect(note).not.toContain('"npm test"');
+    expect((await agentOf(server, second.agentId)).title).toBe("review (failed)");
+    const first = passed.turns[2] as PipelineTurn;
+    expect((await agentOf(server, first.agentId)).title).toBe("implement (failed)");
+  });
+
   const continueOf = (turnId: string, failure: string, attempt: number) =>
     [
       `user: Your last turn failed: ${failure}. This is attempt ${attempt} of this turn.`,
@@ -1751,6 +1850,54 @@ describe("pause and resume (ADR 0187)", () => {
     await json(await resume(server, run.id));
     await until(async () => (await getRun(server, run.id)).state === "passed");
     expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1"]);
+  });
+
+  it("starts no fresh fix worker when Pause lands while the handoff note reads, and starts it after Resume", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, { error: "The provider refused" }, FIX],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
+      }),
+    });
+    const manager = (servers.at(-1) as (typeof servers)[number]).agents.manager();
+    const real = manager.handoff.bind(manager);
+    let entered = false;
+    let release = () => {};
+    const released = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    manager.handoff = async (id) => {
+      entered = true;
+      await released;
+      return real(id);
+    };
+    const { workspaceId } = await workspace(server, "pause-handoff");
+    userPipeline(server.paths.root, "p", withReview("rounds = 2"));
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/fresh`));
+    await until(() => entered);
+    await json(await pause(server, run.id));
+    const before = stageJob(server, workspaceId).updatedAt;
+
+    release();
+    await until(() => {
+      const job = stageJob(server, workspaceId);
+      return job.state === "waiting" && job.updatedAt > before;
+    });
+
+    const held = await getRun(server, run.id);
+    expect(kinds(held)).toEqual(["task1", "review1", "fix1"]);
+    expect(held).toMatchObject({ state: "running", paused: true });
+    await json(await resume(server, run.id));
+    await until(async () => (await getRun(server, run.id)).state === "passed");
+    expect(kinds(await getRun(server, run.id))).toEqual([
+      "task1",
+      "review1",
+      "fix1",
+      "fix1",
+      "review2",
+    ]);
   });
 
   /**
@@ -3331,6 +3478,35 @@ describe("a revise run", () => {
     expect(prompt).toContain('Your change came back with a new brief. You are the "fix" stage');
     expect(prompt).toContain(`pipelines/${run.id}/brief.md`);
     expect(prompt).toContain("## Brief\n\nFix the thing");
+  });
+
+  it("gives a failed task of a reuse stage to a fresh worker with a handoff note", async () => {
+    const failure = {
+      error: "The provider refused",
+      calls: [{ name: "bash", arguments: { command: "npm test" } }],
+    };
+    const { server, first, revise } = await afterFirstRun("reuse-fresh", {
+      worker: [DONE, failure, FIX],
+      reviewer: [LOOKS_FINE, APPROVE],
+    });
+
+    const run = await revise();
+    await until(async () => (await getRun(server, run.id)).blocked !== undefined);
+    // The fresh worker runs on the worker role default, which the review's min_strength_over needs a tier for.
+    writeTiers(server.paths.root, { ...TIERS, "fake/fake-1": "local" });
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/fresh`));
+    await untilState(server, run.id, "passed");
+
+    const done = await getRun(server, run.id);
+    const fresh = done.turns[1] as PipelineTurn;
+    expect(done.workerAgentId).not.toBe(first.workerAgentId);
+    expect(fresh).toMatchObject({ kind: "task", agentId: done.workerAgentId, attempts: 2 });
+    const note = (await chat(server, fresh.agentId)).find((message) =>
+      message.startsWith("user: "),
+    );
+    expect(note).toContain("This is attempt 2 of this turn.");
+    expect(note).toContain('You are the "fix" stage of pipeline "revise". Implement the brief.');
+    expect(note).not.toContain("Your change came back with a new brief");
   });
 
   it("renames the reused worker to the slice name of a named revise run", async () => {
