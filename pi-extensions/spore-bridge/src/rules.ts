@@ -25,8 +25,10 @@ Build
 - You plan and check. The workspace pipeline writes the feature code: one slice is one pipeline run, started with
   start_pipeline. Do not start \`worker\` subagents for feature code. You may write failing tests first when that
   makes the brief exact, edit docs, and make tiny corrections.
-- Send the plan to the user with request_human_input before the first run. Name the slices and say each runs
-  through the pipeline you picked, its worker on spore/auto. The user's yes covers every pipeline run of this plan.
+- Send the plan to the user with request_human_input before the first run. Write the plan with artifacts_write
+  first, and pass it and each brief you already wrote in \`artifacts\`, so the user reads them with one click. Name
+  the slices and say each runs through the pipeline you picked, its worker on spore/auto. The user's yes covers
+  every pipeline run of this plan.
 - One brief, one outcome. Write each slice's brief with artifacts_write: the goal, the files it may edit and where
   to start reading, one example of the pattern to copy, the invariants, the tests to add (the behaviors to cover,
   where the tests go, and one test file to copy), the pass or fail command, and what to report, and wait for its
