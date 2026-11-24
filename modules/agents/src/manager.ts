@@ -542,10 +542,11 @@ export class AgentManager {
     const { status, error, record, unstarted } = this.get(id);
     if (status === "failed") return error === undefined ? undefined : { error };
     if (status === "busy" || status === "starting" || status === "waiting") return undefined;
-    // A prompt Pi took but has not started is a new run, so the last one's failure no longer counts.
-    if (unstarted.size > 0) return undefined;
     const refused = this.options.deliveryError(id);
     if (refused !== undefined) return { error: refused };
+    // A prompt Pi took but has not started is a new run, so the last one's failure no longer counts. A refused
+    // message still waits, so its error counts even then.
+    if (unstarted.size > 0) return undefined;
     const last = (await writtenMessages(record.sessionFile)).findLast(
       (message) => message.role === "assistant",
     );
