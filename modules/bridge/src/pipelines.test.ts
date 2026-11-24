@@ -1141,6 +1141,12 @@ describe("a stage agent whose turn failed", () => {
       .filter(Boolean)
       .map((line) => JSON.parse(line) as { argv: string[]; env: Record<string, string> });
 
+  /** The provider the fake Pi writes on the agent's assistant messages: its `--provider`, else "fake". */
+  const providerOf = (agentId: string) => {
+    const argv = launches().find((entry) => entry.env.PI_SPORE_AGENT_ID === agentId)?.argv ?? [];
+    return argv.includes("--provider") ? argv[argv.indexOf("--provider") + 1] : "fake";
+  };
+
   const agentOf = async (server: TestServer, agentId: string) =>
     (
       await json<{ agent: { title: string; deliveryError?: string } }>(
@@ -1159,6 +1165,8 @@ describe("a stage agent whose turn failed", () => {
 
   const retry = async (server: TestServer, runId: string) =>
     json(await server.request("POST", `/api/pipelines/runs/${runId}/retry`));
+  const freshAgent = async (server: TestServer, runId: string) =>
+    json(await server.request("POST", `/api/pipelines/runs/${runId}/fresh`));
 
   it("blocks the stage on a reviewer turn the provider refused", async () => {
     const server = await start({
@@ -1170,7 +1178,7 @@ describe("a stage agent whose turn failed", () => {
     const review = run.turns[1] as PipelineTurn;
     expect(run.state).toBe("running");
     expect(run.blocked).toBe(
-      `stage review: the reviewer agent "Review 1" failed: ${LIMIT}. Retry starts a fresh reviewer agent for this turn.`,
+      `stage review: the model server ${providerOf(review.agentId)} failed for the reviewer agent "Review 1": ${LIMIT}. Retry tells the same agent to continue. Fresh agent starts a fresh reviewer agent for this turn.`,
     );
     expect(review).toMatchObject({ kind: "review", round: 1 });
     expect(review.report).toBeUndefined();
@@ -1188,7 +1196,7 @@ describe("a stage agent whose turn failed", () => {
     const failed = run.turns[1] as PipelineTurn;
 
     reviewerModel = "after";
-    await retry(server, run.id);
+    await freshAgent(server, run.id);
     await until(async () => (await getRun(server, run.id)).state === "passed");
 
     const passed = await getRun(server, run.id);
@@ -1216,7 +1224,7 @@ describe("a stage agent whose turn failed", () => {
 
     // The job runs `await` again and still has its error, so the run shows `blocked` and Retry must work.
     server.services.jobs.wake("pipelines.stage", workspaceId);
-    await retry(server, run.id);
+    await freshAgent(server, run.id);
     await until(async () => (await getRun(server, run.id)).state === "passed");
 
     expect(kinds(await getRun(server, run.id))).toEqual(["task1", "review1", "review1"]);
@@ -1229,7 +1237,7 @@ describe("a stage agent whose turn failed", () => {
     expect(run.blocked).toContain("boom");
     expect(run.workerAgentId).toBe(failed.agentId);
 
-    await retry(server, run.id);
+    await freshAgent(server, run.id);
     await until(async () => (await getRun(server, run.id)).state === "passed");
 
     const passed = await getRun(server, run.id);
@@ -1239,7 +1247,7 @@ describe("a stage agent whose turn failed", () => {
     expect((await agentOf(server, failed.agentId)).title).toBe("implement (failed)");
   });
 
-  it("blocks the stage when Pi refuses the task, and Retry gives it to a fresh worker", async () => {
+  it("blocks the stage when Pi refuses the task, and Fresh agent gives it to a fresh worker", async () => {
     const NO_KEY =
       "No API key found for anthropic. Use /login to log into a provider via OAuth or API key.";
     const refuse = join(scratch, "refuse");
@@ -1250,11 +1258,11 @@ describe("a stage agent whose turn failed", () => {
     const { run } = await blockedRun(server, "no-key", IMPLEMENT);
     const failed = run.turns[0] as PipelineTurn;
     expect(run.blocked).toBe(
-      `stage implement: the worker agent "implement" failed: ${NO_KEY}. Retry starts a fresh worker agent for this turn.`,
+      `stage implement: the worker agent "implement" failed: ${NO_KEY}. Retry tells the same agent to continue. Fresh agent starts a fresh worker agent for this turn.`,
     );
 
     rmSync(refuse);
-    await retry(server, run.id);
+    await freshAgent(server, run.id);
     await until(async () => (await getRun(server, run.id)).state === "passed");
 
     const passed = await getRun(server, run.id);
@@ -1275,7 +1283,7 @@ describe("a stage agent whose turn failed", () => {
     const { run } = await blockedRun(server, "refused-fix", withReview("rounds = 2"));
     expect(kinds(run)).toEqual(["task1", "review1", "fix1"]);
 
-    await retry(server, run.id);
+    await freshAgent(server, run.id);
     await until(async () => (await getRun(server, run.id)).state === "passed");
 
     const passed = await getRun(server, run.id);
@@ -1285,6 +1293,157 @@ describe("a stage agent whose turn failed", () => {
     expect(fix?.agentId).not.toBe(task?.agentId);
     expect(passed.workerAgentId).toBe(fix?.agentId);
     expect(fix?.report?.summary).toBe(FIX.summary);
+  });
+
+  const continueOf = (turnId: string, failure: string, attempt: number) =>
+    [
+      `user: Your last turn failed: ${failure}. This is attempt ${attempt} of this turn.`,
+      "Check where you stopped (git status, your last tool results), then finish the turn and call report with this turn as before.",
+      "",
+      `Turn: ${turnId}`,
+    ].join("\n");
+  const continues = async (server: TestServer, agentId: string) =>
+    (await chat(server, agentId)).filter((message) =>
+      message.startsWith("user: Your last turn failed: "),
+    );
+  const passedRun = async (server: TestServer, runId: string) => {
+    await until(async () => (await getRun(server, runId)).state === "passed");
+    return getRun(server, runId);
+  };
+
+  it("names the model server, and Retry tells the same worker to continue the turn", async () => {
+    const server = await start({ env: scriptEnv({ worker: [{ error: LIMIT }, DONE] }) });
+    const { run } = await blockedRun(server, "continue", IMPLEMENT);
+    const turn = run.turns[0] as PipelineTurn;
+    expect(run.blocked).toBe(
+      `stage implement: the model server ${providerOf(turn.agentId)} failed for the worker agent "implement": ${LIMIT}. Retry tells the same agent to continue. Fresh agent starts a fresh worker agent for this turn.`,
+    );
+
+    await retry(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(kinds(passed)).toEqual(["task1"]);
+    const [continued] = passed.turns as PipelineTurn[];
+    expect(continued).toMatchObject({ id: turn.id, agentId: turn.agentId, attempts: 2 });
+    expect(continued?.error).toBeUndefined();
+    expect(continued?.report?.summary).toBe("Done");
+    expect(await continues(server, turn.agentId)).toEqual([continueOf(turn.id, LIMIT, 2)]);
+    expect((await agentOf(server, turn.agentId)).title).toBe("implement");
+  });
+
+  it("restarts the same worker on its session file when its Pi process exited", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["crash", DONE] }) });
+    const { run } = await blockedRun(server, "continue-crash", IMPLEMENT);
+    const turn = run.turns[0] as PipelineTurn;
+
+    await retry(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(passed.turns).toHaveLength(1);
+    expect(passed.turns[0]).toMatchObject({ id: turn.id, agentId: turn.agentId, attempts: 2 });
+    const own = launches().filter((entry) => entry.env.PI_SPORE_AGENT_ID === turn.agentId);
+    expect(own).toHaveLength(2);
+    const argv = own[1]?.argv as string[];
+    const session = server.store.get<{ session_file: string }>(
+      "SELECT session_file FROM agents_agents WHERE id = ?",
+      turn.agentId,
+    )?.session_file;
+    expect(argv[argv.indexOf("--session") + 1]).toBe(session);
+  });
+
+  it("counts one attempt more for each Retry", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [{ error: LIMIT }, { error: LIMIT }, DONE] }),
+    });
+    const { run } = await blockedRun(server, "attempts", IMPLEMENT);
+    const turn = run.turns[0] as PipelineTurn;
+
+    await retry(server, run.id);
+    await until(async () => {
+      const again = await getRun(server, run.id);
+      return again.turns[0]?.attempts === 2 && again.blocked !== undefined;
+    });
+    await retry(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(passed.turns).toHaveLength(1);
+    expect(passed.turns[0]).toMatchObject({ id: turn.id, agentId: turn.agentId, attempts: 3 });
+    expect(await continues(server, turn.agentId)).toEqual([
+      continueOf(turn.id, LIMIT, 2),
+      continueOf(turn.id, LIMIT, 3),
+    ]);
+  });
+
+  it("continues the same reviewer on Retry", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] }),
+    });
+    const { run } = await blockedRun(server, "continue-review", withReview());
+    const review = run.turns[1] as PipelineTurn;
+
+    await retry(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(kinds(passed)).toEqual(["task1", "review1"]);
+    expect(passed.turns[1]).toMatchObject({ id: review.id, agentId: review.agentId, attempts: 2 });
+    expect(passed.turns[1]?.report?.verdict).toBe("approve");
+  });
+
+  it("continues the same worker in a fix turn on Retry", async () => {
+    const server = await start({
+      env: scriptEnv({
+        worker: [DONE, { error: LIMIT }, FIX],
+        reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
+      }),
+    });
+    const { run } = await blockedRun(server, "continue-fix", withReview("rounds = 2"));
+    const fix = run.turns[2] as PipelineTurn;
+
+    await retry(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(kinds(passed)).toEqual(["task1", "review1", "fix1", "review2"]);
+    expect(passed.turns[2]).toMatchObject({ id: fix.id, agentId: fix.agentId, attempts: 2 });
+    expect(fix.agentId).toBe(run.turns[0]?.agentId);
+    expect(passed.turns[2]?.report?.summary).toBe(FIX.summary);
+  });
+
+  it("continues a worker that ended its turn twice without a report", async () => {
+    const server = await start({ env: scriptEnv({ worker: ["silent", "silent", DONE] }) });
+    const { run } = await blockedRun(server, "continue-silent", IMPLEMENT);
+    const turn = run.turns[0] as PipelineTurn;
+
+    await retry(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(passed.turns).toHaveLength(1);
+    expect(passed.turns[0]).toMatchObject({ id: turn.id, agentId: turn.agentId, attempts: 2 });
+    expect(await continues(server, turn.agentId)).toEqual([
+      continueOf(turn.id, "you ended your turn twice without a report", 2),
+    ]);
+  });
+
+  it("sends the continue message of a Retry on a paused run only after Resume", async () => {
+    const server = await start({ env: scriptEnv({ worker: [{ error: LIMIT }, DONE] }) });
+    const { workspaceId, run } = await blockedRun(server, "continue-paused", IMPLEMENT);
+    const turn = run.turns[0] as PipelineTurn;
+    const stageJob = () =>
+      server.services.jobs.list({ kind: "pipelines.stage", key: workspaceId }).at(-1) as JobView;
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/pause`));
+
+    const before = stageJob().updatedAt;
+    await retry(server, run.id);
+    await until(() => stageJob().state === "waiting" && stageJob().updatedAt > before);
+    expect(await continues(server, turn.agentId)).toEqual([]);
+
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/resume`));
+    const passed = await passedRun(server, run.id);
+
+    expect(passed.turns[0]).toMatchObject({ id: turn.id, attempts: 2 });
+    expect(await continues(server, turn.agentId)).toEqual([continueOf(turn.id, LIMIT, 2)]);
+    expect((await chat(server, turn.agentId)).filter((m) => m === resumeMessage(turn.id))).toEqual(
+      [],
+    );
   });
 
   it("stays blocked after a restart and starts no new stage agent", async () => {
@@ -1358,7 +1517,7 @@ describe("a stage agent that ends its turn without a report (ADR 0169)", () => {
     const [turn] = run.turns as PipelineTurn[];
     expect(run.state).toBe("running");
     expect(run.blocked).toBe(
-      'stage implement: the worker agent "implement" ended its turn twice without a report. Retry starts a fresh worker agent for this turn.',
+      'stage implement: the worker agent "implement" ended its turn twice without a report. Retry tells the same agent to continue. Fresh agent starts a fresh worker agent for this turn.',
     );
     expect(await reminders(server, run.workerAgentId as string, turn?.id as string)).toHaveLength(
       1,
@@ -1372,12 +1531,12 @@ describe("a stage agent that ends its turn without a report (ADR 0169)", () => {
     expect((await messages())[0]).toContain("ended its turn twice without a report");
   });
 
-  it("starts a fresh worker on Retry, and the run passes", async () => {
+  it("starts a fresh worker on Fresh agent, and the run passes", async () => {
     const server = await start({ env: scriptEnv({ worker: ["silent", "silent", DONE] }) });
     const { run } = await blockedRun(server, "retry");
     const stuck = run.workerAgentId as string;
 
-    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/fresh`));
     await until(async () => (await getRun(server, run.id)).state === "passed");
 
     const passed = await getRun(server, run.id);
@@ -3728,7 +3887,7 @@ fix_passes = 1
     ).toEqual([]);
   });
 
-  it("resumes the open member when Retry replaces a failed one after a restart", async () => {
+  it("resumes the open member when Fresh agent replaces a failed one after a restart", async () => {
     const home = join(scratch, "home");
     const env = scriptEnv({
       worker: [DONE],
@@ -3762,7 +3921,7 @@ fix_passes = 1
         states: ["running", "waiting"],
       })[0] as JobView;
     await until(() => stageJob().state === "waiting" && stageJob().error !== null);
-    await json(await second.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+    await json(await second.request("POST", `/api/pipelines/runs/${run.id}/fresh`));
     await until(async () => (await getRun(second, run.id)).state === "passed");
 
     expect(kinds(await getRun(second, run.id))).toEqual(["task1", "review1", "review1", "review1"]);
@@ -3773,7 +3932,7 @@ fix_passes = 1
     ).toHaveLength(1);
   });
 
-  it("gives a reviewer that Retry starts the diff its round started with", async () => {
+  it("gives a reviewer that Fresh agent starts the diff its round started with", async () => {
     const server = await start({
       env: scriptEnv({
         worker: [DONE],
@@ -3794,7 +3953,7 @@ fix_passes = 1
       ["-c", "user.name=t", "-c", "user.email=t@t", "commit", "-q", "-m", "later"],
       { cwd: folder },
     );
-    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/retry`));
+    await json(await server.request("POST", `/api/pipelines/runs/${run.id}/fresh`));
     await until(async () => (await getRun(server, run.id)).state === "passed");
 
     const read = async (name: string) =>
