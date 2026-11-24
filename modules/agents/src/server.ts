@@ -44,6 +44,7 @@ import {
   readRoleDefaults,
   resolveResourceArgs,
   SPORE_EXTENSIONS,
+  SPORE_SKILLS,
 } from "./launch.js";
 import { AgentManager, type AgentRecord, type ManagerOptions } from "./manager.js";
 import { FALLBACK_ROLES, listRoleModels, writeRoleModel } from "./role-models.js";
@@ -236,7 +237,8 @@ export function createAgentsModule(
 
       const resourceArgs =
         options.resourceArgs ??
-        ((cwd: string) => resolveResourceArgs(cwd, agentDir, exclude, SPORE_EXTENSIONS));
+        ((cwd: string) =>
+          resolveResourceArgs(cwd, agentDir, exclude, SPORE_EXTENSIONS, SPORE_SKILLS));
 
       const baseRoleDefaults =
         options.roleDefaults ?? ((role: string) => readRoleDefaults(agentDir, role));
