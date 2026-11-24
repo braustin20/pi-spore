@@ -3,6 +3,7 @@
 pi-spore is a local, single-user agent workbench: a Node server, a React web UI, and a CLI that run Pi coding
 agents across Git projects, with first-class Unity support. Read these before changing anything:
 
+- `docs/index.md`: the map of the docs. Start there to find the right doc.
 - `docs/vision.md`: requirements, numbered (`R4.2`). Cite them in commits and code comments where useful.
 - `docs/architecture.md`: layout, module contract, domain model, and how each part works.
 - `docs/decisions/`: one file per decision. Do not reverse a decision in code. Propose a new ADR instead.
