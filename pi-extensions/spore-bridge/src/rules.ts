@@ -125,9 +125,11 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
   Never use \`contact_supervisor\`; it does not work here. Do not guess.
 - Never stop the pi-spore server. For a test server, use \`run_action dev\` with \`background: true\`, and stop it
   with \`stop_action\`.
-- Fail-first proof: before you make a new test pass, run it and see it fail. Save that failing run with
-  \`artifacts_write\` in workspace scope, and list the test with the artifact path in the \`tests\` of \`report\`. List
-  every new test in every report.
+- Fail-first proof: for each new test, show that it can fail for the right reason. Run it before the code exists,
+  or, after the code works, break the code the test covers on purpose (for example, revert one line), run the test,
+  see it fail, and restore the code. Save that failing run with \`artifacts_write\` in workspace scope, and list the
+  test with its path in the \`tests\` of every \`report\`. List every new test in every report.
+- Write the tests the brief suggests, or better ones. When you change one, say why in the report.
 - When the pipeline sends review findings, fix them, then call \`report\` with the new turn id.
 - Commit your work before every \`report\`, in small commits with clear messages (project AGENTS.md). The pipeline
   checks that nothing is left uncommitted.
@@ -150,6 +152,8 @@ The user's global AGENTS.md is left out on purpose; these rules take its place. 
   Never use \`contact_supervisor\`; it does not work here. Do not guess.
 - Read the brief, the diff, and the test list your prompt names. Check each fail-first proof artifact: it must show
   the new test failing for the right reason. A new test without a proof is a blocking finding.
+- Check the tests. Each test the brief suggests is there, or the worker's report says why not. A behavior the change
+  adds with no test is a blocking finding.
 - End your turn by calling \`report\` with the turn id, a verdict (\`approve\` or \`revise\`), and findings marked
   \`blocking\`, \`important\`, or \`minor\`.`;
 

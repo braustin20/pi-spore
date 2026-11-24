@@ -704,6 +704,32 @@ describe("spore-bridge", () => {
     );
   });
 
+  // ADR 0199: a proof is a failing run for the right reason, made before the code or with it broken on purpose.
+  it("tells the implement worker to prove each test can fail, before the code or with it broken", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    expect(oneLine(STAGE_WORKER_RULES)).toContain(
+      "show that it can fail for the right reason. Run it before the code exists, or, after the code works, break the code the test covers on purpose (for example, revert one line), run the test, see it fail, and restore the code",
+    );
+    expect(oneLine(STAGE_WORKER_RULES)).toContain("the `tests` of every `report`");
+    expect(oneLine(STAGE_WORKER_RULES)).toContain(
+      "Write the tests the brief suggests, or better ones. When you change one, say why in the report.",
+    );
+    expect(STAGE_WORKER_RULES).not.toContain("before you make a new test pass");
+  });
+
+  // ADR 0199: a reviewer that finds an untested new behavior stops the run.
+  it("tells a reviewer that a behavior the change adds with no test is a blocking finding", () => {
+    const oneLine = (rules: string) => rules.replace(/\s+/g, " ");
+    expect(oneLine(STAGE_REVIEWER_RULES)).toContain(
+      "Each test the brief suggests is there, or the worker's report says why not",
+    );
+    expect(oneLine(STAGE_REVIEWER_RULES)).toContain(
+      "A behavior the change adds with no test is a blocking finding",
+    );
+    expect(oneLine(STAGE_REVIEWER_RULES)).toContain(
+      "A new test without a proof is a blocking finding",
+    );
+  });
   // A stage agent that guesses made a wrong turn on 2026-11-14; the plan's chat answers instead (ADR 0179).
   it.each([
     ["worker", STAGE_WORKER_RULES],
