@@ -70,9 +70,10 @@ const toStep = (raw: unknown): ChildRun["steps"][number] => {
 };
 
 /**
- * The child runs in a `subagent-async` widget's lines. A cleared widget (no lines) means none. Throws a readable
- * error for a payload that is not a version 1 snapshot. Times of last activity are left out on purpose: they change
- * every second and the page does not show them.
+ * The child runs in a `subagent-async` widget's lines, in start order (oldest `startedAt` first, queued runs last,
+ * ties by id), because pi-subagents sends them newest activity first and they would swap places. A cleared widget
+ * (no lines) means none. Throws a readable error for a payload that is not a version 1 snapshot. Times of last
+ * activity are left out on purpose: they change every second and the page does not show them. Steps keep their order.
  */
 export function parseChildRuns(lines: unknown): ChildRun[] {
   if (lines === undefined || lines === null) return [];
@@ -81,18 +82,23 @@ export function parseChildRuns(lines: unknown): ChildRun[] {
     payload(lines, SNAPSHOT_PREFIX, CHILD_RUNS_WIDGET),
     "pi-subagents status",
   );
-  return snapshot.runs.map((raw): ChildRun => {
-    const run = parse(Node, raw, "pi-subagents run");
-    return {
-      id: run.id,
-      label: run.label,
-      state: run.state,
-      ...optional("currentTool", run.activity?.currentTool),
-      ...optional("startedAt", run.startedAt),
-      ...optional("endedAt", run.endedAt),
-      steps: (run.children ?? []).map(toStep),
-    };
-  });
+  // Two queued runs compare as NaN, which is falsy, so they fall through to the id tie-break.
+  return snapshot.runs
+    .map((raw): ChildRun => {
+      const run = parse(Node, raw, "pi-subagents run");
+      return {
+        id: run.id,
+        label: run.label,
+        state: run.state,
+        ...optional("currentTool", run.activity?.currentTool),
+        ...optional("startedAt", run.startedAt),
+        ...optional("endedAt", run.endedAt),
+        steps: (run.children ?? []).map(toStep),
+      };
+    })
+    .sort(
+      (a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || a.id.localeCompare(b.id),
+    );
 }
 
 /** Runs that hold a runner process. A queued run has none yet (ADR 0034). */
