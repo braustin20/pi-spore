@@ -24,7 +24,9 @@
 //   "turns:<n>"    answers in <n> turns of one run: each of the first n-1 writes its own assistant message and a
 //                  `turn_end`, and the echo reply is the last turn with its own `turn_end`. The run then holds before
 //                  `agent_end` / `agent_settled` while a `.fake-pi-hold-settle` file is in the workspace, so a test
-//                  can read state mid-run.
+//                  can read state mid-run. A `.fake-pi-step-turns` file in the workspace when the prompt arrives paces
+//                  such a run between its turns: the fake writes that file again after a `turn_end` and waits for the
+//                  test to remove it, so a test delivers one `turn_end` at a time.
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
@@ -66,6 +68,8 @@
 // FAKE_PI_STATS_GATE=<file>: while the file exists, every `get_session_stats` answer waits until it goes. Each
 //   request appends a line to `<file>.requests`, so a test counts reads. The reply's tokens and percent grow with the
 //   read count, so a test tells a new read from the start-up one.
+// FAKE_PI_STATS_FAIL=<file>: while the file exists, every `get_session_stats` answer is an error, as Pi gives for a
+//   session it cannot measure. Each request appends a line to `<file>.requests` too, and still counts.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { FAKE_PNG } from "./png.mjs";
@@ -534,12 +538,23 @@ async function run(text, images = []) {
 
   // A `turns:<n>` run answers in <n> turns, each ending with a `turn_end`. The echo reply below is the last turn.
   const turns = text.startsWith("turns:") ? Number(text.slice("turns:".length)) : 0;
+  // A `.fake-pi-step-turns` file with the prompt paces the run between its turns: the fake writes that file again
+  // after a turn and waits for the test to remove it, so a test delivers one `turn_end` at a time and can read state
+  // between the turns. The last turn ends the run, so only the settle gate holds it.
+  const step = join(process.cwd(), ".fake-pi-step-turns");
+  const paced = turns > 0 && existsSync(step);
+  const pace = async () => {
+    if (!paced) return;
+    writeFileSync(step, "");
+    await waitUntilGone(step);
+  };
   for (let turn = 1; turn < turns; turn++) {
     write({
       type: "turn_end",
       message: assistantTextMessage(`turn ${turn} of ${turns}`),
       toolResults: [],
     });
+    await pace();
   }
 
   let reply = images.length > 0 ? `echo: ${text} [${images.length} images]` : `echo: ${text}`;
@@ -753,11 +768,14 @@ const handle = async (command) => {
       return respond(id, type, { levels: ["off", "low", "medium", "high"] });
     case "get_session_stats": {
       statsReads++;
+      // A test counts the reads from the sibling file of the gate or the fail file it set.
+      const record = process.env.FAKE_PI_STATS_GATE ?? process.env.FAKE_PI_STATS_FAIL;
+      if (record)
+        appendFileSync(`${record}.requests`, `${JSON.stringify({ reads: statsReads })}\n`);
+      const failFile = process.env.FAKE_PI_STATS_FAIL;
+      if (failFile && existsSync(failFile)) return fail(id, type, "no session to measure");
       const gate = process.env.FAKE_PI_STATS_GATE;
-      if (gate) {
-        appendFileSync(`${gate}.requests`, `${JSON.stringify({ reads: statsReads })}\n`);
-        await waitUntilGone(gate);
-      }
+      if (gate) await waitUntilGone(gate);
       // Tokens and percent grow with the read, so a test tells a new read from an old one.
       return respond(id, type, {
         sessionFile,
