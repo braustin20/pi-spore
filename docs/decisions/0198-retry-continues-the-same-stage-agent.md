@@ -1,6 +1,7 @@
 # 0198. Retry continues the same stage agent; Fresh agent replaces it
 
-- Status: Accepted
+- Status: Accepted; changed in part by [0201](0201-nudge-once-on-a-model-server-error.md) (one nudge before a
+  model server error blocks)
 - Date: 2026-11-23
 - Requirements: R6, R6.6
 - Changes: [0140](0140-pipeline-stage-agents.md) ("Failed agents"), [0169](0169-remind-a-stage-agent-once-then-block.md)

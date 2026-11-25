@@ -718,7 +718,8 @@ fail_first = "artifact"
   one and tells each agent of an open turn once to continue and call `report`. Turns that reported do not run again.
   If an agent ends its turn without a report, the step reminds it once per turn (column `reminded` on the turn, also
   across a restart); a second such end blocks the stage
-  (ADR 0169). There are no other automatic reminders.
+  (ADR 0169). A turn that ends on a model server error gets one nudge too (ADR 0201, below). There are no other
+  automatic reminders.
 - **Pause** (ADR 0187). `paused_at` on the run pauses it; the run stays `running` and its view has `paused: true`.
   The open turn is not cut off, and its report is kept. `advance`, `decide`, and `finish` wait while the run is
   paused, and a step that ends on a paused run takes no effect. `await` reminds no one and blocks nothing while
@@ -757,10 +758,15 @@ fail_first = "artifact"
   and shows it as `blocked`. A turn that ended twice without a report blocks the same way (`... ended its turn twice
   without a report ...`, ADR 0169), and both choices cover it. The old agent may still report while the run is
   blocked.
+  A model server error first gets one nudge (ADR 0201): when the failure has a `provider` and its text does not
+  name a usage limit (`usage limit`, `quota`, `billing`, `out of budget`, `available balance`,
+  `insufficient_quota`), and the turn's `error_nudged` is 0, `await` sends the same agent `Your model call failed:
+  <error>.`, a line that tells it to check where it stopped and finish the turn, and the `Turn:` line, and sets
+  `error_nudged` to 1. Only the next such error blocks. After a restart or a Resume, that message covers the nudge.
   Retry (`POST /api/pipelines/runs/:id/retry`) writes the raw failure on the turn's `retry_error`. The next `await`
   that is not paused sends the same agent one message, `Your last turn failed: <failure>. This is attempt <N> of this
   turn.`, a line that tells it to check where it stopped and finish the turn, and the `Turn:` line. In the same commit
-  it raises `attempts`, sets `reminded` to 0, and clears `retry_error`. The other open turns get what the step gives
+  it raises `attempts`, sets `reminded` and `error_nudged` to 0, and clears `retry_error`. The other open turns get what the step gives
   them then (the resume or the restart message). A Pi process that exited starts again on its session file. The turn
   view has `attempts` from 2.
   Fresh agent (`POST /api/pipelines/runs/:id/fresh`) writes the error on the turn, and `await` then replaces it in

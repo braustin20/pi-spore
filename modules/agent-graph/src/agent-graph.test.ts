@@ -866,7 +866,11 @@ describe("how a step ended, and why a running one waits (ADR 0188)", () => {
 
   it("says blocked, with the reason, on the blocked run's running step, and on no other", async () => {
     const server = await start(
-      { worker: [DONE], reviewer: [{ error: "The provider refused the review turn" }] },
+      {
+        worker: [DONE],
+        // A usage limit blocks at once; another server error would get a nudge first (ADR 0201).
+        reviewer: [{ error: "The provider refused: usage limit reached" }],
+      },
       WITH_REVIEW,
     );
     const { workspaceId } = await workspace(server, "outcome-blocked");

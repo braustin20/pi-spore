@@ -252,6 +252,12 @@ function holdJobs(server: TestServer) {
 
 const DONE = { summary: "Done", tests: [{ name: "adds", proof: "proofs/adds.md" }] };
 
+/**
+ * A provider refusal the stage blocks on at once: a usage limit gets no nudge, because a retry would fail the same
+ * way (ADR 0201).
+ */
+const LIMIT = "The ChatGPT user has reached their Subscription Sharing usage limit";
+
 describe("a pipeline run", () => {
   it("stores the file's hash and stages, and a later edit does not change the run", async () => {
     const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
@@ -1211,7 +1217,8 @@ describe("min_strength_over (R4.4)", () => {
 });
 
 describe("a stage agent whose turn failed", () => {
-  const LIMIT = "The ChatGPT user has reached their Subscription Sharing usage limit";
+  /** A model server failure of the moment: Pi is alive, and its next request works (ADR 0201). */
+  const ENGINE = "the engine stopped unexpectedly (exit code 1); the next request restarts it";
   const APPROVE = { summary: "Good", verdict: "approve" };
 
   const launches = () =>
@@ -1484,6 +1491,17 @@ describe("a stage agent whose turn failed", () => {
     (await chat(server, agentId)).filter((message) =>
       message.startsWith("user: Your last turn failed: "),
     );
+  const nudgeOf = (turnId: string, failure: string) =>
+    [
+      `user: Your model call failed: ${failure}.`,
+      "Check where you stopped (git status, your last tool results), then finish the turn and call report with this turn.",
+      "",
+      `Turn: ${turnId}`,
+    ].join("\n");
+  const nudges = async (server: TestServer, agentId: string) =>
+    (await chat(server, agentId)).filter((message) =>
+      message.startsWith("user: Your model call failed: "),
+    );
   const passedRun = async (server: TestServer, runId: string) => {
     await until(async () => (await getRun(server, runId)).state === "passed");
     return getRun(server, runId);
@@ -1507,6 +1525,51 @@ describe("a stage agent whose turn failed", () => {
     expect(continued?.report?.summary).toBe("Done");
     expect(await continues(server, turn.agentId)).toEqual([continueOf(turn.id, LIMIT, 2)]);
     expect((await agentOf(server, turn.agentId)).title).toBe("implement");
+    // A usage limit blocks at once: a nudge would fail the same way (ADR 0201).
+    expect(await nudges(server, turn.agentId)).toEqual([]);
+  });
+
+  it("nudges the worker once on a model server error, and the run passes with no Retry", async () => {
+    const server = await start({ env: scriptEnv({ worker: [{ error: ENGINE }, DONE] }) });
+    const { workspaceId } = await workspace(server, "nudge");
+    userPipeline(server.paths.root, "p", IMPLEMENT);
+    const { run } = await json<{ run: PipelineRun }>(await startRun(server, workspaceId), 201);
+
+    const passed = await passedRun(server, run.id);
+
+    expect(passed.blocked).toBeUndefined();
+    expect(kinds(passed)).toEqual(["task1"]);
+    const task = passed.turns[0] as PipelineTurn;
+    // The same agent went on: one turn with one attempt (the view omits `attempts` then), still the run's worker.
+    expect(task).toMatchObject({ agentId: passed.workerAgentId as string });
+    expect(task.attempts).toBeUndefined();
+    expect(task.report?.summary).toBe("Done");
+    expect((await agentOf(server, task.agentId)).title).toBe("implement");
+    expect(await nudges(server, task.agentId)).toEqual([nudgeOf(task.id, ENGINE)]);
+  });
+
+  it("blocks on the second model server error, and Retry gives the turn a fresh nudge", async () => {
+    const server = await start({
+      env: scriptEnv({ worker: [{ error: ENGINE }, { error: ENGINE }, { error: ENGINE }, DONE] }),
+    });
+    const { run } = await blockedRun(server, "nudge-twice", IMPLEMENT);
+    const turn = run.turns[0] as PipelineTurn;
+    expect(run.blocked).toBe(
+      `stage implement: the model server ${providerOf(turn.agentId)} failed for the worker agent "implement": ${ENGINE}. Retry tells the same agent to continue. Fresh agent starts a fresh worker agent for this turn.`,
+    );
+    expect(await nudges(server, turn.agentId)).toEqual([nudgeOf(turn.id, ENGINE)]);
+
+    await retry(server, run.id);
+    const passed = await passedRun(server, run.id);
+
+    expect(kinds(passed)).toEqual(["task1"]);
+    expect(passed.turns[0]).toMatchObject({ id: turn.id, agentId: turn.agentId, attempts: 2 });
+    expect(await continues(server, turn.agentId)).toEqual([continueOf(turn.id, ENGINE, 2)]);
+    // The Retry reset the nudge, so the third error got one more.
+    expect(await nudges(server, turn.agentId)).toEqual([
+      nudgeOf(turn.id, ENGINE),
+      nudgeOf(turn.id, ENGINE),
+    ]);
   });
 
   it("restarts the same worker on its session file when its Pi process exited", async () => {
@@ -1934,7 +1997,7 @@ describe("pause and resume (ADR 0187)", () => {
   it("starts no fresh fix worker when Pause lands while the handoff note reads, and starts it after Resume", async () => {
     const server = await start({
       env: scriptEnv({
-        worker: [DONE, { error: "The provider refused" }, FIX],
+        worker: [DONE, { error: LIMIT }, FIX],
         reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
       }),
     });
@@ -3038,7 +3101,6 @@ describe("gates in a parallel group (ADR 0178)", () => {
         };
       },
     };
-    const LIMIT = "The provider refused the turn";
     const server = await start({
       env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] }),
       extraModules: [holder],
@@ -3582,7 +3644,7 @@ describe("a revise run", () => {
 
   it("gives a failed task of a reuse stage to a fresh worker with a handoff note", async () => {
     const failure = {
-      error: "The provider refused",
+      error: LIMIT,
       calls: [{ name: "bash", arguments: { command: "npm test" } }],
     };
     const { server, first, revise } = await afterFirstRun("reuse-fresh", {
@@ -4102,7 +4164,6 @@ rounds = 1
 fix_passes = 1
 `;
   const APPROVE = { summary: "Good", verdict: "approve" };
-  const LIMIT = "The provider refused the turn";
   const finding = (title: string) => ({ severity: "important", title });
   const restarted = (turnId: string) =>
     `user: pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;

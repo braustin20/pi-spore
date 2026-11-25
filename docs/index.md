@@ -220,11 +220,13 @@ section, update this map in the same change.
 - [0197](decisions/0197-auto-archive-on-merge.md): Archive a workspace when its PR merges, on by default, never
   forced. Accepted.
 - [0198](decisions/0198-retry-continues-the-same-stage-agent.md): Retry continues the same stage agent; Fresh agent
-  replaces it. Accepted.
+  replaces it. Accepted; changed in part by 0201.
 - [0199](decisions/0199-proof-by-breaking-the-code.md): A test's proof may come from code broken on purpose; the
   brief suggests the tests. Accepted.
 - [0200](decisions/0200-questions-link-to-artifacts.md): Questions link to artifacts; a Read button opens the file
   over the page. Accepted.
+- [0201](decisions/0201-nudge-once-on-a-model-server-error.md): Nudge a stage agent once on a model server error,
+  then block; a usage limit blocks at once. Accepted.
 
 ## Spikes
 
