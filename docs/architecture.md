@@ -2220,7 +2220,9 @@ archived, it also has the select "Archive when the PR merges": "Use the setting 
 fill it through the workspaces web interface `WorkspaceViewKey`:
 
 - `addPanel` adds a section to the right column (Actions, Unity). A panel renders its own `CollapsibleSection`, so
-  it can render nothing when it does not apply.
+  it can render nothing when it does not apply. Panels are keyed by workspace, so each workspace gets a fresh panel.
+  Each panel calls `onLoaded` once its first load ends, with data or with an error. The Details tab shows a spinner
+  until all have.
 - `addTab` adds a tab after Details (Terminals). A `wide` tab widens the column while it is open. Its component
   mounts only while the tab is open.
 - `setMain` sets the middle pane. The agents module sets the chat. The route `#/workspaces/<id>/chats/<chat>`

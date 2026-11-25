@@ -11,13 +11,21 @@ import type { ComponentType, ReactNode } from "react";
 
 /**
  * A section another web module adds to the workspace's right column, such as Actions or Unity. It renders its own
- * `CollapsibleSection`, so it can render nothing when it does not apply (Unity on a non-Unity project).
+ * `CollapsibleSection`, so it can render nothing when it does not apply (Unity on a non-Unity project). It is
+ * mounted again for each workspace.
  */
 export interface WorkspacePanel {
   id: string;
   /** Lower comes first. */
   order: number;
-  component: ComponentType<{ workspace: Workspace }>;
+  component: ComponentType<{
+    workspace: Workspace;
+    /**
+     * The panel calls it when its first load ends, with data or with an error. The Details tab shows a spinner
+     * until every panel has.
+     */
+    onLoaded: () => void;
+  }>;
 }
 
 /**
