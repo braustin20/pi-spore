@@ -252,6 +252,12 @@ function holdJobs(server: TestServer) {
 
 const DONE = { summary: "Done", tests: [{ name: "adds", proof: "proofs/adds.md" }] };
 
+/**
+ * A provider refusal the stage blocks on at once: a usage limit gets no nudge, because a retry would fail the same
+ * way (ADR 0201).
+ */
+const LIMIT = "The ChatGPT user has reached their Subscription Sharing usage limit";
+
 describe("a pipeline run", () => {
   it("stores the file's hash and stages, and a later edit does not change the run", async () => {
     const server = await start({ env: scriptEnv({ worker: ["hang"] }) });
@@ -1211,7 +1217,6 @@ describe("min_strength_over (R4.4)", () => {
 });
 
 describe("a stage agent whose turn failed", () => {
-  const LIMIT = "The ChatGPT user has reached their Subscription Sharing usage limit";
   const APPROVE = { summary: "Good", verdict: "approve" };
 
   const launches = () =>
@@ -1934,7 +1939,7 @@ describe("pause and resume (ADR 0187)", () => {
   it("starts no fresh fix worker when Pause lands while the handoff note reads, and starts it after Resume", async () => {
     const server = await start({
       env: scriptEnv({
-        worker: [DONE, { error: "The provider refused" }, FIX],
+        worker: [DONE, { error: LIMIT }, FIX],
         reviewer: [{ summary: "Not yet", verdict: "revise", findings: [FINDING] }, APPROVE],
       }),
     });
@@ -3038,7 +3043,6 @@ describe("gates in a parallel group (ADR 0178)", () => {
         };
       },
     };
-    const LIMIT = "The provider refused the turn";
     const server = await start({
       env: scriptEnv({ worker: [DONE], reviewer: [{ error: LIMIT }, APPROVE] }),
       extraModules: [holder],
@@ -3582,7 +3586,7 @@ describe("a revise run", () => {
 
   it("gives a failed task of a reuse stage to a fresh worker with a handoff note", async () => {
     const failure = {
-      error: "The provider refused",
+      error: LIMIT,
       calls: [{ name: "bash", arguments: { command: "npm test" } }],
     };
     const { server, first, revise } = await afterFirstRun("reuse-fresh", {
@@ -4102,7 +4106,6 @@ rounds = 1
 fix_passes = 1
 `;
   const APPROVE = { summary: "Good", verdict: "approve" };
-  const LIMIT = "The provider refused the turn";
   const finding = (title: string) => ({ severity: "important", title });
   const restarted = (turnId: string) =>
     `user: pi-spore restarted while you worked. Continue, then call report with this turn.\n\nTurn: ${turnId}`;
