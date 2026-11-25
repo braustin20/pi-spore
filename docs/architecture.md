@@ -158,8 +158,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
 - **spore-bridge** (`pi-extensions/spore-bridge/`, package `@pi-spore/spore-bridge`) is a Pi extension that adds
   the workbench tools. It calls the `bridge` module's routes (`/api/bridge/`) with `PI_SPORE_URL` and the agent
   token (ADR 0032). A failed call reaches the model as a tool error that quotes the server.
-  - `request_human_input` `{ question, choices?, recommended? }` or `{ steps }` (section 11b): files a question for
-    the user (Home) and ends the turn with `terminate: true`. Its guidelines and the rules say to ask related
+  - `request_human_input` `{ question, choices?, recommended? }` or `{ steps }`, each with optional `artifacts`
+    (section 11b): files a question for the user (Home) and ends the turn with `terminate: true`. Its guidelines and the rules say to ask related
     decisions in one call with steps. The answer arrives later as a new user message, through a delivery (section 6), so
     a long wait survives restarts. Its guidelines say to use the user's `ask_user` only for a quick choice while the user watches.
   - `check`: runs the project's `check` action and returns its outcome and log tail (ADR 0025).
@@ -1259,7 +1259,12 @@ See [ADR 0022](decisions/0022-usage-tracking.md).
 See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.6, R15.
 
 - The `attention` module (core, requires `projects`, `workspaces`, `agents`) owns questions (`attention_questions`:
-  agent, workspace, question, choices, recommended, steps, state `open`, `answered`, or `closed`, answer, times).
+  agent, workspace, question, choices, recommended, steps, artifacts, state `open`, `answered`, or `closed`, answer,
+  times).
+- A question may link 1 to 6 **artifacts** `{ scope, path, label? }` (ADR 0200), the files the user should read
+  first. The bridge route checks each exists (`ArtifactsKey.list`); a missing one is 400 `artifact_not_found` with
+  the path, and nothing is filed. The stored question adds `ownerId` to each (the workspace id, or its project id).
+  The column is NULL for none, so old rows load; answered and closed questions keep it.
 - A question has 1 to 6 **steps** (`QuestionStep`). Each has a Markdown `prompt` and a `type`: `text`, `select`,
   `multiselect`, or `confirm`. `select` and `multiselect` have 2 to 8 `options` (`label`, Markdown `description`,
   Markdown `preview` for a code example or a text diagram), an optional `recommended` index, and `allowOther` (the
@@ -1309,7 +1314,9 @@ See [ADR 0008](decisions/0008-questions-up-the-chain.md). Requirements R3.5, R5.
   one request. Nothing is sent before that. Answers are kept while the user moves, and in `sessionStorage`
   (`pi-spore:question:<id>`) across a reload. Option rows show the label, the description, and the chip; the
   selected option's preview shows beside the list on a wide screen and under it on a narrow one. Arrow keys move,
-  Enter picks and goes Next, Escape goes Back, Ctrl+Enter goes Next from a text box. Prompts, descriptions, and
+  Enter picks and goes Next, Escape goes Back, Ctrl+Enter goes Next from a text box. A question's artifacts show as
+  **Read <label>** buttons above the prompt on every step (label default: the file name). The artifacts web module
+  draws them through `AttentionWeb.setArtifactLink`; without it the card shows the paths as text (ADR 0200). Prompts, descriptions, and
   previews render with `Markdown` from `@pi-spore/ui` (react-markdown with remark-gfm; no raw HTML; links open in
   a new tab; images show as links, ADR 0061); the same dialog card as the chat (from the agents web interface `AgentsWebKey`); a failure with its error;
   a finished agent with Open chat and Dismiss. The inbox also has `interrupted`: jobs a restart cut off (section
@@ -1689,6 +1696,9 @@ See [ADR 0070](decisions/0070-artifacts-per-workspace-and-project.md). Requireme
   `<iframe sandbox="">` (no scripts, no same origin), and shows other text as code. In the chat, a link to a local
   `.md` or `.markdown` file opens the same viewer in a dialog through the `view` route. The agents module offers this
   slot as `AgentsWeb.setFileLink`; without it the link stays plain.
+- The artifacts web module (requires `workspaces`, `agents`, `attention`) also sets `AttentionWeb.setArtifactLink`:
+  a question's Read button opens the file in the same viewer in a dialog, through the `file` route of its scope.
+  Escape closes only the dialog, so the question keeps its step and draft (ADR 0200).
 
 ## 11g. Agent graph
 

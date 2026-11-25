@@ -16,6 +16,7 @@ import {
   type InboxWorkspace,
   itemHref,
   itemKey,
+  type LinkedArtifact,
   notification,
   PushFocusRequest,
   type PushPayload,
@@ -87,6 +88,9 @@ const MIGRATIONS = [
     label TEXT NOT NULL,
     created_at INTEGER NOT NULL
   )`,
+  // A JSON array of LinkedArtifact (ADR 0200). NULL for none, so the rows written before it still load. Migrations
+  // go by position, so a new one always goes last; see the upgrade test in modules/bridge/src/bridge.test.ts.
+  "ALTER TABLE attention_questions ADD COLUMN artifacts TEXT",
 ];
 
 interface SubscriptionRow {
@@ -165,6 +169,8 @@ interface Row {
   recommended: number | null;
   /** A JSON array of QuestionStep, written only by this module. */
   steps: string | null;
+  /** A JSON array of LinkedArtifact, written only by this module. */
+  artifacts: string | null;
   state: "open" | "answered" | "closed";
   answer: string | null;
   created_at: number;
@@ -200,6 +206,15 @@ function readSteps(row: Row): QuestionStep[] {
   }
 }
 
+/** The question's artifact links (ADR 0200); `file` wrote the JSON, so a parse failure means a broken row. */
+function readArtifacts(row: Row): LinkedArtifact[] {
+  try {
+    return JSON.parse(row.artifacts ?? "[]") as LinkedArtifact[];
+  } catch {
+    throw new Error(`Question ${row.id} has broken artifacts in the store`);
+  }
+}
+
 const toQuestion = (row: Row): Question => ({
   id: row.id,
   agentId: row.agent_id,
@@ -208,6 +223,7 @@ const toQuestion = (row: Row): Question => ({
   ...(row.choices === null ? {} : { choices: readChoices(row) }),
   ...(row.recommended === null ? {} : { recommended: row.recommended }),
   steps: readSteps(row),
+  ...(row.artifacts === null ? {} : { artifacts: readArtifacts(row) }),
   state: row.state,
   ...(row.answer === null ? {} : { answer: row.answer }),
   createdAt: row.created_at,
@@ -615,6 +631,11 @@ export const createAttentionModule = ({
             throw new ApiError(400, "bad_question", `Step ${index + 1}: option labels must differ`);
         }
         const workspace = workspaces.get(caller.workspaceId);
+        // The caller checked the files exist; here each link gets the folder that owns it.
+        const artifacts = request.artifacts?.map((artifact) => ({
+          ...artifact,
+          ownerId: artifact.scope === "workspace" ? workspace.id : workspace.projectId,
+        }));
         const row: Row = {
           id: host.newId(),
           agent_id: caller.agentId,
@@ -623,14 +644,15 @@ export const createAttentionModule = ({
           choices: choices ? JSON.stringify(choices) : null,
           recommended: recommended ?? null,
           steps: steps ? JSON.stringify(steps) : null,
+          artifacts: artifacts ? JSON.stringify(artifacts) : null,
           state: "open",
           answer: null,
           created_at: host.now(),
           answered_at: null,
         };
         host.store.run(
-          `INSERT INTO attention_questions (id, agent_id, workspace_id, question, choices, recommended, steps, state, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
+          `INSERT INTO attention_questions (id, agent_id, workspace_id, question, choices, recommended, steps, artifacts, state, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'open', ?)`,
           row.id,
           row.agent_id,
           row.workspace_id,
@@ -638,6 +660,7 @@ export const createAttentionModule = ({
           row.choices,
           row.recommended,
           row.steps,
+          row.artifacts,
           row.created_at,
         );
         changed();

@@ -223,6 +223,8 @@ section, update this map in the same change.
   replaces it. Accepted.
 - [0199](decisions/0199-proof-by-breaking-the-code.md): A test's proof may come from code broken on purpose; the
   brief suggests the tests. Accepted.
+- [0200](decisions/0200-questions-link-to-artifacts.md): Questions link to artifacts; a Read button opens the file
+  over the page. Accepted.
 
 ## Spikes
 

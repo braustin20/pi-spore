@@ -2,6 +2,7 @@ import { execFileSync } from "node:child_process";
 import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { DatabaseSync } from "node:sqlite";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import { type AgentEvent, createAgentsModule } from "@pi-spore/mod-agents/server";
@@ -323,6 +324,157 @@ describe("request_human_input", () => {
     expect(question).not.toHaveProperty("recommended");
     const [item] = (await inbox(server)).items;
     expect((item as { question: Question }).question).not.toHaveProperty("recommended");
+  });
+
+  // ADR 0200: a question can point at the files the user should read first.
+  it("files a question with artifact links and keeps them through the answer", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "ask-links");
+    const call = asAgent(server, agentId, workspaceId);
+    const { workspace: home } = await json<{ workspace: { projectId: string } }>(
+      await server.request("GET", `/api/workspaces/${workspaceId}`),
+    );
+    await json(
+      await call("POST", "artifacts", {
+        scope: "workspace",
+        path: "plans/auth.md",
+        content: "# Plan",
+      }),
+    );
+    await json(
+      await call("POST", "artifacts", {
+        scope: "project",
+        path: "decisions.md",
+        content: "shared",
+      }),
+    );
+
+    const linked = [
+      { scope: "workspace", path: "plans/auth.md", label: "plan", ownerId: workspaceId },
+      { scope: "project", path: "decisions.md", ownerId: home.projectId },
+    ];
+    const filed = await json<{ question: Question }>(
+      await call("POST", "questions", {
+        question: "Which way?",
+        artifacts: [
+          { scope: "workspace", path: "plans/auth.md", label: "plan" },
+          { scope: "project", path: "decisions.md" },
+        ],
+      }),
+      201,
+    );
+    expect(filed.question.artifacts).toEqual(linked);
+
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question.artifacts).toEqual(linked);
+    const stored = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${filed.question.id}`),
+    );
+    expect(stored.question.artifacts).toEqual(linked);
+
+    await json(
+      await server.request("POST", `/api/attention/questions/${filed.question.id}/answer`, {
+        answer: "The plan",
+      }),
+    );
+    const answered = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${filed.question.id}`),
+    );
+    expect(answered.question).toMatchObject({ state: "answered", answer: "The plan" });
+    expect(answered.question.artifacts).toEqual(linked);
+  });
+
+  it("refuses a question whose artifact file does not exist, and files nothing", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "ask-no-file");
+    const call = asAgent(server, agentId, workspaceId);
+    await json(
+      await call("POST", "artifacts", {
+        scope: "workspace",
+        path: "plans/here.md",
+        content: "# Here",
+      }),
+    );
+
+    const response = await call("POST", "questions", {
+      question: "Which way?",
+      artifacts: [{ scope: "project", path: "plans/gone.md" }],
+    });
+    expect(response.status).toBe(400);
+    const body = (await response.json()) as { error: { code: string; message: string } };
+    expect(body.error.code).toBe("artifact_not_found");
+    expect(body.error.message).toContain("plans/gone.md");
+    expect((await inbox(server)).items).toEqual([]);
+  });
+
+  it("lists a question with no artifacts key when the agent linked none", async () => {
+    const server = await start();
+    const { agentId, workspaceId } = await workspace(server, "ask-plain");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", {
+        question: "Which color?",
+        choices: ["red", "blue"],
+      }),
+      201,
+    );
+    expect(question).not.toHaveProperty("artifacts");
+    const [item] = (await inbox(server)).items;
+    expect((item as { question: Question }).question).not.toHaveProperty("artifacts");
+    const stored = await json<{ question: Question }>(
+      await server.request("GET", `/api/attention/questions/${question.id}`),
+    );
+    expect(stored.question).not.toHaveProperty("artifacts");
+  });
+
+  // Migrations go by array position (store.ts), so a new one must go last. A store that already ran the push
+  // subscriptions migration must not run it again.
+  it("opens a store from before the artifacts column and files links into it", async () => {
+    const home = join(scratch, "ask-upgrade");
+    const server = await start({ home });
+    const { agentId, workspaceId } = await workspace(server, "upgrade");
+    const { question } = await json<{ question: Question }>(
+      await asAgent(server, agentId, workspaceId)("POST", "questions", {
+        question: "Which color?",
+        choices: ["red", "blue"],
+      }),
+      201,
+    );
+    const entry = servers.pop();
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    // Put the store back to the one of the release before this column: attention at version 7.
+    const db = new DatabaseSync(server.paths.database);
+    db.exec(`
+      ALTER TABLE attention_questions DROP COLUMN artifacts;
+      DELETE FROM core_migrations WHERE module = 'attention' AND version >= 8;
+    `);
+    db.close();
+
+    const upgraded = await start({ home, firstId: 1_000 });
+    const stored = await json<{ question: Question }>(
+      await upgraded.request("GET", `/api/attention/questions/${question.id}`),
+    );
+    expect(stored.question).toMatchObject({ id: question.id, state: "open" });
+    expect(stored.question).not.toHaveProperty("artifacts");
+
+    const call = asAgent(upgraded, agentId, workspaceId);
+    await json(
+      await call("POST", "artifacts", { scope: "project", path: "note.md", content: "shared" }),
+    );
+    const { workspace: parent } = await json<{ workspace: { projectId: string } }>(
+      await upgraded.request("GET", `/api/workspaces/${workspaceId}`),
+    );
+    const linked = await json<{ question: Question }>(
+      await call("POST", "questions", {
+        question: "Read the note?",
+        artifacts: [{ scope: "project", path: "note.md" }],
+      }),
+      201,
+    );
+    expect(linked.question.artifacts).toEqual([
+      { scope: "project", path: "note.md", ownerId: parent.projectId },
+    ]);
   });
 
   it.each([

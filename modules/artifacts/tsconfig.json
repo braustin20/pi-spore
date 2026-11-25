@@ -15,6 +15,7 @@
     { "path": "../projects" },
     { "path": "../workspaces" },
     { "path": "../agents" },
+    { "path": "../attention" },
     { "path": "../vcs-git" },
     { "path": "../vcs-folder" },
     { "path": "../../packages/server-core" }

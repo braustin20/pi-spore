@@ -35,7 +35,7 @@ import {
 } from "react";
 import { chatAsks, chatWaits, createInboxStore, type InboxStore } from "./inbox-store.js";
 import { BlockedChip, PhonePushButton } from "./phone-push.js";
-import { QuestionCard } from "./question-card.js";
+import { QuestionCard, setArtifactLink } from "./question-card.js";
 import { type ApprovalViewProps, AttentionWebKey } from "./web-contract.js";
 
 export * from "./web-contract.js";
@@ -531,6 +531,7 @@ export const attentionWeb: WebModule = {
         approvalViews.set(kind, view);
       },
       DeclineNote,
+      setArtifactLink,
     });
     host.addPage({
       path: "/",

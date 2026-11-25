@@ -4,7 +4,10 @@ import type { Static, TSchema } from "typebox";
 
 /** Questions agents file for the user (R3.5, ADR 0008), for the bridge module. */
 export interface Questions {
-  /** Files an open question from the calling agent. It shows on Home until the user answers it. */
+  /**
+   * Files an open question from the calling agent. It shows on Home until the user answers it.
+   * The caller checks that the request's `artifacts` exist; this only records their paths.
+   */
   file(caller: BridgeCaller, request: FileQuestionRequest): Question;
 }
 

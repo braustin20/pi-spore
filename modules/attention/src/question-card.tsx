@@ -4,6 +4,14 @@ import { Button, Chip, cn, Markdown, Textarea } from "@pi-spore/ui";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import Type, { type Static } from "typebox";
 import { Check } from "typebox/value";
+import type { ArtifactLink } from "./web-contract.js";
+
+let ArtifactLinkView: ArtifactLink | undefined;
+
+/** `undefined` clears it, so a test can show the plain paths again. */
+export function setArtifactLink(component: ArtifactLink | undefined): void {
+  ArtifactLinkView = component;
+}
 
 /**
  * The user's unsent answer to one step. `picked`: the chosen labels of a select (at most one) or multiselect step.
@@ -136,13 +144,29 @@ export function QuestionCard({
     <div
       className="flex flex-col gap-2.5"
       onKeyDown={(event) => {
-        if (event.key === "Escape") back();
+        // A dialog the card opens, such as a linked file, sits in a portal; its Escape only closes it.
+        if (event.key === "Escape" && event.currentTarget.contains(event.target as Node)) back();
       }}
     >
       {steps.length > 1 && (
         <span className="text-xs text-muted">
           Step {index + 1} of {steps.length}
         </span>
+      )}
+      {question.artifacts && question.artifacts.length > 0 && (
+        <div className="flex flex-wrap gap-2">
+          {question.artifacts.map((artifact) =>
+            ArtifactLinkView ? (
+              <ArtifactLinkView key={`${artifact.scope}:${artifact.path}`} artifact={artifact}>
+                {`Read ${artifact.label ?? artifact.path.slice(artifact.path.lastIndexOf("/") + 1)}`}
+              </ArtifactLinkView>
+            ) : (
+              <code key={`${artifact.scope}:${artifact.path}`} className="text-xs">
+                {artifact.path}
+              </code>
+            ),
+          )}
+        </div>
       )}
       <Markdown text={step.prompt} className="text-sm" />
       {step.type === "text" && (

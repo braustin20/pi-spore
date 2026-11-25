@@ -7,6 +7,7 @@ import type { ComponentType } from "react";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { setArtifactLink } from "./question-card.js";
 import { attentionWeb } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -254,6 +255,39 @@ describe("the choices of a question on Home", () => {
     expect(send).toHaveBeenCalledWith("POST", "attention/questions/Q1/answer", {
       answers: [{ type: "select", label: "red" }],
     });
+  });
+});
+
+describe("the files a question links", () => {
+  const linked = question({
+    artifacts: [
+      { scope: "project", ownerId: "P1", path: "plans/question.md", label: "plan" },
+      { scope: "workspace", ownerId: "W1", path: "briefs/02-web.md" },
+    ],
+  });
+  afterEach(() => setArtifactLink(undefined));
+
+  it("shows a Read button for each, named by its label or its file name", async () => {
+    setArtifactLink(({ artifact, children }) => (
+      <button type="button" data-path={artifact.path}>
+        {children}
+      </button>
+    ));
+    const { container } = await render(linked);
+    const links = [...container.querySelectorAll("button[data-path]")];
+    expect(links.map((link) => [link.getAttribute("data-path"), link.textContent])).toEqual([
+      ["plans/question.md", "Read plan"],
+      ["briefs/02-web.md", "Read 02-web.md"],
+    ]);
+  });
+
+  it("shows the paths as text while no module sets a link", async () => {
+    const { container } = await render(linked);
+    expect([...container.querySelectorAll("code")].map((code) => code.textContent)).toEqual([
+      "plans/question.md",
+      "briefs/02-web.md",
+    ]);
+    expect(container.textContent).not.toContain("Read ");
   });
 });
 
