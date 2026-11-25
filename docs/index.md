@@ -232,6 +232,8 @@ section, update this map in the same change.
 
 - [hermes-setup.md](spikes/hermes-setup.md): runbook and evidence for the Hermes API server of profile
   `homelab-maintainer`, reachable from the desktop over Tailscale only. (card Hermes 0.1)
+- [hermes-protocol.md](spikes/hermes-protocol.md): how the Hermes API server really behaves (runs, SSE,
+  approvals, sessions, version) and which Hermes-to-Pi channel to use. (card Hermes 0.2)
 - [pi-lens-value.md](spikes/pi-lens-value.md): is pi-lens worth its memory cost for pi-spore agents? (ADR 0025)
 - [q1-rpc-agents.md](spikes/q1-rpc-agents.md): does `pi --mode rpc` load the whole Pi setup, do dialogs reach the
   client, and how much memory does an agent use? (ADR 0002)
