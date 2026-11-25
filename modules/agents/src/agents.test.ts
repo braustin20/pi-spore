@@ -379,7 +379,7 @@ describe("agents", () => {
     await until(() => piTypes(agentId).includes("agent_settled"));
   });
 
-  it("reads the context meter on the turn_end after a read failed", async () => {
+  it("takes a new context read on the turn_end after a read failed", async () => {
     const broken = join(scratch, "stats-broken");
     await setup({}, { FAKE_PI_STATS_FAIL: broken });
     const { agentId, folder } = await makeAgent();
@@ -391,17 +391,19 @@ describe("agents", () => {
 
     await json(await prompt(agentId, "turns:2"));
     await until(() => turnEnds(agentId) === 1);
-    // The start-up read and the turn's read both failed, and that stays silent: the page has no reading yet.
     await until(() => statsRequests(broken) === 2, 2_000);
+    // The record only says fake Pi took that read. It answers stdin in order, so a commands round trip lands after
+    // the failed read's answer, and the manager has run that read's cleanup once the answer is back here.
+    await json(await server.request("GET", `/api/agents/${agentId}/commands`));
+    // Both reads so far failed, the start-up one and this turn's, and that stays silent: no reading on the page.
     expect(meterReads(agentId)).toEqual([]);
 
-    // A failed read lets go of its guard too, so the next turn reads again. Reads 1 and 2 failed, so the reading that
-    // lands names read 3.
-    rmSync(broken);
+    // A failed read lets go of its guard, so the next turn reads again. The failure file stays, so the reads are
+    // one per turn and all fail: 1 at start-up, 2 for the first turn, 3 for the second.
     rmSync(step);
     await until(() => turnEnds(agentId) === 2);
-    await until(async () => (await meter(agentId))?.tokens === 3000, 2_000);
-    expect(meterReads(agentId)).toHaveLength(1);
+    await until(() => statsRequests(broken) === 3, 2_000);
+    expect(meterReads(agentId)).toEqual([]);
 
     rmSync(settle);
     await until(() => piTypes(agentId).includes("agent_settled"));
