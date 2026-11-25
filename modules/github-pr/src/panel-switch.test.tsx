@@ -93,8 +93,10 @@ afterEach(() => {
 /** w1's PR status answers at once; w2's waits for the test. */
 async function render() {
   let answerW2: (status: PrStatus) => void = () => {};
-  const w2 = new Promise<PrStatus>((resolve) => {
+  let failW2: (reason: unknown) => void = () => {};
+  const w2 = new Promise<PrStatus>((resolve, reject) => {
     answerW2 = resolve;
+    failW2 = reject;
   });
   const api = {
     get: async (path: string) => {
@@ -127,7 +129,12 @@ async function render() {
   await show("w1");
   const page = container;
   const text = () => page.textContent ?? "";
-  return { show, text, answerW2: (shown: PrStatus) => act(async () => answerW2(shown)) };
+  return {
+    show,
+    text,
+    answerW2: (shown: PrStatus) => act(async () => answerW2(shown)),
+    failW2: (reason: Error) => act(async () => failW2(reason)),
+  };
 }
 
 describe("the PR panel when the workspace changes", () => {
@@ -151,5 +158,14 @@ describe("the PR panel when the workspace changes", () => {
     expect(text()).toContain("Loading workspace");
     await answerW2(status("w2", false));
     expect(text()).not.toContain("Loading workspace");
+  });
+
+  it("drops the spinner when the status fails to load", async () => {
+    const { show, text, failW2 } = await render();
+    await show("w2");
+    expect(text()).toContain("Loading workspace");
+    await failW2(new Error("GitHub is down"));
+    expect(text()).not.toContain("Loading workspace");
+    expect(text()).not.toContain("#12");
   });
 });

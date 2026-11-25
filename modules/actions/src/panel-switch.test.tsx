@@ -63,17 +63,26 @@ afterEach(() => {
   localStorage.clear();
 });
 
-/** w1's action list answers at once; w2's waits for the test. */
-async function render() {
-  let answerW2: (body: unknown) => void = () => {};
-  const w2 = new Promise<unknown>((resolve) => {
-    answerW2 = resolve;
+function deferred<T>() {
+  let resolve: (value: T) => void = () => {};
+  let reject: (reason: unknown) => void = () => {};
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
   });
+  return { promise, resolve, reject };
+}
+
+/** w1's list and runs answer at once; w2's wait for the test. */
+async function render() {
+  const w2List = deferred<unknown>();
+  const w2Runs = deferred<unknown>();
   const api = {
     get: async (path: string) => {
       if (path === "actions/workspaces/w1") return list("build");
-      if (path === "actions/workspaces/w2") return w2;
-      if (path.startsWith("actions/workspaces/")) return { runs: [] };
+      if (path === "actions/workspaces/w1/runs") return { runs: [] };
+      if (path === "actions/workspaces/w2") return w2List.promise;
+      if (path === "actions/workspaces/w2/runs") return w2Runs.promise;
       if (path === "projects/settings") return { settings: [] };
       return { projects: [project] };
     },
@@ -104,28 +113,61 @@ async function render() {
     [...page.querySelectorAll("button")]
       .map((button) => button.getAttribute("aria-label"))
       .filter((label) => label?.startsWith("Run "));
-  const text = () => page.textContent ?? "";
-  return { show, runButtons, text, answerW2: (body: unknown) => act(async () => answerW2(body)) };
+  const loading = () => (page.textContent ?? "").includes("Loading workspace");
+  const settle = (work: () => void) => act(async () => work());
+  return { show, runButtons, loading, settle, w2List, w2Runs };
 }
 
 describe("the Actions panel when the workspace changes", () => {
   it("shows no Run button of the old workspace until the new list answers", async () => {
-    const { show, runButtons, answerW2 } = await render();
+    const { show, runButtons, settle, w2List } = await render();
     expect(runButtons()).toEqual(["Run build"]);
 
     await show("w2");
     expect(runButtons()).toEqual([]);
 
-    await answerW2(list("test"));
+    await settle(() => w2List.resolve(list("test")));
     expect(runButtons()).toEqual(["Run test"]);
   });
+});
 
-  it("drops the loading spinner once the list and the runs have answered", async () => {
-    const { show, text, answerW2 } = await render();
-    expect(text()).not.toContain("Loading workspace");
+describe("the Details spinner while the Actions panel loads", () => {
+  it("is gone only when the list and the runs have both answered", async () => {
+    const { show, loading, settle, w2List, w2Runs } = await render();
+    expect(loading()).toBe(false);
+
     await show("w2");
-    expect(text()).toContain("Loading workspace");
-    await answerW2(list("test"));
-    expect(text()).not.toContain("Loading workspace");
+    expect(loading()).toBe(true);
+    await settle(() => w2List.resolve(list("test")));
+    expect(loading()).toBe(true);
+    await settle(() => w2Runs.resolve({ runs: [] }));
+    expect(loading()).toBe(false);
+  });
+
+  it("is gone when the runs answered first and the list answers last", async () => {
+    const { show, loading, settle, w2List, w2Runs } = await render();
+    await show("w2");
+    await settle(() => w2Runs.resolve({ runs: [] }));
+    expect(loading()).toBe(true);
+    await settle(() => w2List.resolve(list("test")));
+    expect(loading()).toBe(false);
+  });
+
+  it("is gone when the list fails and the runs answer", async () => {
+    const { show, loading, settle, w2List, w2Runs } = await render();
+    await show("w2");
+    await settle(() => w2Runs.resolve({ runs: [] }));
+    expect(loading()).toBe(true);
+    await settle(() => w2List.reject(new Error("no config")));
+    expect(loading()).toBe(false);
+  });
+
+  it("is gone when the runs fail and the list answers", async () => {
+    const { show, loading, settle, w2List, w2Runs } = await render();
+    await show("w2");
+    await settle(() => w2List.resolve(list("test")));
+    expect(loading()).toBe(true);
+    await settle(() => w2Runs.reject(new Error("no runs")));
+    expect(loading()).toBe(false);
   });
 });
