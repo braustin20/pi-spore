@@ -21,6 +21,10 @@
 //                  even while streaming
 //   "agent-start-again"  writes a second `agent_start` in the open run, as Pi does when it retries or compacts and
 //                  continues before `agent_settled`. Runs as a command, even while streaming
+//   "turns:<n>"    answers in <n> turns of one run: each of the first n-1 writes its own assistant message and a
+//                  `turn_end`, and the echo reply is the last turn with its own `turn_end`. The run then holds before
+//                  `agent_end` / `agent_settled` while a `.fake-pi-hold-settle` file is in the workspace, so a test
+//                  can read state mid-run.
 //   "/subagents-inspect-rpc <request> <run> [child] --lines N"  answers with a `subagent-inspect` widget for a known
 //                  run, or a not_found error reply, then clears the widget; runs as a command, even while streaming
 // Stage agents (PI_SPORE_CHAT_KIND=stage) with FAKE_PI_SCRIPT=<file>: the file is JSON such as
@@ -59,8 +63,11 @@
 // FAKE_PI_REFUSE_FILE=<file>: while the file exists, every prompt fails with the file's text, as Pi refuses a prompt
 // for a provider with no API key. The process stays up and idle.
 // A `.fake-pi-hold-turn` file in the workspace holds accepted prompts before their first event until removed.
+// FAKE_PI_STATS_GATE=<file>: while the file exists, every `get_session_stats` answer waits until it goes. Each
+//   request appends a line to `<file>.requests`, so a test counts reads. The reply's tokens and percent grow with the
+//   read count, so a test tells a new read from the start-up one.
 import { appendFileSync, existsSync, mkdirSync, readFileSync, watch, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { FAKE_PNG } from "./png.mjs";
 
 const argv = process.argv.slice(2);
@@ -159,6 +166,8 @@ let model = {
   input: ["text", "image"],
 };
 let thinkingLevel = arg("--thinking") ?? "medium";
+/** The `get_session_stats` reads taken so far, so every reply names a different usage. */
+let statsReads = 0;
 let streaming = false;
 let abortRun = null;
 /** Set while a `bash:<command>` run waits for its `bash-done` command. */
@@ -252,6 +261,19 @@ const fail = (id, command, error) =>
   write({ id, type: "response", command, success: false, error });
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
+/** Resolves once <file> is gone. It watches the folder, so a test's rmSync releases the wait at once. */
+const waitUntilGone = (file) =>
+  new Promise((resolve) => {
+    const released = () => {
+      if (!existsSync(file)) {
+        watcher.close();
+        resolve();
+      }
+    };
+    const watcher = watch(dirname(file), released);
+    released();
+  });
+
 /** Pi's ImageContent check: refuses what Pi would refuse. */
 const badImages = (images) =>
   images !== undefined &&
@@ -263,6 +285,22 @@ const badImages = (images) =>
         !/^[A-Za-z0-9+/]+={0,2}$/.test(image.data) ||
         typeof image.mimeType !== "string",
     ));
+
+/** An assistant text message, as Pi writes one: `message_start`, `message_end`, then the session file. */
+function assistantTextMessage(text) {
+  const message = {
+    role: "assistant",
+    content: [{ type: "text", text }],
+    provider: model.provider,
+    model: model.id,
+    stopReason: "stop",
+    timestamp: ++clock,
+  };
+  write({ type: "message_start", message });
+  write({ type: "message_end", message });
+  appendMessage(message);
+  return message;
+}
 
 /** The assistant message that holds a tool call, written before the tool runs. */
 function toolCallMessage(call) {
@@ -483,18 +521,7 @@ async function run(text, images = []) {
     aborted = true;
   };
   const gate = join(process.cwd(), ".fake-pi-hold-turn");
-  if (existsSync(gate)) {
-    await new Promise((resolve) => {
-      const released = () => {
-        if (!existsSync(gate)) {
-          watcher.close();
-          resolve();
-        }
-      };
-      const watcher = watch(process.cwd(), released);
-      released();
-    });
-  }
+  if (existsSync(gate)) await waitUntilGone(gate);
   write({ type: "agent_start" });
   const user = {
     role: "user",
@@ -504,6 +531,16 @@ async function run(text, images = []) {
   write({ type: "message_start", message: user });
   write({ type: "message_end", message: user });
   appendMessage(user);
+
+  // A `turns:<n>` run answers in <n> turns, each ending with a `turn_end`. The echo reply below is the last turn.
+  const turns = text.startsWith("turns:") ? Number(text.slice("turns:".length)) : 0;
+  for (let turn = 1; turn < turns; turn++) {
+    write({
+      type: "turn_end",
+      message: assistantTextMessage(`turn ${turn} of ${turns}`),
+      toolResults: [],
+    });
+  }
 
   let reply = images.length > 0 ? `echo: ${text} [${images.length} images]` : `echo: ${text}`;
   if (text === "screenshot") {
@@ -583,6 +620,11 @@ async function run(text, images = []) {
     write({ type: "message_end", message: stopped });
     appendMessage(stopped);
   }
+  if (turns > 0 && !aborted) {
+    write({ type: "turn_end", message: final, toolResults: [] });
+    // Hold the run here, so a test reads what the turns produced while it is still open.
+    await waitUntilGone(join(process.cwd(), ".fake-pi-hold-settle"));
+  }
   streaming = false;
   abortRun = null;
   write({ type: "agent_end", messages: [] });
@@ -598,7 +640,7 @@ async function run(text, images = []) {
   }
 }
 
-const handle = (command) => {
+const handle = async (command) => {
   const { id, type } = command;
   switch (type) {
     case "get_state":
@@ -709,11 +751,23 @@ const handle = (command) => {
       });
     case "get_available_thinking_levels":
       return respond(id, type, { levels: ["off", "low", "medium", "high"] });
-    case "get_session_stats":
+    case "get_session_stats": {
+      statsReads++;
+      const gate = process.env.FAKE_PI_STATS_GATE;
+      if (gate) {
+        appendFileSync(`${gate}.requests`, `${JSON.stringify({ reads: statsReads })}\n`);
+        await waitUntilGone(gate);
+      }
+      // Tokens and percent grow with the read, so a test tells a new read from an old one.
       return respond(id, type, {
         sessionFile,
-        contextUsage: { tokens: 1234, contextWindow: model.contextWindow, percent: 1.2 },
+        contextUsage: {
+          tokens: 1000 * statsReads,
+          contextWindow: model.contextWindow,
+          percent: statsReads,
+        },
       });
+    }
     case "get_commands":
       return respond(id, type, {
         commands: [{ name: "review", description: "Review the diff", source: "prompt" }],
@@ -744,7 +798,7 @@ if (process.env.FAKE_PI_HANG === "1") {
       const command = line.trim() ? parseJson(line, "stdin") : undefined;
       if (command?.parseError)
         write({ type: "response", success: false, error: command.parseError });
-      else if (command) handle(command);
+      else if (command) void handle(command);
       newline = buffer.indexOf("\n");
     }
   });
