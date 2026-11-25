@@ -147,6 +147,8 @@ const MIGRATIONS = [
   "ALTER TABLE pipelines_turns ADD COLUMN attempts INTEGER NOT NULL DEFAULT 1",
   // Retry asked the turn's agent to continue; the failure text waits here until `await` sends the continue message.
   "ALTER TABLE pipelines_turns ADD COLUMN retry_error TEXT",
+  // The turn got the one "your model call failed" nudge (ADR 0201), so a second server error blocks; Retry clears it.
+  "ALTER TABLE pipelines_turns ADD COLUMN error_nudged INTEGER NOT NULL DEFAULT 0",
 ];
 
 /** The approval kind filed when a review stage uses its last round on a REVISE (R6.4). */
@@ -225,6 +227,7 @@ interface TurnRow {
   commit_reminded: number;
   attempts: number;
   retry_error: string | null;
+  error_nudged: number;
   model: string | null;
   created_at: number;
   reported_at: number | null;
@@ -594,6 +597,22 @@ const answerMessage = (question: QuestionRow, answer: string) =>
 
 const endedMessage = (turnId: string) =>
   `You ended your turn without calling report. Finish the work, then call report with this turn.\n\nTurn: ${turnId}`;
+
+/**
+ * A model server error that is a usage limit blocks at once: the limit resets only after hours, so a nudge would
+ * fail the same way (ADR 0201). The words follow pi-ai's `NON_RETRYABLE_PROVIDER_LIMIT_ERROR_PATTERN`.
+ */
+const PROVIDER_LIMIT_ERROR =
+  /usage.?limit|quota|billing|out of budget|available balance|insufficient_quota/i;
+
+/** The one nudge of ADR 0201: the same agent goes on after a model server error. */
+const errorNudgeMessage = (turnId: string, failure: string) =>
+  [
+    `Your model call failed: ${failure}.`,
+    "Check where you stopped (git status, your last tool results), then finish the turn and call report with this turn.",
+    "",
+    `Turn: ${turnId}`,
+  ].join("\n");
 
 export const pipelinesModule: ServerModule = {
   id: "pipelines",
@@ -1781,7 +1800,7 @@ export const pipelinesModule: ServerModule = {
           commit: () => {
             for (const turn of continued) {
               host.store.run(
-                "UPDATE pipelines_turns SET attempts = attempts + 1, reminded = 0, retry_error = NULL WHERE id = ?",
+                "UPDATE pipelines_turns SET attempts = attempts + 1, reminded = 0, retry_error = NULL, error_nudged = 0 WHERE id = ?",
                 turn.id,
               );
               agents.deliver(
@@ -1793,11 +1812,21 @@ export const pipelinesModule: ServerModule = {
           },
         });
       }
+      // A live agent whose model call failed gets one nudge to go on before the stage blocks (ADR 0201).
+      const nudge: { turn: TurnRow; error: string }[] = [];
       for (const turn of open) {
         const failure = await agents.turnError(turn.agent_id);
         const paused = holdIfPaused();
         if (paused) return paused;
         if (failure !== undefined) {
+          if (
+            failure.provider !== undefined &&
+            turn.error_nudged === 0 &&
+            !PROVIDER_LIMIT_ERROR.test(failure.error)
+          ) {
+            nudge.push({ turn, error: failure.error });
+            continue;
+          }
           throw new Error(
             failure.provider === undefined
               ? failedMessage(turn, `failed: ${failure.error}`)
@@ -1842,6 +1871,10 @@ export const pipelinesModule: ServerModule = {
           for (const turn of remind) {
             host.store.run("UPDATE pipelines_turns SET reminded = 1 WHERE id = ?", turn.id);
             agents.deliver(turn.agent_id, endedMessage(turn.id));
+          }
+          for (const { turn, error } of nudge) {
+            host.store.run("UPDATE pipelines_turns SET error_nudged = 1 WHERE id = ?", turn.id);
+            agents.deliver(turn.agent_id, errorNudgeMessage(turn.id, error));
           }
         },
       });
