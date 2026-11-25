@@ -25,7 +25,7 @@ let container: HTMLElement | undefined;
 afterEach(() => container?.remove());
 
 async function renderLog(status: ActionRun["status"], text: string) {
-  let panel: ComponentType<{ workspace: Workspace }> | undefined;
+  let panel: ComponentType<{ workspace: Workspace; onLoaded: () => void }> | undefined;
   actionsWeb.setup({
     use: () => ({ addPanel: (added: { component: typeof panel }) => (panel = added.component) }),
   } as unknown as WebHost);
@@ -52,7 +52,7 @@ async function renderLog(status: ActionRun["status"], text: string) {
   await act(async () => {
     createRoot(container as HTMLElement).render(
       <ApiContext value={api}>
-        <Panel workspace={workspace} />
+        <Panel workspace={workspace} onLoaded={() => {}} />
       </ApiContext>,
     );
   });

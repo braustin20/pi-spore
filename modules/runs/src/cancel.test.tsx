@@ -31,7 +31,7 @@ let container: HTMLElement | undefined;
 afterEach(() => container?.remove());
 
 async function render(shown: Run) {
-  let panel: ComponentType<{ workspace: Workspace }> | undefined;
+  let panel: ComponentType<{ workspace: Workspace; onLoaded: () => void }> | undefined;
   const view = { addPanel: (added: { component: typeof panel }) => (panel = added.component) };
   runsWeb.setup({
     use: () => ({ ...view, addApprovalView: () => {}, DeclineNote: NoNote }),
@@ -54,7 +54,7 @@ async function render(shown: Run) {
   await act(async () => {
     createRoot(container as HTMLElement).render(
       <ApiContext value={api}>
-        <Panel workspace={workspace} />
+        <Panel workspace={workspace} onLoaded={() => {}} />
       </ApiContext>,
     );
   });
