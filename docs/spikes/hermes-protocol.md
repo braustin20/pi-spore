@@ -5,9 +5,8 @@
 - Target: Hermes API server on the tailnet node `hermes-docker`, port `8642`, profile `homelab-maintainer`
   (`/p/homelab-maintainer/...`).
 - Hermes version on the target: **0.23.3** (release date 2026.9.24), probed from the public `/health`.
-- Status: **draft. Live checks partly blocked.** The desktop has no key file
-  `~/.pi-spore/hermes/homelab-maintainer.key`, so no probe that needs the bearer key has run yet. See
-  [Live checks blocked](#live-checks-blocked).
+- Status: **draft. Live checks blocked.** `homelab-maintainer` has no working API key yet. No probe that needs
+  the bearer key has run. See [Live checks blocked](#live-checks-blocked).
 
 ## How each answer is marked
 
@@ -20,8 +19,21 @@
 
 ## Live checks blocked
 
-These need the key. They stay open until the user puts the key file on the desktop (runbook
-[hermes-setup.md](hermes-setup.md), step 2.1, mode `0600`):
+Cause, checked by the user on 2026-11-25:
+
+- `homelab-maintainer`'s profile `.env` has no nonempty `API_SERVER_KEY` line.
+- The running gateway's own (default profile) key gets `401` on `/p/homelab-maintainer/v1/capabilities`. This
+  matches the docs: the default key is refused on a named profile's prefix.
+- The desktop has no key file `~/.pi-spore/hermes/homelab-maintainer.key`.
+
+A `200` from `/p/homelab-maintainer/health` proves only that the URL is reachable. `/health` needs no key. It does
+not prove that any credential works.
+
+To unblock: the user does runbook [hermes-setup.md](hermes-setup.md) steps 2.1 and 1.3 (new key on the desktop,
+same key in the profile `.env`, gateway restart), then check 1 in Part 3 gives `HTTP 200`. The spike changes no
+Hermes config itself.
+
+These checks need that key:
 
 - Q1 the real `GET /v1/capabilities` body on this install.
 - Q2 `POST /v1/runs` with `Idempotency-Key`, replay, and a lookup after a timeout.
@@ -68,8 +80,8 @@ What this shows:
 
 - Hermes runs as its own tailnet node `hermes-docker` (the runbook's "Tailscale for the container" option). Unraid
   (`tower`) publishes no 8642.
-- `homelab-maintainer` is a configured profile with its own key: its prefix answers, an unknown prefix answers
-  `profile_unknown`.
+- `homelab-maintainer` is a known profile: its prefix answers, an unknown prefix answers `profile_unknown`. This
+  says nothing about its key. With no key, its authenticated routes fail closed with `401`.
 - `/api/ws` is not on 8642.
 - **Security finding:** the dashboard on `9119` answers from the desktop over the tailnet. It shows a login page,
   and `/api/status` is public. The 0.1 runbook says 9119 stays on loopback. This spike changes nothing. The user
@@ -176,7 +188,8 @@ Docs and source v0.23.3. Not yet probed.
 - Session-authority body: exactly `{"request_id", "execution_generation", "choice"}`. Any other key is refused
   (`invalid_params`). `execution_generation` comes from `GET /v1/runs/{id}`.
 - pi-spore must only ever send `once` or `deny`. `session` and `always` widen the grant.
-- `approvals.timeout` behavior: not found yet. Live probe needed.
+- `approvals.timeout`: source v0.23.3, default 300 s (`tools/approval_context.py`). On timeout the command is
+  blocked ("timed out without user response"). The run-level event at timeout: live probe needed.
 
 ### 6. Clarify
 
@@ -193,7 +206,8 @@ run_not_active`.
 
 Source v0.23.3. Not yet probed. Routes: `GET/POST /api/sessions`, `GET/PATCH/DELETE /api/sessions/{id}`,
 `GET /api/sessions/{id}/messages`, `POST .../fork`, `.../chat`, `.../chat/stream`, `.../model`. Session rows carry
-`source`; the API stamps `source: "api_server"`. The `409 permission_denied` on a gateway-owned session: still to
+`source`; the API stamps `source: "api_server"`. `GET /api/sessions?source=api_server` filters on it (limit 50,
+max 200). The `409 permission_denied` on a gateway-owned session: still to
 probe.
 
 ### 9. Version check
