@@ -875,19 +875,23 @@ function RightColumn({
   onCollapse: () => void;
 }) {
   const sortedTabs = [...tabs].sort((a, b) => a.order - b.order);
-  const [loaded, setLoaded] = useState<{ workspaceId: string; ids: ReadonlySet<string> }>({
-    workspaceId: workspace.id,
-    ids: new Set(),
-  });
-  // A new workspace starts with no panel loaded, so a late call from the old one's panels finds a different id.
-  if (loaded.workspaceId !== workspace.id) setLoaded({ workspaceId: workspace.id, ids: new Set() });
+  // The panels mount while Details is open, and again for each workspace. Each mount is a new round with no panel
+  // loaded, so a late call from an earlier round finds a different number and changes nothing.
+  const mounted = tab === "details" ? workspace.id : undefined;
+  const [loaded, setLoaded] = useState<{
+    mounted: string | undefined;
+    round: number;
+    ids: ReadonlySet<string>;
+  }>({ mounted, round: 0, ids: new Set() });
+  if (loaded.mounted !== mounted) setLoaded({ mounted, round: loaded.round + 1, ids: new Set() });
   const loading =
-    loaded.workspaceId !== workspace.id || panels.some((panel) => !loaded.ids.has(panel.id));
-  const onLoaded = (workspaceId: string, panelId: string) => () =>
+    mounted !== undefined &&
+    (loaded.mounted !== mounted || panels.some((panel) => !loaded.ids.has(panel.id)));
+  const onLoaded = (round: number, panelId: string) => () =>
     setLoaded((current) =>
-      current.workspaceId !== workspaceId || current.ids.has(panelId)
+      current.round !== round || current.ids.has(panelId)
         ? current
-        : { workspaceId, ids: new Set([...current.ids, panelId]) },
+        : { ...current, ids: new Set([...current.ids, panelId]) },
     );
   return (
     <aside
@@ -964,7 +968,7 @@ function RightColumn({
               <panel.component
                 key={`${panel.id}:${workspace.id}`}
                 workspace={workspace}
-                onLoaded={onLoaded(workspace.id, panel.id)}
+                onLoaded={onLoaded(loaded.round, panel.id)}
               />
             ))}
         </TabsContent>

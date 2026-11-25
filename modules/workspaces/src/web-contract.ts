@@ -12,7 +12,7 @@ import type { ComponentType, ReactNode } from "react";
 /**
  * A section another web module adds to the workspace's right column, such as Actions or Unity. It renders its own
  * `CollapsibleSection`, so it can render nothing when it does not apply (Unity on a non-Unity project). It is
- * mounted again for each workspace.
+ * mounted while the Details tab is open, and again for each workspace.
  */
 export interface WorkspacePanel {
   id: string;
@@ -22,7 +22,7 @@ export interface WorkspacePanel {
     workspace: Workspace;
     /**
      * The panel calls it when its first load ends, with data or with an error. The Details tab shows a spinner
-     * until every panel has.
+     * until every panel has. A call from an earlier mount of the panel changes nothing.
      */
     onLoaded: () => void;
   }>;
