@@ -37,6 +37,7 @@ These checks need that key:
 
 - Q1 the real `GET /v1/capabilities` body on this install.
 - Q2 `POST /v1/runs` with `Idempotency-Key`, replay, and a lookup after a timeout.
+- Q3 `GET /v1/runs/{id}` after a container restart (needs the user to restart, or a natural restart).
 - Q4 the SSE event names, `Last-Event-ID` resume, and the keepalive interval, seen on the wire.
 - Q5 approval request, body, choices, and timeout with the profile's `approvals.mode`.
 - Q6 clarify over `/v1/runs`.
@@ -145,7 +146,7 @@ retry.
 
 ### 3. Run lifetime
 
-Source v0.23.3. The restart probe is skipped by the user's choice (2026-11-25). This answer stays source only.
+Source v0.23.3. Not yet probed.
 
 - Legacy mode: run status lives in memory. A terminal status is kept 3600 s (`_RUN_STATUS_TTL`). A run's SSE
   buffer is swept 300 s after creation when no one listens (`_RUN_STREAM_TTL`), but a live run keeps its status.
