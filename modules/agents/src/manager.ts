@@ -157,6 +157,8 @@ interface Live {
   model?: AgentModel;
   thinkingLevel?: string;
   contextUsage?: ContextUsage;
+  /** The `turn_end` stats read that has no answer yet, so a busy run asks Pi once at a time. */
+  turnStats?: Promise<void>;
   dialogs: Map<string, { dialog: AgentDialog; openedAt: number; timer?: NodeJS.Timeout }>;
   idleTimer?: NodeJS.Timeout;
   /** Background pi-subagents helpers of the running process, from its `subagent-async` widget (ADR 0034). */
@@ -1179,6 +1181,12 @@ export class AgentManager {
       this.setStatus(live, "idle");
       void this.refreshStats(live);
       this.armIdle(live);
+    } else if (event.type === "turn_end") {
+      // One model response and its tool calls. A run that never settles until its work is done, such as a pipeline
+      // worker's, would else show no context until it ends (section 2, Context meter).
+      live.turnStats ??= this.refreshStats(live).finally(() => {
+        delete live.turnStats;
+      });
     } else if (event.type === "thinking_level_changed" && typeof event.level === "string") {
       live.thinkingLevel = event.level;
       this.publishModel(live);
