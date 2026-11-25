@@ -510,8 +510,11 @@ function PrTab({ workspace }: { workspace: Workspace }) {
 }
 
 /** A short PR line in the Details tab, so "waiting for you" shows without opening the PR tab. */
-function PrPanel({ workspace }: { workspace: Workspace }) {
-  const { status } = usePrStatus(workspace, false);
+function PrPanel({ workspace, onLoaded }: { workspace: Workspace; onLoaded: () => void }) {
+  const { status, error } = usePrStatus(workspace, false);
+  useEffect(() => {
+    if (status !== undefined || error !== undefined) onLoaded();
+  }, [status, error, onLoaded]);
   const pr = status?.pr;
   if (!status || !pr) return null;
   const watch = WATCH[status.watch.state];

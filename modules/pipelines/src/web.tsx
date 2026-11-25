@@ -325,8 +325,12 @@ function PipelineTab({ workspace }: { workspace: Workspace }) {
 }
 
 /** A short line in the Details tab: the latest run's state and stage, and what its latest review found. */
-function PipelinePanel({ workspace }: { workspace: Workspace }) {
-  const run = useRuns(workspace.id)?.[0];
+function PipelinePanel({ workspace, onLoaded }: { workspace: Workspace; onLoaded: () => void }) {
+  const runs = useRuns(workspace.id);
+  useEffect(() => {
+    if (runs !== undefined) onLoaded();
+  }, [runs, onLoaded]);
+  const run = runs?.[0];
   if (!run) return null;
   const shown = shownState(run);
   const counts = openFindings(run);

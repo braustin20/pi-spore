@@ -29,7 +29,7 @@ function where(editor: OpenEditor, workspace: Workspace): string {
 }
 
 /** "Open in Unity" and the project's editor lease (R10.3 to R10.5). Hidden for projects without Unity. */
-function UnityPanel({ workspace }: { workspace: Workspace }) {
+function UnityPanel({ workspace, onLoaded }: { workspace: Workspace; onLoaded: () => void }) {
   const api = useApi();
   const [view, setView] = useState<UnityWorkspaceView | undefined>();
   const [blocked, setBlocked] = useState<string | undefined>();
@@ -50,6 +50,9 @@ function UnityPanel({ workspace }: { workspace: Workspace }) {
   useEffect(() => {
     void load();
   }, [load]);
+  useEffect(() => {
+    if (view !== undefined || error !== undefined) onLoaded();
+  }, [view, error, onLoaded]);
 
   const run = async (work: () => Promise<void>) => {
     setBusy(true);

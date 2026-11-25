@@ -120,10 +120,13 @@ function RunLog({ runId, onEnded }: { runId: string; onEnded: () => void }) {
   );
 }
 
-function ActionsPanel({ workspace }: { workspace: Workspace }) {
+function ActionsPanel({ workspace, onLoaded }: { workspace: Workspace; onLoaded: () => void }) {
   const api = useApi();
   const [actions, setActions] = useState<ActionView[] | undefined>();
   const [runs, setRuns] = useState<ActionRun[]>([]);
+  // The list and the runs load apart; the panel is loaded when both have ended, with data or an error.
+  const [listEnded, setListEnded] = useState(false);
+  const [runsEnded, setRunsEnded] = useState(false);
   const [selected, setSelected] = useState<string | undefined>();
   const [error, setError] = useState<string | undefined>();
 
@@ -131,16 +134,22 @@ function ActionsPanel({ workspace }: { workspace: Workspace }) {
     api
       .get(`actions/workspaces/${workspace.id}/runs`)
       .then((body) => setRuns(parse(ActionRunList, body, "runs").runs))
-      .catch((caught: unknown) => setError(message(caught)));
+      .catch((caught: unknown) => setError(message(caught)))
+      .finally(() => setRunsEnded(true));
   }, [api, workspace.id]);
 
   useEffect(() => {
     api
       .get(`actions/workspaces/${workspace.id}`)
       .then((body) => setActions(parse(ActionList, body, "actions").actions))
-      .catch((caught: unknown) => setError(message(caught)));
+      .catch((caught: unknown) => setError(message(caught)))
+      .finally(() => setListEnded(true));
     loadRuns();
   }, [api, workspace.id, loadRuns]);
+
+  useEffect(() => {
+    if (listEnded && runsEnded) onLoaded();
+  }, [listEnded, runsEnded, onLoaded]);
 
   const start = (name: string) => {
     setError(undefined);
