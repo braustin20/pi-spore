@@ -288,10 +288,7 @@ describe("agents", () => {
     const { agentId } = await makeAgent();
     await json(await prompt(agentId, "hi"));
     await until(() => statuses(agentId).at(-1) === "idle" && statuses(agentId).length >= 4);
-    const piTypes = events(agentId).flatMap((event) =>
-      event.type === "pi" ? [(event.event as { type: string }).type] : [],
-    );
-    expect(piTypes).toEqual(
+    expect(piTypes(agentId)).toEqual(
       expect.arrayContaining([
         "agent_start",
         "message_start",
