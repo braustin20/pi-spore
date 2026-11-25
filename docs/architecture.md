@@ -50,6 +50,11 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
   process's agent token, ADR 0032), `PI_SPORE_SERVER_PID` (the server's pid, for the bash guard, ADR 0160), `PI_SPORE_AGENT_ID`, `PI_SPORE_WORKSPACE_ID`, `PI_SPORE_CHAT_KIND` (`worker`,
   `side`, `planner`, or `stage`), `PI_SPORE_UNITY_PROJECT` (Unity projects), and from launch hooks `PI_SPORE_RUN_ID` and `PI_SPORE_RUN_ROLE`
   (`coordinator` or `lane`, section 9). Later: the workspace action env.
+- **Context meter.** The chat header's "context N%" is `contextUsage` from Pi's `get_session_stats`. The manager
+  reads it when the process starts, after each `turn_end` (one model response and its tool calls), on
+  `agent_settled`, and after a compaction. So a long single run, such as a pipeline worker's, shows it grow. A
+  `turn_end` read is skipped while the last one has no answer yet. A failed read changes nothing. On `spore/auto`
+  there is no usage until the first response, because Pi takes the window from the model that answered.
 - **Launch hooks** (ADR 0150). `AgentsKey.addLaunchContext(hook)` registers a synchronous hook that the manager calls
   at each launch with the agent and its workspace. It may add `env` and replace the tool allowlist with `tools`
   (`--tools <tools> --exclude-tools mcp__*`). Two hooks that give `tools` for one agent fail the launch. A hook never

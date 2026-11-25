@@ -129,6 +129,31 @@ const statuses = (agentId: string) =>
   events(agentId).flatMap((event) => (event.type === "status" ? [event.status] : []));
 const status = (agentId: string) => statuses(agentId).at(-1);
 
+/** The Pi event types the agent published to its page, in order. */
+const piTypes = (agentId: string) =>
+  events(agentId).flatMap((event) =>
+    event.type === "pi" ? [(event.event as { type: string }).type] : [],
+  );
+
+/** How many model turns finished, from the `turn_end` events the agent published. */
+const turnEnds = (agentId: string) => piTypes(agentId).filter((type) => type === "turn_end").length;
+
+/** The context meter readings the agent published, in order (its `stats` events). */
+const meterReads = (agentId: string) =>
+  events(agentId).flatMap((event) => (event.type === "stats" ? [event.contextUsage] : []));
+
+/** The context meter of the agent's page snapshot. */
+async function meter(agentId: string) {
+  const [snapshot] = (await server.events.snapshot(`agent:${agentId}`)) as AgentEvent[];
+  return snapshot?.type === "snapshot" ? snapshot.contextUsage : undefined;
+}
+
+/** The `get_session_stats` reads fake Pi took, counted from its record file (FAKE_PI_STATS_GATE). */
+const statsRequests = (gate: string) =>
+  existsSync(`${gate}.requests`)
+    ? readFileSync(`${gate}.requests`, "utf8").split("\n").filter(Boolean).length
+    : 0;
+
 async function until(check: () => boolean | Promise<boolean>, ms = 5_000): Promise<void> {
   const end = Date.now() + ms;
   while (!(await check())) {
@@ -266,10 +291,7 @@ describe("agents", () => {
     const { agentId } = await makeAgent();
     await json(await prompt(agentId, "hi"));
     await until(() => statuses(agentId).at(-1) === "idle" && statuses(agentId).length >= 4);
-    const piTypes = events(agentId).flatMap((event) =>
-      event.type === "pi" ? [(event.event as { type: string }).type] : [],
-    );
-    expect(piTypes).toEqual(
+    expect(piTypes(agentId)).toEqual(
       expect.arrayContaining([
         "agent_start",
         "message_start",
@@ -279,6 +301,112 @@ describe("agents", () => {
       ]),
     );
     expect(events(agentId).some((event) => event.type === "stats")).toBe(true);
+  });
+
+  it("reads the context meter on a turn_end, while the run is still open", async () => {
+    await setup();
+    const { agentId, folder } = await makeAgent();
+    const settle = join(folder, ".fake-pi-hold-settle");
+    writeFileSync(settle, "");
+
+    await json(await prompt(agentId, "turns:1"));
+    await until(() => piTypes(agentId).includes("turn_end"));
+    // The second reading: the first is the start-up one, and each read names more tokens.
+    await until(async () => (await meter(agentId))?.tokens === 2000, 2_000);
+
+    // The turn gave the reading, not the run's end: fake Pi holds the run before it settles.
+    expect(status(agentId)).toBe("busy");
+    expect(piTypes(agentId)).not.toContain("agent_settled");
+    expect(meterReads(agentId)).toEqual([
+      { tokens: 1000, contextWindow: 100_000, percent: 1 },
+      { tokens: 2000, contextWindow: 100_000, percent: 2 },
+    ]);
+
+    rmSync(settle);
+    await until(() => piTypes(agentId).includes("agent_settled"));
+  });
+
+  it("reads the context meter once for turn_ends that come while a read waits", async () => {
+    const gate = join(scratch, "stats-gate");
+    await setup({}, { FAKE_PI_STATS_GATE: gate });
+    const { agentId, folder } = await makeAgent();
+    const hold = join(folder, ".fake-pi-hold-turn");
+    const settle = join(folder, ".fake-pi-hold-settle");
+    writeFileSync(hold, "");
+    writeFileSync(settle, "");
+
+    await json(await prompt(agentId, "turns:2"));
+    // Only after the start-up read answered does the run start, so the turns' read is the one that waits.
+    await until(() => meterReads(agentId).length === 1);
+    writeFileSync(gate, "");
+    rmSync(hold);
+    await until(() => turnEnds(agentId) === 2);
+
+    // The answer for both turn_ends, then: one read between them, not one each.
+    rmSync(gate);
+    await until(() => meterReads(agentId).length >= 2, 2_000);
+    expect(statsRequests(gate)).toBe(2);
+    expect(meterReads(agentId)).toHaveLength(2);
+    expect(await meter(agentId)).toEqual({ tokens: 2000, contextWindow: 100_000, percent: 2 });
+
+    rmSync(settle);
+    await until(() => piTypes(agentId).includes("agent_settled"));
+  });
+
+  it("reads the context meter again on the turn_end after a read answered", async () => {
+    await setup();
+    const { agentId, folder } = await makeAgent();
+    // Fake Pi writes one turn and waits here, so the test lets the second turn start only once it saw the first
+    // turn's reading: the read is over, so the next turn must take a new one.
+    const step = join(folder, ".fake-pi-step-turns");
+    const settle = join(folder, ".fake-pi-hold-settle");
+    writeFileSync(step, "");
+    writeFileSync(settle, "");
+
+    await json(await prompt(agentId, "turns:2"));
+    await until(() => turnEnds(agentId) === 1);
+    await until(async () => (await meter(agentId))?.tokens === 2000, 2_000);
+
+    rmSync(step);
+    await until(() => turnEnds(agentId) === 2);
+    await until(async () => (await meter(agentId))?.tokens === 3000, 2_000);
+    // Still the turns' own readings: the run holds before it settles, where Pi would read the stats again.
+    expect(status(agentId)).toBe("busy");
+    expect(piTypes(agentId)).not.toContain("agent_settled");
+    expect(meterReads(agentId)).toHaveLength(3);
+
+    rmSync(settle);
+    await until(() => piTypes(agentId).includes("agent_settled"));
+  });
+
+  it("takes a new context read on the turn_end after a read failed", async () => {
+    const broken = join(scratch, "stats-broken");
+    await setup({}, { FAKE_PI_STATS_FAIL: broken });
+    const { agentId, folder } = await makeAgent();
+    const step = join(folder, ".fake-pi-step-turns");
+    const settle = join(folder, ".fake-pi-hold-settle");
+    writeFileSync(step, "");
+    writeFileSync(settle, "");
+    writeFileSync(broken, "");
+
+    await json(await prompt(agentId, "turns:2"));
+    await until(() => turnEnds(agentId) === 1);
+    await until(() => statsRequests(broken) === 2, 2_000);
+    // The record only says fake Pi took that read. It answers stdin in order, so a commands round trip lands after
+    // the failed read's answer, and the manager has run that read's cleanup once the answer is back here.
+    await json(await server.request("GET", `/api/agents/${agentId}/commands`));
+    // Both reads so far failed, the start-up one and this turn's, and that stays silent: no reading on the page.
+    expect(meterReads(agentId)).toEqual([]);
+
+    // A failed read lets go of its guard, so the next turn reads again. The failure file stays, so the reads are
+    // one per turn and all fail: 1 at start-up, 2 for the first turn, 3 for the second.
+    rmSync(step);
+    await until(() => turnEnds(agentId) === 2);
+    await until(() => statsRequests(broken) === 3, 2_000);
+    expect(meterReads(agentId)).toEqual([]);
+
+    rmSync(settle);
+    await until(() => piTypes(agentId).includes("agent_settled"));
   });
 
   it("resumes the same session after a stop, without forcing the role model", async () => {
