@@ -45,7 +45,7 @@ afterEach(() => container?.remove());
 
 /** Render the run panel with one run. `refuse` makes every send fail with that message. */
 async function render(shown: Run, refuse?: string) {
-  let panel: ComponentType<{ workspace: Workspace }> | undefined;
+  let panel: ComponentType<{ workspace: Workspace; onLoaded: () => void }> | undefined;
   const view = { addPanel: (added: { component: typeof panel }) => (panel = added.component) };
   runsWeb.setup({
     use: () => ({ ...view, addApprovalView: () => {}, DeclineNote: NoNote }),
@@ -72,7 +72,7 @@ async function render(shown: Run, refuse?: string) {
   await act(async () => {
     createRoot(root).render(
       <ApiContext value={api}>
-        <Panel workspace={workspace} />
+        <Panel workspace={workspace} onLoaded={() => {}} />
       </ApiContext>,
     );
   });

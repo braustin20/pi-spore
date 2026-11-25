@@ -392,8 +392,11 @@ function RunsPage() {
 }
 
 /** In a run workspace: the run. In a lane workspace: a link back to its run. Elsewhere: nothing. */
-function RunPanel({ workspace }: { workspace: Workspace }) {
+function RunPanel({ workspace, onLoaded }: { workspace: Workspace; onLoaded: () => void }) {
   const runs = useRuns();
+  useEffect(() => {
+    if (runs !== undefined) onLoaded();
+  }, [runs, onLoaded]);
   const run = runs?.find((candidate) => candidate.workspaceId === workspace.id);
   if (run) {
     return (

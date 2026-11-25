@@ -31,6 +31,7 @@ import {
   ResizeHandle,
   SectionLabel,
   Select,
+  Spinner,
   StatusLine,
   splitHash,
   switchPane,
@@ -874,6 +875,24 @@ function RightColumn({
   onCollapse: () => void;
 }) {
   const sortedTabs = [...tabs].sort((a, b) => a.order - b.order);
+  // The panels mount while Details is open, and again for each workspace. Each mount is a new round with no panel
+  // loaded, so a late call from an earlier round finds a different number and changes nothing.
+  const mounted = tab === "details" ? workspace.id : undefined;
+  const [loaded, setLoaded] = useState<{
+    mounted: string | undefined;
+    round: number;
+    ids: ReadonlySet<string>;
+  }>({ mounted, round: 0, ids: new Set() });
+  if (loaded.mounted !== mounted) setLoaded({ mounted, round: loaded.round + 1, ids: new Set() });
+  const loading =
+    mounted !== undefined &&
+    (loaded.mounted !== mounted || panels.some((panel) => !loaded.ids.has(panel.id)));
+  const onLoaded = (round: number, panelId: string) => () =>
+    setLoaded((current) =>
+      current.round !== round || current.ids.has(panelId)
+        ? current
+        : { ...current, ids: new Set([...current.ids, panelId]) },
+    );
   return (
     <aside
       aria-label="Workspace details"
@@ -910,7 +929,10 @@ function RightColumn({
               phone && "[scrollbar-width:none]",
             )}
           >
-            <TabsTrigger value="details">Details</TabsTrigger>
+            <TabsTrigger value="details">
+              Details
+              {loading && <Spinner className="ml-1.5" />}
+            </TabsTrigger>
             {sortedTabs.map((extra) => (
               <TabsTrigger key={extra.id} value={extra.id}>
                 {extra.title}
@@ -932,12 +954,22 @@ function RightColumn({
           )}
         </div>
         <TabsContent value="details" className="overflow-y-auto">
+          {loading && (
+            <div role="status" className="flex items-center gap-2 px-4 py-2 text-sm text-muted">
+              <Spinner /> Loading workspace
+            </div>
+          )}
           {/* Keyed by id, so a rename or error of one workspace does not carry over to the next. */}
           <Details key={workspace.id} workspace={workspace} project={project} onNotes={onNotes} />
           {[...panels]
             .sort((a, b) => a.order - b.order)
             .map((panel) => (
-              <panel.component key={panel.id} workspace={workspace} />
+              // Keyed by workspace too, so a panel's state and late answers do not carry over to the next one.
+              <panel.component
+                key={`${panel.id}:${workspace.id}`}
+                workspace={workspace}
+                onLoaded={onLoaded(loaded.round, panel.id)}
+              />
             ))}
         </TabsContent>
         {sortedTabs.map((extra) => (

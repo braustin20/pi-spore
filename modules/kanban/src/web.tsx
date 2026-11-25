@@ -1325,8 +1325,11 @@ function BoardPage({ params }: { params: Readonly<Record<string, string>> }) {
 }
 
 /** The workspace's card in the workspace view's right column. Renders nothing without one. */
-function CardPanel({ workspace }: { workspace: Workspace }) {
+function CardPanel({ workspace, onLoaded }: { workspace: Workspace; onLoaded: () => void }) {
   const all = useBoard();
+  useEffect(() => {
+    if (all !== undefined) onLoaded();
+  }, [all, onLoaded]);
   const card = all?.find((candidate) => candidate.workspaceId === workspace.id);
   if (!card) return null;
   const today = localDay(new Date());
