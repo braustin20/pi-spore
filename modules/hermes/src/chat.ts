@@ -11,6 +11,7 @@ import {
   type HermesChatTool,
   parseJsonBody,
   ResolveHermesChatRunRequest,
+  RetryHermesChatRunRequest,
   SendHermesChatRequest,
 } from "@pi-spore/shared";
 import type { Hermes, Run, RunEvent, Session } from "./contract.js";
@@ -28,8 +29,11 @@ const ENDED: ReadonlySet<string> = new Set([
 ]);
 /** Errors on a run post that mean this try sent nothing. Any other 5xx may have reached Hermes. */
 const NOT_SENT: ReadonlySet<string> = new Set(["hermes_not_ready", "hermes_key_file"]);
-/** How long Hermes keeps an Idempotency-Key (spike Q2). A later retry could start a second run. */
-const KEY_RETENTION_MS = 24 * 3_600_000;
+/**
+ * How long Hermes keeps an Idempotency-Key after a run ends (spike Q2). A retry this long after the first try may find
+ * the key gone and start the run again, so it needs the user's confirm.
+ */
+export const KEY_RETENTION_MS = 24 * 3_600_000;
 /**
  * The wait before following a run again after the stream was lost with no new frame, or Hermes did not answer. It
  * doubles to `RETRY_MAX_MS`. These differ from the status poll's waits, so tests can fire one without the other.
@@ -623,21 +627,21 @@ export function setupChat(
     return c.json({ run: await post(id) }, 201);
   });
 
-  // Only the user's click sends again, and only a post that got no answer: the same key and the identical body.
+  // Only the user's click sends again, and only a post that got no answer: the same key and the identical body. The run
+  // stays `sending` until Hermes answers, so its session stays blocked: Hermes may hold a run of it.
   host.routes.post("/chat/runs/:id/retry", async (c) => {
     const row = found(c.req.param("id"));
+    const request = parseJsonBody(RetryHermesChatRunRequest, await c.req.text(), "retry");
     if (row.state !== "sending")
       throw new ApiError(409, "hermes_run_sent", `Run ${row.id} reached Hermes; nothing to retry`);
-    if (host.now() - row.created_at >= KEY_RETENTION_MS) {
-      // Hermes may have dropped the key, so the same post could start the run a second time. Sending nothing frees the
-      // session; the first try may still have run.
-      update(row.id, {
-        state: "failed",
-        error:
-          "pi-spore did not send it again: Hermes keeps a key for 24 h only, so a retry now could run it twice. The first try may have reached Hermes; check the transcript.",
-      });
-      return c.json({ run: await publishRun(row.id) });
-    }
+    // Hermes replays the first run while it keeps the key: always while the run is unfinished or unknown, and for 24 h
+    // after it ends. Past 24 h from the first try, a retry may run it twice, so the user decides.
+    if (host.now() - row.created_at >= KEY_RETENTION_MS && request.confirmed !== true)
+      throw new ApiError(
+        409,
+        "hermes_retry_confirm",
+        "The first try was sent 24 h or more ago. If Hermes ended that run more than 24 h ago, it dropped the key, and a retry runs the message again. Confirm to retry; nothing was sent.",
+      );
     return c.json({ run: await post(row.id) });
   });
 

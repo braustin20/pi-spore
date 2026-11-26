@@ -2023,17 +2023,22 @@ Tests use the fake Hermes; they are not live proof (card Hermes 2.3).
   `pi-spore-chat-<id>` and stores the title and the optional project link (migrations namespace `hermes-chat`).
 - **Transcript.** `GET /api/hermes/chat/sessions/:id/messages?limit=&offset=&order=` passes Hermes's paging through
   (limit 1 to 200, default 100). Any session may be read. The page reads the newest 100 (`order=latest`), with
-  "Load older", and shows user, assistant (in `Markdown`), and tool messages. Pages merge by message id, so reading
-  the newest page again (after a run ends, or on a snapshot) keeps the older pages shown and repeats nothing.
+  "Load older", and shows user, assistant (in `Markdown`), and tool messages. After a run ends, or on a snapshot,
+  it reads pages from the newest until one reaches a message it shows already (at most 10 pages; with no overlap it
+  starts over from what it read), so the list stays one unbroken run back from the newest message. "Load older"
+  pages on from the list's length. Pages merge by message id, so nothing repeats.
 - **Runs.** `POST /api/hermes/chat/sessions/:id/runs` `{ text }` stores a `hermes_chat_runs` row and posts the run
   with `Idempotency-Key` = the row id: no provider or model. One run per session at a time (409
   `hermes_run_active`; a run left `unknown` counts until it is marked as interrupted). A post with no answer (a 5xx
   or a timeout) stays `sending` with "Hermes did not answer, so the message may have reached it" and sets
   `run_posted`; only the user's Retry (`POST /api/hermes/chat/runs/:id/retry`) posts again, with the same key and the
   identical body. A refusal is `failed`. A check that fails before sending is `failed` only if no earlier try may have
-  reached Hermes (`run_posted` 0); otherwise the run stays `sending`, so no second run can start beside it. A Retry
-  24 h or more after the send (Hermes's key retention) sends nothing: the run ends `failed`, saying the first try may
-  have reached Hermes. The page shows the input of a run Hermes never got. `POST .../:id/stop` sends `stop`; the page
+  reached Hermes (`run_posted` 0); otherwise the run stays `sending`, so no second run can start beside it. A run
+  stays `sending`, and its session blocked, until Hermes answers a Retry: Hermes may hold a run of it. Hermes keeps a
+  key while its run is unfinished or unknown, and for 24 h after it ends, so a Retry 24 h or more after the first try
+  needs `{ confirmed: true }` (409 `hermes_retry_confirm` without it, and nothing is sent); the page asks first,
+  saying the message may run twice. A Retry that gets the first run back follows it, so a run Hermes lost on a
+  restart shows as `unknown` with its reconcile view. The page shows the input of a run Hermes never got. `POST .../:id/stop` sends `stop`; the page
   says completed steps are not undone. A stop that fails leaves `stopRequested` false. No Steer: the connector does
   not read `run_steer`, and the spike did not probe the steer body.
 - **Relay.** A follower per run reads the run status, then the SSE stream, and publishes on topic

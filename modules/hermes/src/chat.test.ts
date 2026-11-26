@@ -178,10 +178,12 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
         `/api/hermes/chat/sessions/${session.id}/messages?limit=50&offset=0&order=oldest`,
       ),
     );
+    // After a reload, the stored transcript holds the same reply the live stream showed.
     expect(messages.map(({ role, content }) => ({ role, content }))).toEqual([
       { role: "user", content: "Reply with pong." },
-      { role: "assistant", content: "ng" },
+      { role: "assistant", content: published(h, run).text },
     ]);
+    expect(published(h, run).text).toBe("pong");
     expect(h.fake.requests.find((request) => request.path.endsWith("/messages"))?.path).toContain(
       session.id,
     );
@@ -294,6 +296,8 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     );
     expect(down.text).toBe("po");
 
+    // The follower arms its wait after the failed status read; fire it only once it is there.
+    await until(() => h.timers.delays().includes(RETRY_FIRST_MS));
     h.fake.options.serverError = false;
     h.fake.options.dropStreamAfter = undefined;
     await h.timers.fire(RETRY_FIRST_MS);
@@ -468,22 +472,49 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     expect(retried.runId).toBe("run_fake1");
   });
 
-  it("sends nothing on a Retry after Hermes's 24 h key window, and frees the session", async () => {
+  it("keeps a lost admission's session blocked past 24 h, and recovers only through the user's confirmed Retry", async () => {
     const h = await start();
     const session = await newSession(h);
+    // Hermes admits the run, but its answer is lost; then Hermes restarts and the run is unknown.
     h.fake.options.holdRuns = true;
     const pending = send(h, session.id);
     await until(() => runPosts(h).length === 1);
     await h.timers.fire(TIMEOUT_MS);
     const { run } = await json<{ run: HermesChatRun }>(await pending, 201);
+    expect(run.state).toBe("sending");
+    h.fake.restart();
     h.fake.options.holdRuns = false;
     h.server.advance(24 * 3_600_000);
-    const { run: late } = await json<{ run: HermesChatRun }>(
-      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/retry`, {}),
+
+    // Without the confirm, nothing is sent, and the session stays blocked: Hermes may hold a run of it.
+    const unconfirmed = await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/retry`, {});
+    expect(unconfirmed.status).toBe(409);
+    expect(((await unconfirmed.json()) as { error: { code: string } }).error.code).toBe(
+      "hermes_retry_confirm",
     );
-    expect(late.state).toBe("failed");
-    expect(late.error).toContain("24 h");
     expect(runPosts(h)).toHaveLength(1);
+    expect((await runOf(h, session.id, run.id)).state).toBe("sending");
+    expect((await send(h, session.id)).status).toBe(409);
+
+    // The confirmed Retry sends the same key and body. Hermes still has the key of the unknown run, so it replays it.
+    const { run: retried } = await json<{ run: HermesChatRun }>(
+      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/retry`, { confirmed: true }),
+    );
+    expect(retried.runId).toBe("run_fake1");
+    expect(runPosts(h)[1]?.raw).toBe(runPosts(h)[0]?.raw);
+    expect(runPosts(h)[1]?.headers["idempotency-key"]).toBe(
+      runPosts(h)[0]?.headers["idempotency-key"],
+    );
+    await reaches(h, run, (now) => now.state === "unknown");
+    expect((await send(h, session.id)).status).toBe(409);
+    await json(
+      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/resolve`, {
+        action: "interrupt",
+      }),
+    );
+    // The session is free in Hermes too: a new run runs, it does not wait behind the lost one.
+    const next = await sent(h, session.id, "And now?");
+    expect(h.fake.run(next.runId as string)?.status).toBe("running");
   });
 
   it("follows a live run again after a pi-spore restart, and refills its text from the stream", async () => {

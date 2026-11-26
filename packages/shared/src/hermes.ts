@@ -276,6 +276,16 @@ export const SendHermesChatRequest = Type.Object(
 export type SendHermesChatRequest = Static<typeof SendHermesChatRequest>;
 
 /**
+ * `POST /api/hermes/chat/runs/:id/retry`. `confirmed` is needed 24 h or more after the first try: Hermes keeps a key
+ * for 24 h after a run ends, so if the first try ended that long ago, the retry runs it again.
+ */
+export const RetryHermesChatRunRequest = Type.Object(
+  { confirmed: Type.Optional(Type.Literal(true)) },
+  { additionalProperties: false },
+);
+export type RetryHermesChatRunRequest = Static<typeof RetryHermesChatRunRequest>;
+
+/**
  * The user's pick for a chat run left `unknown`. Only "Mark as interrupted": Hermes holds every later run of the session
  * until the lost run is resolved, so "Send again" would only wait, and "Drop" would leave the session stuck.
  */

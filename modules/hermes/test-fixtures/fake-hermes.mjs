@@ -5,7 +5,8 @@
 //     409 idempotency_key_conflict;
 //   - SSE frames with `id:` and `data:` only, the event name in `data.event`, `Last-Event-ID` replay;
 //   - `restart()`: a run that had not ended becomes `unknown` and its event buffer is gone (events answer 404) until
-//     `resolve-unknown` with the exact {admission_id, execution_generation};
+//     `resolve-unknown` with the exact {admission_id, execution_generation}; a new run in that session waits as
+//     `queued` until then;
 //   - approval and clarify answers with exact bodies;
 //   - 409 permission_denied for a run into a session whose source is not api_server or bot_room;
 //   - session messages paged with `limit`, `offset`, and `order` (`oldest` or `latest`).
@@ -55,6 +56,8 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
     json(response, status, { error: { code, message } });
 
   const emit = (run, data) => {
+    // The reply Hermes stores is all the text it streamed.
+    if (data.event === "message.delta") run.streamed = (run.streamed ?? "") + data.delta;
     const seq = run.events.length;
     const frame = { seq, data: { ...data, run_id: run.run_id, seq } };
     run.events.push(frame);
@@ -67,7 +70,13 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
   };
 
   const view = (run) => {
-    const { events: _events, listeners: _listeners, eventsLost: _lost, ...rest } = run;
+    const {
+      events: _events,
+      listeners: _listeners,
+      eventsLost: _lost,
+      streamed: _streamed,
+      ...rest
+    } = run;
     return rest;
   };
 
@@ -169,9 +178,13 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
       if (session && session.source !== "api_server" && session.source !== "bot_room")
         return error(response, 409, "permission_denied");
       counter += 1;
+      // A run left unknown holds every later run of its session until resolve-unknown (spike, "unknown").
+      const blocked = [...runs.values()].some(
+        (other) => other.session_id === body?.session_id && other.status === "unknown",
+      );
       const run = {
         run_id: `run_fake${counter}`,
-        status: "running",
+        status: blocked ? "queued" : "running",
         admission_id: `adm_fake${counter}`,
         execution_generation: 1,
         session_id: body?.session_id,
@@ -242,6 +255,9 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
           return error(response, 409, "stale_generation");
         if (run.status !== "unknown") return error(response, 409, "not_unknown");
         run.status = "cancelled";
+        for (const other of runs.values())
+          if (other.session_id === run.session_id && other.status === "queued")
+            other.status = "running";
         return json(response, 200, {
           run_id: run.run_id,
           status: "terminal",
@@ -326,10 +342,14 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
     addSession(id, source) {
       sessions.set(id, { id, title: id, source, message_count: 0, messages: [] });
     },
-    /** Sends a delta and a completion, and stores the two messages in the run's session. */
-    finish(runId, output) {
+    /**
+     * Sends a last delta and a completion, and stores the input and the whole streamed reply (earlier deltas too) in
+     * the run's session.
+     */
+    finish(runId, last) {
       const run = runs.get(runId);
-      emit(run, { event: "message.delta", delta: output });
+      emit(run, { event: "message.delta", delta: last });
+      const output = run.streamed;
       run.output = output;
       end(run, "completed", "run.completed", { output, completed: true });
       const session = sessions.get(run.session_id);

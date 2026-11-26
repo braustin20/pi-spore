@@ -372,7 +372,12 @@ describe("the Hermes page", () => {
     expect(page.textContent).toContain("Reconnecting: Hermes answered 503");
     await fake.push("hermes:session:s1", {
       type: "run",
-      run: run({ id: "r2", state: "sending", error: "Hermes did not answer" }),
+      run: run({
+        id: "r2",
+        state: "sending",
+        error: "Hermes did not answer",
+        createdAt: Date.now(),
+      }),
     });
     await click("Retry");
     expect(fake.sent).toEqual([{ method: "POST", path: "hermes/chat/runs/r2/retry", body: {} }]);
@@ -482,6 +487,70 @@ describe("the Hermes page", () => {
     expect(text()).toContain("message 151");
     expect(text()).toContain("message 1");
     expect(page.querySelectorAll(".md").length).toBe(151);
+  });
+
+  it("asks before a Retry 24 h or more after the first try, and sends the confirm", async () => {
+    const fake = chat();
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", {
+      type: "snapshot",
+      runs: [
+        run({
+          state: "sending",
+          error: "Hermes did not answer",
+          createdAt: Date.now() - 25 * 3_600_000,
+        }),
+      ],
+    });
+    await click("Retry");
+    expect(page.ownerDocument.body.textContent).toContain("Its side effects would happen twice.");
+    expect(fake.sent).toEqual([]);
+    await act(async () => buttons("Retry")[1]?.click());
+    expect(fake.sent).toEqual([
+      { method: "POST", path: "hermes/chat/runs/r1/retry", body: { confirmed: true } },
+    ]);
+  });
+
+  it("fills the gap when more than a page of messages came in during a reconnect", async () => {
+    let stored = Array.from({ length: 150 }, (_, index) => ({
+      id: index + 1,
+      role: "assistant",
+      content: `message ${index + 1}`,
+    }));
+    const fake = fakeApi({
+      "hermes/status": READY,
+      "hermes/chat/sessions": { enabled: true, sessions: SESSIONS },
+      "hermes/chat/sessions/s1/messages": (path: string) => {
+        const query = new URLSearchParams(path.split("?")[1]);
+        const offset = Number(query.get("offset"));
+        return {
+          messages: [...stored].reverse().slice(offset, offset + Number(query.get("limit"))),
+        };
+      },
+    });
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [] });
+    await act(async () => undefined);
+    expect(page.querySelectorAll(".md").length).toBe(100);
+    // The socket drops; 200 messages come in; the new socket gets a fresh snapshot.
+    stored = [
+      ...stored,
+      ...Array.from({ length: 200 }, (_, index) => ({
+        id: index + 151,
+        role: "assistant",
+        content: `message ${index + 151}`,
+      })),
+    ];
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [] });
+    await act(async () => undefined);
+    expect(page.querySelectorAll(".md").length).toBe(300);
+    await click("Load older");
+    const shown = [...page.querySelectorAll(".md")].map((entry) => entry.textContent);
+    expect(shown).toHaveLength(350);
+    expect(new Set(shown).size).toBe(350);
+    expect(shown[0]).toBe("message 1");
+    expect(shown.at(-1)).toBe("message 350");
+    expect(button("Load older")).toBeUndefined();
   });
 
   it("keeps the user's text on the page when Hermes never got it", async () => {

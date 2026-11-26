@@ -30,6 +30,7 @@ import {
   Select,
   Textarea,
   type Tone,
+  useConfirm,
 } from "@pi-spore/ui";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ControlRow, Handoffs, Reconcile } from "./handoffs-page.js";
@@ -38,6 +39,10 @@ import { ControlRow, Handoffs, Reconcile } from "./handoffs-page.js";
 export const STATUS_MS = 5_000;
 /** Messages per page of the stored transcript. */
 const PAGE = 100;
+/** Pages read at most to reach the messages shown already, after a reconnect or a run's end. */
+const CATCH_UP_PAGES = 10;
+/** Hermes keeps a run's Idempotency-Key for 24 h after the run ends (spike Q2). */
+const KEY_RETENTION_MS = 24 * 3_600_000;
 
 const STATUS_TONE: Record<HermesStatus["state"], Tone> = {
   disabled: "neutral",
@@ -232,6 +237,7 @@ function StoredMessage({ entry }: { entry: HermesChatMessages["messages"][number
 /** One run sent from the page. The server publishes every change, so the block needs no reload. */
 function RunBlock({ run }: { run: HermesChatRun }) {
   const api = useApi();
+  const { confirm, dialog } = useConfirm();
   const [error, setError] = useState<string | undefined>();
   const post = async (path: string, body: unknown = {}) => {
     setError(undefined);
@@ -241,9 +247,22 @@ function RunBlock({ run }: { run: HermesChatRun }) {
       setError(message(caught));
     }
   };
+  const retry = async () => {
+    // Past 24 h, Hermes may have dropped the key of a first try that ended, and the retry would run it again.
+    if (Date.now() - run.createdAt < KEY_RETENTION_MS) return await post("retry");
+    const yes = await confirm({
+      title: "Retry after 24 h?",
+      message:
+        "The first try was sent 24 h or more ago. If Hermes ran it and it ended more than 24 h ago, Hermes dropped its key, and this runs the message again. Its side effects would happen twice.",
+      confirmLabel: "Retry",
+      tone: "danger",
+    });
+    if (yes) await post("retry", { confirmed: true });
+  };
   const live = !ENDED.has(run.state);
   return (
     <div className="flex flex-col gap-2 border-l-2 border-line pl-3 text-sm">
+      {dialog}
       {/* Not in the stored transcript yet: a live run's input, or one Hermes never got. */}
       {(live || !run.runId) && (
         <div className="flex flex-col gap-1 self-end rounded-lg bg-raised px-3 py-2">
@@ -297,7 +316,7 @@ function RunBlock({ run }: { run: HermesChatRun }) {
           </Button>
         )}
         {run.state === "sending" && (
-          <Button size="sm" onClick={() => void post("retry")}>
+          <Button size="sm" onClick={() => void retry()}>
             Retry
           </Button>
         )}
@@ -352,33 +371,69 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
   const [error, setError] = useState<string | undefined>();
   const id = session.id;
 
-  /**
-   * A page counted from the newest (`order=latest`). Pages merge by message id, so a reload of the newest page keeps
-   * the older ones shown, and a page that overlaps after new messages came in repeats nothing.
-   */
-  const loadMessages = useCallback(
-    (offset = 0) =>
-      api
-        .get(
+  const fetchPage = useCallback(
+    async (offset: number) =>
+      parse(
+        HermesChatMessages,
+        await api.get(
           `hermes/chat/sessions/${encodeURIComponent(id)}/messages?limit=${PAGE}&offset=${offset}&order=latest`,
-        )
-        .then((body) => {
-          const page = parse(HermesChatMessages, body, "Hermes messages").messages;
-          if (offset > 0 || messagesRef.current === undefined) setMore(page.length === PAGE);
-          setMessages((shown) => {
-            const byId = new Map((shown ?? []).map((entry) => [entry.id, entry]));
-            for (const entry of page) byId.set(entry.id, entry);
-            const merged = [...byId.values()].sort((a, b) => a.id - b.id);
-            messagesRef.current = merged;
-            return merged;
-          });
-        })
-        .catch((caught: unknown) => setError(message(caught))),
+        ),
+        "Hermes messages",
+      ).messages,
     [api, id],
   );
+  const show = useCallback((list: HermesChatMessages["messages"]) => {
+    const sorted = [...new Map(list.map((entry) => [entry.id, entry])).values()].sort(
+      (a, b) => a.id - b.id,
+    );
+    messagesRef.current = sorted;
+    setMessages(sorted);
+  }, []);
+  /**
+   * Reads pages from the newest (`order=latest`) until one reaches a message shown already, so the list stays one
+   * unbroken run back from the newest message, and "Load older" can page on from its length. With no overlap within
+   * `CATCH_UP_PAGES`, the list starts over from what was read. The first read takes one page.
+   */
+  const catchUp = useCallback(async () => {
+    try {
+      const known = messagesRef.current;
+      const newest = known?.at(-1)?.id;
+      const read: HermesChatMessages["messages"] = [];
+      let overlap = false;
+      let start = false;
+      for (let page = 0; page < (known ? CATCH_UP_PAGES : 1); page += 1) {
+        const entries = await fetchPage(page * PAGE);
+        read.push(...entries);
+        if (entries.length < PAGE) {
+          start = true;
+          break;
+        }
+        if (newest !== undefined && entries.some((entry) => entry.id <= newest)) {
+          overlap = true;
+          break;
+        }
+      }
+      const current = messagesRef.current;
+      if (current && (overlap || start)) show([...current, ...read]);
+      else show(read);
+      if (start) setMore(false);
+      else if (!overlap) setMore(true);
+    } catch (caught) {
+      setError(message(caught));
+    }
+  }, [fetchPage, show]);
+  const loadOlder = async () => {
+    try {
+      const entries = await fetchPage(messagesRef.current?.length ?? 0);
+      setMore(entries.length === PAGE);
+      show([...(messagesRef.current ?? []), ...entries]);
+    } catch (caught) {
+      setError(message(caught));
+    }
+  };
   useEffect(() => {
-    if (ready) void loadMessages();
-  }, [ready, loadMessages]);
+    if (ready) void catchUp();
+  }, [ready, catchUp]);
   useEffect(
     () =>
       api.subscribe(`hermes:session:${id}`, (event) => {
@@ -386,9 +441,9 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
         setRuns((shown) => reduce(shown, next));
         // An ended run is in the stored transcript now. A snapshot (a reconnect) may hold runs that ended meanwhile.
         if (next.type === "snapshot" || (next.type === "run" && ENDED.has(next.run.state)))
-          void loadMessages();
+          void catchUp();
       }),
-    [api, id, loadMessages],
+    [api, id, catchUp],
   );
 
   // A run left unknown holds the session in Hermes until it is marked as interrupted.
@@ -425,7 +480,7 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
       </div>
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4 max-md:px-4">
         {more && (
-          <Button size="sm" onClick={() => void loadMessages(messages?.length ?? 0)}>
+          <Button size="sm" onClick={() => void loadOlder()}>
             Load older
           </Button>
         )}

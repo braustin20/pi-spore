@@ -159,6 +159,7 @@ export {
   HermesStatus,
   ResolveHermesChatRunRequest,
   ResolveHermesHandoffRequest,
+  RetryHermesChatRunRequest,
   SendHermesChatRequest,
 } from "./hermes.js";
 export { type ImageType, imageHeaders, imageTypeOfPath, sniffImage } from "./images.js";
