@@ -56,7 +56,11 @@ describe("the rail", () => {
     path,
     title: path,
     component: () => null,
-    rail: { order: 1, icon: NoIcon, ...(visible === undefined ? {} : { useVisible: () => visible }) },
+    rail: {
+      order: 1,
+      icon: NoIcon,
+      ...(visible === undefined ? {} : { useVisible: () => visible }),
+    },
   });
 
   it("leaves out an entry whose useVisible hook says false", async () => {
