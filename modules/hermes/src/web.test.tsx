@@ -1,10 +1,10 @@
 // @vitest-environment happy-dom
 import { type ApiClient, ApiContext } from "@pi-spore/module-api";
-import type { HermesHandoff, HermesStatus } from "@pi-spore/shared";
+import type { HermesHandoff, HermesStatus, Workspace } from "@pi-spore/shared";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { HandoffsPage, HermesSection, hermesWeb } from "./web.js";
+import { HandoffsPage, HermesPanel, HermesSection, hermesWeb } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -159,13 +159,86 @@ describe("Hermes handoffs page", () => {
     ]);
   });
 
+  it("answers a clarify question with the typed text", async () => {
+    const control = {
+      promptId: "c1",
+      kind: "clarify" as const,
+      question: "ping or pong?",
+      state: "open" as const,
+      createdAt: Date.now(),
+      expiresAt: Date.now() + 300_000,
+    };
+    const { root, sent, button } = await renderPage([handoff({ controls: [control] })]);
+    expect(root.textContent).toContain("ping or pong?");
+    const input = root.querySelector("input") as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        input,
+        "pong",
+      );
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => button("Answer")?.click());
+    expect(sent).toEqual([
+      { method: "POST", path: "hermes/handoffs/h1/controls/c1", body: { answer: "pong" } },
+    ]);
+  });
+
+  it("says Hermes is offline on a pending handoff that waits for it", async () => {
+    const { root } = await renderPage([
+      handoff({ state: "pending", error: "Hermes is offline: no answer" }),
+    ]);
+    expect(root.textContent).toContain("Hermes is offline: no answer");
+  });
+
   it("adds a page with no rail entry", () => {
     const pages: { path: string; rail?: unknown }[] = [];
     hermesWeb.setup({
-      use: () => ({ addSection: () => undefined }),
+      use: () => ({ addSection: () => undefined, addPanel: () => undefined }),
       addPage: (page: { path: string; rail?: unknown }) => pages.push(page),
     } as never);
     expect(pages).toEqual([expect.objectContaining({ path: "/hermes" })]);
     expect(pages[0]?.rail).toBeUndefined();
+  });
+});
+
+describe("Hermes handoffs in the workspace Details column", () => {
+  const workspace = { id: "w1" } as Workspace;
+  async function renderPanel(handoffs: HermesHandoff[]) {
+    const paths: string[] = [];
+    let loaded = 0;
+    const api = {
+      get: async (path: string) => {
+        paths.push(path);
+        return { handoffs };
+      },
+    } as unknown as ApiClient;
+    const root = document.body.appendChild(document.createElement("div"));
+    await act(async () => {
+      createRoot(root).render(
+        <ApiContext value={api}>
+          <HermesPanel workspace={workspace} onLoaded={() => (loaded += 1)} />
+        </ApiContext>,
+      );
+    });
+    return { root, paths, loaded: () => loaded };
+  }
+
+  it("lists the workspace's handoffs and links to the Hermes handoffs page", async () => {
+    const { root, paths, loaded } = await renderPanel([
+      handoff({ title: "tmp", state: "running" }),
+    ]);
+    expect(paths).toEqual(["hermes/handoffs?workspaceId=w1"]);
+    expect(root.textContent).toContain("Hermes handoffs");
+    expect(root.textContent).toContain("running");
+    expect(root.textContent).toContain("tmp");
+    expect(root.querySelector('a[href="#/hermes"]')).not.toBeNull();
+    expect(loaded()).toBe(1);
+  });
+
+  it("shows nothing for a workspace that never asked Hermes", async () => {
+    const { root, loaded } = await renderPanel([]);
+    expect(root.textContent).toBe("");
+    expect(loaded()).toBe(1);
   });
 });

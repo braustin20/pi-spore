@@ -1,4 +1,5 @@
 import { SettingsPageKey } from "@pi-spore/mod-projects/web";
+import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import {
   type HermesControl,
@@ -7,10 +8,12 @@ import {
   HermesReconcile,
   HermesStatus,
   parse,
+  type Workspace,
 } from "@pi-spore/shared";
 import {
   Button,
   Chip,
+  CollapsibleSection,
   EmptyState,
   Input,
   Notice,
@@ -221,7 +224,49 @@ function Reconcile({
   );
 }
 
-/** Handoffs from Pi chats to Hermes (card Hermes 1.2). Home items for approvals and uncertain runs link here. */
+/**
+ * The workspace's handoffs in its Details column, with a link to the Hermes handoffs page, where Cancel and the full
+ * result are. It shows nothing for a workspace that never asked Hermes, so with Hermes off it is never there.
+ */
+export function HermesPanel({
+  workspace,
+  onLoaded,
+}: {
+  workspace: Workspace;
+  onLoaded: () => void;
+}) {
+  const api = useApi();
+  const [handoffs, setHandoffs] = useState<HermesHandoff[] | undefined>();
+  const [error, setError] = useState<string | undefined>();
+  useEffect(() => {
+    api
+      .get(`hermes/handoffs?workspaceId=${encodeURIComponent(workspace.id)}`)
+      .then((body) => setHandoffs(parse(HandoffList, body, "Hermes handoffs").handoffs))
+      .catch((caught: unknown) => setError(message(caught)));
+  }, [api, workspace.id]);
+  useEffect(() => {
+    if (handoffs !== undefined || error !== undefined) onLoaded();
+  }, [handoffs, error, onLoaded]);
+  if (!error && !handoffs?.length) return null;
+  return (
+    <CollapsibleSection title="Hermes handoffs">
+      <div className="flex flex-col gap-2 text-sm">
+        {error && <Notice tone="fail">{error}</Notice>}
+        {handoffs?.slice(0, 5).map((handoff) => (
+          <div key={handoff.id} className="flex min-w-0 items-center gap-2">
+            <Chip tone={STATE_TONE[handoff.state]}>{handoff.state}</Chip>
+            <span className="min-w-0 truncate">{handoff.title ?? handoff.text}</span>
+          </div>
+        ))}
+        <a href="#/hermes" className="text-accent">
+          Open the Hermes handoffs page
+        </a>
+      </div>
+    </CollapsibleSection>
+  );
+}
+
+/** Handoffs from Pi chats to Hermes (card Hermes 1.2). Home items and the workspace Details panel link here. */
 export function HandoffsPage() {
   const api = useApi();
   const [handoffs, setHandoffs] = useState<HermesHandoff[] | undefined>();
@@ -314,11 +359,12 @@ export function HandoffsPage() {
 
 export const hermesWeb: WebModule = {
   id: "hermes",
-  requires: ["projects"],
+  requires: ["projects", "workspaces"],
   core: false,
   setup(host) {
     host.use(SettingsPageKey).addSection({ id: "hermes", order: 20, component: HermesSection });
     // No rail entry (ADR 0202 decision 12): Home items link here.
     host.addPage({ path: "/hermes", title: "Hermes handoffs", component: HandoffsPage });
+    host.use(WorkspaceViewKey).addPanel({ id: "hermes", order: 8, component: HermesPanel });
   },
 };

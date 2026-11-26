@@ -6,6 +6,7 @@ import { join } from "node:path";
 import type { AgentEvent } from "@pi-spore/mod-agents/server";
 import type { ChatState, HermesHandoff, HermesReconcile, Inbox } from "@pi-spore/shared";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { STREAM_IDLE_MS } from "./client.js";
 import { type Harness, harness, TIMEOUT_MS } from "./test-helpers.js";
 
 let scratch: string;
@@ -408,6 +409,235 @@ describe("ask_hermes handoffs (FAKE Hermes, FAKE Pi)", () => {
   });
 });
 
+describe("cancel and uncertain picks, the hard cases (FAKE Hermes)", () => {
+  const stopPath = (runId: string) => `/v1/runs/${runId}/stop`;
+
+  it("cancels during a submit whose answer has not come back: same run, stopped, no second run", async () => {
+    const setup = await start();
+    const { h } = setup;
+    h.fake.options.holdRuns = true;
+    const sent = await asked(await setup.ask());
+    await until(() => runPosts(h).length === 1);
+    // Hermes admitted run_fake1, but its answer has not come back to pi-spore.
+    h.fake.options.holdRuns = false;
+    await json(await h.server.request("POST", `/api/hermes/handoffs/${sent.id}/cancel`, {}));
+    await state(h, sent.id, "cancelled");
+    expect(posts(h, stopPath("run_fake1"))).toHaveLength(1);
+    const [first, second] = runPosts(h);
+    expect(second?.raw).toBe(first?.raw);
+    expect(second?.headers["idempotency-key"]).toBe(first?.headers["idempotency-key"]);
+    expect(h.fake.run("run_fake1")?.status).toBe("cancelled");
+    expect(h.fake.run("run_fake2")).toBeUndefined();
+  });
+
+  it("cancels after a submit timed out: it finds the run Hermes admitted and stops it", async () => {
+    const setup = await start();
+    const { h } = setup;
+    h.fake.options.holdRuns = true;
+    const sent = await asked(await setup.ask());
+    await until(() => runPosts(h).length === 1);
+    await until(() => h.timers.delays().includes(TIMEOUT_MS));
+    await h.timers.fire(TIMEOUT_MS);
+    await until(async () => (await handoff(h, sent.id)).error !== undefined);
+    expect((await handoff(h, sent.id)).state).toBe("pending");
+    h.fake.release();
+    await json(await h.server.request("POST", `/api/hermes/handoffs/${sent.id}/cancel`, {}));
+    await state(h, sent.id, "cancelled");
+    expect(h.fake.run("run_fake1")?.status).toBe("cancelled");
+    expect(posts(h, stopPath("run_fake1"))).toHaveLength(1);
+    await until(async () => (await answers(h, setup.agentId, sent.id)).length > 0);
+    expect(await answers(h, setup.agentId, sent.id)).toHaveLength(1);
+  });
+
+  it("ends uncertain when the stop fails, and later frames change nothing", async () => {
+    const setup = await start();
+    const { h } = setup;
+    const run = await askAndRun(setup);
+    // The follower's open stream keeps an idle timer; it goes when the follower closes the stream.
+    await until(() => h.timers.delays().includes(STREAM_IDLE_MS));
+    h.fake.options.answers[stopPath(run.runId)] = { status: 500, raw: "{}" };
+    await json(await h.server.request("POST", `/api/hermes/handoffs/${run.id}/cancel`, {}));
+    await state(h, run.id, "uncertain");
+    expect((await handoff(h, run.id)).error).toContain("did not confirm the stop");
+    h.fake.emit(run.runId, { event: "tool.started", tool: "terminal", preview: "ls" });
+    h.fake.finish(run.runId, "late");
+    await until(async () => (await answers(h, setup.agentId, run.id)).length > 0);
+    // The old follower read the late frames and closed its stream; it must have written nothing.
+    await until(() => !h.timers.delays().includes(STREAM_IDLE_MS));
+    const after = await handoff(h, run.id);
+    expect(after.state).toBe("uncertain");
+    expect(after.result).toBeUndefined();
+    expect(await answers(h, setup.agentId, run.id)).toHaveLength(1);
+    const inbox = await json<Inbox>(await h.server.request("GET", "/api/attention/inbox"));
+    expect(
+      inbox.items.some((item) => item.kind === "notice" && item.id === `uncertain:${run.id}`),
+    ).toBe(true);
+  });
+
+  it("ends uncertain when Hermes says stopping but the run does not end in 60 s", async () => {
+    const setup = await start();
+    const { h } = setup;
+    const run = await askAndRun(setup);
+    h.fake.options.answers[stopPath(run.runId)] = {
+      status: 200,
+      raw: JSON.stringify({ run_id: run.runId, status: "stopping" }),
+    };
+    await json(await h.server.request("POST", `/api/hermes/handoffs/${run.id}/cancel`, {}));
+    await until(() => h.jobTimers.delays().length > 0);
+    expect((await handoff(h, run.id)).state).toBe("running");
+    h.server.advance(60_000);
+    await h.jobTimers.fireAll();
+    await state(h, run.id, "uncertain");
+    expect((await handoff(h, run.id)).error).toContain("did not end in 60 s");
+    await until(async () => (await answers(h, setup.agentId, run.id)).length > 0);
+    expect(await answers(h, setup.agentId, run.id)).toHaveLength(1);
+  });
+
+  it("keeps the result of a run that ended before its stop", async () => {
+    const setup = await start();
+    const { h } = setup;
+    // The follower hears nothing, so only the cancel can see the end.
+    h.fake.options.dropStreamAfter = 0;
+    const run = await askAndRun(setup);
+    h.fake.finish(run.runId, "done anyway");
+    h.fake.options.answers[stopPath(run.runId)] = {
+      status: 409,
+      raw: JSON.stringify({ error: { code: "run_not_active" } }),
+    };
+    await json(await h.server.request("POST", `/api/hermes/handoffs/${run.id}/cancel`, {}));
+    await state(h, run.id, "completed");
+    expect((await handoff(h, run.id)).result).toBe("done anyway");
+    await until(async () => (await answers(h, setup.agentId, run.id)).length > 0);
+    const [text] = await answers(h, setup.agentId, run.id);
+    expect(text).toContain("done anyway");
+    expect(text).toContain("finished before the cancel took effect");
+  });
+
+  it("drops an uncertain handoff on the user's pick, once, and clears its Home item", async () => {
+    const setup = await start();
+    const { h } = setup;
+    const run = await askAndRun(setup);
+    h.fake.restart();
+    await state(h, run.id, "uncertain");
+    const [one, two] = await Promise.all([
+      h.server.request("POST", `/api/hermes/handoffs/${run.id}/resolve`, { action: "drop" }),
+      h.server.request("POST", `/api/hermes/handoffs/${run.id}/resolve`, { action: "drop" }),
+    ]);
+    expect([one.status, two.status].sort()).toEqual([200, 409]);
+    expect((await handoff(h, run.id)).resolution).toBe("dropped");
+    const inbox = await json<Inbox>(await h.server.request("GET", "/api/attention/inbox"));
+    expect(
+      inbox.items.some((item) => item.kind === "notice" && item.id === `uncertain:${run.id}`),
+    ).toBe(false);
+    expect(posts(h, "/resolve-unknown")).toHaveLength(0);
+    expect(runPosts(h)).toHaveLength(1);
+  });
+
+  it("sends resolve-unknown once for a double click on Mark as interrupted", async () => {
+    const setup = await start();
+    const { h } = setup;
+    const run = await askAndRun(setup);
+    h.fake.restart();
+    await state(h, run.id, "uncertain");
+    const [one, two] = await Promise.all([
+      h.server.request("POST", `/api/hermes/handoffs/${run.id}/resolve`, { action: "interrupt" }),
+      h.server.request("POST", `/api/hermes/handoffs/${run.id}/resolve`, { action: "interrupt" }),
+    ]);
+    expect([one.status, two.status].sort()).toEqual([200, 409]);
+    expect(posts(h, "/resolve-unknown")).toHaveLength(1);
+  });
+});
+
+describe("ask_hermes edge cases (FAKE Hermes)", () => {
+  it("gives one handoff and one run for two requests with the same receipt at once", async () => {
+    const setup = await start();
+    const [one, two] = await Promise.all([setup.ask(), setup.ask()]);
+    const first = await asked(one);
+    const second = await asked(two);
+    expect(second.id).toBe(first.id);
+    await running(setup.h, first.id);
+    expect(runPosts(setup.h)).toHaveLength(1);
+  });
+
+  it("lists only one workspace's handoffs for the Details panel", async () => {
+    const setup = await start();
+    const sent = await asked(await setup.ask());
+    const list = async (workspaceId: string) =>
+      (
+        await json<{ handoffs: HermesHandoff[] }>(
+          await setup.h.server.request("GET", `/api/hermes/handoffs?workspaceId=${workspaceId}`),
+        )
+      ).handoffs.map((entry) => entry.id);
+    expect(await list(setup.workspaceId)).toEqual([sent.id]);
+    expect(await list("01OTHER")).toEqual([]);
+  });
+
+  it("does not send after hermes.offlineWaitHours passed, even when Hermes is back", async () => {
+    const setup = await start({ settings: { offlineWaitHours: 1 } });
+    const { h } = setup;
+    h.fake.options.serverError = true;
+    const sent = await asked(await setup.ask());
+    await until(async () => (await handoff(h, sent.id)).error !== undefined);
+    h.server.advance(3_600_000);
+    h.fake.options.serverError = false;
+    await until(() => h.jobTimers.delays().length > 0);
+    await h.jobTimers.fireAll();
+    await state(h, sent.id, "failed");
+    expect((await handoff(h, sent.id)).error).toContain("could not be reached for 1 h");
+    expect(runPosts(h)).toHaveLength(0);
+  });
+
+  it("takes the provider and model from the session record once Hermes fills them in", async () => {
+    const setup = await start();
+    const { h } = setup;
+    h.fake.options.blankSessionMeta = true;
+    const run = await askAndRun(setup);
+    expect(run.provider).toBeUndefined();
+    expect(run.model).toBeUndefined();
+    h.fake.setSessionMeta(`pi-spore-${run.id}`, {
+      model: "gpt-6.1-sol",
+      billing_provider: "openai-codex",
+    });
+    h.fake.finish(run.runId, "pong");
+    await state(h, run.id, "completed");
+    expect(await handoff(h, run.id)).toMatchObject({
+      provider: "openai-codex",
+      model: "gpt-6.1-sol",
+    });
+  });
+
+  it("stores the end of a handoff whose chat is gone, and delivers to nobody", async () => {
+    const setup = await start();
+    const { h } = setup;
+    const run = await askAndRun(setup);
+    h.server.store.run("UPDATE hermes_handoffs SET agent_id = '01GONE' WHERE id = ?", run.id);
+    h.fake.finish(run.runId, "pong");
+    await state(h, run.id, "completed");
+    expect(h.log.some((line) => line.message === "The chat that asked Hermes is gone")).toBe(true);
+  });
+
+  it.each([
+    ["unauthorized", (h: Harness) => writeFileSync(h.keyFile, "fake-wrong-key", { mode: 0o600 })],
+    [
+      "incompatible",
+      (h: Harness) => {
+        h.fake.options.version = "0.24.0";
+      },
+    ],
+  ])("refuses an ask while Hermes is %s, and starts nothing", async (status, breakIt) => {
+    const setup = await start();
+    breakIt(setup.h);
+    const refused = await setup.ask();
+    expect(refused.status).toBe(503);
+    expect((await refused.json()).error.message).toContain(`Hermes is ${status}`);
+    expect(runPosts(setup.h)).toHaveLength(0);
+    const { handoffs } = await json<{ handoffs: unknown[] }>(
+      await setup.h.server.request("GET", "/api/hermes/handoffs"),
+    );
+    expect(handoffs).toEqual([]);
+  });
+});
+
 describe("Hermes approvals and clarify questions go to the user on Home", () => {
   const inboxNotices = async (h: Harness) =>
     (await json<Inbox>(await h.server.request("GET", "/api/attention/inbox"))).items.filter(
@@ -490,6 +720,21 @@ describe("Hermes approvals and clarify questions go to the user on Home", () => 
     const late = await answer(h, run.id, "prompt-4", { choice: "once" });
     expect(late.status).toBe(409);
     expect((await control(h, run.id, "prompt-4"))?.state).toBe("expired");
+    expect(posts(h, "/approval")).toHaveLength(1);
+  });
+
+  it("does not post again after an answer Hermes took whose reply was lost", async () => {
+    const setup = await start();
+    const { h } = setup;
+    const run = await askAndRun(setup);
+    h.fake.requestApproval(run.runId, "prompt-5");
+    await control(h, run.id, "prompt-5");
+    h.fake.options.loseAnswers = true;
+    const lost = await answer(h, run.id, "prompt-5", { choice: "once" });
+    expect(lost.status).toBe(502);
+    expect((await control(h, run.id, "prompt-5"))?.state).toBe("answered");
+    h.fake.options.loseAnswers = false;
+    expect((await answer(h, run.id, "prompt-5", { choice: "once" })).status).toBe(409);
     expect(posts(h, "/approval")).toHaveLength(1);
   });
 

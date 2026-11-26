@@ -11,7 +11,9 @@
 // Knobs on `fake.options`: version, missingFlag, falseFlag, models, serverError (5xx on every keyed request),
 // holdRuns (admit POST /v1/runs but never answer, like a lost response), holdAll (never answer anything),
 // dropStreamAfter (cut each event stream after n frames), answers ({ "<path below the profile>": { status, raw } }:
-// that path answers this status and raw body, for broken or unexpected answers).
+// that path answers this status and raw body, for broken or unexpected answers), loseAnswers (take an approval or
+// clarify answer, then reset the connection instead of answering, like a response lost on the way back),
+// blankSessionMeta (new sessions have no model or provider yet; `setSessionMeta` fills them in later).
 import { createServer } from "node:http";
 
 const REQUIRED = {
@@ -226,6 +228,7 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
         // The spike lists approval.responded only; it names no event for a clarify answer.
         if (action === "/approval")
           emit(run, { event: "approval.responded", request_id: body.request_id });
+        if (options.loseAnswers) return response.destroy();
         return json(response, 200, { ok: true });
       }
       if (request.method === "POST" && action === "/resolve-unknown") {
@@ -253,8 +256,8 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
         title: body.title ?? body.id,
         source: body.source ?? "api_server",
         message_count: 0,
-        model: "gpt-6.1-sol",
-        billing_provider: "openai-codex",
+        model: options.blankSessionMeta ? "" : "gpt-6.1-sol",
+        billing_provider: options.blankSessionMeta ? "" : "openai-codex",
         messages: [],
       };
       sessions.set(session.id, session);
@@ -351,6 +354,10 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
       emit(run, { event: "clarify.request", request_id: promptId });
     },
     run: (runId) => runs.get(runId),
+    /** Sets the model and provider of a session's record, as Hermes does once its routing picked them. */
+    setSessionMeta(id, { model, billing_provider }) {
+      Object.assign(sessions.get(id), { model, billing_provider });
+    },
     /** Like a Hermes restart: open streams drop, event buffers are gone, runs that had not ended are `unknown`. */
     restart() {
       for (const run of runs.values()) {

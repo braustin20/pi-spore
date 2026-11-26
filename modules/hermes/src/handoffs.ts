@@ -24,6 +24,12 @@ import type { Hermes, Run, RunEvent } from "./contract.js";
 
 const JOB = "hermes.ask";
 const ENDED: ReadonlySet<string> = new Set(["completed", "cancelled", "failed", "uncertain"]);
+/** Connector errors that mean Hermes did not answer at all. */
+const UNREACHABLE: ReadonlySet<string> = new Set([
+  "hermes_unreachable",
+  "hermes_timeout",
+  "hermes_unavailable",
+]);
 /** The first wait after Hermes did not answer; it doubles up to `MAX_BACKOFF_MS`. Same as the status poll. */
 const FIRST_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 300_000;
@@ -31,6 +37,11 @@ const MAX_BACKOFF_MS = 300_000;
 const MESSAGE_CAP = 4_000;
 /** How much of one session message the reconcile view shows. */
 const FACT_CAP = 1_000;
+/** How long a sent stop may take to show as an ended run, and how often the cancel step reads the run meanwhile. */
+const STOP_CONFIRM_MS = 60_000;
+const STOP_POLL_MS = 2_000;
+/** Pages of 100 sessions read to find a handoff's session record. */
+const SESSION_PAGES = 5;
 
 /** Hermes run status to handoff state (card Hermes 1.2). `waiting_for_approval` is running with an open control. */
 const STATE_OF: Record<Run["status"], HermesHandoffState> = {
@@ -75,6 +86,9 @@ interface Row {
   execution_generation: number | null;
   idempotency_key: string;
   job_id: string | null;
+  /** 1 once a `POST /v1/runs` went out: from then on Hermes may have the run, even with no `run_id` stored. */
+  run_posted: number;
+  stop_sent_at: number | null;
   provider: string | null;
   model: string | null;
   last_event_id: string | null;
@@ -122,6 +136,8 @@ export const HANDOFF_MIGRATIONS = [
     execution_generation INTEGER,
     idempotency_key TEXT NOT NULL,
     job_id TEXT,
+    run_posted INTEGER NOT NULL DEFAULT 0,
+    stop_sent_at INTEGER,
     provider TEXT,
     model TEXT,
     last_event_id TEXT,
@@ -258,22 +274,24 @@ export function setupHandoffs(
       lines.push(
         "Hermes lost track of the run (a restart or a stop it did not confirm). The user decides on pi-spore's Hermes handoffs page what happens next.",
       );
-    if (row.cancel_requested === 1)
+    const cancelled = row.cancel_requested === 1;
+    if (end.state === "completed") {
+      if (cancelled) lines.push("It finished before the cancel took effect.");
+    } else if (end.state === "cancelled" && cancelled)
       lines.push("It was cancelled. Steps Hermes completed are not undone.");
-    else if (end.state !== "completed")
-      lines.push("Side effects that already happened in Hermes are not undone.");
+    else lines.push("Side effects that already happened in Hermes are not undone.");
     return lines.join("\n");
   };
 
   /**
    * Stores the end state and delivers the one message in the same transaction (architecture 6). A handoff that
-   * already ended is left as it is, so no path delivers twice.
+   * already ended, or that another job owns now (`jobId`), is left as it is, so no path delivers twice.
    */
-  const finish = (id: string, end: End): boolean => {
+  const finish = (id: string, end: End, jobId?: string): boolean => {
     let ended = false;
     store.transaction(() => {
       const row = load(id);
-      if (!row || ENDED.has(row.state)) return;
+      if (!row || ENDED.has(row.state) || (jobId !== undefined && row.job_id !== jobId)) return;
       update(id, {
         state: end.state,
         result_text: end.result ?? null,
@@ -284,14 +302,38 @@ export function setupHandoffs(
         host.now(),
         id,
       );
-      agents.deliver(row.agent_id, message(row, end));
+      // A chat removed since the ask has nobody to tell; the end is still stored for the page.
+      if (asker(row.agent_id)) agents.deliver(row.agent_id, message(row, end));
+      else
+        host.log.warn("The chat that asked Hermes is gone", { handoff: id, agent: row.agent_id });
       ended = true;
     });
     if (ended) homeItems.changed();
     return ended;
   };
 
-  /** Makes the stored controls match the run's `pending_controls`. Controls the run no longer waits on expire. */
+  const asker = (agentId: string) => {
+    try {
+      return agents.get(agentId);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return undefined;
+      throw error;
+    }
+  };
+
+  /** The handoff while job `jobId` owns it and it has not ended. A replaced or cancelled job's late step gets none. */
+  const owned = (id: string, jobId: string): Row | undefined => {
+    const row = load(id);
+    return row && row.job_id === jobId && !ENDED.has(row.state) ? row : undefined;
+  };
+  const updateOwned = (id: string, jobId: string, fields: Partial<Row>) => {
+    if (owned(id, jobId)) update(id, fields);
+  };
+
+  /**
+   * Makes the stored controls match the run's `pending_controls`. One the run no longer waits on expires; one whose
+   * answer is on its way (`answering`) too, and the answer route marks it answered when Hermes takes it.
+   */
   const syncControls = (row: Row, run: Run) => {
     const pending = run.pending_controls ?? [];
     const now = host.now();
@@ -317,7 +359,10 @@ export function setupHandoffs(
       }
       const open = new Set(pending.map((control) => control.prompt_id));
       for (const control of controlsOf(row.id))
-        if (control.state === "open" && !open.has(control.prompt_id)) {
+        if (
+          (control.state === "open" || control.state === "answering") &&
+          !open.has(control.prompt_id)
+        ) {
           store.run(
             "UPDATE hermes_controls SET state = 'expired', updated_at = ? WHERE handoff_id = ? AND prompt_id = ?",
             now,
@@ -330,9 +375,10 @@ export function setupHandoffs(
     if (changed) homeItems.changed();
   };
 
-  /** Stores what the run status says. Returns the end when the run has ended or is `unknown`. */
-  const syncRun = (row: Row, run: Run): End | undefined => {
+  /** Stores what the run status says, while `jobId` owns the handoff. Returns the end once the run ended or is `unknown`. */
+  const syncRun = (row: Row, run: Run, jobId: string): End | undefined => {
     const state = STATE_OF[run.status];
+    if (!owned(row.id, jobId)) return undefined;
     syncControls(row, run);
     const fields: Partial<Row> = {
       ...(run.admission_id === undefined ? {} : { admission_id: run.admission_id }),
@@ -341,6 +387,9 @@ export function setupHandoffs(
         : { execution_generation: run.execution_generation }),
     };
     if (!ENDED.has(state)) fields.state = state;
+    const runtime = run.runtime;
+    if (runtime?.provider) fields.provider = runtime.provider;
+    if (runtime?.model) fields.model = runtime.model;
     if (Object.keys(fields).length > 0) update(row.id, fields);
     if (!ENDED.has(state)) return undefined;
     if (state === "completed") return { state, result: run.output ?? "" };
@@ -357,6 +406,14 @@ export function setupHandoffs(
     next: "deliver",
     checkpoint: { end },
   });
+  const offlineMs = async () => (await host.settings.resolve()).get(offlineHours).value * 3_600_000;
+  /** Past the wait, a resend may outlive Hermes's 24 h key retention, so a run that may exist is not sent again. */
+  const expired = (row: Row, hours: number): End => ({
+    state: row.run_posted ? "uncertain" : "failed",
+    error: row.run_posted
+      ? `Hermes could not be reached for ${hours} h after a send that may have reached it; pi-spore did not send it again`
+      : `Hermes could not be reached for ${hours} h`,
+  });
 
   /**
    * Waits while Hermes cannot be reached, up to `hermes.offlineWaitHours`: from the ask for a handoff not sent yet,
@@ -364,77 +421,109 @@ export function setupHandoffs(
    */
   const waitOrFail = async (
     row: Row,
+    jobId: string,
     step: "submit" | "follow",
     { tries = 0, since }: Checkpoint,
     error: ApiError,
   ): Promise<StepOutcome<Checkpoint>> => {
-    const hours = (await host.settings.resolve()).get(offlineHours).value;
+    const wait = await offlineMs();
     const start = since ?? (step === "submit" ? row.created_at : host.now());
-    if (host.now() - start >= hours * 3_600_000)
-      return deliverWith({
-        state: row.run_id ? "uncertain" : "failed",
-        error: `Hermes could not be reached for ${hours} h: ${error.message}`,
-      });
+    if (host.now() - start >= wait) {
+      const end = expired(row, wait / 3_600_000);
+      return deliverWith(step === "follow" ? { ...end, state: "uncertain" } : end);
+    }
+    // Off, a refused key, or an untested version needs the user, so it does not say offline.
+    const offline = UNREACHABLE.has(error.code) || (await hermes.status()).state === "unreachable";
+    const why = offline
+      ? `Hermes is offline: ${error.message}`
+      : `Waiting for Hermes: ${error.message}`;
     return {
       next: step,
       after: backoff(tries),
       checkpoint: { tries: tries + 1, since: start },
-      commit: () => update(row.id, { error: `Hermes is offline: ${error.message}` }),
+      commit: () => updateOwned(row.id, jobId, { error: why }),
     };
   };
   /** Errors that mean "try again later": Hermes is off, down, slow, or answered with a server error. */
   const transient = (error: unknown): error is ApiError =>
     error instanceof ApiError && (error.status >= 500 || error.code === "hermes_run_not_found");
 
-  const submit = async (id: string, checkpoint: Checkpoint): Promise<StepOutcome<Checkpoint>> => {
-    const row = load(id);
-    if (!row || ENDED.has(row.state)) return { next: null };
-    if (row.run_id) return { next: "follow", checkpoint: {} };
+  /** The session record's provider and model, when Hermes has them; blank stays unknown (ADR 0202 decision 7). */
+  const refreshSession = async (id: string, jobId: string, sessionId: string) => {
     try {
+      for (let page = 0; page < SESSION_PAGES; page += 1) {
+        const list = await hermes.listSessions({
+          source: "api_server",
+          limit: 100,
+          offset: page * 100,
+        });
+        const session = list.data.find((entry) => entry.id === sessionId);
+        if (session) {
+          const fields: Partial<Row> = {};
+          if (session.billing_provider) fields.provider = session.billing_provider;
+          if (session.model) fields.model = session.model;
+          updateOwned(id, jobId, fields.provider || fields.model ? fields : {});
+          return;
+        }
+        if (!list.has_more) return;
+      }
+    } catch (error) {
+      // Only the shown provider and model depend on it.
+      host.log.warn("Could not read the Hermes session record", { error: String(error) });
+    }
+  };
+
+  /** The identical body and key on every try, so Hermes starts the run at most once (spike Q2). */
+  const startRun = (row: Row) =>
+    hermes.startRun({ input: row.prompt, session_id: `pi-spore-${row.id}` }, row.run_key);
+
+  const submit = async (
+    id: string,
+    jobId: string,
+    checkpoint: Checkpoint,
+  ): Promise<StepOutcome<Checkpoint>> => {
+    const row = owned(id, jobId);
+    if (!row) return { next: null };
+    if (row.cancel_requested) return { next: "cancel", checkpoint: {} };
+    if (row.run_id) return { next: "follow", checkpoint: {} };
+    const wait = await offlineMs();
+    // Checked before every send, so a job that slept past the wait (or a stopped pi-spore) does not send late.
+    if (host.now() - row.created_at >= wait) return deliverWith(expired(row, wait / 3_600_000));
+    try {
+      const name = `pi-spore-${row.id}`;
       if (!row.session_id) {
-        const name = `pi-spore-${row.id}`;
         try {
-          const session = await hermes.createSession({ id: name, title: row.title ?? name });
-          update(id, {
-            session_id: session.id,
-            provider: session.billing_provider || null,
-            model: session.model || null,
-          });
+          await hermes.createSession({ id: name, title: row.title ?? name });
         } catch (error) {
           // An earlier try made it and lost the answer. It is ours: no other client names sessions this way.
           if (!(error instanceof ApiError && error.code === "hermes_session_exists")) throw error;
-          update(id, { session_id: name });
         }
+        updateOwned(id, jobId, { session_id: name });
+        await refreshSession(id, jobId, name);
       }
-      // The same key and the identical body on every try, so Hermes starts the run at most once (spike Q2).
-      const admission = await hermes.startRun(
-        { input: row.prompt, session_id: `pi-spore-${row.id}` },
-        row.run_key,
-      );
-      if (load(id)?.cancel_requested === 1)
-        await hermes.stop(admission.run_id).catch(() => undefined);
+      // A cancel while the session was made: it wins. From the next line on, a cancel stops the run instead.
+      const now = owned(id, jobId);
+      if (!now) return { next: null };
+      if (now.cancel_requested) return { next: "cancel", checkpoint: {} };
+      update(id, { run_posted: 1 });
+      const admission = await startRun(row);
       return {
         next: "follow",
         checkpoint: {},
         commit: () =>
-          update(id, {
-            run_id: admission.run_id,
-            state: "accepted",
-            error: null,
-            session_id: `pi-spore-${row.id}`,
-          }),
+          updateOwned(id, jobId, { run_id: admission.run_id, state: "accepted", error: null }),
       };
     } catch (error) {
-      if (transient(error)) return await waitOrFail(row, "submit", checkpoint, error);
+      if (transient(error)) return await waitOrFail(row, jobId, "submit", checkpoint, error);
       return deliverWith({ state: "failed", error: (error as Error).message });
     }
   };
 
   /** Handles one event. Returns the end once the run ended. */
-  const onEvent = async (row: Row, event: RunEvent): Promise<End | undefined> => {
+  const onEvent = async (row: Row, jobId: string, event: RunEvent): Promise<End | undefined> => {
     switch (event.event) {
       case "tool.started":
-        update(row.id, {
+        updateOwned(row.id, jobId, {
           tool_started: event.preview ? `${event.tool}: ${event.preview}` : event.tool,
           state: "running",
         });
@@ -442,8 +531,8 @@ export function setupHandoffs(
       case "tool.completed":
       case "tool.failed": {
         const failed = event.event === "tool.failed" || event.error === true;
-        update(row.id, {
-          tool_finished: `${event.tool ?? load(row.id)?.tool_started ?? "a tool"}${failed ? " (error)" : ""}`,
+        updateOwned(row.id, jobId, {
+          tool_finished: `${event.tool ?? row.tool_started ?? "a tool"}${failed ? " (error)" : ""}`,
         });
         return undefined;
       }
@@ -455,36 +544,49 @@ export function setupHandoffs(
       case "run.failed":
       case "run.interrupted":
       case "replay.truncated":
-        return syncRun(row, await hermes.getRun(row.run_id as string));
+        return syncRun(row, await hermes.getRun(row.run_id as string), jobId);
       default:
-        if (row.state === "accepted") update(row.id, { state: "running" });
+        if (row.state === "accepted") updateOwned(row.id, jobId, { state: "running" });
         return undefined;
     }
   };
 
-  const follow = async (id: string, checkpoint: Checkpoint): Promise<StepOutcome<Checkpoint>> => {
-    const row = load(id);
-    if (!row || ENDED.has(row.state) || !row.run_id) return { next: null };
+  /** The end to deliver, after a last read of the session record for the provider and model. */
+  const ended = async (row: Row, jobId: string, end: End) => {
+    if (row.session_id) await refreshSession(row.id, jobId, row.session_id);
+    return deliverWith(end);
+  };
+
+  const follow = async (
+    id: string,
+    jobId: string,
+    checkpoint: Checkpoint,
+  ): Promise<StepOutcome<Checkpoint>> => {
+    const row = owned(id, jobId);
+    if (!row?.run_id) return { next: null };
     const runId = row.run_id;
     // Frames came in on this try, so the waits before it no longer count.
     let reached = false;
     try {
       // The status first: after a restart, a lost stream, or a 404 on events, it is the truth (spike Q4).
-      const first = syncRun(row, await hermes.getRun(runId));
-      if (first) return deliverWith(first);
+      const first = syncRun(row, await hermes.getRun(runId), jobId);
+      if (first) return await ended(row, jobId, first);
       let last = row.last_event_id ?? undefined;
       while (true) {
         let progressed = false;
         try {
           for await (const frame of hermes.runEvents(runId, last)) {
+            // A cancel hands the handoff to a new job; this one stops reading and writes nothing more.
+            const live = owned(id, jobId);
+            if (!live) return { next: null };
             progressed = true;
             reached = true;
             if (frame.id !== undefined) {
               last = frame.id;
               update(id, { last_event_id: last });
             }
-            const end = await onEvent(load(id) as Row, frame.event);
-            if (end) return deliverWith(end);
+            const end = await onEvent(live, jobId, frame.event);
+            if (end) return await ended(live, jobId, end);
           }
           // A terminal frame whose status read did not end the run: read again on the next try.
           return { next: "follow", after: backoff(0), checkpoint: {} };
@@ -501,36 +603,89 @@ export function setupHandoffs(
         return deliverWith({ state: "uncertain", error: (error as Error).message });
       // A 404 on events (Hermes restarted) or a lost stream: read the status now, so `unknown` shows at once.
       try {
-        const end = syncRun(row, await hermes.getRun(runId));
-        if (end) return deliverWith(end);
+        const end = syncRun(row, await hermes.getRun(runId), jobId);
+        if (end) return await ended(row, jobId, end);
       } catch {
         // Hermes is down: wait below.
       }
-      return await waitOrFail(row, "follow", reached ? {} : checkpoint, error);
+      return await waitOrFail(row, jobId, "follow", reached ? {} : checkpoint, error);
+    }
+  };
+
+  /**
+   * Stops the run of a cancelled handoff and waits, at most `STOP_CONFIRM_MS`, for Hermes to show it ended. A send
+   * that may have reached Hermes but left no run id is asked again with the identical body and key, which returns
+   * that run (or, if the first never got in, starts it once, to be stopped at once). A stop that Hermes refuses or
+   * does not confirm ends `uncertain`; a run that ended anyway keeps its own end.
+   */
+  const cancelStep = async (id: string, jobId: string): Promise<StepOutcome<Checkpoint>> => {
+    const row = owned(id, jobId);
+    if (!row) return { next: null };
+    if (!row.run_posted) return deliverWith({ state: "cancelled" });
+    const unconfirmed = (why: string): End => ({
+      state: "uncertain",
+      error: `Hermes did not confirm the stop: ${why}`,
+    });
+    try {
+      let runId = row.run_id;
+      if (!runId) {
+        runId = (await startRun(row)).run_id;
+        updateOwned(id, jobId, { run_id: runId });
+      }
+      let stopSentAt = row.stop_sent_at;
+      if (stopSentAt === null) {
+        try {
+          await hermes.stop(runId);
+        } catch (error) {
+          // An ended run may refuse the stop: read it before calling the stop unconfirmed.
+          const end = syncRun(row, await hermes.getRun(runId), jobId);
+          return deliverWith(end ?? unconfirmed((error as Error).message));
+        }
+        stopSentAt = host.now();
+        updateOwned(id, jobId, { stop_sent_at: stopSentAt });
+      }
+      const end = syncRun(row, await hermes.getRun(runId), jobId);
+      if (end) return deliverWith(end);
+      if (host.now() - stopSentAt >= STOP_CONFIRM_MS)
+        return deliverWith(unconfirmed(`the run did not end in ${STOP_CONFIRM_MS / 1000} s`));
+      return { next: "cancel", after: STOP_POLL_MS, checkpoint: {} };
+    } catch (error) {
+      return deliverWith(unconfirmed((error as Error).message));
     }
   };
 
   host.jobs.define<{ handoffId: string }, Checkpoint>(JOB, [
     {
       name: "submit",
-      run: ({ subject, checkpoint }) => submit(subject.handoffId, checkpoint ?? {}),
+      run: ({ id, subject, checkpoint }) => submit(subject.handoffId, id, checkpoint ?? {}),
     },
     {
       name: "follow",
-      run: ({ subject, checkpoint }) => follow(subject.handoffId, checkpoint ?? {}),
+      run: ({ id, subject, checkpoint }) => follow(subject.handoffId, id, checkpoint ?? {}),
     },
+    { name: "cancel", run: ({ id, subject }) => cancelStep(subject.handoffId, id) },
     {
       name: "deliver",
-      run: async ({ subject, checkpoint }) => ({
+      run: async ({ id, subject, checkpoint }) => ({
         next: null,
         commit: () => {
-          if (checkpoint?.end) finish(subject.handoffId, checkpoint.end);
+          if (checkpoint?.end) finish(subject.handoffId, checkpoint.end, id);
         },
       }),
     },
   ]);
 
-  /** Writes a new `pending` handoff and its job in one transaction. */
+  const byReceipt = (agentId: string, receipt: string) =>
+    store.get<Row>(
+      "SELECT * FROM hermes_handoffs WHERE agent_id = ? AND idempotency_key = ?",
+      agentId,
+      receipt,
+    );
+
+  /**
+   * Writes a new `pending` handoff and its job in one transaction, or returns the one this receipt already made. The
+   * receipt is read again inside the transaction, after the awaits, so two requests that race get one handoff.
+   */
   const create = async (
     owner: { agentId: string; workspaceId: string },
     request: AskHermesRequest,
@@ -546,7 +701,9 @@ export function setupHandoffs(
     // Only the text the agent gave, never its transcript.
     const prompt = `${header}\n\n${what}${request.title ? `: ${request.title}` : ""}\n\n${request.text}`;
     const now = host.now();
-    store.transaction(() => {
+    return store.transaction(() => {
+      const again = byReceipt(owner.agentId, receipt);
+      if (again) return again;
       store.run(
         `INSERT INTO hermes_handoffs (id, direction, agent_id, workspace_id, project_id, profile, kind, title, text,
          prompt, hop_count, state, run_key, idempotency_key, created_at, updated_at)
@@ -566,8 +723,8 @@ export function setupHandoffs(
         now,
       );
       update(id, { job_id: host.jobs.start(JOB, { handoffId: id }) });
+      return load(id) as Row;
     });
-    return load(id) as Row;
   };
 
   const own = (caller: BridgeCaller, id: string): Row => {
@@ -582,30 +739,22 @@ export function setupHandoffs(
     return row;
   };
 
-  const cancel = async (row: Row): Promise<Row> => {
-    if (ENDED.has(row.state)) return row;
-    update(row.id, { cancel_requested: 1 });
-    if (!row.run_id) {
-      store.transaction(() => {
-        if (row.job_id) host.jobs.cancel(row.job_id);
-        finish(row.id, { state: "cancelled" });
-      });
+  /**
+   * Cancels a handoff. With nothing sent to Hermes yet it ends `cancelled` at once: the submit step reads
+   * `cancel_requested` right before it sends, with no await between, so it cannot send after this. Otherwise a new
+   * job runs the cancel step now, even if the old one sleeps in a backoff; the old job writes nothing more.
+   */
+  const cancel = (row: Row): Row =>
+    store.transaction(() => {
+      const current = load(row.id) as Row;
+      if (ENDED.has(current.state) || current.cancel_requested) return current;
+      update(row.id, { cancel_requested: 1 });
+      if (current.job_id) host.jobs.cancel(current.job_id);
+      if (current.run_posted)
+        update(row.id, { job_id: host.jobs.start(JOB, { handoffId: row.id }) });
+      else finish(row.id, { state: "cancelled" });
       return load(row.id) as Row;
-    }
-    try {
-      // The job follows the run to `cancelled` and delivers then.
-      await hermes.stop(row.run_id);
-    } catch (error) {
-      store.transaction(() => {
-        if (row.job_id) host.jobs.cancel(row.job_id);
-        finish(row.id, {
-          state: "uncertain",
-          error: `Hermes did not confirm the stop: ${(error as Error).message}`,
-        });
-      });
-    }
-    return load(row.id) as Row;
-  };
+    });
 
   // Home items: controls that wait for the user, and uncertain handoffs that wait for a pick (ADR 0155).
   homeItems.register("hermes", async () => {
@@ -649,14 +798,17 @@ export function setupHandoffs(
 
   host.routes.get("/handoffs", async (c) => {
     const timeout = await timeoutMs();
+    const workspaceId = c.req.query("workspaceId");
     const rows = store.all<Row>(
-      "SELECT * FROM hermes_handoffs ORDER BY created_at DESC, id DESC LIMIT 100",
+      `SELECT * FROM hermes_handoffs ${workspaceId === undefined ? "" : "WHERE workspace_id = ?"}
+       ORDER BY created_at DESC, id DESC LIMIT 100`,
+      ...(workspaceId === undefined ? [] : [workspaceId]),
     );
     return c.json({ handoffs: rows.map((row) => view(row, timeout)) });
   });
 
   host.routes.post("/handoffs/:id/cancel", async (c) =>
-    c.json({ handoff: await viewOf(await cancel(found(c.req.param("id")))) }),
+    c.json({ handoff: await viewOf(cancel(found(c.req.param("id")))) }),
   );
 
   host.routes.get("/handoffs/:id/reconcile", async (c) => {
@@ -689,39 +841,44 @@ export function setupHandoffs(
   host.routes.post("/handoffs/:id/resolve", async (c) => {
     const row = found(c.req.param("id"));
     const request = parseJsonBody(ResolveHermesHandoffRequest, await c.req.text(), "pick");
-    if (row.state !== "uncertain" || row.resolution !== null)
-      throw new ApiError(409, "handoff_not_uncertain", `Handoff ${row.id} waits for no pick`);
-    if (request.action === "interrupt") {
-      if (!row.run_id) throw new ApiError(409, "handoff_no_run", `Handoff ${row.id} has no run`);
-      // The exact pair from the run status now (spike Q3).
-      const run = await hermes.getRun(row.run_id);
-      const admission = run.admission_id ?? row.admission_id;
-      const generation = run.execution_generation ?? row.execution_generation;
-      if (
-        admission === null ||
-        admission === undefined ||
-        generation === null ||
-        generation === undefined
-      )
-        throw new ApiError(
-          409,
-          "handoff_no_admission",
-          `Hermes names no admission for run ${row.run_id}`,
-        );
-      await hermes.resolveUnknown(row.run_id, {
-        admission_id: admission,
-        execution_generation: generation,
-      });
-      update(row.id, { resolution: "interrupted", state: "cancelled" });
-    } else if (request.action === "drop") {
-      update(row.id, { resolution: "dropped" });
-    } else {
+    // One pick only: the request that claims the row acts, so a double click sends nothing twice.
+    const claim = (resolution: NonNullable<Row["resolution"]>) => {
       const { changes } = store.run(
-        "UPDATE hermes_handoffs SET resolution = 'resent' WHERE id = ? AND resolution IS NULL",
+        "UPDATE hermes_handoffs SET resolution = ?, updated_at = ? WHERE id = ? AND state = 'uncertain' AND resolution IS NULL",
+        resolution,
+        host.now(),
         row.id,
       );
       if (changes === 0)
         throw new ApiError(409, "handoff_not_uncertain", `Handoff ${row.id} waits for no pick`);
+    };
+    const unclaim = () => update(row.id, { resolution: null });
+    if (request.action === "drop") claim("dropped");
+    else if (request.action === "interrupt") {
+      if (!row.run_id) throw new ApiError(409, "handoff_no_run", `Handoff ${row.id} has no run`);
+      claim("interrupted");
+      try {
+        // The exact pair from the run status now (spike Q3).
+        const run = await hermes.getRun(row.run_id);
+        const admission = run.admission_id ?? row.admission_id;
+        const generation = run.execution_generation ?? row.execution_generation;
+        if (admission == null || generation == null)
+          throw new ApiError(
+            409,
+            "handoff_no_admission",
+            `Hermes names no admission for run ${row.run_id}`,
+          );
+        await hermes.resolveUnknown(row.run_id, {
+          admission_id: admission,
+          execution_generation: generation,
+        });
+      } catch (error) {
+        unclaim();
+        throw error;
+      }
+      update(row.id, { state: "cancelled" });
+    } else {
+      claim("resent");
       // A new handoff: a new id, so a new session and a new Idempotency-Key. The old session waits on its unknown run.
       try {
         const fresh = await create(
@@ -731,7 +888,7 @@ export function setupHandoffs(
         );
         update(row.id, { resent_as: fresh.id });
       } catch (error) {
-        update(row.id, { resolution: null });
+        unclaim();
         throw error;
       }
     }
@@ -789,12 +946,24 @@ export function setupHandoffs(
         (error.status === 409 || error.status === 400 || error.status === 404)
       )
         throw expire();
-      store.run(
-        "UPDATE hermes_controls SET state = 'open', updated_at = ? WHERE handoff_id = ? AND prompt_id = ?",
-        host.now(),
-        row.id,
-        promptId,
-      );
+      // No answer came back, yet Hermes may have taken the post. Only a run that still waits on the request may get
+      // another; one that no longer does took it (or timed out). Unknown stays `answering` until the next sync.
+      let waiting: boolean | undefined;
+      try {
+        const run = await hermes.getRun(row.run_id as string);
+        waiting = (run.pending_controls ?? []).some((entry) => entry.prompt_id === promptId);
+      } catch {
+        waiting = undefined;
+      }
+      if (waiting !== undefined)
+        store.run(
+          "UPDATE hermes_controls SET state = ?, updated_at = ? WHERE handoff_id = ? AND prompt_id = ?",
+          waiting ? "open" : "answered",
+          host.now(),
+          row.id,
+          promptId,
+        );
+      homeItems.changed();
       throw error;
     }
     store.run(
@@ -809,11 +978,7 @@ export function setupHandoffs(
 
   return {
     async ask(caller, request, receipt) {
-      const again = store.get<Row>(
-        "SELECT * FROM hermes_handoffs WHERE agent_id = ? AND idempotency_key = ?",
-        caller.agentId,
-        receipt,
-      );
+      const again = byReceipt(caller.agentId, receipt);
       if (again) return await viewOf(again);
       if (agents.get(caller.agentId).kind === "stage")
         throw new ApiError(
@@ -843,7 +1008,7 @@ export function setupHandoffs(
       return await viewOf(await create(caller, request, receipt));
     },
     async cancel(caller, id) {
-      return await viewOf(await cancel(own(caller, id)));
+      return await viewOf(cancel(own(caller, id)));
     },
   };
 }
