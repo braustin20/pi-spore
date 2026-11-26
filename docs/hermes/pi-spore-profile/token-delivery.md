@@ -130,26 +130,38 @@ texts 1 and 2 again. Do not retry a decrypt on a mismatched file.
 Still in that shell, write it into the profile's `.env`. The decrypted token goes into a **shell variable only**: no
 plaintext file is ever created, nothing is printed, and no external program gets the value as an argument.
 
-```bash
-# 1. prove the ciphertext decrypts for this key, writing nothing
-openssl pkeyutl -decrypt -inkey receive.key \
-  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 \
-  -in mcp.token.enc -out /dev/null
-# 2. the token into a shell variable; command substitution drops the trailing newline, so it holds 64 characters
-tok=$(openssl pkeyutl -decrypt -inkey receive.key \
-  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 \
-  -in mcp.token.enc)
-# 3. check the length only, never the value
-[ "$(printf %s "$tok" | wc -c)" -eq 64 ] || { echo "not 64 characters: stop, do not write"; }
-# 4. replace the line: one delete, one append. printf is a shell builtin, so nothing is exec'd and nothing prints
-sed -i '/^PI_SPORE_MCP_TOKEN=/d' /opt/data/profiles/pi-spore/.env
-printf 'PI_SPORE_MCP_TOKEN=%s\n' "$tok" >> /opt/data/profiles/pi-spore/.env
-unset tok
+Run it as the one block below. `set -eu` in a subshell means the first failed step ends the block before `.env` is
+touched, so a wrong receiving key or a bad paste leaves the existing line exactly as it was:
+
+```sh
+(
+  set -eu
+  # 1. prove the ciphertext decrypts for this key, writing nothing
+  openssl pkeyutl -decrypt -inkey receive.key \
+    -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 \
+    -in mcp.token.enc -out /dev/null
+  # 2. the token into a shell variable; command substitution drops the trailing newline
+  tok=$(openssl pkeyutl -decrypt -inkey receive.key \
+    -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 \
+    -in mcp.token.enc)
+  # 3. the length only, never the value: anything but 64 characters stops here
+  test "$(printf %s "$tok" | wc -c)" -eq 64
+  # 4. only now replace the line. printf is a shell builtin, so nothing is exec'd and nothing prints
+  env_file=/opt/data/profiles/pi-spore/.env
+  sed -i '/^PI_SPORE_MCP_TOKEN=/d' "$env_file"
+  printf 'PI_SPORE_MCP_TOKEN=%s\n' "$tok" >> "$env_file"
+  echo written
+)
 ```
 
-Only decrypt and write once step 1 and the length check pass. The two lines of step 4 belong together: if anything
-between them fails, the line is simply absent, Hermes then refuses the connect and names `PI_SPORE_MCP_TOKEN`, and the
-fix is to run step 4 again. That state is visible and safe — a placeholder is never sent.
+`echo written` prints a fixed word, so you can see the block got through step 4. The subshell ends there too, so the
+variable holding the token dies with it. If the block stops early, the shell just returns to the prompt: run
+`grep -c '^PI_SPORE_MCP_TOKEN=' /opt/data/profiles/pi-spore/.env` and expect the value it had before (usually `1`). Fix
+the cause — usually the paste or the key — and run the block again.
+
+The `sed` and the append are the last two steps for a reason: if something still fails between them, the line is simply
+absent, Hermes then refuses the connect and names `PI_SPORE_MCP_TOKEN`, and the fix is to run step 4 again. That state
+is visible and safe — a placeholder is never sent.
 
 Run this in a plain `sh` inside the container, as above: it keeps no history file. Do not export the variable, do not
 `echo` it, and do not paste the value into any other command.
