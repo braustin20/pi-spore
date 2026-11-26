@@ -12,15 +12,14 @@ import {
 import {
   AnswerHermesControlRequest,
   type AskHermesRequest,
-  type HermesControl,
   type HermesHandoff,
   type HermesHandoffState,
-  type HermesReconcile,
   parseJsonBody,
   ResolveHermesHandoffRequest,
 } from "@pi-spore/shared";
 import Type from "typebox";
 import type { Hermes, Run, RunEvent } from "./contract.js";
+import { type ControlRow, type Controls, runFacts } from "./controls.js";
 
 const JOB = "hermes.ask";
 const ENDED: ReadonlySet<string> = new Set(["completed", "cancelled", "failed", "uncertain"]);
@@ -35,8 +34,6 @@ const FIRST_BACKOFF_MS = 5_000;
 const MAX_BACKOFF_MS = 300_000;
 /** How much of a result goes into the delivered message. The full result stays on the handoff. */
 const MESSAGE_CAP = 4_000;
-/** How much of one session message the reconcile view shows. */
-const FACT_CAP = 1_000;
 /** How long a sent stop may take to show as an ended run, and how often the cancel step reads the run meanwhile. */
 const STOP_CONFIRM_MS = 60_000;
 const STOP_POLL_MS = 2_000;
@@ -103,18 +100,6 @@ interface Row {
   updated_at: number;
 }
 
-interface ControlRow {
-  handoff_id: string;
-  prompt_id: string;
-  kind: "approval" | "clarify";
-  command: string | null;
-  description: string | null;
-  question: string | null;
-  execution_generation: number;
-  state: HermesControl["state"];
-  created_at: number;
-}
-
 export const HANDOFF_MIGRATIONS = [
   `CREATE TABLE hermes_handoffs (
     id TEXT PRIMARY KEY,
@@ -178,6 +163,7 @@ const cap = (text: string, max: number) =>
 export function setupHandoffs(
   host: ServerHost,
   hermes: Hermes,
+  controls: Controls,
   settings: { profile: () => Promise<string>; enabled: () => Promise<boolean> },
 ): HermesAsker {
   const agents = host.use(AgentsKey);
@@ -194,13 +180,6 @@ export function setupHandoffs(
     default: 24,
     scope: "global",
   });
-  const approvalSeconds = host.settings.declare({
-    key: "hermes.approvalTimeoutSeconds",
-    // Hermes's `approvals.timeout`; pi-spore cannot read Hermes's config, so it is set here to match.
-    schema: Type.Integer({ minimum: 1 }),
-    default: 300,
-    scope: "global",
-  });
 
   const load = (id: string) => store.get<Row>("SELECT * FROM hermes_handoffs WHERE id = ?", id);
   const update = (id: string, fields: Partial<Row>) => {
@@ -212,13 +191,7 @@ export function setupHandoffs(
       id,
     );
   };
-  const controlsOf = (id: string) =>
-    store.all<ControlRow>(
-      "SELECT * FROM hermes_controls WHERE handoff_id = ? ORDER BY created_at, prompt_id",
-      id,
-    );
-
-  const timeoutMs = async () => (await host.settings.resolve()).get(approvalSeconds).value * 1000;
+  const timeoutMs = controls.timeoutMs;
 
   const view = (row: Row, timeout: number): HermesHandoff => {
     const optional = (value: string | null) => value ?? undefined;
@@ -244,16 +217,7 @@ export function setupHandoffs(
       text: row.text,
       state: row.state,
       ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
-      controls: controlsOf(row.id).map((control) => ({
-        promptId: control.prompt_id,
-        kind: control.kind,
-        ...(control.command === null ? {} : { command: control.command }),
-        ...(control.description === null ? {} : { description: control.description }),
-        ...(control.question === null ? {} : { question: control.question }),
-        state: control.state,
-        createdAt: control.created_at,
-        expiresAt: control.created_at + timeout,
-      })),
+      controls: controls.list(row.id, timeout),
       createdAt: row.created_at,
       updatedAt: row.updated_at,
     };
@@ -297,11 +261,7 @@ export function setupHandoffs(
         result_text: end.result ?? null,
         error: end.error ?? null,
       });
-      store.run(
-        "UPDATE hermes_controls SET state = 'expired', updated_at = ? WHERE handoff_id = ? AND state = 'open'",
-        host.now(),
-        id,
-      );
+      controls.expireOpen(id);
       // A chat removed since the ask has nobody to tell; the end is still stored for the page.
       if (asker(row.agent_id)) agents.deliver(row.agent_id, message(row, end));
       else
@@ -330,56 +290,11 @@ export function setupHandoffs(
     if (owned(id, jobId)) update(id, fields);
   };
 
-  /**
-   * Makes the stored controls match the run's `pending_controls`. One the run no longer waits on expires; one whose
-   * answer is on its way (`answering`) too, and the answer route marks it answered when Hermes takes it.
-   */
-  const syncControls = (row: Row, run: Run) => {
-    const pending = run.pending_controls ?? [];
-    const now = host.now();
-    let changed = false;
-    store.transaction(() => {
-      for (const control of pending) {
-        const kind =
-          control.kind === "clarify" || control.question !== undefined ? "clarify" : "approval";
-        changed =
-          store.run(
-            `INSERT OR IGNORE INTO hermes_controls (handoff_id, prompt_id, kind, command, description, question,
-             execution_generation, state, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
-            row.id,
-            control.prompt_id,
-            kind,
-            control.command ?? null,
-            control.description ?? null,
-            control.question ?? null,
-            run.execution_generation ?? row.execution_generation ?? 0,
-            now,
-            now,
-          ).changes > 0 || changed;
-      }
-      const open = new Set(pending.map((control) => control.prompt_id));
-      for (const control of controlsOf(row.id))
-        if (
-          (control.state === "open" || control.state === "answering") &&
-          !open.has(control.prompt_id)
-        ) {
-          store.run(
-            "UPDATE hermes_controls SET state = 'expired', updated_at = ? WHERE handoff_id = ? AND prompt_id = ?",
-            now,
-            row.id,
-            control.prompt_id,
-          );
-          changed = true;
-        }
-    });
-    if (changed) homeItems.changed();
-  };
-
   /** Stores what the run status says, while `jobId` owns the handoff. Returns the end once the run ended or is `unknown`. */
   const syncRun = (row: Row, run: Run, jobId: string): End | undefined => {
     const state = STATE_OF[run.status];
     if (!owned(row.id, jobId)) return undefined;
-    syncControls(row, run);
+    controls.sync(row.id, run, row.execution_generation);
     const fields: Partial<Row> = {
       ...(run.admission_id === undefined ? {} : { admission_id: run.admission_id }),
       ...(run.execution_generation === undefined
@@ -822,29 +737,7 @@ export function setupHandoffs(
 
   host.routes.get("/handoffs/:id/reconcile", async (c) => {
     const row = found(c.req.param("id"));
-    let runStatus: string;
-    try {
-      runStatus = row.run_id ? (await hermes.getRun(row.run_id)).status : "no run";
-    } catch (error) {
-      runStatus = `not readable: ${(error as Error).message}`;
-    }
-    let messages: HermesReconcile["messages"] = [];
-    if (row.session_id) {
-      const { data } = await hermes.sessionMessages(row.session_id, { order: "latest", limit: 20 });
-      messages = data.reverse().map((entry) => ({
-        role: entry.role,
-        ...(entry.content ? { content: cap(entry.content, FACT_CAP) } : {}),
-        ...(entry.tool_name ? { tool: entry.tool_name } : {}),
-      }));
-    }
-    const body: HermesReconcile = {
-      handoff: await viewOf(row),
-      runStatus,
-      ...(row.tool_started ? { toolStarted: row.tool_started } : {}),
-      ...(row.tool_finished ? { toolFinished: row.tool_finished } : {}),
-      messages,
-    };
-    return c.json(body);
+    return c.json({ handoff: await viewOf(row), ...(await runFacts(hermes, row)) });
   });
 
   host.routes.post("/handoffs/:id/resolve", async (c) => {
@@ -907,81 +800,8 @@ export function setupHandoffs(
 
   host.routes.post("/handoffs/:id/controls/:promptId", async (c) => {
     const row = found(c.req.param("id"));
-    const promptId = c.req.param("promptId");
     const request = parseJsonBody(AnswerHermesControlRequest, await c.req.text(), "answer");
-    const timeout = await timeoutMs();
-    const expire = () => {
-      store.run(
-        "UPDATE hermes_controls SET state = 'expired', updated_at = ? WHERE handoff_id = ? AND prompt_id = ?",
-        host.now(),
-        row.id,
-        promptId,
-      );
-      homeItems.changed();
-      return new ApiError(409, "control_expired", "This Hermes request expired; nothing was sent");
-    };
-    const control = controlsOf(row.id).find((entry) => entry.prompt_id === promptId);
-    if (!control) throw new ApiError(404, "control_not_found", `No Hermes request ${promptId}`);
-    const isApproval = "choice" in request;
-    if (isApproval !== (control.kind === "approval"))
-      throw new ApiError(
-        400,
-        "bad_answer",
-        `Answer a ${control.kind} with ${control.kind === "approval" ? "choice" : "answer"}`,
-      );
-    if (control.state === "open" && host.now() > control.created_at + timeout) throw expire();
-    // One answer posts once: only the request that moves the control out of `open` sends it.
-    const { changes } = store.run(
-      "UPDATE hermes_controls SET state = 'answering', updated_at = ? WHERE handoff_id = ? AND prompt_id = ? AND state = 'open'",
-      host.now(),
-      row.id,
-      promptId,
-    );
-    if (changes === 0)
-      throw new ApiError(
-        409,
-        "control_expired",
-        `This Hermes request is ${control.state}; nothing was sent`,
-      );
-    try {
-      const target = { request_id: promptId, execution_generation: control.execution_generation };
-      if (isApproval)
-        await hermes.answerApproval(row.run_id as string, { ...target, choice: request.choice });
-      else await hermes.answerClarify(row.run_id as string, { ...target, answer: request.answer });
-    } catch (error) {
-      // Hermes moved on: a stale generation, a request it no longer has, or a run that ended.
-      if (
-        error instanceof ApiError &&
-        (error.status === 409 || error.status === 400 || error.status === 404)
-      )
-        throw expire();
-      // No answer came back, yet Hermes may have taken the post. Only a run that still waits on the request may get
-      // another; one that no longer does took it (or timed out). Unknown stays `answering` until the next sync.
-      let waiting: boolean | undefined;
-      try {
-        const run = await hermes.getRun(row.run_id as string);
-        waiting = (run.pending_controls ?? []).some((entry) => entry.prompt_id === promptId);
-      } catch {
-        waiting = undefined;
-      }
-      if (waiting !== undefined)
-        store.run(
-          "UPDATE hermes_controls SET state = ?, updated_at = ? WHERE handoff_id = ? AND prompt_id = ?",
-          waiting ? "open" : "answered",
-          host.now(),
-          row.id,
-          promptId,
-        );
-      homeItems.changed();
-      throw error;
-    }
-    store.run(
-      "UPDATE hermes_controls SET state = 'answered', updated_at = ? WHERE handoff_id = ? AND prompt_id = ?",
-      host.now(),
-      row.id,
-      promptId,
-    );
-    homeItems.changed();
+    await controls.answer(row.id, row.run_id as string, c.req.param("promptId"), request);
     return c.json({ handoff: await viewOf(load(row.id) as Row) });
   });
 

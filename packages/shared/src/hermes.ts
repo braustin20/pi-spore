@@ -105,14 +105,13 @@ export const HermesHandoff = Type.Object({
 });
 export type HermesHandoff = Static<typeof HermesHandoff>;
 
-/** What is known about an `uncertain` handoff before the user picks (ADR 0202 decision 6). */
-export const HermesReconcile = Type.Object({
-  handoff: HermesHandoff,
+/** What is known about a run Hermes lost track of, before the user picks (ADR 0202 decision 6). */
+export const HermesRunFacts = Type.Object({
   /** The run's status now, or why it could not be read. */
   runStatus: Type.String(),
   toolStarted: Type.Optional(Type.String()),
   toolFinished: Type.Optional(Type.String()),
-  /** The newest messages of the handoff's session, oldest first, each cut short. */
+  /** The newest messages of the run's session, oldest first, each cut short. */
   messages: Type.Array(
     Type.Object({
       role: Type.String(),
@@ -120,6 +119,13 @@ export const HermesReconcile = Type.Object({
       tool: Type.Optional(Type.String()),
     }),
   ),
+});
+export type HermesRunFacts = Static<typeof HermesRunFacts>;
+
+/** What is known about an `uncertain` handoff before the user picks. */
+export const HermesReconcile = Type.Object({
+  handoff: HermesHandoff,
+  ...HermesRunFacts.properties,
 });
 export type HermesReconcile = Static<typeof HermesReconcile>;
 
@@ -148,3 +154,120 @@ export const ResolveHermesHandoffRequest = Type.Union([
   ),
 ]);
 export type ResolveHermesHandoffRequest = Static<typeof ResolveHermesHandoffRequest>;
+
+// The Hermes chat page (card Hermes 2.1): pi-spore-owned API sessions on the profile, never another source's.
+
+/**
+ * `chat`: made by pi-spore's chat page, the only kind it sends into (ADR 0202 decision 11). `handoff`: the session of a
+ * handoff (`pi-spore-<handoff id>`). `foreign`: any other session; `readOnly` says why.
+ */
+export const HermesChatSession = Type.Object({
+  id: Type.String(),
+  source: Type.String(),
+  title: Type.Optional(Type.String()),
+  kind: Type.Union([Type.Literal("chat"), Type.Literal("handoff"), Type.Literal("foreign")]),
+  /** Why pi-spore does not send into it, such as "Owned by cli". Absent: sendable. */
+  readOnly: Type.Optional(Type.String()),
+  projectId: Type.Optional(Type.String()),
+  /** From the session record; absent is unknown, never an error (ADR 0202 decision 7). */
+  provider: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+});
+export type HermesChatSession = Static<typeof HermesChatSession>;
+
+/** `GET /api/hermes/chat/sessions`. `enabled` false: Hermes is off, nothing was asked, and the list is empty. */
+export const HermesChatSessionList = Type.Object({
+  enabled: Type.Boolean(),
+  sessions: Type.Array(HermesChatSession),
+});
+export type HermesChatSessionList = Static<typeof HermesChatSessionList>;
+
+/** One stored message of a Hermes session, from `GET /api/hermes/chat/sessions/:id/messages`. */
+export const HermesChatMessage = Type.Object({
+  id: Type.Integer(),
+  role: Type.String(),
+  content: Type.Optional(Type.String()),
+  tool: Type.Optional(Type.String()),
+});
+export type HermesChatMessage = Static<typeof HermesChatMessage>;
+
+export const HermesChatMessages = Type.Object({ messages: Type.Array(HermesChatMessage) });
+export type HermesChatMessages = Static<typeof HermesChatMessages>;
+
+/**
+ * `sending`: the run post got no answer, so Hermes may or may not have it; only the user's Retry sends it again, with
+ * the same key and body. The rest are Hermes's run statuses. pi-spore stops following at `unknown`, until the user
+ * picks.
+ */
+export const HermesChatRunState = Type.Union([
+  Type.Literal("sending"),
+  Type.Literal("queued"),
+  Type.Literal("running"),
+  Type.Literal("waiting_for_approval"),
+  Type.Literal("unknown"),
+  Type.Literal("completed"),
+  Type.Literal("cancelled"),
+  Type.Literal("failed"),
+  Type.Literal("interrupted"),
+]);
+export type HermesChatRunState = Static<typeof HermesChatRunState>;
+
+export const HermesChatTool = Type.Object({
+  name: Type.String(),
+  preview: Type.Optional(Type.String()),
+  state: Type.Union([Type.Literal("running"), Type.Literal("done"), Type.Literal("failed")]),
+});
+export type HermesChatTool = Static<typeof HermesChatTool>;
+
+/** One message the user sent from the chat page, and the run it started. */
+export const HermesChatRun = Type.Object({
+  id: Type.String(),
+  sessionId: Type.String(),
+  input: Type.String(),
+  state: HermesChatRunState,
+  runId: Type.Optional(Type.String()),
+  provider: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+  error: Type.Optional(Type.String()),
+  stopRequested: Type.Boolean(),
+  resolution: Type.Optional(Type.Union([Type.Literal("interrupted"), Type.Literal("dropped")])),
+  /** The reply text streamed so far in this server process. The stored transcript has the rest. */
+  text: Type.String(),
+  tools: Type.Array(HermesChatTool),
+  /** Set while the event stream is lost and pi-spore tries again, with why. */
+  reconnecting: Type.Optional(Type.String()),
+  controls: Type.Array(HermesControl),
+  createdAt: Type.Integer(),
+  updatedAt: Type.Integer(),
+});
+export type HermesChatRun = Static<typeof HermesChatRun>;
+
+/** Events on topic `hermes:session:<session id>`: the snapshot first, then text deltas and changed runs. */
+export const HermesChatEvent = Type.Union([
+  Type.Object({ type: Type.Literal("snapshot"), runs: Type.Array(HermesChatRun) }),
+  Type.Object({ type: Type.Literal("run"), run: HermesChatRun }),
+  Type.Object({ type: Type.Literal("delta"), runId: Type.String(), delta: Type.String() }),
+]);
+export type HermesChatEvent = Static<typeof HermesChatEvent>;
+
+export const CreateHermesChatSessionRequest = Type.Object(
+  {
+    title: Type.String({ minLength: 1, maxLength: 200 }),
+    projectId: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+export type CreateHermesChatSessionRequest = Static<typeof CreateHermesChatSessionRequest>;
+
+export const SendHermesChatRequest = Type.Object(
+  { text: Type.String({ minLength: 1, maxLength: 8_000 }) },
+  { additionalProperties: false },
+);
+export type SendHermesChatRequest = Static<typeof SendHermesChatRequest>;
+
+/** The user's pick for a chat run left `unknown`. No "Send again": the session waits until the run is resolved. */
+export const ResolveHermesChatRunRequest = Type.Object(
+  { action: Type.Union([Type.Literal("interrupt"), Type.Literal("drop")]) },
+  { additionalProperties: false },
+);
+export type ResolveHermesChatRunRequest = Static<typeof ResolveHermesChatRunRequest>;

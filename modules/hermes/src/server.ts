@@ -2,8 +2,10 @@ import { join } from "node:path";
 import { BridgeKey } from "@pi-spore/mod-bridge/server";
 import type { JobTimer, ServerModule } from "@pi-spore/module-api";
 import Type from "typebox";
+import { setupChat } from "./chat.js";
 import { createConnector } from "./client.js";
 import { HermesKey } from "./contract.js";
+import { createControls } from "./controls.js";
 import { setupHandoffs } from "./handoffs.js";
 import { expandHome } from "./key.js";
 
@@ -96,12 +98,14 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
         },
       });
       host.provide(HermesKey, connector);
-      host.use(BridgeKey).setHermesAsker(
-        setupHandoffs(host, connector, {
-          profile: async () => (await host.settings.resolve()).get(keys.profile).value,
-          enabled: async () => (await host.settings.resolve()).get(keys.enabled).value,
-        }),
-      );
+      const flags = {
+        profile: async () => (await host.settings.resolve()).get(keys.profile).value,
+        enabled: async () => (await host.settings.resolve()).get(keys.enabled).value,
+      };
+      // Handoffs and chat runs share one store and one answer path for approvals and clarify.
+      const controls = createControls(host, connector);
+      host.use(BridgeKey).setHermesAsker(setupHandoffs(host, connector, controls, flags));
+      setupChat(host, connector, controls, { enabled: flags.enabled, timer });
 
       let failures = 0;
       const poll = async () => {
