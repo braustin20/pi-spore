@@ -3,8 +3,8 @@ import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { JobTimer, Logger, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
-import { createHermesModule, type Hermes, HermesKey } from "../src/server.js";
 import { type FakeHermes, startFakeHermes } from "../test-fixtures/fake-hermes.mjs";
+import { createHermesModule, type Hermes, HermesKey } from "./server.js";
 
 export const TIMEOUT_MS = 10_000;
 

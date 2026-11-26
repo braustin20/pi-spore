@@ -77,9 +77,6 @@
       "path": "modules/hermes"
     },
     {
-      "path": "modules/hermes/test"
-    },
-    {
       "path": "packages/server"
     },
     {

@@ -20,6 +20,9 @@
     },
     {
       "path": "../projects"
+    },
+    {
+      "path": "../../packages/server-core"
     }
   ]
 }

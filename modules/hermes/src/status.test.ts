@@ -2,7 +2,7 @@ import { chmodSync } from "node:fs";
 import { createServer } from "node:net";
 import type { HermesStatus } from "@pi-spore/shared";
 import { afterEach, describe, expect, it } from "vitest";
-import { type Harness, harness } from "./helpers.js";
+import { type Harness, harness } from "./test-helpers.js";
 
 // Every test runs against a FAKE Hermes (test-fixtures/fake-hermes.mjs). Passing here is not live proof.
 

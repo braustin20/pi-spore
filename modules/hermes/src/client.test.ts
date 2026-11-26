@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from "vitest";
-import type { ApprovalAnswer, RunEventFrame } from "../src/server.js";
-import { type Harness, harness, TIMEOUT_MS } from "./helpers.js";
+import type { ApprovalAnswer, RunEventFrame } from "./server.js";
+import { type Harness, harness, TIMEOUT_MS } from "./test-helpers.js";
 
 // Every test runs against a FAKE Hermes (test-fixtures/fake-hermes.mjs). Passing here is not live proof.
 

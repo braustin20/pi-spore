@@ -328,7 +328,7 @@ packages/
 modules/<id>/   one npm package per module, @pi-spore/mod-<id>
   src/server.ts server entry: exports the ServerModule and any interface keys and types
   src/web.tsx   web entry: exports the WebModule (pages)
-  src/*.test.ts tests, run against server-core's test server (modules/hermes keeps them in test/)
+  src/*.test.ts tests, run against server-core's test server
 pi-extensions/
   spore-bridge/ workbench tools for agents (loaded with -e)
   router/       router virtual model; also installable into plain pi

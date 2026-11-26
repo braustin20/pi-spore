@@ -4,9 +4,9 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { silentLog } from "@pi-spore/server-core/testing";
 import { afterEach, describe, expect, it } from "vitest";
-import { type Connector, createConnector, type HermesConfig } from "../src/client.js";
 import { type FakeHermes, startFakeHermes } from "../test-fixtures/fake-hermes.mjs";
-import { fakeTimer } from "./helpers.js";
+import { type Connector, createConnector, type HermesConfig } from "./client.js";
+import { fakeTimer } from "./test-helpers.js";
 
 // The connector alone, with a config the test swaps between two calls. Settings files cannot be changed at an exact
 // point inside one call, so these races are driven here. Both Hermes servers are FAKES.

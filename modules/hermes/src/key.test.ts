@@ -2,7 +2,7 @@ import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HermesStatus } from "@pi-spore/shared";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { type Harness, harness } from "./helpers.js";
+import { type Harness, harness } from "./test-helpers.js";
 
 // The key is a generated fake value in a temp home. The real ~/.pi-spore/hermes is never read.
 
