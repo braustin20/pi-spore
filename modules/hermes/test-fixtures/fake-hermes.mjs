@@ -7,7 +7,8 @@
 //   - `restart()`: a run that had not ended becomes `unknown` and its event buffer is gone (events answer 404) until
 //     `resolve-unknown` with the exact {admission_id, execution_generation};
 //   - approval and clarify answers with exact bodies;
-//   - 409 permission_denied for a run into a session whose source is not api_server or bot_room.
+//   - 409 permission_denied for a run into a session whose source is not api_server or bot_room;
+//   - session messages paged with `limit`, `offset`, and `order` (`oldest` or `latest`).
 // Knobs on `fake.options`: version, missingFlag, falseFlag, models, serverError (5xx on every keyed request),
 // holdRuns (admit POST /v1/runs but never answer, like a lost response), holdAll (never answer anything),
 // dropStreamAfter (cut each event stream after n frames), answers ({ "<path below the profile>": { status, raw } }:
@@ -283,7 +284,17 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
     if (request.method === "GET" && messagesMatch) {
       const session = sessions.get(decodeURIComponent(messagesMatch[1]));
       if (!session) return error(response, 404, "session_not_found");
-      return json(response, 200, { object: "list", data: session.messages, pagination: {} });
+      const ordered =
+        url.searchParams.get("order") === "latest"
+          ? [...session.messages].reverse()
+          : session.messages;
+      const limit = Number(url.searchParams.get("limit") ?? 100);
+      const offset = Number(url.searchParams.get("offset") ?? 0);
+      return json(response, 200, {
+        object: "list",
+        data: ordered.slice(offset, offset + limit),
+        pagination: {},
+      });
     }
     return error(response, 404, "not_found");
   };

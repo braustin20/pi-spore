@@ -3,8 +3,10 @@ import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import { HermesStatus, parse } from "@pi-spore/shared";
 import { Button, Chip, Notice, Panel, PanelHeader, type Tone } from "@pi-spore/ui";
-import { useCallback, useEffect, useState } from "react";
-import { HandoffsPage, HermesPanel } from "./handoffs-page.js";
+import { MessagesSquare } from "lucide-react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { createStatusStore, HermesPage } from "./chat-page.js";
+import { HermesPanel } from "./handoffs-page.js";
 
 const TONE: Record<HermesStatus["state"], Tone> = {
   disabled: "neutral",
@@ -60,8 +62,25 @@ export const hermesWeb: WebModule = {
   core: false,
   setup(host) {
     host.use(SettingsPageKey).addSection({ id: "hermes", order: 20, component: HermesSection });
-    // No rail entry (ADR 0202 decision 12): Home items link here.
-    host.addPage({ path: "/hermes", title: "Hermes handoffs", component: HandoffsPage });
+    const store = createStatusStore(host.api);
+    const component = ({ params }: { params: Readonly<Record<string, string>> }) => (
+      <HermesPage store={store} params={params} />
+    );
+    // The rail entry shows only while Hermes is on (ADR 0202 decision 12); Home items link to the page either way.
+    host.addPage({
+      path: "/hermes",
+      title: "Hermes",
+      component,
+      rail: {
+        order: 60,
+        icon: MessagesSquare,
+        useVisible: () => {
+          const status = useSyncExternalStore(store.subscribe, store.get);
+          return status !== undefined && status.state !== "disabled";
+        },
+      },
+    });
+    host.addPage({ path: "/hermes/:sessionId", title: "Hermes", component });
     host.use(WorkspaceViewKey).addPanel({ id: "hermes", order: 8, component: HermesPanel });
   },
 };
