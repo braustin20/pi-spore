@@ -3,8 +3,8 @@ import { type ApiClient, ApiContext } from "@pi-spore/module-api";
 import type { HermesHandoff, HermesStatus, Workspace } from "@pi-spore/shared";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { afterEach, describe, expect, it } from "vitest";
-import { HandoffsPage, HermesPanel } from "./handoffs-page.js";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { HandoffsPage, HermesPanel, REFRESH_MS } from "./handoffs-page.js";
 import { HermesSection, hermesWeb } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
@@ -212,13 +212,13 @@ describe("Hermes handoffs page", () => {
 
 describe("Hermes handoffs in the workspace Details column", () => {
   const workspace = { id: "w1" } as Workspace;
-  async function renderPanel(handoffs: HermesHandoff[]) {
+  async function renderPanel(...answers: HermesHandoff[][]) {
     const paths: string[] = [];
     let loaded = 0;
     const api = {
       get: async (path: string) => {
         paths.push(path);
-        return { enabled: true, handoffs };
+        return { enabled: true, handoffs: answers[Math.min(paths.length, answers.length) - 1] };
       },
     } as unknown as ApiClient;
     const root = document.body.appendChild(document.createElement("div"));
@@ -242,6 +242,22 @@ describe("Hermes handoffs in the workspace Details column", () => {
     expect(root.textContent).toContain("tmp");
     expect(root.querySelector('a[href="#/hermes"]')).not.toBeNull();
     expect(loaded()).toBe(1);
+  });
+
+  it("appears without a reload when the chat asks Hermes while Details is open", async () => {
+    vi.useFakeTimers();
+    try {
+      const { root, paths } = await renderPanel([], [handoff({ title: "tmp", state: "pending" })]);
+      expect(root.textContent).toBe("");
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(REFRESH_MS);
+      });
+      expect(paths).toHaveLength(2);
+      expect(root.textContent).toContain("pending");
+      expect(root.querySelector('a[href="#/hermes"]')).not.toBeNull();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("shows nothing for a workspace that never asked Hermes", async () => {

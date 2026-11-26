@@ -629,6 +629,9 @@ export function setupHandoffs(
     try {
       let runId = row.run_id;
       if (!runId) {
+        // Past the wait, Hermes may have dropped the key, and the same body would start the task again.
+        const wait = await offlineMs();
+        if (host.now() - row.created_at >= wait) return deliverWith(expired(row, wait / 3_600_000));
         runId = (await startRun(row)).run_id;
         updateOwned(id, jobId, { run_id: runId });
       }
@@ -639,13 +642,15 @@ export function setupHandoffs(
         } catch (error) {
           // An ended run may refuse the stop: read it before calling the stop unconfirmed.
           const end = syncRun(row, await hermes.getRun(runId), jobId);
-          return deliverWith(end ?? unconfirmed((error as Error).message));
+          return end
+            ? await ended(row, jobId, end)
+            : deliverWith(unconfirmed((error as Error).message));
         }
         stopSentAt = host.now();
         updateOwned(id, jobId, { stop_sent_at: stopSentAt });
       }
       const end = syncRun(row, await hermes.getRun(runId), jobId);
-      if (end) return deliverWith(end);
+      if (end) return await ended(row, jobId, end);
       if (host.now() - stopSentAt >= STOP_CONFIRM_MS)
         return deliverWith(unconfirmed(`the run did not end in ${STOP_CONFIRM_MS / 1000} s`));
       return { next: "cancel", after: STOP_POLL_MS, checkpoint: {} };

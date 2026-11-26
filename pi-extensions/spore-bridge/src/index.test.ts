@@ -1823,6 +1823,20 @@ describe("start_helper", () => {
 });
 
 describe("ask_hermes (ADR 0202 decision 9)", () => {
+  /** The context Pi gives a tool in a pi-spore chat, which runs with `--mode rpc`. */
+  const RPC = { mode: "rpc" };
+
+  it.each(["ask_hermes", "cancel_hermes_ask"])(
+    "refuses %s in a helper session, which Pi runs in print mode, and sends nothing",
+    async (name) => {
+      const params = name === "ask_hermes" ? { kind: "question", text: "ping?" } : { id: "h1" };
+      await expect(
+        fakePi().tool(name).execute("toolu_x", params, undefined, undefined, { mode: "print" }),
+      ).rejects.toThrow("not a helper");
+      expect(seen).toEqual([]);
+    },
+  );
+
   it("sends the ask with the tool call id as its receipt and returns the handoff id at once", async () => {
     reply("POST /api/bridge/hermes/asks", {
       status: 201,
@@ -1830,7 +1844,13 @@ describe("ask_hermes (ADR 0202 decision 9)", () => {
     });
     const result = await fakePi()
       .tool("ask_hermes")
-      .execute("toolu_h", { kind: "task", text: "List /tmp.", title: "tmp" });
+      .execute(
+        "toolu_h",
+        { kind: "task", text: "List /tmp.", title: "tmp" },
+        undefined,
+        undefined,
+        RPC,
+      );
     expect(seen).toEqual([
       {
         method: "POST",
@@ -1855,7 +1875,9 @@ describe("ask_hermes (ADR 0202 decision 9)", () => {
     reply("POST /api/bridge/hermes/asks/h1/cancel", {
       body: { handoff: { id: "h1", state: "running" } },
     });
-    const result = await fakePi().tool("cancel_hermes_ask").execute("toolu_c", { id: "h1" });
+    const result = await fakePi()
+      .tool("cancel_hermes_ask")
+      .execute("toolu_c", { id: "h1" }, undefined, undefined, RPC);
     expect(seen[0]).toMatchObject({
       path: "/api/bridge/hermes/asks/h1/cancel",
       receipt: "toolu_c",

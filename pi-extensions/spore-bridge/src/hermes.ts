@@ -3,7 +3,7 @@
  * `pi-spore`, a remote agent on the user's home server. The tool returns a handoff id at once; pi-spore sends the
  * handoff, follows it, and delivers the result to this chat as a new message.
  */
-import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import Type from "typebox";
 import { StringEnum } from "./cards.js";
 import type { BridgeClient, BridgeEnv } from "./client.js";
@@ -15,8 +15,20 @@ const HandoffAnswer = Type.Object({
 const text = (value: string) => [{ type: "text" as const, text: value }];
 
 /**
+ * pi-spore runs every chat with `--mode rpc`; pi-subagents binds each helper session in `print` mode, in this process
+ * or in its runner, whatever environment it gets. So a call from any other mode comes from a helper.
+ */
+function refuseHelper(ctx: ExtensionContext | undefined) {
+  if (ctx?.mode !== "rpc")
+    throw new Error(
+      "Only a pi-spore chat can hand work to Hermes, not a helper it started (ADR 0202). Ask the chat to do it.",
+    );
+}
+
+/**
  * Registers the tools in workspace chats and the planner chat only (ADR 0202 decision 9). Stage chats, lane chats,
- * side chats, and helpers pi-subagents started never get them, so Hermes is no side channel between lanes (R7.5).
+ * side chats, and helpers pi-subagents started never use them, so Hermes is no side channel between lanes (R7.5):
+ * a helper with a known marker never gets them, and any other one is refused when it calls (`refuseHelper`).
  * The planner chat's allowlist names them. The server refuses the rest: a chat that works on a Hermes request, and a
  * Hermes that is off or set up wrong.
  */
@@ -55,7 +67,8 @@ export function registerHermesTools(pi: ExtensionAPI, client: BridgeClient, env:
         }),
       ),
     }),
-    async execute(toolCallId, params, signal) {
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
+      refuseHelper(ctx);
       const { handoff } = await client.call(HandoffAnswer, "hermes/asks", {
         body: {
           kind: params.kind,
@@ -84,7 +97,8 @@ export function registerHermesTools(pi: ExtensionAPI, client: BridgeClient, env:
     parameters: Type.Object({
       id: Type.String({ minLength: 1, description: "The handoff id ask_hermes returned" }),
     }),
-    async execute(toolCallId, params, signal) {
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
+      refuseHelper(ctx);
       const { handoff } = await client.call(
         HandoffAnswer,
         `hermes/asks/${encodeURIComponent(params.id)}/cancel`,

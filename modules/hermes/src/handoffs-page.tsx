@@ -38,6 +38,9 @@ const STATE_TONE: Record<HermesHandoffState, Tone> = {
   uncertain: "warn",
 };
 const ENDED = new Set<HermesHandoffState>(["completed", "cancelled", "failed", "uncertain"]);
+/** How often the workspace panel reads its handoffs again. The list is local, so this sends Hermes nothing. */
+export const REFRESH_MS = 5_000;
+
 /** `GET /api/hermes/handoffs`. `enabled` false: Hermes is off, and the list is empty. */
 const HandoffList = Type.Object({ enabled: Type.Boolean(), handoffs: Type.Array(HermesHandoff) });
 const time = (ms: number) => new Date(ms).toLocaleString();
@@ -193,10 +196,18 @@ export function HermesPanel({
   const [handoffs, setHandoffs] = useState<HermesHandoff[] | undefined>();
   const [error, setError] = useState<string | undefined>();
   useEffect(() => {
-    api
-      .get(`hermes/handoffs?workspaceId=${encodeURIComponent(workspace.id)}`)
-      .then((body) => setHandoffs(parse(HandoffList, body, "Hermes handoffs").handoffs))
-      .catch((caught: unknown) => setError(message(caught)));
+    const read = () =>
+      api
+        .get(`hermes/handoffs?workspaceId=${encodeURIComponent(workspace.id)}`)
+        .then((body) => {
+          setHandoffs(parse(HandoffList, body, "Hermes handoffs").handoffs);
+          setError(undefined);
+        })
+        .catch((caught: unknown) => setError(message(caught)));
+    void read();
+    // A chat may ask Hermes while Details is open; the panel then appears without a reload.
+    const timer = setInterval(read, REFRESH_MS);
+    return () => clearInterval(timer);
   }, [api, workspace.id]);
   useEffect(() => {
     if (handoffs !== undefined || error !== undefined) onLoaded();

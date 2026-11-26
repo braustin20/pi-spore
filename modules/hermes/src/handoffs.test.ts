@@ -513,6 +513,42 @@ describe("cancel and uncertain picks, the hard cases (FAKE Hermes)", () => {
     expect(text).toContain("finished before the cancel took effect");
   });
 
+  it("does not send again to find the run when a cancel comes after hermes.offlineWaitHours", async () => {
+    const setup = await start({ settings: { offlineWaitHours: 1 } });
+    const { h } = setup;
+    h.fake.options.holdRuns = true;
+    const sent = await asked(await setup.ask());
+    await until(() => runPosts(h).length === 1);
+    await until(() => h.timers.delays().includes(TIMEOUT_MS));
+    await h.timers.fire(TIMEOUT_MS);
+    await until(async () => (await handoff(h, sent.id)).error !== undefined);
+    h.fake.release();
+    h.server.advance(3_600_000);
+    await json(await h.server.request("POST", `/api/hermes/handoffs/${sent.id}/cancel`, {}));
+    await state(h, sent.id, "uncertain");
+    expect((await handoff(h, sent.id)).error).toContain("did not send it again");
+    expect(runPosts(h)).toHaveLength(1);
+    expect(posts(h, "/stop")).toHaveLength(0);
+  });
+
+  it("takes the provider and model from the session record when a cancel ends the run", async () => {
+    const setup = await start();
+    const { h } = setup;
+    h.fake.options.blankSessionMeta = true;
+    const run = await askAndRun(setup);
+    expect(run.provider).toBeUndefined();
+    h.fake.setSessionMeta(`pi-spore-${run.id}`, {
+      model: "gpt-6.1-sol",
+      billing_provider: "openai-codex",
+    });
+    await json(await h.server.request("POST", `/api/hermes/handoffs/${run.id}/cancel`, {}));
+    await state(h, run.id, "cancelled");
+    expect(await handoff(h, run.id)).toMatchObject({
+      provider: "openai-codex",
+      model: "gpt-6.1-sol",
+    });
+  });
+
   it("drops an uncertain handoff on the user's pick, once, and clears its Home item", async () => {
     const setup = await start();
     const { h } = setup;

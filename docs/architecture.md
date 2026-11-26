@@ -1913,9 +1913,10 @@ Hermes 1.4).
   - Tools `ask_hermes` (`kind` `question` or `task`, `text` up to 8,000 characters, optional `title`) and
     `cancel_hermes_ask`, in `pi-extensions/spore-bridge/src/hermes.ts`. Spore-bridge registers them in workspace
     chats, the planner chat (its allowlist names them), and a run coordinator. Stage, lane, and side chats never get
-    them, and neither does a helper pi-subagents started (`PI_SUBAGENT_CHILD=1` in its background runner,
-    `PI_SUBAGENT_EXTENSION_BINDINGS` in a foreground child): a helper keeps its chat's token, so only the extension
-    can tell it apart. `ask_hermes` returns the handoff id at once.
+    them. A helper pi-subagents started keeps its chat's token, so only the extension can tell it apart: it does not
+    register them when it sees `PI_SUBAGENT_CHILD=1` or `PI_SUBAGENT_EXTENSION_BINDINGS`, and both tools refuse to
+    run unless Pi's `ctx.mode` is `rpc`. pi-spore runs every chat with `--mode rpc`, and pi-subagents binds every
+    helper session in `print` mode. `ask_hermes` returns the handoff id at once.
   - Bridge routes `POST /api/bridge/hermes/asks` and `POST /api/bridge/hermes/asks/:id/cancel`. The bridge refuses
     a read-only side chat (403 `read_only_chat`) and a lane chat (403 `hermes_refused`). The hermes module answers
     the rest through `Bridge.setHermesAsker`, as github-pr does for PRs, so the bridge does not depend on it; with
@@ -1957,7 +1958,9 @@ Hermes 1.4).
   - Cancel (the asking chat, or the user on the page). With nothing sent yet it ends `cancelled` at once: `submit`
     reads the cancel right before it sends, with no await between. Otherwise the old job is cancelled and a new job
     runs the `cancel` step at once. A send that left no run id is asked again with the identical body and key,
-    which returns that run (or, if the first never got in, starts it once, to be stopped at once). Then it sends
+    which returns that run (or, if the first never got in, starts it once, to be stopped at once). Past
+    `hermes.offlineWaitHours` after the ask it sends nothing and ends `uncertain`, since Hermes may have dropped the
+    key. A run the cancel sees end gets the same last read of the session record. Then it sends
     `stop` and reads the run every 2 s. A run that ends keeps its own end (a `completed` result is kept). A stop
     that Hermes refuses for a run still going, or a run that does not end within 60 s, ends `uncertain`.
   - User routes (user token only; an agent token gets 401): `GET /api/hermes/handoffs[?workspaceId=]`, `POST
@@ -1986,7 +1989,8 @@ Hermes 1.4).
   the newest 100 handoffs with their state, times, and the provider and model from the session record ("unknown"
   when blank), with Cancel, the control answers, and the uncertain picks. A "Hermes handoffs" panel in the
   workspace Details column lists that workspace's newest five with their state and links to the page; it shows
-  nothing for a workspace that never asked Hermes. Code: `modules/hermes/src/handoffs-page.tsx` (`HandoffsPage`,
+  nothing for a workspace that never asked Hermes, and reads the list again every 5 s, so it appears when a chat
+  asks while Details is open. Code: `modules/hermes/src/handoffs-page.tsx` (`HandoffsPage`,
   `ControlRow`, `Reconcile`, `HermesPanel`); card 2.1 extends it with the rail entry and the session views. With
   `hermes.enabled` off, `GET /api/hermes/handoffs` answers `{ enabled: false, handoffs: [] }`, the page says only
   that Hermes is off (with a link to Settings), and Home shows no Hermes item. Home items are notices that link to
