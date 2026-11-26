@@ -1986,7 +1986,12 @@ Hermes 1.4).
   the newest 100 handoffs with their state, times, and the provider and model from the session record ("unknown"
   when blank), with Cancel, the control answers, and the uncertain picks. A "Hermes handoffs" panel in the
   workspace Details column lists that workspace's newest five with their state and links to the page; it shows
-  nothing for a workspace that never asked Hermes.
+  nothing for a workspace that never asked Hermes. Code: `modules/hermes/src/handoffs-page.tsx` (`HandoffsPage`,
+  `ControlRow`, `Reconcile`, `HermesPanel`); card 2.1 extends it with the rail entry and the session views. With
+  `hermes.enabled` off, `GET /api/hermes/handoffs` answers `{ enabled: false, handoffs: [] }`, the page says only
+  that Hermes is off (with a link to Settings), and Home shows no Hermes item. Home items are notices that link to
+  the page, not inline `Questions`: a `Questions` answer goes to an agent, and no agent may answer Hermes (ADR 0202
+  decision 9).
 - **Hermes to Pi (planned, card 1.3):** the listener's tools `list_targets`, `submit_request`, `get_request`, `cancel_request`, each
   deduped by `request_id`. A request becomes a Home approval. On Accept, a new workspace chat in a target from
   `hermes.inbound.projects` gets it, marked as remote input, not the user's approval. Results wait in the table until
