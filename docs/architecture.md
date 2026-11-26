@@ -1810,7 +1810,8 @@ See [ADR 0202](decisions/0202-hermes-remote-teammate.md) and the facts in
 Requirements R19, R1.2, R1.4. The connector (card Hermes 1.1), Pi-to-Hermes handoffs (card Hermes 1.2), the chat
 page (card Hermes 2.1), and the MCP listener with Hermes-to-Pi requests (card Hermes 1.3) are built. The Hermes-side
 MCP entry and the network rule (card Hermes 1.4) are **planned, not built yet**; live proof is cards Hermes 1.5 and
-2.3.
+2.3. The files the user applies for that side, with a yes slot and an evidence table per step, are in
+[hermes/pi-spore-profile/runbook.md](hermes/pi-spore-profile/runbook.md).
 
 The Hermes profile `pi-spore` on the user's Unraid server is a remote teammate. It is not a workbench agent: no
 worktree, no pipeline, run, lane, or stage role, and no live agent slot. It is not Homelab Maintainer and has none of
