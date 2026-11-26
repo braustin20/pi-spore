@@ -25,6 +25,12 @@ export interface BridgeEnv {
   runRole?: (typeof RUN_ROLES)[number];
   /** Set exactly when `runRole` is: the run's id. */
   runId?: string;
+  /**
+   * Set in a helper that pi-subagents started from this chat. Its background runner sets `PI_SUBAGENT_CHILD=1`; a
+   * foreground child gets `PI_SUBAGENT_EXTENSION_BINDINGS` while it loads. A helper keeps the chat's token, so the
+   * server cannot tell it apart.
+   */
+  helper?: true;
 }
 
 /**
@@ -54,11 +60,13 @@ export function bridgeEnv(env: Readonly<Record<string, string | undefined>>): Br
     throw new Error(
       `spore-bridge: PI_SPORE_RUN_ROLE is ${runRole}, but PI_SPORE_RUN_ID is not set`,
     );
+  const helper = env.PI_SUBAGENT_CHILD === "1" || env.PI_SUBAGENT_EXTENSION_BINDINGS !== undefined;
   const base = {
     url: url.replace(/\/+$/, ""),
     token,
     serverPid,
     ...(runRole && runId ? { runRole, runId } : {}),
+    ...(helper ? { helper: true as const } : {}),
   };
   if (kind === "worker" || kind === "side" || kind === "planner")
     return { ...base, chatKind: kind };

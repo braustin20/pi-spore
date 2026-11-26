@@ -1870,6 +1870,8 @@ describe("ask_hermes (ADR 0202 decision 9)", () => {
     ["a side chat", { PI_SPORE_CHAT_KIND: "side" }, false],
     ["a stage chat", { PI_SPORE_CHAT_KIND: "stage", PI_SPORE_STAGE_ROLE: "worker" }, false],
     ["a lane chat", { PI_SPORE_RUN_ROLE: "lane", PI_SPORE_RUN_ID: "U1" }, false],
+    ["a background helper of a workspace chat", { PI_SUBAGENT_CHILD: "1" }, false],
+    ["a foreground helper of a workspace chat", { PI_SUBAGENT_EXTENSION_BINDINGS: "e30=" }, false],
   ])("in %s registers it: %s", (_name, env, registered) => {
     for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
     const pi = fakePi();

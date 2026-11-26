@@ -16,12 +16,13 @@ const text = (value: string) => [{ type: "text" as const, text: value }];
 
 /**
  * Registers the tools in workspace chats and the planner chat only (ADR 0202 decision 9). Stage chats, lane chats,
- * and side chats never get them, so Hermes is no side channel between lanes (R7.5). The planner chat's allowlist
- * names them; helpers run under a ceiling that leaves them out. The server refuses the rest: a chat that works on a
- * Hermes request, and a Hermes that is off or set up wrong.
+ * side chats, and helpers pi-subagents started never get them, so Hermes is no side channel between lanes (R7.5).
+ * The planner chat's allowlist names them. The server refuses the rest: a chat that works on a Hermes request, and a
+ * Hermes that is off or set up wrong.
  */
 export function registerHermesTools(pi: ExtensionAPI, client: BridgeClient, env: BridgeEnv): void {
-  if (env.chatKind === "stage" || env.chatKind === "side" || env.runRole === "lane") return;
+  if (env.chatKind === "stage" || env.chatKind === "side" || env.runRole === "lane" || env.helper)
+    return;
 
   pi.registerTool({
     name: "ask_hermes",
