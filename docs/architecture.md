@@ -1800,7 +1800,8 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
 
 See [ADR 0202](decisions/0202-hermes-remote-teammate.md) and the facts in
 [hermes-protocol.md](spikes/hermes-protocol.md) and [hermes-pi-spore-profile.md](spikes/hermes-pi-spore-profile.md).
-Requirements R19, R1.2, R1.4. **Planned, not built yet** (cards Hermes 1.1 to 2.3).
+Requirements R19, R1.2, R1.4. The connector is built (card Hermes 1.1). Handoffs, the listener, and the chat page
+are **planned, not built yet** (cards Hermes 1.2 to 2.3).
 
 The Hermes profile `pi-spore` on the user's Unraid server is a remote teammate. It is not a workbench agent: no
 worktree, no pipeline, run, lane, or stage role, and no live agent slot. It is not Homelab Maintainer and has none of
@@ -1850,16 +1851,53 @@ Hermes 1.4).
 
 ### Connector
 
-- Module `modules/hermes`, interface key `HermesKey`. Settings, global only: `hermes.enabled` (default `false`),
-  `hermes.url` (default `http://hermes-docker:8642`), `hermes.profile` (default `pi-spore`), `hermes.keyFile`
-  (default `~/.pi-spore/hermes/<profile>.key`). Off means no request to Hermes, no listener, no tool, no rail entry.
-- Startup check: `/p/<profile>/health` (tested minor `0.23.x`), then the required flags of `/v1/capabilities`
-  (spike Q1), then the model id in `/v1/models`. Status `disabled`, `unreachable`, `unauthorized`, `incompatible`,
-  or `ready`.
-- Every `POST /v1/runs` has an `Idempotency-Key`; a retry sends the identical body. SSE event names are in
-  `data.event`; resume with `Last-Event-ID`; after a stream loss, poll the run status.
-- No provider or model override. The provider and model shown come from the session record; blank run runtime
-  fields show as unknown.
+- Module `modules/hermes` (`@pi-spore/mod-hermes`, not core, requires nothing). Other modules reach it only through
+  `HermesKey` (`modules/hermes/src/contract.ts`). Code: `src/client.ts` (HTTP, SSE, status), `src/key.ts` (key
+  loader), `src/protocol/` (TypeBox schemas of every Hermes answer and SSE event it reads).
+- Settings, global only: `hermes.enabled` (default `false`), `hermes.url` (default `http://hermes-docker:8642`;
+  an origin only: `http://` or `https://`, a host name, an IPv4 or bracketed IPv6 address, and a port; no path, user
+  info, query, or backslash), `hermes.profile` (default `pi-spore`), `hermes.keyFile` (default
+  `null`: `<pi-spore home>/hermes/<profile>.key`, so `~/.pi-spore/hermes/pi-spore.key`; a set value may start with
+  `~/`). Settings hold the path, never the key. Off means no request to Hermes, no listener, no tool, no rail entry.
+- Key loader: reads the file on every call. It refuses, naming the path and never the content, a missing or empty
+  file, a file mode wider than `0600`, a folder mode wider than `0700`, or bytes a header cannot carry. A refused
+  key makes the status `unauthorized`.
+- Status check, in order: `/p/<profile>/health` with no key (tested minor `0.23.x`; another names both versions),
+  then the required flags of `/v1/capabilities` (spike Q1; a missing or `false` flag is named), then the profile's
+  model id in `/v1/models`. Status `disabled`, `unreachable` (no answer, a timeout, or a 5xx), `unauthorized` (401,
+  403, or a refused key file), `incompatible` (version, flags, model, or an answer that fails its schema), or `ready`.
+- The status is cached per URL, profile, and key file. A poll checks again 60 s after `ready` or `disabled` (off
+  reads settings only), and after a failure waits 5 s, doubling up to 5 min. Timers are unref'd. `GET
+  /api/hermes/status` (user token) answers the cached status, or checks once if there is none. `POST
+  /api/hermes/refresh` checks now. The Settings page shows the status in a "Hermes" panel; its Reload button posts
+  the refresh.
+- Every client call except `status` reads the settings once and uses that snapshot for the check and the request.
+  It refuses with 503 `hermes_not_ready` unless that config is `ready`. A cached failure is checked again first, so
+  a call works as soon as Hermes is back. A request
+  waits 10 s for its answer (a stream: for its headers), then fails 502 `hermes_timeout`. Hermes errors come back
+  as `hermes_<code>` (for example 409 `hermes_idempotency_key_conflict`, 409 `hermes_permission_denied`, 404
+  `hermes_run_not_found`).
+- Every `POST /v1/runs` has an `Idempotency-Key` (1 to 255 visible ASCII). The body is `{input, session_id}` in a
+  fixed key order, so a retry of the same fields is the identical body. Nothing is sent again on its own.
+- SSE: frames carry `id:` and `data:`; the event name is `data.event`. `runEvents(id, lastEventId)` sends
+  `Last-Event-ID`, yields known events (a `replay.truncated` too), and ends after a terminal one. An unknown event
+  name is logged once (at info: the host `Logger` has no debug level) and skipped. A known event without a field
+  pi-spore reads fails 502 `hermes_bad_response`. A stream that ends early fails 502 `hermes_stream_lost`, naming
+  the last id. Turning `hermes.enabled` off closes open streams at the next check (poll or refresh) with 503
+  `hermes_not_ready`. An open stream has no idle timeout yet: a half-open connection waits until Hermes or the
+  process ends it. The first card that follows streams adds one, keyed to the 10 s keepalive. Unknown
+  fields are allowed everywhere in Hermes data.
+- Approval answers are exactly `{request_id, execution_generation, choice}`, `choice` `once` or `deny` (the type and
+  a closed schema both refuse `session` and `always`). Clarify answers are exactly
+  `{request_id, execution_generation, answer}`. `resolveUnknown` sends exactly `{admission_id,
+  execution_generation}`; no code calls it on its own.
+- No provider or model override: the outgoing schemas are closed, so a body with `model` or `provider` is refused.
+  The provider and model shown come from the session record (`model`, `billing_provider`); blank run runtime fields
+  are unknown, not an error.
+- No stop hook in `ServerHost`: shutdown ends the process, which closes any open SSE stream, and the module opens no
+  listener in this card.
+- Tests run against a fake Hermes, `modules/hermes/test-fixtures/fake-hermes.mjs`. It is not live proof; card
+  Hermes 1.5 is.
 
 ### Handoffs
 
@@ -2126,7 +2164,8 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   "Workspace settings" panel stays read-only. Other web modules add panels between "Global settings" and
   "Workspace settings" through `SettingsPageKey` (`modules/projects/src/web-contract.ts`), sorted by `order`. The
   agents module adds "Role models" there: one row per role and subagent with a model picker and Reset, which save
-  at once with `PUT /api/agents/role-models/:name` and show the list it answers (ADR 0181).
+  at once with `PUT /api/agents/role-models/:name` and show the list it answers (ADR 0181). The hermes module adds
+  "Hermes": the connector's status (section 11h).
 
 - Role models (ADR 0181) live in Pi's own file, not in pi-spore's: `<agentDir>/settings.json` (`PI_CODING_AGENT_DIR`,
   else `~/.pi/agent`), key `subagents.agentOverrides.<name>.model`. pi-subagents reads the same key for its helpers.

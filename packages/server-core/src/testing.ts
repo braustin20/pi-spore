@@ -103,6 +103,8 @@ export async function createTestServer(
     firstId?: number;
     /** Schedules delayed job steps. Real unless a fake is given, so tests control delays. */
     timer?: JobTimer;
+    /** The modules' log. Silent unless given, so a test can read what modules log. */
+    log?: Logger;
   } = {},
 ): Promise<TestServer> {
   const root = options.home ?? mkdtempSync(join(tmpdir(), "pi-spore-test-"));
@@ -130,7 +132,7 @@ export async function createTestServer(
   });
   const services: HostServices = {
     events,
-    log: silentLog,
+    log: options.log ?? silentLog,
     store,
     home: paths,
     exec: options.exec ?? realExec,

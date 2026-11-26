@@ -74,6 +74,9 @@
       "path": "modules/agent-graph"
     },
     {
+      "path": "modules/hermes"
+    },
+    {
       "path": "packages/server"
     },
     {
