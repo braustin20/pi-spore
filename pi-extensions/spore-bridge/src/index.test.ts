@@ -1826,10 +1826,14 @@ describe("ask_hermes (ADR 0202 decision 9)", () => {
   /** The context Pi gives a tool in a pi-spore chat, which runs with `--mode rpc`. */
   const RPC = { mode: "rpc" };
 
-  it.each(["ask_hermes", "cancel_hermes_ask"])(
+  it.each(["ask_hermes", "cancel_hermes_ask", "reply_hermes"])(
     "refuses %s in a helper session, which Pi runs in print mode, and sends nothing",
     async (name) => {
-      const params = name === "ask_hermes" ? { kind: "question", text: "ping?" } : { id: "h1" };
+      const params = {
+        ask_hermes: { kind: "question", text: "ping?" },
+        cancel_hermes_ask: { id: "h1" },
+        reply_hermes: { request_id: "r-1", text: "done" },
+      }[name];
       await expect(
         fakePi().tool(name).execute("toolu_x", params, undefined, undefined, { mode: "print" }),
       ).rejects.toThrow("not a helper");
@@ -1885,6 +1889,25 @@ describe("ask_hermes (ADR 0202 decision 9)", () => {
     expect(result.content[0]?.text).toContain("not undone");
   });
 
+  it("replies to a Hermes request through the bridge, with the tool call id as its receipt", async () => {
+    reply("POST /api/bridge/hermes/replies", {
+      body: { request: { requestId: "r-1", state: "completed" } },
+    });
+    const result = await fakePi()
+      .tool("reply_hermes")
+      .execute("toolu_r", { request_id: "r-1", text: "done" }, undefined, undefined, RPC);
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/hermes/replies",
+        auth: "Bearer agent-token",
+        receipt: "toolu_r",
+        body: { requestId: "r-1", text: "done" },
+      },
+    ]);
+    expect(result.content[0]?.text).toContain("Hermes request r-1 (completed)");
+  });
+
   it.each([
     ["a workspace chat", {}, true],
     ["the planner chat", { PI_SPORE_CHAT_KIND: "planner" }, true],
@@ -1899,5 +1922,6 @@ describe("ask_hermes (ADR 0202 decision 9)", () => {
     const pi = fakePi();
     expect(pi.tools.has("ask_hermes")).toBe(registered);
     expect(pi.tools.has("cancel_hermes_ask")).toBe(registered);
+    expect(pi.tools.has("reply_hermes")).toBe(registered);
   });
 });

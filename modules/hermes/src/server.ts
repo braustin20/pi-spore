@@ -7,7 +7,9 @@ import { createConnector } from "./client.js";
 import { HermesKey } from "./contract.js";
 import { createControls } from "./controls.js";
 import { setupHandoffs } from "./handoffs.js";
+import { setupInbound } from "./inbound.js";
 import { expandHome } from "./key.js";
+import { findTailscaleAddress, type McpAddress, setupMcpListener } from "./mcp/listener.js";
 
 export * from "./contract.js";
 
@@ -22,6 +24,8 @@ export interface HermesModuleOptions {
   timer?: JobTimer;
   /** How long one request may wait for Hermes's answer (for a stream: its headers). */
   timeoutMs?: number;
+  /** Where the MCP listener binds. Default: the desktop's Tailscale address, read from the network interfaces. */
+  mcpAddress?: McpAddress;
 }
 
 // Timers are unref'd: an open poll or request never keeps the process up. A shutdown ends the process, which closes
@@ -41,7 +45,8 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
   return {
     id: "hermes",
     // The handoffs deliver results to chats, put controls on Home, and name the workspace and project (card 1.2).
-    requires: ["agents", "attention", "workspaces", "projects", "bridge"],
+    // Requests from Hermes skip the workspaces of runs (card 1.3).
+    requires: ["agents", "attention", "workspaces", "projects", "bridge", "runs"],
     core: false,
     setup(host) {
       const keys = {
@@ -104,11 +109,26 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
       };
       // Handoffs and chat runs share one store and one answer path for approvals and clarify.
       const controls = createControls(host, connector);
-      host.use(BridgeKey).setHermesAsker(setupHandoffs(host, connector, controls, flags));
+      // Hermes to Pi through the MCP listener (card 1.3); the bridge's reply route answers its requests.
+      const inbound = setupInbound(host, flags);
+      host.use(BridgeKey).setHermesAsker({
+        ...setupHandoffs(host, connector, controls, flags),
+        reply: inbound.reply,
+      });
       setupChat(host, connector, controls, { enabled: flags.enabled, timer });
+      const listener = setupMcpListener(host, inbound, {
+        address: options.mcpAddress ?? { lookup: findTailscaleAddress },
+        enabled: flags.enabled,
+      });
 
       let failures = 0;
       const poll = async () => {
+        // The listener follows its settings at each check, so turning one off closes it without a restart.
+        await listener
+          .sync()
+          .catch((error: unknown) =>
+            host.log.error("The Hermes MCP listener check failed", { error: String(error) }),
+          );
         try {
           const status = await connector.refresh();
           failures = status.state === "ready" || status.state === "disabled" ? 0 : failures + 1;

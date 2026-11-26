@@ -1,7 +1,8 @@
 /**
  * `ask_hermes` and `cancel_hermes_ask` (ADR 0202, card Hermes 1.2): hand a question or a task to the Hermes profile
  * `pi-spore`, a remote agent on the user's home server. The tool returns a handoff id at once; pi-spore sends the
- * handoff, follows it, and delivers the result to this chat as a new message.
+ * handoff, follows it, and delivers the result to this chat as a new message. `reply_hermes` (card Hermes 1.3) answers
+ * a request Hermes sent this chat; Hermes reads the answer later.
  */
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import Type from "typebox";
@@ -10,6 +11,10 @@ import type { BridgeClient, BridgeEnv } from "./client.js";
 
 const HandoffAnswer = Type.Object({
   handoff: Type.Object({ id: Type.String(), state: Type.String() }),
+});
+
+const ReplyAnswer = Type.Object({
+  request: Type.Object({ requestId: Type.String(), state: Type.String() }),
 });
 
 const text = (value: string) => [{ type: "text" as const, text: value }];
@@ -113,6 +118,41 @@ export function registerHermesTools(pi: ExtensionAPI, client: BridgeClient, env:
           `Asked Hermes to stop handoff ${handoff.id} (now ${handoff.state}). Steps it completed are not undone.`,
         ),
         details: { handoffId: handoff.id },
+      };
+    },
+  });
+
+  pi.registerTool({
+    name: "reply_hermes",
+    label: "Reply to Hermes",
+    description:
+      "Answer a request the Hermes profile sent this chat (the message names its request id). pi-spore stores the " +
+      "answer, and Hermes reads it later. Call it once, when the work is done or you cannot do it; say which.",
+    promptSnippet: "Answer a request from Hermes; Hermes reads it later",
+    parameters: Type.Object({
+      request_id: Type.String({
+        minLength: 1,
+        maxLength: 128,
+        description: "The request id from the Hermes message",
+      }),
+      text: Type.String({
+        minLength: 1,
+        maxLength: 16_000,
+        description: "Your answer or result for Hermes",
+      }),
+    }),
+    async execute(toolCallId, params, signal, _onUpdate, ctx) {
+      refuseHelper(ctx);
+      const { request } = await client.call(ReplyAnswer, "hermes/replies", {
+        body: { requestId: params.request_id, text: params.text },
+        receipt: toolCallId,
+        ...(signal ? { signal } : {}),
+      });
+      return {
+        content: text(
+          `Stored your answer to Hermes request ${request.requestId} (${request.state}). Hermes reads it later.`,
+        ),
+        details: { requestId: request.requestId },
       };
     },
   });

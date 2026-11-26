@@ -12,6 +12,7 @@ import {
 import {
   AnswerHermesControlRequest,
   type AskHermesRequest,
+  type HermesControl,
   type HermesHandoff,
   type HermesHandoffState,
   parseJsonBody,
@@ -22,6 +23,8 @@ import type { Hermes, Run, RunEvent } from "./contract.js";
 import { type ControlRow, type Controls, runFacts } from "./controls.js";
 
 const JOB = "hermes.ask";
+/** Starts the `idempotency_key` of an `in` row, so it never equals an `out` receipt of the same chat. */
+export const IN_PREFIX = "in:";
 const ENDED: ReadonlySet<string> = new Set(["completed", "cancelled", "failed", "uncertain"]);
 /** Connector errors that mean Hermes did not answer at all. */
 const UNREACHABLE: ReadonlySet<string> = new Set([
@@ -64,8 +67,10 @@ interface End {
  */
 type Checkpoint = { tries?: number; since?: number; end?: End };
 
-interface Row {
+export interface Row {
   id: string;
+  direction: "out" | "in";
+  /** For `in`: empty until the user accepts the request. */
   agent_id: string;
   workspace_id: string;
   project_id: string;
@@ -81,6 +86,7 @@ interface Row {
   session_id: string | null;
   admission_id: string | null;
   execution_generation: number | null;
+  /** For `out`: the asking tool call's receipt. For `in`: `IN_PREFIX` and Hermes's `request_id`. */
   idempotency_key: string;
   job_id: string | null;
   /** 1 once a `POST /v1/runs` went out: from then on Hermes may have the run, even with no `run_id` stored. */
@@ -152,6 +158,41 @@ export const HANDOFF_MIGRATIONS = [
   );`,
 ];
 
+/**
+ * The API view of a handoff row, both directions. `controls` come from `Controls.list`; an `in` row has none, and no
+ * agent until the user accepts it.
+ */
+export const toHandoff = (row: Row, controls: HermesControl[]): HermesHandoff => {
+  const optional = (value: string | null) => value ?? undefined;
+  const fields = {
+    title: optional(row.title),
+    runId: optional(row.run_id),
+    sessionId: optional(row.session_id),
+    provider: optional(row.provider),
+    model: optional(row.model),
+    result: optional(row.result_text),
+    error: optional(row.error),
+    resolution: optional(row.resolution),
+    resentAs: optional(row.resent_as),
+  };
+  return {
+    id: row.id,
+    direction: row.direction,
+    ...(row.agent_id === "" ? {} : { agentId: row.agent_id }),
+    ...(row.direction === "in" ? { requestId: row.idempotency_key.slice(IN_PREFIX.length) } : {}),
+    workspaceId: row.workspace_id,
+    projectId: row.project_id,
+    profile: row.profile,
+    kind: row.kind,
+    text: row.text,
+    state: row.state,
+    ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
+    controls,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  };
+};
+
 const cap = (text: string, max: number) =>
   text.length <= max ? text : `${text.slice(0, max)}... (cut at ${max} characters)`;
 
@@ -165,7 +206,7 @@ export function setupHandoffs(
   hermes: Hermes,
   controls: Controls,
   settings: { profile: () => Promise<string>; enabled: () => Promise<boolean> },
-): HermesAsker {
+): Omit<HermesAsker, "reply"> {
   const agents = host.use(AgentsKey);
   const workspaces = host.use(WorkspacesKey);
   const projects = host.use(ProjectsKey);
@@ -193,35 +234,7 @@ export function setupHandoffs(
   };
   const timeoutMs = controls.timeoutMs;
 
-  const view = (row: Row, timeout: number): HermesHandoff => {
-    const optional = (value: string | null) => value ?? undefined;
-    const fields = {
-      title: optional(row.title),
-      runId: optional(row.run_id),
-      sessionId: optional(row.session_id),
-      provider: optional(row.provider),
-      model: optional(row.model),
-      result: optional(row.result_text),
-      error: optional(row.error),
-      resolution: optional(row.resolution),
-      resentAs: optional(row.resent_as),
-    };
-    return {
-      id: row.id,
-      direction: "out",
-      agentId: row.agent_id,
-      workspaceId: row.workspace_id,
-      projectId: row.project_id,
-      profile: row.profile,
-      kind: row.kind,
-      text: row.text,
-      state: row.state,
-      ...Object.fromEntries(Object.entries(fields).filter(([, value]) => value !== undefined)),
-      controls: controls.list(row.id, timeout),
-      createdAt: row.created_at,
-      updatedAt: row.updated_at,
-    };
-  };
+  const view = (row: Row, timeout: number) => toHandoff(row, controls.list(row.id, timeout));
   const viewOf = async (row: Row) => view(row, await timeoutMs());
 
   const message = (row: Row, end: End) => {
@@ -649,13 +662,15 @@ export function setupHandoffs(
 
   const own = (caller: BridgeCaller, id: string): Row => {
     const row = load(id);
-    if (!row || row.agent_id !== caller.agentId)
+    if (row?.direction !== "out" || row.agent_id !== caller.agentId)
       throw new ApiError(404, "handoff_not_found", `No Hermes handoff ${id}`);
     return row;
   };
+  // The routes below act on handoffs to Hermes; requests from Hermes have their own (inbound.ts).
   const found = (id: string): Row => {
     const row = load(id);
-    if (!row) throw new ApiError(404, "handoff_not_found", `No Hermes handoff ${id}`);
+    if (row?.direction !== "out")
+      throw new ApiError(404, "handoff_not_found", `No Hermes handoff ${id}`);
     return row;
   };
 
