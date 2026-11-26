@@ -20,6 +20,13 @@ export function fakeTimer() {
     timer,
     /** Delays of the timers armed now, in the order they were armed. */
     delays: () => [...pending].map((entry) => entry.ms),
+    /** Runs the oldest pending timer of this delay, and waits for it. */
+    async fireOne(ms: number) {
+      const entry = [...pending].find((candidate) => candidate.ms === ms);
+      if (!entry) throw new Error(`no timer of ${ms} ms is pending`);
+      pending.delete(entry);
+      await entry.run();
+    },
     /** Runs every pending timer of this delay once, and waits for them. */
     async fire(ms: number) {
       const due = [...pending].filter((entry) => entry.ms === ms);
@@ -88,8 +95,9 @@ export async function harness(
       join(server.paths.root, "settings.json"),
       JSON.stringify({ hermes: { url: fake.url, ...values } }),
     );
-  // Off writes no settings file at all, so the default decides.
-  if (options.enabled !== false) settings({ enabled: true, ...options.settings });
+  // Off leaves hermes.enabled unset, so its default decides. The URL is always the fake's, so a request that should
+  // not happen reaches the fake, where the test sees it, and never a real host.
+  settings({ ...(options.enabled === false ? {} : { enabled: true }), ...options.settings });
   if (!hermes) throw new Error("the hermes module did not provide HermesKey");
   return {
     server,

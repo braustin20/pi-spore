@@ -10,7 +10,8 @@
 //   - 409 permission_denied for a run into a session whose source is not api_server or bot_room.
 // Knobs on `fake.options`: version, missingFlag, falseFlag, models, serverError (5xx on every keyed request),
 // holdRuns (admit POST /v1/runs but never answer, like a lost response), holdAll (never answer anything),
-// dropStreamAfter (cut each event stream after n frames).
+// dropStreamAfter (cut each event stream after n frames), answers ({ "<path below the profile>": { status, raw } }:
+// that path answers this status and raw body, for broken or unexpected answers).
 import { createServer } from "node:http";
 
 const REQUIRED = {
@@ -34,7 +35,7 @@ const sameKeys = (body, keys) =>
 
 /** Starts the fake on a free loopback port. */
 export async function startFakeHermes({ key, profile = "pi-spore" }) {
-  const options = { version: "0.23.3", models: [profile] };
+  const options = { version: "0.23.3", models: [profile], answers: {} };
   /** Every request: method, path (below the profile), headers, and the raw body. */
   const requests = [];
   const sessions = new Map();
@@ -77,7 +78,7 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
     const write = (frame) => {
       if (drop !== undefined && sent >= drop) return;
       sent += 1;
-      const text = `id: ${frame.seq}\ndata: ${JSON.stringify(frame.data)}\n\n`;
+      const text = `id: ${frame.seq}\ndata: ${frame.raw ?? JSON.stringify(frame.data)}\n\n`;
       // A drop resets the socket once the last frame is out, as a lost connection would.
       if (sent === drop) response.write(text, () => response.destroy());
       else response.write(text);
@@ -96,6 +97,12 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
   const handle = (request, response, raw) => {
     const url = new URL(request.url, "http://fake");
     const prefix = `/p/${profile}`;
+    const set = options.answers[url.pathname.replace(/^\/p\/[^/]+/, "")];
+    if (set) {
+      response.writeHead(set.status, { "content-type": "application/json" });
+      response.end(set.raw);
+      return;
+    }
     // One gateway serves every profile, each with its own health.
     if (url.pathname === "/health" || /^\/p\/[^/]+\/health$/.test(url.pathname)) {
       json(response, 200, { status: "ok", platform: "hermes-agent", version: options.version });
@@ -216,10 +223,9 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
           return error(response, 409, "stale_generation");
         run.pending_controls = run.pending_controls.filter((candidate) => candidate !== control);
         run.status = "running";
-        emit(run, {
-          event: action === "/approval" ? "approval.responded" : "clarify.responded",
-          request_id: body.request_id,
-        });
+        // The spike lists approval.responded only; it names no event for a clarify answer.
+        if (action === "/approval")
+          emit(run, { event: "approval.responded", request_id: body.request_id });
         return json(response, 200, { ok: true });
       }
       if (request.method === "POST" && action === "/resolve-unknown") {
@@ -321,6 +327,13 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
     /** Sends any frame, such as an event name pi-spore does not know. */
     emit(runId, data) {
       emit(runs.get(runId), data);
+    },
+    /** Sends a frame whose data is this text as is, such as one that is not JSON. */
+    emitRaw(runId, raw) {
+      const run = runs.get(runId);
+      const frame = { seq: run.events.length, raw };
+      run.events.push(frame);
+      for (const listener of run.listeners) listener(frame);
     },
     requestApproval(runId, promptId) {
       const run = runs.get(runId);

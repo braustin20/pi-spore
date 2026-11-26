@@ -10,6 +10,7 @@ export interface FakeHermesOptions {
   holdRuns?: boolean;
   holdAll?: boolean;
   dropStreamAfter?: number | undefined;
+  answers: Record<string, { status: number; raw: string }>;
 }
 
 export interface FakeRequest {
@@ -34,6 +35,7 @@ export interface FakeHermes {
   addSession(id: string, source: string): void;
   finish(runId: string, output: string): void;
   emit(runId: string, data: Record<string, unknown>): void;
+  emitRaw(runId: string, raw: string): void;
   requestApproval(runId: string, promptId: string): void;
   requestClarify(runId: string, promptId: string): void;
   run(runId: string): FakeRun | undefined;

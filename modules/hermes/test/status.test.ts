@@ -1,3 +1,4 @@
+import { chmodSync } from "node:fs";
 import { createServer } from "node:net";
 import type { HermesStatus } from "@pi-spore/shared";
 import { afterEach, describe, expect, it } from "vitest";
@@ -147,6 +148,60 @@ describe("Hermes connector status", () => {
     expect(response.status).toBe(422);
     h.settings({ enabled: true, url: "http://hermes-docker:8642/p/pi-spore" });
     expect((await h.server.request("GET", "/api/hermes/status")).status).toBe(422);
+    // URL parsing reads a backslash as a path separator.
+    h.settings({ enabled: true, url: `${h.fake.url}\\p\\other` });
+    expect((await h.server.request("GET", "/api/hermes/status")).status).toBe(422);
     expect(h.fake.requests).toEqual([]);
+  });
+
+  it("checks again on Reload (POST /api/hermes/refresh), not only at the next poll", async () => {
+    h = await harness();
+    chmodSync(h.keyFile, 0o644);
+    expect(await status(h)).toMatchObject({ state: "unauthorized" });
+    chmodSync(h.keyFile, 0o600);
+    // The GET answers the cached status; the Reload checks now.
+    expect(await status(h)).toMatchObject({ state: "unauthorized" });
+    const reload = await h.server.request("POST", "/api/hermes/refresh");
+    expect(reload.status).toBe(200);
+    expect(await reload.json()).toMatchObject({ state: "ready" });
+    expect(await status(h)).toMatchObject({ state: "ready" });
+  });
+
+  it("lets a client call check again when the cached status is a failure", async () => {
+    h = await harness();
+    h.fake.options.serverError = true;
+    expect(await status(h)).toMatchObject({ state: "unreachable" });
+    h.fake.options.serverError = false;
+    const admitted = await h.hermes.startRun({ input: "hi", session_id: "s" }, "k-back");
+    expect(admitted.run_id).toBe("run_fake1");
+  });
+
+  it("is unauthorized on a 403", async () => {
+    h = await harness();
+    h.fake.options.answers["/v1/capabilities"] = { status: 403, raw: "{}" };
+    const now = await status(h);
+    expect(now.state).toBe("unauthorized");
+    expect("detail" in now && now.detail).toContain("403");
+  });
+
+  it("is incompatible when health is not JSON or has no version", async () => {
+    h = await harness();
+    h.fake.options.answers["/health"] = { status: 200, raw: "<html>" };
+    expect(await status(h)).toMatchObject({
+      state: "incompatible",
+      detail: expect.stringContaining("not JSON"),
+    });
+    h.fake.options.answers["/health"] = { status: 200, raw: '{"status":"ok"}' };
+    const reload = await h.server.request("POST", "/api/hermes/refresh");
+    expect(await reload.json()).toMatchObject({
+      state: "incompatible",
+      detail: expect.stringContaining("version"),
+    });
+  });
+
+  it("takes a tested version without a patch part", async () => {
+    h = await harness();
+    h.fake.options.version = "0.23";
+    expect(await status(h)).toMatchObject({ state: "ready", version: "0.23" });
   });
 });

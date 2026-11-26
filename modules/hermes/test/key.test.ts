@@ -1,7 +1,7 @@
 import { chmodSync, rmSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type { HermesStatus } from "@pi-spore/shared";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { type Harness, harness } from "./helpers.js";
 
 // The key is a generated fake value in a temp home. The real ~/.pi-spore/hermes is never read.
@@ -70,5 +70,31 @@ describe("Hermes key file", () => {
     const now = await status(h);
     expect(now.state).toBe("unauthorized");
     expect("detail" in now && now.detail).toContain(`${dirname(h.keyFile)}/other.key`);
+  });
+
+  it("reads a key file under ~/ from the user's home", async () => {
+    h = await harness();
+    // The user's home is the temp home here, so nothing under the real ~ is read.
+    vi.stubEnv("HOME", h.server.paths.root);
+    try {
+      h.settings({ enabled: true, keyFile: "~/hermes/pi-spore.key" });
+      expect(await status(h)).toMatchObject({ state: "ready" });
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+
+  it("refuses a relative key file path", async () => {
+    h = await harness();
+    h.settings({ enabled: true, keyFile: "hermes/pi-spore.key" });
+    const now = await status(h);
+    expect(now.state).toBe("unauthorized");
+    expect("detail" in now && now.detail).toContain("not an absolute path");
+  });
+
+  it("refuses a key with bytes a header cannot carry, without quoting it", async () => {
+    h = await harness();
+    writeFileSync(h.keyFile, `${h.key} second-line`);
+    await expectRefused(h, "characters a key cannot have");
   });
 });

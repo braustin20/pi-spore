@@ -48,8 +48,12 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
         }),
         url: host.settings.declare({
           key: "hermes.url",
-          // A base only: no path, no user info, no query.
-          schema: Type.String({ pattern: "^https?://[^/?#@\\s]+$" }),
+          // An origin only: a host name, an IPv4 or a bracketed IPv6 address, and a port. Anything else (a path,
+          // user info, a query, a backslash that URL parsing reads as a path) would move the /p/<profile> paths.
+          schema: Type.String({
+            pattern:
+              "^https?://([A-Za-z0-9-]+(\\.[A-Za-z0-9-]+)*|\\[[0-9A-Fa-f:.]+\\])(:[0-9]{1,5})?$",
+          }),
           default: "http://hermes-docker:8642",
           scope: "global",
         }),
@@ -111,6 +115,8 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
       });
 
       host.routes.get("/status", async (c) => c.json(await connector.status()));
+      // Reload on the Settings page: check now, not at the next poll.
+      host.routes.post("/refresh", async (c) => c.json(await connector.refresh()));
     },
   };
 }

@@ -47,7 +47,9 @@ describe("Hermes client runs", () => {
     expect(again?.headers["idempotency-key"]).toBe(sent?.headers["idempotency-key"]);
     expect(again?.raw).toBe(sent?.raw);
     expect(retry).toMatchObject({ replayed: true });
-    expect(retry.run_id).toBe(h.fake.run(retry.run_id)?.run_id);
+    // The run the fake admitted first, and no second one.
+    expect(retry.run_id).toBe("run_fake1");
+    expect(h.fake.run("run_fake2")).toBeUndefined();
     expect(runRequests(h)).toHaveLength(2);
   });
 
@@ -100,6 +102,15 @@ describe("Hermes client runs", () => {
     await expect(h.hermes.getRun("run_missing")).rejects.toMatchObject({
       status: 404,
       code: "hermes_run_not_found",
+    });
+  });
+
+  it("keeps the status of a refusal whose body is not JSON", async () => {
+    h = await ready();
+    h.fake.options.answers["/v1/runs/run_x"] = { status: 400, raw: "oops" };
+    await expect(h.hermes.getRun("run_x")).rejects.toMatchObject({
+      status: 400,
+      code: "hermes_http_400",
     });
   });
 
@@ -159,6 +170,42 @@ describe("Hermes client events", () => {
     await expect(collect(h.hermes.runEvents(run_id))).rejects.toMatchObject({
       code: "hermes_bad_response",
     });
+  });
+
+  it("refuses a frame that is not JSON or has no event name", async () => {
+    h = await ready();
+    const { run_id } = await h.hermes.startRun({ input: "hi", session_id: "s" }, "k-raw");
+    h.fake.emitRaw(run_id, "not json");
+    h.fake.finish(run_id, "x");
+    await expect(collect(h.hermes.runEvents(run_id))).rejects.toMatchObject({
+      code: "hermes_bad_response",
+      message: expect.stringContaining("not JSON"),
+    });
+    await expect(collect(h.hermes.runEvents(run_id, "0"))).resolves.toHaveLength(2);
+    const other = await h.hermes.startRun({ input: "hi", session_id: "s" }, "k-raw-2");
+    h.fake.emit(other.run_id, { delta: "no name" });
+    await expect(collect(h.hermes.runEvents(other.run_id))).rejects.toMatchObject({
+      code: "hermes_bad_response",
+      message: expect.stringContaining("no event name"),
+    });
+  });
+
+  it("closes an open stream when Hermes is turned off", async () => {
+    h = await ready();
+    const { run_id } = await h.hermes.startRun({ input: "sleep", session_id: "s" }, "k-off");
+    h.fake.emit(run_id, { event: "message.delta", delta: "a" });
+    const seen: RunEventFrame[] = [];
+    const reading = (async () => {
+      for await (const frame of (h as Harness).hermes.runEvents(run_id)) seen.push(frame);
+    })();
+    await expect.poll(() => seen.length).toBe(1);
+    h.settings({});
+    await h.server.request("POST", "/api/hermes/refresh");
+    await expect(reading).rejects.toMatchObject({ code: "hermes_not_ready" });
+    const before = h.fake.requests.length;
+    h.fake.emit(run_id, { event: "message.delta", delta: "b" });
+    await expect(h.hermes.getRun(run_id)).rejects.toMatchObject({ code: "hermes_not_ready" });
+    expect(h.fake.requests).toHaveLength(before);
   });
 
   it("says the stream was lost when it drops before the run ends, then resumes", async () => {

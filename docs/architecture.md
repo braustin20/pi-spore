@@ -1855,7 +1855,8 @@ Hermes 1.4).
   `HermesKey` (`modules/hermes/src/contract.ts`). Code: `src/client.ts` (HTTP, SSE, status), `src/key.ts` (key
   loader), `src/protocol/` (TypeBox schemas of every Hermes answer and SSE event it reads).
 - Settings, global only: `hermes.enabled` (default `false`), `hermes.url` (default `http://hermes-docker:8642`;
-  `http://` or `https://`, no path, no user info), `hermes.profile` (default `pi-spore`), `hermes.keyFile` (default
+  an origin only: `http://` or `https://`, a host name, an IPv4 or bracketed IPv6 address, and a port; no path, user
+  info, query, or backslash), `hermes.profile` (default `pi-spore`), `hermes.keyFile` (default
   `null`: `<pi-spore home>/hermes/<profile>.key`, so `~/.pi-spore/hermes/pi-spore.key`; a set value may start with
   `~/`). Settings hold the path, never the key. Off means no request to Hermes, no listener, no tool, no rail entry.
 - Key loader: reads the file on every call. It refuses, naming the path and never the content, a missing or empty
@@ -1863,13 +1864,16 @@ Hermes 1.4).
   key makes the status `unauthorized`.
 - Status check, in order: `/p/<profile>/health` with no key (tested minor `0.23.x`; another names both versions),
   then the required flags of `/v1/capabilities` (spike Q1; a missing or `false` flag is named), then the profile's
-  model id in `/v1/models`. Status `disabled`, `unreachable` (no answer, a timeout, or a 5xx), `unauthorized` (401
-  or a refused key file), `incompatible` (version, flags, model, or an answer that fails its schema), or `ready`.
+  model id in `/v1/models`. Status `disabled`, `unreachable` (no answer, a timeout, or a 5xx), `unauthorized` (401,
+  403, or a refused key file), `incompatible` (version, flags, model, or an answer that fails its schema), or `ready`.
 - The status is cached per URL, profile, and key file. A poll checks again 60 s after `ready` or `disabled` (off
   reads settings only), and after a failure waits 5 s, doubling up to 5 min. Timers are unref'd. `GET
-  /api/hermes/status` (user token) answers the cached status, or checks once if there is none. The Settings page
-  shows it in a "Hermes" panel, with Reload.
-- Every client call except `status` refuses with 503 `hermes_not_ready` unless the status is `ready`. A request
+  /api/hermes/status` (user token) answers the cached status, or checks once if there is none. `POST
+  /api/hermes/refresh` checks now. The Settings page shows the status in a "Hermes" panel; its Reload button posts
+  the refresh.
+- Every client call except `status` reads the settings once and uses that snapshot for the check and the request.
+  It refuses with 503 `hermes_not_ready` unless that config is `ready`. A cached failure is checked again first, so
+  a call works as soon as Hermes is back. A request
   waits 10 s for its answer (a stream: for its headers), then fails 502 `hermes_timeout`. Hermes errors come back
   as `hermes_<code>` (for example 409 `hermes_idempotency_key_conflict`, 409 `hermes_permission_denied`, 404
   `hermes_run_not_found`).
@@ -1879,7 +1883,10 @@ Hermes 1.4).
   `Last-Event-ID`, yields known events (a `replay.truncated` too), and ends after a terminal one. An unknown event
   name is logged once (at info: the host `Logger` has no debug level) and skipped. A known event without a field
   pi-spore reads fails 502 `hermes_bad_response`. A stream that ends early fails 502 `hermes_stream_lost`, naming
-  the last id. Unknown fields are allowed everywhere in Hermes data.
+  the last id. Turning `hermes.enabled` off closes open streams at the next check (poll or refresh) with 503
+  `hermes_not_ready`. An open stream has no idle timeout yet: a half-open connection waits until Hermes or the
+  process ends it. The first card that follows streams adds one, keyed to the 10 s keepalive. Unknown
+  fields are allowed everywhere in Hermes data.
 - Approval answers are exactly `{request_id, execution_generation, choice}`, `choice` `once` or `deny` (the type and
   a closed schema both refuse `session` and `always`). Clarify answers are exactly
   `{request_id, execution_generation, answer}`. `resolveUnknown` sends exactly `{admission_id,

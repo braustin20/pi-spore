@@ -13,11 +13,16 @@ afterEach(() => {
 });
 
 async function render(answers: HermesStatus[]) {
-  const gets: string[] = [];
+  const calls: string[] = [];
+  const answer = () => answers[Math.min(calls.length, answers.length) - 1];
   const api = {
     get: async (path: string) => {
-      gets.push(path);
-      return answers[Math.min(gets.length, answers.length) - 1];
+      calls.push(`GET ${path}`);
+      return answer();
+    },
+    send: async (method: string, path: string) => {
+      calls.push(`${method} ${path}`);
+      return answer();
     },
   } as unknown as ApiClient;
   const root = document.body.appendChild(document.createElement("div"));
@@ -28,12 +33,12 @@ async function render(answers: HermesStatus[]) {
       </ApiContext>,
     );
   });
-  return { root, gets };
+  return { root, calls };
 }
 
 describe("Hermes row on the Settings page", () => {
-  it("shows the status from /api/hermes/status, and reloads it", async () => {
-    const { root, gets } = await render([
+  it("shows the status from /api/hermes/status, and Reload checks again", async () => {
+    const { root, calls } = await render([
       { state: "disabled" },
       { state: "incompatible", detail: "Hermes 0.24.0 is not tested", checkedAt: 1 },
     ]);
@@ -41,7 +46,7 @@ describe("Hermes row on the Settings page", () => {
     expect(root.textContent).toContain("hermes.enabled");
     const reload = [...root.querySelectorAll("button")].find((b) => b.textContent === "Reload");
     await act(async () => reload?.click());
-    expect(gets).toEqual(["hermes/status", "hermes/status"]);
+    expect(calls).toEqual(["GET hermes/status", "POST hermes/refresh"]);
     expect(root.textContent).toContain("incompatible");
     expect(root.textContent).toContain("Hermes 0.24.0 is not tested");
   });

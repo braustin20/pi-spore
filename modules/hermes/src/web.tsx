@@ -17,16 +17,15 @@ export function HermesSection() {
   const api = useApi();
   const [status, setStatus] = useState<HermesStatus | undefined>();
   const [error, setError] = useState<string | undefined>();
-  const load = useCallback(() => {
+  const show = useCallback((answer: Promise<unknown>) => {
     setError(undefined);
-    api
-      .get("hermes/status")
+    answer
       .then((body) => setStatus(parse(HermesStatus, body, "Hermes status")))
       .catch((caught: unknown) =>
         setError(caught instanceof Error ? caught.message : String(caught)),
       );
-  }, [api]);
-  useEffect(load, [load]);
+  }, []);
+  useEffect(() => show(api.get("hermes/status")), [api, show]);
 
   return (
     <Panel>
@@ -43,7 +42,7 @@ export function HermesSection() {
                 `Hermes ${status.version} at ${status.url}, profile ${status.profile}.`}
               {"detail" in status && status.detail}
             </span>
-            <Button size="sm" onClick={load}>
+            <Button size="sm" onClick={() => show(api.send("POST", "hermes/refresh"))}>
               Reload
             </Button>
           </div>

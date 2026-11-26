@@ -78,7 +78,12 @@ interface SendOptions {
   headers?: Record<string, string>;
   /** `/health` needs no key. */
   auth?: boolean;
+  /** Ends the request, or the stream after its headers, when it aborts. */
+  signal?: AbortSignal;
 }
+
+const turnedOff = (what: string) =>
+  new ApiError(503, "hermes_not_ready", `Hermes was turned off; ${what} is closed`);
 
 /** Outbound HTTP and SSE to `<url>/p/<profile>` (ADR 0202 decision 4). Opens no listener. */
 export function createConnector(options: ConnectorOptions): Connector {
@@ -90,7 +95,7 @@ export function createConnector(options: ConnectorOptions): Connector {
     config: HermesConfig,
     method: string,
     path: string,
-    { body, headers = {}, auth = true }: SendOptions = {},
+    { body, headers = {}, auth = true, signal }: SendOptions = {},
     readBody = true,
   ): Promise<{ response: Response; text: string }> => {
     const what = `${method} ${path}`;
@@ -109,7 +114,7 @@ export function createConnector(options: ConnectorOptions): Connector {
       const response = await fetch(`${config.url}/p/${config.profile}${path}`, {
         method,
         headers: all,
-        signal: controller.signal,
+        signal: signal ? AbortSignal.any([controller.signal, signal]) : controller.signal,
         ...(body === undefined ? {} : { body: JSON.stringify(body) }),
       });
       const text = readBody || !response.ok ? await response.text() : "";
@@ -117,6 +122,7 @@ export function createConnector(options: ConnectorOptions): Connector {
       return { response, text };
     } catch (error) {
       if (error instanceof ApiError) throw error;
+      if (signal?.aborted) throw turnedOff(what);
       if (controller.signal.aborted)
         throw new ApiError(
           502,
@@ -135,11 +141,11 @@ export function createConnector(options: ConnectorOptions): Connector {
   };
 
   const failure = (config: HermesConfig, what: string, status: number, text: string) => {
-    if (status === 401)
+    if (status === 401 || status === 403)
       return new ApiError(
         502,
         "hermes_unauthorized",
-        `Hermes refused the key in ${config.keyFile} (401 on ${what})`,
+        `Hermes refused the key in ${config.keyFile} (${status} on ${what})`,
       );
     if (status >= 500)
       return new ApiError(502, "hermes_unavailable", `Hermes answered ${status} to ${what}`);
@@ -185,7 +191,7 @@ export function createConnector(options: ConnectorOptions): Connector {
     ): HermesStatus => ({ state, detail, checkedAt });
     try {
       const { version } = await call(config, Health, "GET", "/health", { auth: false });
-      const match = /^(\d+)\.(\d+)\./.exec(version);
+      const match = /^(\d+)\.(\d+)(\.|$)/.exec(version);
       if (
         Number(match?.[1]) !== TESTED_VERSION.major ||
         Number(match?.[2]) !== TESTED_VERSION.minor
@@ -228,15 +234,18 @@ export function createConnector(options: ConnectorOptions): Connector {
     JSON.stringify([config.url, config.profile, config.keyFile]);
   let cached: { key: string; status: HermesStatus } | undefined;
   let running: { key: string; promise: Promise<HermesStatus> } | undefined;
+  /** Open event streams. Turning Hermes off closes them, so off means no connection at all. */
+  const streams = new Set<AbortController>();
 
   const refreshWith = (config: HermesConfig): Promise<HermesStatus> => {
     if (!config.enabled) {
       cached = undefined;
+      for (const stream of streams) stream.abort();
       return Promise.resolve({ state: "disabled" });
     }
     const key = configKey(config);
     if (running?.key === key) return running.promise;
-    const promise = check(config)
+    const promise: Promise<HermesStatus> = check(config)
       .then((status) => {
         if (cached?.status.state !== status.state)
           log.info("Hermes connector status", {
@@ -247,21 +256,27 @@ export function createConnector(options: ConnectorOptions): Connector {
         return status;
       })
       .finally(() => {
-        running = undefined;
+        // A check for another config may have started since; it stays the one to join.
+        if (running?.promise === promise) running = undefined;
       });
     running = { key, promise };
     return promise;
   };
 
+  const cachedFor = (config: HermesConfig) =>
+    config.enabled && cached?.key === configKey(config) ? cached.status : undefined;
+
   const status = async (): Promise<HermesStatus> => {
     const config = await options.config();
-    if (config.enabled && cached?.key === configKey(config)) return cached.status;
-    return refreshWith(config);
+    return cachedFor(config) ?? (await refreshWith(config));
   };
 
+  /** The config a call uses, read once, so the check and the request go to the same Hermes. */
   const ready = async (): Promise<HermesConfig> => {
     const config = await options.config();
-    const now = await status();
+    const known = cachedFor(config);
+    // A cached failure may be old: check again before refusing, so a call works as soon as Hermes is back.
+    const now = known?.state === "ready" ? known : await refreshWith(config);
     if (now.state === "ready") return config;
     throw new ApiError(
       503,
@@ -284,68 +299,80 @@ export function createConnector(options: ConnectorOptions): Connector {
   async function* runEvents(id: string, lastEventId?: string): AsyncGenerator<RunEventFrame> {
     const config = await ready();
     const path = runPath(id, "/events");
-    const { response } = await send(
-      config,
-      "GET",
-      path,
-      {
-        headers: {
-          accept: "text/event-stream",
-          ...(lastEventId === undefined ? {} : { "last-event-id": lastEventId }),
-        },
-      },
-      false,
-    );
-    if (!response.body) throw new ApiError(502, "hermes_bad_response", `GET ${path} has no body`);
-    let last = lastEventId;
-    const lost = () =>
-      new ApiError(
-        502,
-        "hermes_stream_lost",
-        `The event stream of run ${id} ended before the run did; resume after event ${last ?? "none"} or read the run`,
-      );
-    const frames = sseFrames(response.body);
-    // Closing the generator, by the end or by a caller that stops reading, cancels the body.
+    const stream = new AbortController();
+    streams.add(stream);
     try {
-      while (true) {
-        let next: IteratorResult<SseFrame>;
-        try {
-          next = await frames.next();
-        } catch {
-          throw lost();
-        }
-        if (next.done) throw lost();
-        const frame = next.value;
-        if (frame.id !== undefined) last = frame.id;
-        let data: unknown;
-        try {
-          data = JSON.parse(frame.data);
-        } catch {
-          throw new ApiError(502, "hermes_bad_response", `An event of run ${id} is not JSON`);
-        }
-        const event = (data as { event?: unknown } | null)?.event;
-        if (typeof event !== "string")
-          throw new ApiError(502, "hermes_bad_response", `An event of run ${id} has no event name`);
-        if (!KNOWN_EVENTS.has(event)) {
-          if (!unknownEvents.has(event)) {
-            unknownEvents.add(event);
-            log.info("Hermes sent an unknown event; skipped", { event });
+      const { response } = await send(
+        config,
+        "GET",
+        path,
+        {
+          headers: {
+            accept: "text/event-stream",
+            ...(lastEventId === undefined ? {} : { "last-event-id": lastEventId }),
+          },
+          signal: stream.signal,
+        },
+        false,
+      );
+      if (!response.body) throw new ApiError(502, "hermes_bad_response", `GET ${path} has no body`);
+      let last = lastEventId;
+      // Closing the generator, by the end or by a caller that stops reading, cancels the body.
+      const frames = sseFrames(response.body);
+      try {
+        while (true) {
+          let next: IteratorResult<SseFrame>;
+          try {
+            next = await frames.next();
+          } catch {
+            next = { done: true, value: undefined };
           }
-          continue;
+          if (stream.signal.aborted) throw turnedOff(`the event stream of run ${id}`);
+          if (next.done)
+            throw new ApiError(
+              502,
+              "hermes_stream_lost",
+              `The event stream of run ${id} ended before the run did; resume after event ${last ?? "none"} or read the run`,
+            );
+          const frame = next.value;
+          if (frame.id !== undefined) last = frame.id;
+          const event = eventOf(id, frame.data);
+          if (event === undefined) continue;
+          yield { id: frame.id, event };
+          if (TERMINAL_EVENTS.has(event.event)) return;
         }
-        let parsed: RunEvent;
-        try {
-          parsed = parse(RunEvent, data, `Hermes event ${event}`);
-        } catch (error) {
-          throw new ApiError(502, "hermes_bad_response", (error as Error).message);
-        }
-        yield { id: frame.id, event: parsed };
-        if (TERMINAL_EVENTS.has(event)) return;
+      } finally {
+        await frames.return(undefined);
       }
     } finally {
-      await frames.return(undefined);
+      streams.delete(stream);
     }
   }
+
+  /** The checked event of one frame, or undefined for an event name pi-spore does not know. */
+  const eventOf = (id: string, text: string): RunEvent | undefined => {
+    let data: unknown;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      throw new ApiError(502, "hermes_bad_response", `An event of run ${id} is not JSON`);
+    }
+    const name = (data as { event?: unknown } | null)?.event;
+    if (typeof name !== "string")
+      throw new ApiError(502, "hermes_bad_response", `An event of run ${id} has no event name`);
+    if (!KNOWN_EVENTS.has(name)) {
+      if (!unknownEvents.has(name)) {
+        unknownEvents.add(name);
+        log.info("Hermes sent an unknown event; skipped", { event: name });
+      }
+      return undefined;
+    }
+    try {
+      return parse(RunEvent, data, `Hermes event ${name}`);
+    } catch (error) {
+      throw new ApiError(502, "hermes_bad_response", (error as Error).message);
+    }
+  };
 
   return {
     refresh: async () => refreshWith(await options.config()),
