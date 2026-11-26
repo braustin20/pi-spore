@@ -75,40 +75,75 @@ verbatim.
 ## Allow the four tools for this profile's API sessions
 
 The profile's API toolsets are `terminal` and `clarify` only
-([hermes-pi-spore-profile.md](../../spikes/hermes-pi-spore-profile.md)). Each configured MCP server makes a
-`mcp-<server>` toolset, and in `platform_toolsets.<platform>` a list that names no MCP server gets **every** enabled
-server — so naming this one is the narrow choice: it adds only `pi_spore` and keeps any server added later out of API
-sessions ([Hermes: Toolsets](https://hermes-agent.nousresearch.com/docs/reference/toolsets-reference)).
+([hermes-pi-spore-profile.md](../../spikes/hermes-pi-spore-profile.md)). Hermes' docs say each configured MCP server
+makes an `mcp-<server>` toolset, and that in `platform_toolsets.<platform>` a list that names **no** MCP server gets
+**every** enabled server, while a list that names servers gets only those
+([Hermes: Toolsets](https://hermes-agent.nousresearch.com/docs/reference/toolsets-reference)).
+
+Read the current state first. Both commands are profile-scoped:
 
 ```bash
-docker exec <container> hermes -p pi-spore tools enable pi_spore --platform api_server
+docker exec <container> hermes -p pi-spore tools list --platform api_server
 docker exec <container> hermes -p pi-spore config get platform_toolsets
 ```
 
-**Check before applying.** Hermes documents `hermes tools enable <tool> --platform <p>` and the `hermes tools`
-selection UI; the exact platform key for the API server (`api_server` or `api`) and the saved shape of
-`platform_toolsets` are not proven by the spike docs. Run `hermes -p pi-spore tools --help` first, then read the
-result back with the `config get` above and paste it in the evidence. The check that matters is the evidence run in
-step S6: the four `pi_spore` tools are listed for a `pi-spore` API session, and no other MCP tool is.
+`hermes tools list --platform <p>` prints the built-in toolsets enabled for that platform and each MCP server with its
+include or exclude filter, so it is the read-back for this step. If the platform name is wrong, the CLI names the
+valid ones (`Unknown platform '<p>'. Valid: …`) — use what it prints, and record it.
 
-Keep `terminal` and `clarify` as they are, and add nothing else: no `file`, no `browser`, no `code_execution`, no
-`kanban`, no `connections`.
+**The enabling mechanism is unresolved, on purpose.** Verified against Hermes v0.23.3
+(`hermes_cli/tools_config_mcp.py`, `tools_disable_enable_command`):
+
+- a bare name is checked against the configurable built-in and plugin toolsets, so `hermes tools enable pi_spore
+  --platform <p>` fails with `Unknown toolset 'pi_spore'`. **Do not run it as the enabling step** — an earlier draft of
+  this doc named that command, and it does not work.
+- a `server:tool` name goes to the per-server filter instead: it edits `mcp_servers.<server>.tools.exclude`. That is
+  the same filter this card already writes by hand, so it adds nothing here.
+- so no `hermes tools` subcommand adds a native MCP server to a platform's toolset list. The documented place for that
+  list is `platform_toolsets.<platform>` in `config.yaml`, and this lane cannot verify the exact key and saved shape on
+  this build.
+
+Work out what this profile actually needs from the read-back, then choose:
+
+- **If the four `mcp__pi_spore__*` tools already appear for a `pi-spore` API session** — which the "names no MCP server
+  gets every enabled server" rule predicts while `pi_spore` is the only server configured — **change nothing**.
+  Record that in the evidence line: no toolset change, and the reason.
+- **If they do not appear, or the profile gains another MCP server later**, then the list has to name `pi_spore` and
+  nothing else. Edit `config.yaml` under the platform key the read-back showed, with the three toolsets this profile is
+  allowed: `terminal`, `clarify`, `pi_spore`. Read it back with both commands above, and add nothing else: no `file`,
+  no `browser`, no `code_execution`, no `kanban`, no `connections`. **Check before applying**: the key name and the
+  saved shape come from this build, not from this doc. If neither the docs' key nor the CLI produces a list with those
+  three, stop and record what the build offers instead of guessing.
+
+Either way, the authority is step S6's tool list for a real `pi-spore` API session: the four
+`mcp__pi_spore__*` tools present, and no other `mcp__*` tool.
 
 ## Reload, and confirm the load
 
+Every Hermes command in this card carries `-p pi-spore`. A bare `hermes mcp` reads the **default** profile, not
+`pi-spore`, and it is the catalog and configuration picker rather than a connection report — so it cannot be evidence
+that this profile loaded four tools.
+
 ```bash
-# The running gateway watches config.yaml; a session picks the change up on reload.
 docker exec <container> hermes -p pi-spore config get mcp_servers.pi_spore
-docker exec <container> hermes mcp            # status picker: pi_spore connected, 4 tools
+docker exec <container> hermes -p pi-spore tools list --platform api_server
 docker exec <container> hermes gateway status
 ```
 
-In a running session, `/reload-mcp` reconnects MCP servers. A gateway restart also works
-(`docker exec <container> hermes gateway restart`), and is the command the spike used.
+The running gateway watches `config.yaml` on its own: a removed entry is torn down and a new one connects within about
+a minute. In a running session, `/reload-mcp` reconnects the MCP servers. `docker exec <container> hermes gateway
+restart` also works, and is the command the spike used.
 
-Expected: `pi_spore` connected with exactly four tools — `mcp__pi_spore__list_targets`,
-`mcp__pi_spore__submit_request`, `mcp__pi_spore__get_request`, `mcp__pi_spore__cancel_request`. Record the tool list,
-redacted, in the runbook's evidence table.
+Two separate pieces of evidence, and both belong in the runbook:
+
+1. **The saved config**, from the two commands above: the entry is there with `${env:PI_SPORE_MCP_TOKEN}` and the four
+   `tools.include` names, and the platform read-back shows what API sessions get.
+2. **The live connection, on this profile.** Ask a `pi-spore` session to list its tools, or use the in-session
+   `/tools list`, and expect exactly `mcp__pi_spore__list_targets`, `mcp__pi_spore__submit_request`,
+   `mcp__pi_spore__get_request`, `mcp__pi_spore__cancel_request` and no other `mcp__*` name. The decisive proof is
+   step S6's first call: `mcp__pi_spore__list_targets` answers from inside a `pi-spore` run, which only happens if the
+   connect and the load both worked. If the connect failed, `docker exec <container> hermes logs --level debug` shows
+   the endpoint each attempt used.
 
 ## What the listener accepts, so a failure reads clearly
 
@@ -120,8 +155,8 @@ request; the answer is one JSON body (no SSE, no session id). A message with no 
 | `Host` is not the listener's own `<ip>:<port>` | `403 bad_host` |
 | Any `Origin` header | `403 bad_origin` |
 | Missing or wrong bearer token, or pi-spore's user or agent token | `401 unauthorized` (with `WWW-Authenticate: Bearer`) |
-| `hermes.enabled` or `hermes.mcp.enabled` is off | `503 mcp_off` |
-| The token file is missing, unreadable, too open, or empty | `503 mcp_token_unusable` |
+| `hermes.enabled` or `hermes.mcp.enabled` is off, in the short window before the settings check runs | `503 mcp_off` |
+| The token file went bad while the listener was open | `503 mcp_token_unusable` |
 | Any path but `/mcp` | `404 not_found` |
 | `GET`, or any method but `POST` | `405` with `Allow: POST` |
 | `Content-Type` not `application/json` | `415 bad_content_type` |
@@ -131,6 +166,18 @@ request; the answer is one JSON body (no SSE, no session id). A message with no 
 
 Methods answered: `initialize`, `ping`, `tools/list`, `tools/call`. Protocol revisions echoed back if offered:
 `2025-11-25`, `2025-06-18`, `2025-03-26`; otherwise the newest.
+
+**Off means closed, not `503`.** `GET /api/hermes/mcp` runs the same settings check, and when a gate is off that check
+closes the server. So once a setting is off — or the token file was never good, in which case the listener never
+opened — a client gets "connection refused", and `503 mcp_off` only appears in the moments between the change and the
+check that closes the port. Read "the port does not answer" as "off or not ours", and use the listener state on the
+pi-spore Settings page to tell which.
+
+**A tool that refuses is not an HTTP error.** A `tools/call` whose handler raises comes back as **HTTP 200** with a
+JSON-RPC result of `isError: true` and one text item holding the message. The internal error code and status are not
+sent. So `hop_count` above 0, a `request_id` reused with a different body, and a target outside
+`hermes.inbound.projects` all read as a failed tool call whose text says why — not as `403` or `409`. Only the guards
+in the table above, which run before any tool, answer with an HTTP status.
 
 ## Three things to watch when S4 is applied
 
@@ -143,10 +190,13 @@ Methods answered: `initialize`, `ping`, `tools/list`, `tools/call`. Protocol rev
   listener answers `405` with no body. If the connect dies there, set `skip_preflight: true` on the entry — the docs
   give exactly that key for a valid Streamable HTTP endpoint. **Check before applying**: this build's behaviour is
   unproven; `docker exec <container> hermes logs --level debug` shows the endpoint and the failure.
-- **`trust` stays at its default (`full`).** With `trust: untrusted`, every write-capable tool of the server needs a
-  Hermes approval first, and this profile has `unattended_mode: deny` — an API session with nobody at a prompt would
-  deny its own requests. The four tools are harmless until the user accepts a request in pi-spore, which is the real
-  gate, so the narrow trust setting is not needed here. Do not set `trust`.
+- **`trust` stays at its default (`full`).** With `trust: untrusted`, every write-capable tool of this server needs a
+  Hermes approval first, and this profile runs `approvals.mode: manual` with `unattended_mode: deny` — an API session
+  with nobody at a prompt would deny its own requests, so the setting would break the integration without adding a
+  gate that matters. The gate that matters is on pi-spore: a new request does nothing until the user accepts it on
+  Home. That does **not** make the token or these tools harmless — `list_targets`, `get_request`, and `cancel_request`
+  disclose and act without any acceptance, as [token-delivery.md](token-delivery.md) spells out. The point is only that
+  a Hermes-side approval prompt would not catch what a leaked token can do. Do not set `trust`.
 
 ## Rollback
 
