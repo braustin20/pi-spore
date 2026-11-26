@@ -110,8 +110,8 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     worker-kind chats with role `planner`: they start on `subagents.agentOverrides.planner`, else
     `agentOverrides.orchestrator` (ADR 0175), launch with
     `PLANNER_CHAT_TOOLS` (the side chat tools plus `kanban_list_cards`, `kanban_read_card`, `kanban_add_card`,
-    `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`, `start_helper` (ADR 0194); no
-    `subagent`; `--exclude-tools 'mcp__*'`), a read-only
+    `kanban_update_card`, `web_search`, `fetch_content`, `get_search_content`, `start_helper` (ADR 0194),
+    `ask_hermes` and `cancel_hermes_ask` (ADR 0202, section 11h); no `subagent`; `--exclude-tools 'mcp__*'`), a read-only
     token, and `PI_SPORE_CHAT_KIND=planner`. A launch hook that gives one tools fails the launch. Side chats in it answer 409
     `planner_no_side_chats`. The bridge lets a planner token add and edit cards, and move them only between
     `backlog` and `ready`. Rename, park, resume, and archive of the planner workspace answer 409
@@ -191,6 +191,12 @@ See [ADR 0002](decisions/0002-agent-runtime-pi-rpc.md).
     0163): files a `workspace-pr` approval through `POST /api/bridge/workspace/pr` and ends the turn with
     `terminate: true`. The tool call id is the receipt (R16.3). The rules say to call it when card work passes check
     and the tests, and to report `not_supported` without a retry.
+  - `ask_hermes` `{ kind, text, title? }` and `cancel_hermes_ask` `{ id }` (ADR 0202): hand work to the Hermes
+    profile `pi-spore` and cancel it, through `POST /api/bridge/hermes/asks` (receipt: the tool call id) and its
+    `/:id/cancel`. Workspace chats, the planner chat, and a run coordinator get them; stage, lane, and side chats do
+    not. The result arrives later as a message. See section 11h.
+  - `reply_hermes` `{ request_id, text }` (card Hermes 1.3): answers a request Hermes sent this chat, through
+    `POST /api/bridge/hermes/replies` (receipt: the tool call id). Registered where `ask_hermes` is. See section 11h.
   - `push_line` `{}`, only in the orchestrator chat (ADR 0164): pushes the workspace's branch through
     `POST /api/bridge/workspace/push`, so the chat can push fixes for a PR that pi-spore merges when checks pass.
   - Artifact tools (ADR 0070), limited to the agent's workspace and its project: `artifacts_list` (both scopes),
@@ -359,7 +365,8 @@ export interface WebModule extends ModuleManifest {
 
 export interface WebHost {
   api: ApiClient;                         // HTTP, live events, and module socket URLs
-  addPage(page: WebPage): void;           // a hash route; `rail` adds an icon to the left rail
+  addPage(page: WebPage): void;           // a hash route; `rail` adds an icon to the left rail (`rail.useVisible`
+                                          // hides it, such as for a feature that is off)
   provide / use                           // as on the server
 }
 
@@ -1800,7 +1807,11 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
 
 See [ADR 0202](decisions/0202-hermes-remote-teammate.md) and the facts in
 [hermes-protocol.md](spikes/hermes-protocol.md) and [hermes-pi-spore-profile.md](spikes/hermes-pi-spore-profile.md).
-Requirements R19, R1.2, R1.4. **Planned, not built yet** (cards Hermes 1.1 to 2.3).
+Requirements R19, R1.2, R1.4. The connector (card Hermes 1.1), Pi-to-Hermes handoffs (card Hermes 1.2), the chat
+page (card Hermes 2.1), and the MCP listener with Hermes-to-Pi requests (card Hermes 1.3) are built. The Hermes-side
+MCP entry and the network rule (card Hermes 1.4) are **planned, not built yet**; live proof is cards Hermes 1.5 and
+2.3. The files the user applies for that side, with a yes slot and an evidence table per step, are in
+[hermes/pi-spore-profile/runbook.md](hermes/pi-spore-profile/runbook.md).
 
 The Hermes profile `pi-spore` on the user's Unraid server is a remote teammate. It is not a workbench agent: no
 worktree, no pipeline, run, lane, or stage role, and no live agent slot. It is not Homelab Maintainer and has none of
@@ -1850,31 +1861,291 @@ Hermes 1.4).
 
 ### Connector
 
-- Module `modules/hermes`, interface key `HermesKey`. Settings, global only: `hermes.enabled` (default `false`),
-  `hermes.url` (default `http://hermes-docker:8642`), `hermes.profile` (default `pi-spore`), `hermes.keyFile`
-  (default `~/.pi-spore/hermes/<profile>.key`). Off means no request to Hermes, no listener, no tool, no rail entry.
-- Startup check: `/p/<profile>/health` (tested minor `0.23.x`), then the required flags of `/v1/capabilities`
-  (spike Q1), then the model id in `/v1/models`. Status `disabled`, `unreachable`, `unauthorized`, `incompatible`,
-  or `ready`.
-- Every `POST /v1/runs` has an `Idempotency-Key`; a retry sends the identical body. SSE event names are in
-  `data.event`; resume with `Last-Event-ID`; after a stream loss, poll the run status.
-- No provider or model override. The provider and model shown come from the session record; blank run runtime
-  fields show as unknown.
+- Module `modules/hermes` (`@pi-spore/mod-hermes`, not core). It requires `agents`, `attention`, `workspaces`,
+  `projects`, and `bridge`, for the handoffs below. Other modules reach the client only through `HermesKey`
+  (`modules/hermes/src/contract.ts`). Code: `src/client.ts` (HTTP, SSE, status), `src/key.ts` (key loader),
+  `src/protocol/` (TypeBox schemas of every Hermes answer and SSE event it reads), `src/handoffs.ts` (handoffs),
+  `src/controls.ts` (approvals and clarify, shared by handoffs and chat runs), `src/chat.ts` (the chat page's
+  routes and relay), `src/chat-page.tsx` and `src/handoffs-page.tsx` (the Hermes page), `src/inbound.ts` (requests
+  from Hermes), `src/mcp/listener.ts` (the MCP listener).
+- Settings, global only: `hermes.enabled` (default `false`), `hermes.url` (default `http://hermes-docker:8642`;
+  an origin only: `http://` or `https://`, a host name, an IPv4 or bracketed IPv6 address, and a port; no path, user
+  info, query, or backslash), `hermes.profile` (default `pi-spore`), `hermes.keyFile` (default
+  `null`: `<pi-spore home>/hermes/<profile>.key`, so `~/.pi-spore/hermes/pi-spore.key`; a set value may start with
+  `~/`). Settings hold the path, never the key. Off means no request to Hermes, no listener, no tool, no rail entry.
+- Key loader: reads the file on every call. It refuses, naming the path and never the content, a missing or empty
+  file, a file mode wider than `0600`, a folder mode wider than `0700`, or bytes a header cannot carry. A refused
+  key makes the status `unauthorized`.
+- Status check, in order: `/p/<profile>/health` with no key (tested minor `0.23.x`; another names both versions),
+  then the required flags of `/v1/capabilities` (spike Q1; a missing or `false` flag is named), then the profile's
+  model id in `/v1/models`. Status `disabled`, `unreachable` (no answer, a timeout, or a 5xx), `unauthorized` (401,
+  403, or a refused key file), `incompatible` (version, flags, model, or an answer that fails its schema), or `ready`.
+- The status is cached per URL, profile, and key file. A poll checks again 60 s after `ready` or `disabled` (off
+  reads settings only), and after a failure waits 5 s, doubling up to 5 min. Timers are unref'd. `GET
+  /api/hermes/status` (user token) answers the cached status, or checks once if there is none. `POST
+  /api/hermes/refresh` checks now. The Settings page shows the status in a "Hermes" panel; its Reload button posts
+  the refresh.
+- Every client call except `status` reads the settings once and uses that snapshot for the check and the request.
+  It refuses with 503 `hermes_not_ready` unless that config is `ready`. A cached failure is checked again first, so
+  a call works as soon as Hermes is back. A request
+  waits 10 s for its answer (a stream: for its headers), then fails 502 `hermes_timeout`. Hermes errors come back
+  as `hermes_<code>` (for example 409 `hermes_idempotency_key_conflict`, 409 `hermes_permission_denied`, 404
+  `hermes_run_not_found`).
+- Every `POST /v1/runs` has an `Idempotency-Key` (1 to 255 visible ASCII). The body is `{input, session_id}` in a
+  fixed key order, so a retry of the same fields is the identical body. Nothing is sent again on its own.
+- SSE: frames carry `id:` and `data:`; the event name is `data.event`. `runEvents(id, lastEventId)` sends
+  `Last-Event-ID`, yields known events (a `replay.truncated` too), and ends after a terminal one. An unknown event
+  name is logged once (at info: the host `Logger` has no debug level) and skipped. A known event without a field
+  pi-spore reads fails 502 `hermes_bad_response`. A stream that ends early fails 502 `hermes_stream_lost`, naming
+  the last id. Turning `hermes.enabled` off closes open streams at the next check (poll or refresh) with 503
+  `hermes_not_ready`. A stream that sends nothing for 30 s, not even the 10 s keepalive, fails 502
+  `hermes_stream_lost`, so a half-open connection does not hold a handoff forever. Unknown fields are allowed
+  everywhere in Hermes data.
+- Approval answers are exactly `{request_id, execution_generation, choice}`, `choice` `once` or `deny` (the type and
+  a closed schema both refuse `session` and `always`). Clarify answers are exactly
+  `{request_id, execution_generation, answer}`. `resolveUnknown` sends exactly `{admission_id,
+  execution_generation}`; no code calls it on its own.
+- No provider or model override: the outgoing schemas are closed, so a body with `model` or `provider` is refused.
+  The provider and model shown come from the session record (`model`, `billing_provider`); blank run runtime fields
+  are unknown, not an error.
+- No stop hook in `ServerHost`: shutdown ends the process, which closes any open SSE stream and the MCP listener
+  (its server is unref'd, so it never keeps the process up).
+- Tests run against a fake Hermes, `modules/hermes/test-fixtures/fake-hermes.mjs`. It is not live proof; card
+  Hermes 1.5 is.
 
 ### Handoffs
 
-- Table `hermes_handoffs` holds both directions (`out`: Pi asks Hermes; `in`: Hermes asks Pi).
-- **Pi to Hermes:** `ask_hermes` in workspace and planner chats, refused in stage, lane, side, and helper chats, and
-  in a chat that works on a Hermes request. A job (`hermes.ask`) makes one API session per handoff, starts the run,
-  follows it, and delivers the result to the asking chat in the same commit as the end state.
-- **Hermes approvals and clarify** become Home items for the user. Answers post the exact spike bodies, `once` or
-  `deny` only. A stale answer shows "expired" and posts nothing.
-- **Uncertain** (`unknown` after a Hermes restart): pi-spore reads the session's messages and tool events and shows
-  them. The user picks "Mark as interrupted", "Send again", or "Drop". pi-spore never picks.
-- **Hermes to Pi:** the listener's tools `list_targets`, `submit_request`, `get_request`, `cancel_request`, each
-  deduped by `request_id`. A request becomes a Home approval. On Accept, a new workspace chat in a target from
-  `hermes.inbound.projects` gets it, marked as remote input, not the user's approval. Results wait in the table until
-  Hermes reads them.
+- Table `hermes_handoffs` holds both directions (`out`: Pi asks Hermes; `in`: Hermes asks Pi, card 1.3). Table
+  `hermes_controls` holds the approvals and clarify questions a run waits on.
+- **Pi to Hermes (built, card 1.2).** Tests use the fake Hermes and the fake Pi; they are not live proof (card 1.5).
+  - Tools `ask_hermes` (`kind` `question` or `task`, `text` up to 8,000 characters, optional `title`) and
+    `cancel_hermes_ask`, in `pi-extensions/spore-bridge/src/hermes.ts`. Spore-bridge registers them in workspace
+    chats, the planner chat (its allowlist names them), and a run coordinator. Stage, lane, and side chats never get
+    them. A helper pi-subagents started keeps its chat's token, so only the extension can tell it apart: it does not
+    register them when it sees `PI_SUBAGENT_CHILD=1` or `PI_SUBAGENT_EXTENSION_BINDINGS`, and both tools refuse to
+    run unless Pi's `ctx.mode` is `rpc`. pi-spore runs every chat with `--mode rpc`, and pi-subagents binds every
+    helper session in `print` mode. `ask_hermes` returns the handoff id at once.
+  - Bridge routes `POST /api/bridge/hermes/asks` and `POST /api/bridge/hermes/asks/:id/cancel`. The bridge refuses
+    a read-only side chat (403 `read_only_chat`) and a lane chat (403 `hermes_refused`). The hermes module answers
+    the rest through `Bridge.setHermesAsker`, as github-pr does for PRs, so the bridge does not depend on it; with
+    the hermes module disabled the routes answer 422 `not_supported`. The hermes module refuses a stage chat and a
+    chat with an open incoming handoff (the hop rule), both 403 `hermes_refused`, and, with 503
+    `hermes_not_ready`, a Hermes that is off (`hermes.enabled` false: the tool is listed but every call is refused,
+    and nothing reaches Hermes), `unauthorized`, or `incompatible`. An `unreachable` Hermes is fine: the handoff
+    waits. The tool call id is the receipt: the same receipt from the same chat returns the first handoff, also for
+    two requests at once (the receipt is read again in the transaction that inserts). A chat reaches only its own
+    handoffs (404 otherwise).
+  - States: `pending`, `accepted`, `running`, then one end: `completed`, `cancelled`, `failed`, or `uncertain`.
+  - Job `hermes.ask`, steps `submit`, `follow`, `cancel`, `deliver`. Each handoff row names the job that owns it
+    (`job_id`). A step reads and writes the row only while its job owns it and the handoff has not ended, so a
+    cancelled or replaced job's late step (such as a follower still reading SSE) changes nothing.
+    - `submit` makes one API session, `pi-spore-<handoff id>`, and starts the run with `Idempotency-Key` = the
+      handoff id. The input is the attribution line ("From pi-spore agent <title>, project <name>, workspace
+      <name>, handoff <id>.") and the agent's text, stored at ask time, so every retry sends the identical body. No
+      provider or model. It marks `run_posted` right before the first `POST /v1/runs`: from then on Hermes may have
+      the run even with no run id stored. While Hermes cannot be reached (a 5xx, a timeout, or no answer) the
+      handoff stays `pending` with "Hermes is offline: ..." ("Waiting for Hermes: ..." when it is off, refuses the
+      key, or is untested) and the step waits 5 s, doubling to 5 min. `hermes.offlineWaitHours` (default and
+      maximum 24, Hermes's key retention) after the ask, checked before every send too, it sends nothing more:
+      `failed`, or `uncertain` after a send that may have reached Hermes.
+    - `follow` reads the run status first (after a pi-spore restart too), then the SSE stream from the last stored
+      event id. A drop after new frames resumes at once with `Last-Event-ID`; a drop without, or a 404 on events,
+      reads the status, then waits with the same backoff, counted from the first failure (after
+      `hermes.offlineWaitHours`: `uncertain`). Status to state:
+      `queued` is `accepted`; `running` and `waiting_for_approval` are `running`; `completed`, `cancelled`, and
+      `failed` stay; `interrupted` is `cancelled`; `unknown` is `uncertain`. It stores the last tool started and
+      finished from `tool.*` events. The provider and model come from the session record, read from `GET
+      /api/sessions?source=api_server` (up to 5 pages of 100) when the session is made and again when the run ends,
+      and from non-blank run runtime fields. A blank value never replaces a known one.
+    - `cancel` stops the run (see Cancel).
+    - `deliver` stores the end state and calls `agents.deliver` in one transaction, once: a handoff that already
+      ended is left alone. The message is "Hermes answered your ask_hermes <id> (<state>): <result>", cut at 4,000
+      characters (the full result stays on the handoff). For `cancelled`, `failed`, and `uncertain` it says side
+      effects are not undone; for a cancel, that completed steps are not undone; for a run that finished before
+      the cancel, that it did. If the asking chat is gone, the end is stored and nothing is delivered.
+  - Cancel (the asking chat, or the user on the page). With nothing sent yet it ends `cancelled` at once: `submit`
+    reads the cancel right before it sends, with no await between. Otherwise the old job is cancelled and a new job
+    runs the `cancel` step at once. A send that left no run id is asked again with the identical body and key,
+    which returns that run (or, if the first never got in, starts it once, to be stopped at once). Past
+    `hermes.offlineWaitHours` after the ask it sends nothing and ends `uncertain`, since Hermes may have dropped the
+    key. A run the cancel sees end gets the same last read of the session record. Then it sends
+    `stop` and reads the run every 2 s. A run that ends keeps its own end (a `completed` result is kept). A stop
+    that Hermes refuses for a run still going, or a run that does not end within 60 s, ends `uncertain`.
+  - User routes (user token only; an agent token gets 401): `GET /api/hermes/handoffs[?workspaceId=]`, `POST
+    /api/hermes/handoffs/:id/cancel`, `GET .../:id/reconcile`, `POST .../:id/resolve`, `POST
+    .../:id/controls/:promptId`. The list holds both directions; the other routes act on `out` rows only (404 for a
+    request from Hermes, which has its own accept and decline below).
+- **Hermes approvals and clarify.** On `approval.request`, `clarify.request`, or `approval.responded` the job reads
+  `pending_controls` and stores each control with the run's `execution_generation`. Each open control is a Home
+  notice (source `hermes`, link `#/hermes`) with the command or question, the description, the handoff, and the
+  seconds left (`hermes.approvalTimeoutSeconds`, default 300, set to match Hermes's `approvals.timeout`). The
+  Hermes page answers it: `{choice}` (`once` or `deny`; anything else is 400) or `{answer}`. The route moves the
+  control from `open` to `answering` first, so one answer posts once, then sends exactly `{request_id,
+  execution_generation, choice}` or `{request_id, execution_generation, answer}`. A 409 (`stale_generation`), 400,
+  or 404 from Hermes, a control the run no longer lists, or one past its time is `expired`; nothing is sent again.
+  A post with no answer back (a timeout or a reset) may have reached Hermes, so the route reads the run: a control
+  it still waits on opens again; one it does not is `answered`; with no reading it stays `answering` until the
+  run's next sync expires it (at the latest when Hermes's own timeout drops it). The time left counts from when
+  pi-spore first saw the control, so it can be longer than Hermes's.
+- **Uncertain.** A run left `unknown` ends the handoff `uncertain` and puts a Home notice up. "Check what is known"
+  (`reconcile`) shows the run status, the last tool started and finished, and the newest 20 session messages, each
+  cut to 1,000 characters. Then the user picks: "Mark as interrupted" sends `resolve-unknown` with the exact
+  `{admission_id, execution_generation}` from the run status and ends `cancelled`; "Send again", behind a confirm
+  that the first may have run (the route also needs `confirmed: true`), makes a new handoff with a new id, so a new
+  session and a new key; "Drop" only records the pick. Each pick first claims the row, so a double click acts
+  once. pi-spore never picks.
+- **Handoffs on the Hermes page** (`#/hermes`; Home notices and the workspace panel link to it). With no session
+  open, the page lists the newest 100 handoffs with their state, times, and the provider and model from the session
+  record ("unknown" when blank), with Cancel, the control answers, and the uncertain picks. A "Hermes handoffs" panel
+  in the workspace Details column lists that workspace's newest five with their state and links to the page; it
+  shows nothing for a workspace that never asked Hermes, and reads the list again every 5 s, so it appears when a
+  chat asks while Details is open. Code: `modules/hermes/src/handoffs-page.tsx` (`Handoffs`, `ControlRow`,
+  `Reconcile`, `HermesPanel`). With `hermes.enabled` off, `GET /api/hermes/handoffs` answers
+  `{ enabled: false, handoffs: [] }` and Home shows no Hermes item. Home items are notices that link to the page,
+  not inline `Questions`: a `Questions` answer goes to an agent, and no agent may answer Hermes (ADR 0202 decision
+  9).
+- **Approvals and clarify, one path.** `src/controls.ts` holds the `hermes_controls` rows of handoffs and chat runs
+  alike (the `handoff_id` column holds the owner: a handoff id or a chat run id, both from `host.newId`), the sync
+  from `pending_controls`, and the answer: `open` to `answering`, the exact body, `expired` on a 409, 400, or 404 or
+  past its time. A refusal before sending (`hermes_not_ready`, `hermes_key_file`) opens it again, so the user can
+  answer once Hermes is ready. Both the handoff route and the chat route call it.
+- **Hermes to Pi (built, card 1.3).** Tests use a fake MCP client, a fake Tailscale lookup (loopback), and the fake
+  Pi; they are not live proof (card 1.5).
+  - **Listener** (`src/mcp/listener.ts`): its own `node:http` server on `hermes.mcp.port` (default `7430`), at path
+    `/mcp`. It runs only while `hermes.enabled` and `hermes.mcp.enabled` (default `false`) are both on. It reads
+    its settings at each status check of the connector (at start, then every 60 s, or the backoff while Hermes
+    fails) and on each request: a request that finds either off gets 503 `mcp_off` and closes the listener. It binds the desktop's Tailscale address only: an IPv4 address in
+    `100.64.0.0/10` on a `tailscale*` or `utun*` interface, read from `os.networkInterfaces()`. pi-spore never runs
+    `tailscale` (ADR 0143). With no such address it does not start, logs why, and `GET /api/hermes/mcp` (user
+    token) answers `{ state: "failed", error }`; it answers `off` or `{ state: "listening", url }` otherwise. It
+    never binds `0.0.0.0`, `::`, or a LAN address. Tests pass a fake lookup that answers loopback together with an
+    explicit `allowLoopback` flag; production code has no loopback exception. A lost or changed address closes or
+    moves the listener at the next check; a port in use stops it with the cause.
+  - Checks, in order: at most 120 requests a minute (429, counted before the token, so a token cannot be guessed
+    fast); Host must be exactly the bound `<address>:<port>` (403 `bad_host` otherwise); any `Origin` is refused (403 `bad_origin`); then only `Authorization: Bearer <MCP token>` (401 otherwise, so the user
+    token and agent tokens get 401). The token is `<pi-spore home>/hermes/mcp.token`, folder `0700`, file `0600`,
+    read with the same loader as the Hermes key on each request; a bad file stops the listener from starting and
+    names the path, never the content. Then POST only (405 with `Allow: POST`), `application/json` only (415), and
+    at most 64 KiB of body (413).
+  - **The URL Hermes uses** is the desktop's Tailscale IPv4 address and the port:
+    `http://<tailscale-ip>:<hermes.mcp.port>/mcp`, the `url` of the listener's `listening` state. The listener
+    takes only `<address>:<port>` as `Host`, so a MagicDNS name gets 403 `bad_host`. Card Hermes 1.4 writes the
+    `mcp_servers` entry of the `pi-spore` profile from this.
+  - **MCP transport:** Streamable HTTP, as Hermes's MCP client uses it (Hermes v0.23.3 `tools/mcp_tool_transport.py`
+    with `mcp` 2.0; client offers handshake version `2025-11-25`). One JSON-RPC message per POST, answered with one
+    JSON body; no session id and no server stream (GET is 405). A notification gets 202. Methods: `initialize`
+    (echoes `2025-11-25`, `2025-06-18`, or `2025-03-26`, else answers `2025-11-25`), `ping`, `tools/list`,
+    `tools/call`. No MCP library: a minimal handler. Tool errors come back as a result with `isError: true` and the
+    reason. Only a new request is logged at info, with its id and target; the request text never reaches the log.
+  - **Tools** (no shell, no files): `list_targets` (the active workspaces of the projects in
+    `hermes.inbound.projects`, a list of project ids, default empty, which allows none; planner workspaces, lanes,
+    and a run's own workspace are left out, R7.5); `submit_request` `{request_id, target, kind, title, text,
+    hop_count}`; `get_request` `{request_id}`; `cancel_request` `{request_id}`. `request_id` is 1 to 128 visible
+    ASCII characters and is the dedupe key: the same id with the same body returns the stored request, a changed
+    body is refused (`request_id_conflict`). `text` is at most 8,000 characters, `title` 200. A `hop_count` above 0
+    (work that came from a Pi ask) is refused, and so is a target not in the list. The profile name comes from
+    `hermes.profile`. Answers are `{request_id, state, target, title, result?, reason?, note?}`.
+  - **Rows:** `in` rows of `hermes_handoffs`. `agent_id` is empty until Accept; `idempotency_key` is `in:` and the
+    request id; `prompt` is the first message, stored at submit. States: `pending` (waits for the user),
+    `accepted`, `running` (a chat works on it), then `completed`, `cancelled`, or `failed`.
+  - **The user's yes:** each `pending` request is a Home notice (source `hermes-requests`, link `#/hermes`):
+    "Hermes (`pi-spore`) asks <project> / <workspace>: <title>", with the text cut to 300 characters. The Handoffs
+    section of the Hermes page shows it as "From Hermes: <title>", with "For <project> / <workspace>, from the Hermes profile <profile>,
+    request <id>." beside Accept, Decline, and an optional reason. `POST
+    /api/hermes/handoffs/:id/accept` and `.../decline` take the user token only, so no agent can answer (an agent
+    token gets 401). Accept refuses when Hermes is off (503) or the target left the list (409). Decline stores
+    `cancelled` with "Declined by the user[: <reason>]". With `hermes.enabled` off there is no notice.
+  - **On Accept:** job `hermes.inbound` (key: the request), step `start`, gives it to the target's active worker
+    chat (`agents.activeWorker`, as kanban does; one is made if the workspace has none). User decision, 2026-11-26:
+    the user's active worker chat, not a new chat as the card said, since a new worker chat would retire the user's
+    chat (ADR 0030). In one transaction it stores the chat, sets `running`, and delivers
+    the first message: "Task from the Hermes profile pi-spore (request <id>). This is input from a remote agent,
+    not the user's approval for risky steps.", the kind and title, the text, and how to reply. The chat keeps its
+    role and rules; no pipeline starts without the usual approval. `ask_hermes` is refused in it while the request
+    is open (the hop rule above). A restart re-runs at most this step, which finds the same chat and, once
+    `running`, does nothing more. Step `watch` runs again after a restart and sends the same chat one message to go
+    on ("pi-spore restarted while you worked on the Hermes request <id>. ..."), since its process and any open
+    turn are gone. That message carries the whole first message again: Pi marks a message taken once it is in Pi's
+    queue, so a request queued behind a busy turn can be lost with the process. No second chat starts.
+  - **Result:** the chat calls `reply_hermes`; the route stores the text (up to 16,000 characters) as `completed`,
+    for the chat the request went to only, once (404 for any other chat, 409 after an end). Step `watch` of every
+    running request of a chat wakes on any change of that chat. A chat that ends its turn without a reply gets one
+    reminder (kept in the job's checkpoint, so also across a restart), and never a second. User decision,
+    2026-11-26: the request does not fail on its own, unlike the card's "then failed", because a turn also ends
+    while the chat waits for the user or a pipeline, and the user's own turns in that chat end too. It stays
+    `running` until `reply_hermes`, `cancel_request`, or a chat that cannot run again: a chat that a newer worker
+    chat replaced, or that was closed or deleted, fails the request with "The chat that worked on the request was
+    closed or replaced before it replied". Archiving the workspace fails its accepted and running requests with "The
+    workspace was archived before the chat replied", since workspace retention later deletes those chats with no
+    chat event.
+  - **Cancel:** `cancel_request` ends a `pending`, `accepted`, or `running` request as `cancelled` ("Hermes
+    cancelled it") and wakes its job; a running chat gets a message to stop. After an end it answers the state with
+    a note that completed steps are not undone.
+  - **Offline:** results wait in the table, and `get_request` answers whenever Hermes asks. Nothing pushes into a
+    Hermes session.
+
+### Chat page (card Hermes 2.1)
+
+Tests use the fake Hermes; they are not live proof (card Hermes 2.3).
+
+- **Sessions.** `GET /api/hermes/chat/sessions` reads up to 5 pages of 100 from Hermes's `GET /api/sessions` and
+  marks each: `chat` (made here: a row in `hermes_chat_sessions`, source `api_server`), `handoff` (the session of a
+  handoff, "A handoff session; read-only here"), or `foreign` ("Owned by <source>", or "Not made by pi-spore's chat
+  page" for another `api_server` session). Only `chat` is sendable (ADR 0202 decision 11): a send into any other
+  session is 403 `hermes_session_read_only`, and nothing reaches Hermes. Provider and model come from the session
+  record; blank is absent, shown as "unknown". Off, it answers `{ enabled: false, sessions: [] }` and asks Hermes
+  nothing.
+- **New session.** `POST /api/hermes/chat/sessions` `{ title, projectId? }` makes the Hermes session
+  `pi-spore-chat-<id>` and stores the title and the optional project link (migrations namespace `hermes-chat`).
+- **Transcript.** `GET /api/hermes/chat/sessions/:id/messages?limit=&offset=&order=` passes Hermes's paging through
+  (limit 1 to 200, default 100). Any session may be read. The page reads the newest 100 (`order=latest`), with
+  "Load older", and shows user, assistant (in `Markdown`), and tool messages. After a run ends, or on a snapshot,
+  it reads pages from the newest until one reaches a message it shows already (at most 10 pages; with no overlap it
+  starts over from what it read), so the list stays one unbroken run back from the newest message. "Load older"
+  pages on from the list's length. Pages merge by message id, so nothing repeats.
+- **Runs.** `POST /api/hermes/chat/sessions/:id/runs` `{ text }` stores a `hermes_chat_runs` row and posts the run
+  with `Idempotency-Key` = the row id: no provider or model. One run per session at a time (409
+  `hermes_run_active`; a run left `unknown` counts until it is marked as interrupted). A post with no answer (a 5xx
+  or a timeout) stays `sending` with "Hermes did not answer, so the message may have reached it" and sets
+  `run_posted`; only the user's Retry (`POST /api/hermes/chat/runs/:id/retry`) posts again, with the same key and the
+  identical body. A refusal is `failed`. A check that fails before sending is `failed` only if no earlier try may have
+  reached Hermes (`run_posted` 0); otherwise the run stays `sending`, so no second run can start beside it. A run
+  stays `sending`, and its session blocked, until Hermes answers a Retry: Hermes may hold a run of it. Hermes keeps a
+  key while its run is unfinished or unknown, and for 24 h after it ends, so a Retry 24 h or more after the first try
+  needs `{ confirmed: true }` (409 `hermes_retry_confirm` without it, and nothing is sent); the page asks first,
+  saying the message may run twice. A Retry that gets the first run back follows it, so a run Hermes lost on a
+  restart shows as `unknown` with its reconcile view. The page shows the input of a run Hermes never got. `POST .../:id/stop` sends `stop`; the page
+  says completed steps are not undone. A stop that fails leaves `stopRequested` false. No Steer: the connector does
+  not read `run_steer`, and the spike did not probe the steer body.
+- **Relay.** A follower per run reads the run status, then the SSE stream, and publishes on topic
+  `hermes:session:<id>`: `delta` for text, with `seq` (1 for the run's first delta, then one more each), and `run`
+  (the whole run view: state, tool rows, controls, provider and model, error, `reconnecting`, and `textSeq`, the
+  deltas in its text) for the rest. The subscription's snapshot holds the newest 20 runs, with the text and tool
+  rows seen in this server process; a completed run's copy is dropped, since the stored transcript has it. The hub
+  sends deltas published while a snapshot was built after it, so the page skips a delta whose `seq` is not above the
+  run's `textSeq`. A snapshot (a reconnect) also reads the transcript again, since a run may have ended meanwhile. A
+  drop after new frames resumes at once with `Last-Event-ID`; a drop without, or Hermes down or off, reads the status
+  (off: nothing is sent), sets `reconnecting` ("Reconnecting: <why>"), and waits 1 s, doubling to 32 s, then looks
+  again, so it follows once Hermes is on. A restart follows every run not ended again from the first frame, so its
+  text fills again. The browser never talks to Hermes.
+- **Approvals and clarify.** Shown inline in the run, answered through `POST /api/hermes/chat/runs/:id/controls/
+  :promptId` (`{choice}` `once` or `deny`, or `{answer}`), the shared answer path above. Each open control is also a
+  Home notice (source `hermes-chat`, link `#/hermes/<session id>`); one answer closes both.
+- **Unknown.** A run Hermes left `unknown` stops being followed, gets a Home notice, and blocks new sends: Hermes
+  holds every later run of the session until it is resolved, and the page says so. The page shows the reconcile
+  view of card 1.2 (`GET .../:id/reconcile`) with one pick, "Mark as interrupted" (`resolve-unknown` with the exact
+  pair, `POST .../:id/resolve` `{ action: "interrupt" }`). No "Send again" (it would only wait) and no "Drop" (it would
+  leave the session stuck). If the resolve fails and Hermes no longer calls the run unknown, its own end is stored, so
+  the session is free. pi-spore never picks.
+- **Page.** `#/hermes` and `#/hermes/:sessionId` (`src/chat-page.tsx`). A rail entry shows only while the status is
+  not `disabled` (`RailItem.useVisible`); the page and the rail read `GET /api/hermes/status` every 5 s, which the
+  server answers from its cache. Left: the profile, the status chip, the version or the failure detail (it names
+  the flag or the version), New session (it says the session is not Homelab Maintainer and does not share its
+  memory), and the sessions with why each read-only one is read-only. Right: the open session (transcript, runs,
+  composer; read-only sessions get no composer and say why), or the handoffs. When the status turns `ready` again
+  the page reads the sessions again, without a reload. Off, the page says only that Hermes is off, with a link to
+  Settings.
+- All chat routes take the user token; an agent token gets 401.
 
 ## 11. Unity module
 
@@ -2126,7 +2397,8 @@ The resolver is `createSettings` in `packages/server-core`; modules reach it as 
   "Workspace settings" panel stays read-only. Other web modules add panels between "Global settings" and
   "Workspace settings" through `SettingsPageKey` (`modules/projects/src/web-contract.ts`), sorted by `order`. The
   agents module adds "Role models" there: one row per role and subagent with a model picker and Reset, which save
-  at once with `PUT /api/agents/role-models/:name` and show the list it answers (ADR 0181).
+  at once with `PUT /api/agents/role-models/:name` and show the list it answers (ADR 0181). The hermes module adds
+  "Hermes": the connector's status (section 11h).
 
 - Role models (ADR 0181) live in Pi's own file, not in pi-spore's: `<agentDir>/settings.json` (`PI_CODING_AGENT_DIR`,
   else `~/.pi/agent`), key `subagents.agentOverrides.<name>.model`. pi-subagents reads the same key for its helpers.
@@ -2413,6 +2685,8 @@ row and is tried again on the next sweep. Each kind of data deleted gets one log
 - `POST /api/bridge/reports` takes a stage agent's `report` (section 8), read-only callers included.
 - `POST /api/bridge/workspace/pr` `{ title, body }` files a `workspace-pr` approval through the requester github-pr
   sets (section 11e); without one it is 422 `not_supported`.
+- `POST /api/bridge/hermes/asks` `{ kind, text, title? }` and `POST /api/bridge/hermes/asks/:id/cancel` answer
+  through the asker the hermes module sets (section 11h); without one they are 422 `not_supported`.
 - `POST /api/bridge/workspace/push` `{}` pushes the caller's workspace branch with the VCS `publish` push, which never
   forces, and answers `{ remote, line }`. It refuses a read-only chat (403 `read_only_chat`), a run's coordinator
   (403 `run_coordinator`), and a workspace without its own branch of a Git project (422 `not_supported`). A

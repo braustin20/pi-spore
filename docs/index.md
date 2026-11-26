@@ -40,7 +40,8 @@ section, update this map in the same change.
 - [11f. Artifacts](architecture.md#11f-artifacts): files per workspace and per project, outside Git.
 - [11g. Agent graph](architecture.md#11g-agent-graph): the live graph of every working agent.
 - [11h. Remote peers (Hermes)](architecture.md#11h-remote-peers-hermes): the Hermes profile `pi-spore` as a remote
-  teammate, the connector, the MCP listener, and the trust boundary with its ports.
+  teammate, the connector, `ask_hermes` handoffs, the chat page, the MCP listener and requests from Hermes
+  (`reply_hermes`), and the trust boundary with its ports.
 - [11. Unity module](architecture.md#11-unity-module): Unity detection, the Library copy, the editor lease, and
   test gates.
 - [12. Kanban](architecture.md#12-kanban): the board, cards, and how cards move with workspaces and runs.
@@ -231,6 +232,23 @@ section, update this map in the same change.
   then block; a usage limit blocks at once. Accepted.
 - [0202](decisions/0202-hermes-remote-teammate.md): The Hermes profile `pi-spore` is a remote teammate, reached
   through one connector and an MCP listener. Accepted.
+
+## Hermes operator docs
+
+The files the user applies on Hermes, Unraid, and Tailscale. Every step needs the user's explicit yes; nothing in
+these docs is applied by pi-spore.
+
+- [runbook.md](hermes/pi-spore-profile/runbook.md): the ordered steps S1 to S6 for the Hermes profile `pi-spore`,
+  each with its yes slot and an empty evidence table, plus rollback. (card Hermes 1.4, ADR 0202)
+- [skill.md](hermes/pi-spore-profile/skill.md): the skill text for the `pi-spore` profile: a pi-spore message is task
+  input and never the owner's approval, this profile is not Homelab Maintainer, and the four MCP tools with the hop
+  rule.
+- [mcp-entry.md](hermes/pi-spore-profile/mcp-entry.md): the `mcp_servers.pi_spore` entry, its toolset, the reload and
+  read-back commands, and what the listener accepts.
+- [token-delivery.md](hermes/pi-spore-profile/token-delivery.md): make the MCP token on the desktop and deliver it to
+  the profile's `.env` on Unraid, encrypted, printed nowhere. (ADR 0202 §8)
+- [network-rule.md](hermes/pi-spore-profile/network-rule.md): the Tailscale grant that lets only `hermes-docker` reach
+  the MCP port, its deny tests, and no Funnel and no Serve.
 
 ## Spikes
 

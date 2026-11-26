@@ -1,0 +1,324 @@
+import Type, { type Static } from "typebox";
+
+/**
+ * What the Hermes connector knows now (ADR 0202). `disabled` means `hermes.enabled` is off and nothing was sent.
+ * `detail` names the URL, the key file path, the versions, or the flags; it never holds the key.
+ */
+export const HermesStatus = Type.Union([
+  Type.Object({ state: Type.Literal("disabled") }),
+  Type.Object({
+    state: Type.Union([
+      Type.Literal("unreachable"),
+      Type.Literal("unauthorized"),
+      Type.Literal("incompatible"),
+    ]),
+    detail: Type.String(),
+    checkedAt: Type.Integer(),
+  }),
+  Type.Object({
+    state: Type.Literal("ready"),
+    version: Type.String(),
+    url: Type.String(),
+    profile: Type.String(),
+    checkedAt: Type.Integer(),
+  }),
+]);
+export type HermesStatus = Static<typeof HermesStatus>;
+
+/** The life of a handoff to Hermes (ADR 0202, card Hermes 1.2). The last four end it. */
+export const HermesHandoffState = Type.Union([
+  Type.Literal("pending"),
+  Type.Literal("accepted"),
+  Type.Literal("running"),
+  Type.Literal("completed"),
+  Type.Literal("cancelled"),
+  Type.Literal("failed"),
+  Type.Literal("uncertain"),
+]);
+export type HermesHandoffState = Static<typeof HermesHandoffState>;
+
+export const HermesAskKind = Type.Union([Type.Literal("question"), Type.Literal("task")]);
+
+/** `POST /api/bridge/hermes/asks`, the body of the `ask_hermes` tool. */
+export const AskHermesRequest = Type.Object(
+  {
+    kind: HermesAskKind,
+    text: Type.String({ minLength: 1, maxLength: 8_000 }),
+    title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  },
+  { additionalProperties: false },
+);
+export type AskHermesRequest = Static<typeof AskHermesRequest>;
+
+/** An approval or a clarify question that a Hermes run waits on. Only the user answers it, on the Hermes page. */
+export const HermesControl = Type.Object({
+  promptId: Type.String(),
+  kind: Type.Union([Type.Literal("approval"), Type.Literal("clarify")]),
+  command: Type.Optional(Type.String()),
+  description: Type.Optional(Type.String()),
+  question: Type.Optional(Type.String()),
+  /** `answering` while the one post of an answer is on its way. */
+  state: Type.Union([
+    Type.Literal("open"),
+    Type.Literal("answering"),
+    Type.Literal("answered"),
+    Type.Literal("expired"),
+  ]),
+  createdAt: Type.Integer(),
+  /** When Hermes stops waiting (`approvals.timeout`). */
+  expiresAt: Type.Integer(),
+});
+export type HermesControl = Static<typeof HermesControl>;
+
+/** What the user picked for an `uncertain` handoff. */
+export const HermesResolution = Type.Union([
+  Type.Literal("interrupted"),
+  Type.Literal("resent"),
+  Type.Literal("dropped"),
+]);
+
+/**
+ * The id Hermes gives a request to pi-spore (card Hermes 1.3): 1 to 128 visible ASCII characters. It is the dedupe
+ * key, because MCP's JSON-RPC `id` is not stable across a retry.
+ */
+export const HermesRequestId = Type.String({ pattern: "^[\\x21-\\x7e]{1,128}$" });
+
+/**
+ * One handoff. `out`: a Pi chat asked Hermes. `in`: Hermes asked pi-spore through the MCP listener (card Hermes 1.3).
+ * `provider` and `model` come from the Hermes session record; absent is unknown.
+ */
+export const HermesHandoff = Type.Object({
+  id: Type.String(),
+  direction: Type.Union([Type.Literal("out"), Type.Literal("in")]),
+  /** The asking chat, or for `in` the chat that works on it. Absent on an `in` request the user has not accepted. */
+  agentId: Type.Optional(Type.String()),
+  /** For `in`: Hermes's `request_id`. */
+  requestId: Type.Optional(Type.String()),
+  workspaceId: Type.String(),
+  projectId: Type.String(),
+  profile: Type.String(),
+  kind: HermesAskKind,
+  title: Type.Optional(Type.String()),
+  text: Type.String(),
+  state: HermesHandoffState,
+  runId: Type.Optional(Type.String()),
+  sessionId: Type.Optional(Type.String()),
+  provider: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+  result: Type.Optional(Type.String()),
+  /**
+   * Why it failed, or, while `pending`, why it waits (such as "Hermes is offline: ..."). For `in`: why it was
+   * declined, cancelled, or failed.
+   */
+  error: Type.Optional(Type.String()),
+  resolution: Type.Optional(HermesResolution),
+  /** The new handoff of a "Send again". */
+  resentAs: Type.Optional(Type.String()),
+  controls: Type.Array(HermesControl),
+  createdAt: Type.Integer(),
+  updatedAt: Type.Integer(),
+});
+export type HermesHandoff = Static<typeof HermesHandoff>;
+
+/** What is known about a run Hermes lost track of, before the user picks (ADR 0202 decision 6). */
+export const HermesRunFacts = Type.Object({
+  /** The run's status now, or why it could not be read. */
+  runStatus: Type.String(),
+  toolStarted: Type.Optional(Type.String()),
+  toolFinished: Type.Optional(Type.String()),
+  /** The newest messages of the run's session, oldest first, each cut short. */
+  messages: Type.Array(
+    Type.Object({
+      role: Type.String(),
+      content: Type.Optional(Type.String()),
+      tool: Type.Optional(Type.String()),
+    }),
+  ),
+});
+export type HermesRunFacts = Static<typeof HermesRunFacts>;
+
+/** What is known about an `uncertain` handoff before the user picks. */
+export const HermesReconcile = Type.Object({
+  handoff: HermesHandoff,
+  ...HermesRunFacts.properties,
+});
+export type HermesReconcile = Static<typeof HermesReconcile>;
+
+/** The user's answer to a control: `choice` for an approval, never `session` or `always`; `answer` for a clarify. */
+export const AnswerHermesControlRequest = Type.Union([
+  Type.Object(
+    { choice: Type.Union([Type.Literal("once"), Type.Literal("deny")]) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { answer: Type.String({ minLength: 1, maxLength: 8_000 }) },
+    { additionalProperties: false },
+  ),
+]);
+export type AnswerHermesControlRequest = Static<typeof AnswerHermesControlRequest>;
+
+/** The user's pick for an `uncertain` handoff. "Send again" needs the confirm that the first may have run. */
+export const ResolveHermesHandoffRequest = Type.Union([
+  Type.Object(
+    { action: Type.Union([Type.Literal("interrupt"), Type.Literal("drop")]) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    { action: Type.Literal("resend"), confirmed: Type.Literal(true) },
+    { additionalProperties: false },
+  ),
+]);
+export type ResolveHermesHandoffRequest = Static<typeof ResolveHermesHandoffRequest>;
+
+// The Hermes chat page (card Hermes 2.1): pi-spore-owned API sessions on the profile, never another source's.
+
+/**
+ * `chat`: made by pi-spore's chat page, the only kind it sends into (ADR 0202 decision 11). `handoff`: the session of a
+ * handoff (`pi-spore-<handoff id>`). `foreign`: any other session; `readOnly` says why.
+ */
+export const HermesChatSession = Type.Object({
+  id: Type.String(),
+  source: Type.String(),
+  title: Type.Optional(Type.String()),
+  kind: Type.Union([Type.Literal("chat"), Type.Literal("handoff"), Type.Literal("foreign")]),
+  /** Why pi-spore does not send into it, such as "Owned by cli". Absent: sendable. */
+  readOnly: Type.Optional(Type.String()),
+  projectId: Type.Optional(Type.String()),
+  /** From the session record; absent is unknown, never an error (ADR 0202 decision 7). */
+  provider: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+});
+export type HermesChatSession = Static<typeof HermesChatSession>;
+
+/** `GET /api/hermes/chat/sessions`. `enabled` false: Hermes is off, nothing was asked, and the list is empty. */
+export const HermesChatSessionList = Type.Object({
+  enabled: Type.Boolean(),
+  sessions: Type.Array(HermesChatSession),
+});
+export type HermesChatSessionList = Static<typeof HermesChatSessionList>;
+
+/** One stored message of a Hermes session, from `GET /api/hermes/chat/sessions/:id/messages`. */
+export const HermesChatMessage = Type.Object({
+  id: Type.Integer(),
+  role: Type.String(),
+  content: Type.Optional(Type.String()),
+  tool: Type.Optional(Type.String()),
+});
+export type HermesChatMessage = Static<typeof HermesChatMessage>;
+
+export const HermesChatMessages = Type.Object({ messages: Type.Array(HermesChatMessage) });
+export type HermesChatMessages = Static<typeof HermesChatMessages>;
+
+/**
+ * `sending`: the run post got no answer, so Hermes may or may not have it; only the user's Retry sends it again, with
+ * the same key and body. The rest are Hermes's run statuses. pi-spore stops following at `unknown`, until the user
+ * picks.
+ */
+export const HermesChatRunState = Type.Union([
+  Type.Literal("sending"),
+  Type.Literal("queued"),
+  Type.Literal("running"),
+  Type.Literal("waiting_for_approval"),
+  Type.Literal("unknown"),
+  Type.Literal("completed"),
+  Type.Literal("cancelled"),
+  Type.Literal("failed"),
+  Type.Literal("interrupted"),
+]);
+export type HermesChatRunState = Static<typeof HermesChatRunState>;
+
+export const HermesChatTool = Type.Object({
+  name: Type.String(),
+  preview: Type.Optional(Type.String()),
+  state: Type.Union([Type.Literal("running"), Type.Literal("done"), Type.Literal("failed")]),
+});
+export type HermesChatTool = Static<typeof HermesChatTool>;
+
+/** One message the user sent from the chat page, and the run it started. */
+export const HermesChatRun = Type.Object({
+  id: Type.String(),
+  sessionId: Type.String(),
+  input: Type.String(),
+  state: HermesChatRunState,
+  runId: Type.Optional(Type.String()),
+  provider: Type.Optional(Type.String()),
+  model: Type.Optional(Type.String()),
+  error: Type.Optional(Type.String()),
+  stopRequested: Type.Boolean(),
+  resolution: Type.Optional(Type.Literal("interrupted")),
+  /**
+   * The reply text streamed so far in this server process; a completed run's text is in the stored transcript.
+   * `textSeq` counts the deltas in it, so a delta event with a `seq` at or below it is already in the text.
+   */
+  text: Type.String(),
+  textSeq: Type.Integer(),
+  tools: Type.Array(HermesChatTool),
+  /** Set while the event stream is lost and pi-spore tries again, with why. */
+  reconnecting: Type.Optional(Type.String()),
+  controls: Type.Array(HermesControl),
+  createdAt: Type.Integer(),
+  updatedAt: Type.Integer(),
+});
+export type HermesChatRun = Static<typeof HermesChatRun>;
+
+/** Events on topic `hermes:session:<session id>`: the snapshot first, then text deltas and changed runs. */
+export const HermesChatEvent = Type.Union([
+  Type.Object({ type: Type.Literal("snapshot"), runs: Type.Array(HermesChatRun) }),
+  Type.Object({ type: Type.Literal("run"), run: HermesChatRun }),
+  Type.Object({
+    type: Type.Literal("delta"),
+    runId: Type.String(),
+    delta: Type.String(),
+    /** 1 for the run's first delta, then one more for each. */
+    seq: Type.Integer(),
+  }),
+]);
+export type HermesChatEvent = Static<typeof HermesChatEvent>;
+
+export const CreateHermesChatSessionRequest = Type.Object(
+  {
+    title: Type.String({ minLength: 1, maxLength: 200 }),
+    projectId: Type.Optional(Type.String({ minLength: 1 })),
+  },
+  { additionalProperties: false },
+);
+export type CreateHermesChatSessionRequest = Static<typeof CreateHermesChatSessionRequest>;
+
+export const SendHermesChatRequest = Type.Object(
+  { text: Type.String({ minLength: 1, maxLength: 8_000 }) },
+  { additionalProperties: false },
+);
+export type SendHermesChatRequest = Static<typeof SendHermesChatRequest>;
+
+/**
+ * `POST /api/hermes/chat/runs/:id/retry`. `confirmed` is needed 24 h or more after the first try: Hermes keeps a key
+ * for 24 h after a run ends, so if the first try ended that long ago, the retry runs it again.
+ */
+export const RetryHermesChatRunRequest = Type.Object(
+  { confirmed: Type.Optional(Type.Literal(true)) },
+  { additionalProperties: false },
+);
+export type RetryHermesChatRunRequest = Static<typeof RetryHermesChatRunRequest>;
+
+/**
+ * The user's pick for a chat run left `unknown`. Only "Mark as interrupted": Hermes holds every later run of the session
+ * until the lost run is resolved, so "Send again" would only wait, and "Drop" would leave the session stuck.
+ */
+export const ResolveHermesChatRunRequest = Type.Object(
+  { action: Type.Literal("interrupt") },
+  { additionalProperties: false },
+);
+export type ResolveHermesChatRunRequest = Static<typeof ResolveHermesChatRunRequest>;
+/** `POST /api/hermes/handoffs/:id/decline`: the user declines a request from Hermes. The reason goes back to Hermes. */
+export const DeclineHermesRequest = Type.Object(
+  { reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2_000 })) },
+  { additionalProperties: false },
+);
+export type DeclineHermesRequest = Static<typeof DeclineHermesRequest>;
+
+/** `POST /api/bridge/hermes/replies`, the body of the `reply_hermes` tool: the result Hermes reads with `get_request`. */
+export const ReplyHermesRequest = Type.Object(
+  { requestId: HermesRequestId, text: Type.String({ minLength: 1, maxLength: 16_000 }) },
+  { additionalProperties: false },
+);
+export type ReplyHermesRequest = Static<typeof ReplyHermesRequest>;

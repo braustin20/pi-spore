@@ -232,6 +232,11 @@ export interface RailItem {
    * it on every render, always, so it may use other hooks.
    */
   useBadge?: () => number;
+  /**
+   * A React hook that returns false to leave the entry out of the rail, such as for a feature that is off. The page
+   * still answers its path. The rail calls it on every render, always, so it may use other hooks.
+   */
+  useVisible?: () => boolean;
 }
 
 export interface WebPage {

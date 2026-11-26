@@ -1,5 +1,5 @@
 // @vitest-environment happy-dom
-import { type ApiClient, ApiContext } from "@pi-spore/module-api";
+import { type ApiClient, ApiContext, type WebPage } from "@pi-spore/module-api";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
@@ -14,7 +14,7 @@ afterEach(() => {
   container?.remove();
 });
 
-async function renderApp(): Promise<HTMLElement> {
+async function renderApp(pages: readonly WebPage[] = []): Promise<HTMLElement> {
   const api = { get: () => new Promise(() => {}) } as unknown as ApiClient;
   const div = document.body.appendChild(document.createElement("div"));
   container = div;
@@ -22,7 +22,7 @@ async function renderApp(): Promise<HTMLElement> {
   await act(async () => {
     root?.render(
       <ApiContext value={api}>
-        <App pages={[]} />
+        <App pages={pages} />
       </ApiContext>,
     );
   });
@@ -44,5 +44,32 @@ describe("the app top bar", () => {
     expect(logo?.querySelectorAll("circle")).toHaveLength(6);
     expect(logo?.querySelectorAll("path")).toHaveLength(5);
     expect(brand?.textContent).toBe("pi-spore");
+  });
+});
+
+function NoIcon() {
+  return null;
+}
+
+describe("the rail", () => {
+  const page = (path: string, visible?: boolean): WebPage => ({
+    path,
+    title: path,
+    component: () => null,
+    rail: {
+      order: 1,
+      icon: NoIcon,
+      ...(visible === undefined ? {} : { useVisible: () => visible }),
+    },
+  });
+
+  it("leaves out an entry whose useVisible hook says false", async () => {
+    const app = await renderApp([page("/shown"), page("/hidden", false), page("/on", true)]);
+    const links = [...app.querySelectorAll('nav[aria-label="Main"] a')].map((a) =>
+      a.getAttribute("href"),
+    );
+    expect(links).toContain("#/shown");
+    expect(links).toContain("#/on");
+    expect(links).not.toContain("#/hidden");
   });
 });

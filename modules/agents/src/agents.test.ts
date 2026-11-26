@@ -1724,6 +1724,8 @@ describe("chats (ADR 0030)", () => {
     const plannerTools = argv[argv.indexOf("--tools") + 1]?.split(",") ?? [];
     expect(plannerTools).toContain("start_helper");
     expect(plannerTools).not.toContain("subagent");
+    // ADR 0202 decision 9: the planner chat may hand work to Hermes.
+    expect(plannerTools).toContain("ask_hermes");
     expect(launch?.argv).toEqual([
       "--mode",
       "rpc",
@@ -1735,7 +1737,7 @@ describe("chats (ADR 0030)", () => {
       "--model",
       "plan-1",
       "--tools",
-      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_read_card,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content,start_helper",
+      "read,grep,find,ls,request_human_input,artifacts_list,artifacts_read,kanban_list_cards,kanban_read_card,kanban_add_card,kanban_update_card,web_search,fetch_content,get_search_content,start_helper,ask_hermes,cancel_hermes_ask",
       "--exclude-tools",
       "mcp__*",
     ]);
