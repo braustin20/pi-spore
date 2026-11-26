@@ -5,7 +5,7 @@ section, update this map in the same change.
 
 ## Overview
 
-- [vision.md](vision.md): the requirements, numbered R1 to R18, and what is out of scope for v1.
+- [vision.md](vision.md): the requirements, numbered R1 to R19, and what is out of scope for v1.
 - [design.md](design.md): the visual design: feel, themes, type, shape, layout, components, and accessibility.
 - [open-questions.md](open-questions.md): unsettled points, each with where it is used.
 
@@ -39,6 +39,8 @@ section, update this map in the same change.
   merges.
 - [11f. Artifacts](architecture.md#11f-artifacts): files per workspace and per project, outside Git.
 - [11g. Agent graph](architecture.md#11g-agent-graph): the live graph of every working agent.
+- [11h. Remote peers (Hermes)](architecture.md#11h-remote-peers-hermes): the Hermes profile `pi-spore` as a remote
+  teammate, the connector, the MCP listener, and the trust boundary with its ports.
 - [11. Unity module](architecture.md#11-unity-module): Unity detection, the Library copy, the editor lease, and
   test gates.
 - [12. Kanban](architecture.md#12-kanban): the board, cards, and how cards move with workspaces and runs.
@@ -128,7 +130,7 @@ section, update this map in the same change.
 - [0142](decisions/0142-merge-button.md): pi-spore merges a PR only when the user clicks Merge and confirms.
   Accepted; superseded in part by 0164.
 - [0143](decisions/0143-phone-over-tailscale-serve.md): A phone reaches pi-spore through `tailscale serve`, checked
-  by Tailscale login. Accepted.
+  by Tailscale login. Accepted; changed in part by 0202.
 - [0144](decisions/0144-routing-calibration.md): Calibrate the router's local choice from recorded outcomes.
   Accepted; changed by 0173.
 - [0150](decisions/0150-run-worktree-and-green-merges.md): The coordinator works in the run's worktree; a merge
@@ -227,6 +229,8 @@ section, update this map in the same change.
   over the page. Accepted.
 - [0201](decisions/0201-nudge-once-on-a-model-server-error.md): Nudge a stage agent once on a model server error,
   then block; a usage limit blocks at once. Accepted.
+- [0202](decisions/0202-hermes-remote-teammate.md): The Hermes profile `pi-spore` is a remote teammate, reached
+  through one connector and an MCP listener. Accepted.
 
 ## Spikes
 
@@ -234,6 +238,9 @@ section, update this map in the same change.
   `homelab-maintainer`, reachable from the desktop over Tailscale only. (card Hermes 0.1)
 - [hermes-protocol.md](spikes/hermes-protocol.md): how the Hermes API server really behaves (runs, SSE,
   approvals, sessions, version) and which Hermes-to-Pi channel to use. (card Hermes 0.2)
+- [hermes-pi-spore-profile.md](spikes/hermes-pi-spore-profile.md): amendment 2026-11-26, the dedicated profile
+  `pi-spore`: operator-reported setup facts, what is not yet verified, and the correction of the spike's approval
+  finding. (ADR 0202)
 - [pi-lens-value.md](spikes/pi-lens-value.md): is pi-lens worth its memory cost for pi-spore agents? (ADR 0025)
 - [q1-rpc-agents.md](spikes/q1-rpc-agents.md): does `pi --mode rpc` load the whole Pi setup, do dialogs reach the
   client, and how much memory does an agent use? (ADR 0002)

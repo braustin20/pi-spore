@@ -1,5 +1,7 @@
 # Spike Hermes 0.2: Hermes protocol behavior and the Hermes-to-Pi channel
 
+> Amended 2026-11-26: see [hermes-pi-spore-profile.md](hermes-pi-spore-profile.md).
+
 - Date: 2026-11-25
 - Card: Hermes 0.2. The ADR card (Hermes 0.3) decides from these facts.
 - Target: the Hermes API server on the tailnet node `hermes-docker`, port `8642`, profile `homelab-maintainer`.

@@ -1,5 +1,7 @@
 # Spike Hermes 0.1: Hermes API server on Unraid, reachable from the desktop over Tailscale only
 
+> Amended 2026-11-26: see [hermes-pi-spore-profile.md](hermes-pi-spore-profile.md).
+
 - Date: 2026-11-25
 - Hermes: v0.23.4 (the newest release on 2026-11-25), official Docker image `nousresearch/hermes-agent`.
 - Question: can the desktop reach the Hermes HTTP API server of profile `homelab-maintainer` on Unraid over
