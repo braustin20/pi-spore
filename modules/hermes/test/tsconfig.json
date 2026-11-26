@@ -1,0 +1,29 @@
+{
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "../.tsbuild/test",
+    "emitDeclarationOnly": true,
+    "types": ["node"],
+    "lib": ["es2024", "dom", "dom.iterable"],
+    "jsx": "react-jsx"
+  },
+  "include": [".", "../test-fixtures/*.d.mts"],
+  "references": [
+    {
+      "path": ".."
+    },
+    {
+      "path": "../../../packages/module-api"
+    },
+    {
+      "path": "../../../packages/shared"
+    },
+    {
+      "path": "../../../packages/ui"
+    },
+    {
+      "path": "../../../packages/server-core"
+    }
+  ]
+}

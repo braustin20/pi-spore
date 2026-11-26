@@ -6,6 +6,7 @@ import { attentionModule } from "@pi-spore/mod-attention/server";
 import { bridgeModule } from "@pi-spore/mod-bridge/server";
 import { changesModule } from "@pi-spore/mod-changes/server";
 import { githubPrModule } from "@pi-spore/mod-github-pr/server";
+import { hermesModule } from "@pi-spore/mod-hermes/server";
 import { kanbanModule } from "@pi-spore/mod-kanban/server";
 import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
@@ -38,4 +39,5 @@ export const serverModules: readonly ServerModule[] = [
   pipelinesModule,
   runsModule,
   agentGraphModule,
+  hermesModule,
 ];

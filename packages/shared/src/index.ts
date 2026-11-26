@@ -137,6 +137,7 @@ export {
   toolActivity,
 } from "./chat.js";
 export { HealthResponse } from "./health.js";
+export { HermesStatus } from "./hermes.js";
 export { type ImageType, imageHeaders, imageTypeOfPath, sniffImage } from "./images.js";
 export { Job, JobList, JobState } from "./jobs.js";
 export {
