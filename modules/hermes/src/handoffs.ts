@@ -178,7 +178,7 @@ const cap = (text: string, max: number) =>
 export function setupHandoffs(
   host: ServerHost,
   hermes: Hermes,
-  profileName: () => Promise<string>,
+  settings: { profile: () => Promise<string>; enabled: () => Promise<boolean> },
 ): HermesAsker {
   const agents = host.use(AgentsKey);
   const workspaces = host.use(WorkspacesKey);
@@ -694,7 +694,7 @@ export function setupHandoffs(
     const workspace = workspaces.get(owner.workspaceId);
     const project = await projects.get(workspace.projectId);
     const agent = agents.get(owner.agentId);
-    const profile = await profileName();
+    const profile = await settings.profile();
     const id = host.newId();
     const header = `From pi-spore agent ${agent.title ?? agent.id}, project ${project.name}, workspace ${workspace.name}, handoff ${id}.`;
     const what = request.kind === "task" ? "Task" : "Question";
@@ -758,6 +758,8 @@ export function setupHandoffs(
 
   // Home items: controls that wait for the user, and uncertain handoffs that wait for a pick (ADR 0155).
   homeItems.register("hermes", async () => {
+    // Off means no Home item (ADR 0202 decision 12), even for rows from before.
+    if (!(await settings.enabled())) return [];
     const timeout = await timeoutMs();
     const now = host.now();
     const controls = store.all<ControlRow & { title: string | null }>(
@@ -796,7 +798,9 @@ export function setupHandoffs(
     ];
   });
 
+  // Off, the page shows only that Hermes is off, so the list is empty and says so.
   host.routes.get("/handoffs", async (c) => {
+    if (!(await settings.enabled())) return c.json({ enabled: false, handoffs: [] });
     const timeout = await timeoutMs();
     const workspaceId = c.req.query("workspaceId");
     const rows = store.all<Row>(
@@ -804,7 +808,7 @@ export function setupHandoffs(
        ORDER BY created_at DESC, id DESC LIMIT 100`,
       ...(workspaceId === undefined ? [] : [workspaceId]),
     );
-    return c.json({ handoffs: rows.map((row) => view(row, timeout)) });
+    return c.json({ enabled: true, handoffs: rows.map((row) => view(row, timeout)) });
   });
 
   host.routes.post("/handoffs/:id/cancel", async (c) =>

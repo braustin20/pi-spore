@@ -723,6 +723,22 @@ describe("Hermes approvals and clarify questions go to the user on Home", () => 
     expect(posts(h, "/approval")).toHaveLength(1);
   });
 
+  it("shows no Home item and no list once hermes.enabled is off", async () => {
+    const setup = await start();
+    const { h } = setup;
+    const run = await askAndRun(setup);
+    h.fake.requestApproval(run.runId, "prompt-6");
+    await control(h, run.id, "prompt-6");
+    expect(await inboxNotices(h)).toHaveLength(1);
+    h.settings({});
+    expect(await inboxNotices(h)).toHaveLength(0);
+    expect(
+      await json<{ enabled: boolean; handoffs: unknown[] }>(
+        await h.server.request("GET", "/api/hermes/handoffs"),
+      ),
+    ).toEqual({ enabled: false, handoffs: [] });
+  });
+
   it("does not post again after an answer Hermes took whose reply was lost", async () => {
     const setup = await start();
     const { h } = setup;

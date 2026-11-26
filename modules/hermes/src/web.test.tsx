@@ -4,7 +4,8 @@ import type { HermesHandoff, HermesStatus, Workspace } from "@pi-spore/shared";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it } from "vitest";
-import { HandoffsPage, HermesPanel, HermesSection, hermesWeb } from "./web.js";
+import { HandoffsPage, HermesPanel } from "./handoffs-page.js";
+import { HermesSection, hermesWeb } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -84,10 +85,10 @@ const handoff = (fields: Partial<HermesHandoff>): HermesHandoff => ({
   ...fields,
 });
 
-async function renderPage(handoffs: HermesHandoff[], reconcile?: unknown) {
+async function renderPage(handoffs: HermesHandoff[], reconcile?: unknown, enabled = true) {
   const sent: { method: string; path: string; body: unknown }[] = [];
   const api = {
-    get: async (path: string) => (path.endsWith("/reconcile") ? reconcile : { handoffs }),
+    get: async (path: string) => (path.endsWith("/reconcile") ? reconcile : { enabled, handoffs }),
     send: async (method: string, path: string, body: unknown) => {
       sent.push({ method, path, body });
       return {};
@@ -191,6 +192,13 @@ describe("Hermes handoffs page", () => {
     expect(root.textContent).toContain("Hermes is offline: no answer");
   });
 
+  it("shows only that Hermes is off, with a link to Settings, when hermes.enabled is off", async () => {
+    const { root } = await renderPage([], undefined, false);
+    expect(root.textContent).toContain("Hermes is off");
+    expect(root.querySelector('a[href="#/settings"]')).not.toBeNull();
+    expect(root.textContent).not.toContain("No handoffs to Hermes yet");
+  });
+
   it("adds a page with no rail entry", () => {
     const pages: { path: string; rail?: unknown }[] = [];
     hermesWeb.setup({
@@ -210,7 +218,7 @@ describe("Hermes handoffs in the workspace Details column", () => {
     const api = {
       get: async (path: string) => {
         paths.push(path);
-        return { handoffs };
+        return { enabled: true, handoffs };
       },
     } as unknown as ApiClient;
     const root = document.body.appendChild(document.createElement("div"));

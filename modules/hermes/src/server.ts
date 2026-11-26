@@ -96,15 +96,12 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
         },
       });
       host.provide(HermesKey, connector);
-      host
-        .use(BridgeKey)
-        .setHermesAsker(
-          setupHandoffs(
-            host,
-            connector,
-            async () => (await host.settings.resolve()).get(keys.profile).value,
-          ),
-        );
+      host.use(BridgeKey).setHermesAsker(
+        setupHandoffs(host, connector, {
+          profile: async () => (await host.settings.resolve()).get(keys.profile).value,
+          enabled: async () => (await host.settings.resolve()).get(keys.enabled).value,
+        }),
+      );
 
       let failures = 0;
       const poll = async () => {
