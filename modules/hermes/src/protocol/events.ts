@@ -13,10 +13,10 @@ export const RunEvent = Type.Union([
   event("message.delta", { delta: Type.String() }),
   event("message.interim", {}),
   event("reasoning.available", {}),
-  event("tool.started", { tool: Type.String() }),
+  event("tool.started", { tool: Type.String(), preview: Text }),
   event("tool.progress", {}),
-  event("tool.completed", {}),
-  event("tool.failed", {}),
+  event("tool.completed", { tool: Text, error: Type.Optional(Type.Boolean()) }),
+  event("tool.failed", { tool: Text }),
   event("approval.request", {}),
   event("approval.responded", {}),
   event("clarify.request", {}),
@@ -48,8 +48,14 @@ export interface SseFrame {
   data: string;
 }
 
-/** Splits an SSE body into frames. Comment lines (`: keepalive`) and frames without `data:` are dropped. */
-export async function* sseFrames(body: ReadableStream<Uint8Array>): AsyncGenerator<SseFrame> {
+/**
+ * Splits an SSE body into frames. Comment lines (`: keepalive`) and frames without `data:` are dropped. `onChunk` runs
+ * for every chunk read, keepalives too, so a caller can tell a quiet stream from a dead one.
+ */
+export async function* sseFrames(
+  body: ReadableStream<Uint8Array>,
+  onChunk?: () => void,
+): AsyncGenerator<SseFrame> {
   const reader = body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
@@ -59,6 +65,7 @@ export async function* sseFrames(body: ReadableStream<Uint8Array>): AsyncGenerat
     while (true) {
       const { value, done } = await reader.read();
       if (done) return;
+      onChunk?.();
       buffer += decoder.decode(value, { stream: true });
       let end = buffer.indexOf("\n");
       while (end !== -1) {

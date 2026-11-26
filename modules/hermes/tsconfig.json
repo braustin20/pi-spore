@@ -19,6 +19,36 @@
       "path": "../../packages/shared"
     },
     {
+      "path": "../bridge"
+    },
+    {
+      "path": "../actions"
+    },
+    {
+      "path": "../artifacts"
+    },
+    {
+      "path": "../kanban"
+    },
+    {
+      "path": "../pipelines"
+    },
+    {
+      "path": "../runs"
+    },
+    {
+      "path": "../agents"
+    },
+    {
+      "path": "../attention"
+    },
+    {
+      "path": "../workspaces"
+    },
+    {
+      "path": "../vcs-folder"
+    },
+    {
       "path": "../projects"
     },
     {

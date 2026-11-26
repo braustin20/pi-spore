@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { STREAM_IDLE_MS } from "./client.js";
 import type { ApprovalAnswer, RunEventFrame } from "./server.js";
 import { type Harness, harness, TIMEOUT_MS } from "./test-helpers.js";
 
@@ -225,6 +226,24 @@ describe("Hermes client events", () => {
     h.fake.finish(run_id, "c");
     const rest = await collect(h.hermes.runEvents(run_id, "0"));
     expect(rest.map((frame) => frame.id)).toEqual(["1", "2", "3"]);
+  });
+
+  it("ends a stream that sends nothing, not even a keepalive, for 30 s as lost", async () => {
+    h = await ready();
+    const { run_id } = await h.hermes.startRun({ input: "hi", session_id: "s" }, "k-idle");
+    const seen: RunEventFrame[] = [];
+    const reading = (async () => {
+      for await (const frame of (h as Harness).hermes.runEvents(run_id)) seen.push(frame);
+    })();
+    h.fake.emit(run_id, { event: "message.delta", delta: "a" });
+    await expect.poll(() => seen.length).toBe(1);
+    // A frame armed the idle timer again; only silence after it ends the stream.
+    await h.timers.fire(STREAM_IDLE_MS);
+    await expect(reading).rejects.toMatchObject({
+      code: "hermes_stream_lost",
+      message: expect.stringContaining("sent nothing for 30 s"),
+    });
+    expect(h.timers.delays()).not.toContain(STREAM_IDLE_MS);
   });
 
   it("after a Hermes restart: events 404, the run is unknown, and only an explicit resolveUnknown clears it", async () => {

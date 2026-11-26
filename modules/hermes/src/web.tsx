@@ -1,8 +1,10 @@
 import { SettingsPageKey } from "@pi-spore/mod-projects/web";
+import { WorkspaceViewKey } from "@pi-spore/mod-workspaces/web";
 import { useApi, type WebModule } from "@pi-spore/module-api";
 import { HermesStatus, parse } from "@pi-spore/shared";
 import { Button, Chip, Notice, Panel, PanelHeader, type Tone } from "@pi-spore/ui";
 import { useCallback, useEffect, useState } from "react";
+import { HandoffsPage, HermesPanel } from "./handoffs-page.js";
 
 const TONE: Record<HermesStatus["state"], Tone> = {
   disabled: "neutral",
@@ -54,9 +56,12 @@ export function HermesSection() {
 
 export const hermesWeb: WebModule = {
   id: "hermes",
-  requires: ["projects"],
+  requires: ["projects", "workspaces"],
   core: false,
   setup(host) {
     host.use(SettingsPageKey).addSection({ id: "hermes", order: 20, component: HermesSection });
+    // No rail entry (ADR 0202 decision 12): Home items link here.
+    host.addPage({ path: "/hermes", title: "Hermes handoffs", component: HandoffsPage });
+    host.use(WorkspaceViewKey).addPanel({ id: "hermes", order: 8, component: HermesPanel });
   },
 };

@@ -12,6 +12,7 @@ import {
   AnswerLaneRequest,
   AnswerStageRequest,
   AskCoordinatorRequest,
+  AskHermesRequest,
   AskStageRequest,
   BridgeAddCardRequest,
   type BridgeArtifactFile,
@@ -39,7 +40,7 @@ import {
   slugify,
 } from "@pi-spore/shared";
 
-import { type Bridge, BridgeKey } from "./contract.js";
+import { type Bridge, BridgeKey, type HermesAsker } from "./contract.js";
 
 export * from "./contract.js";
 
@@ -86,10 +87,15 @@ export const bridgeModule: ServerModule = {
     const runs = host.use(RunsKey);
     const projects = host.use(ProjectsKey);
     let requestWorkspacePr: Parameters<Bridge["setPrRequester"]>[0] | undefined;
+    let hermesAsker: HermesAsker | undefined;
     host.provide(BridgeKey, {
       setPrRequester: (request) => {
         if (requestWorkspacePr) throw new Error("The bridge module already has a PR requester");
         requestWorkspacePr = request;
+      },
+      setHermesAsker: (asker) => {
+        if (hermesAsker) throw new Error("The bridge module already has a Hermes asker");
+        hermesAsker = asker;
       },
     });
 
@@ -327,6 +333,47 @@ export const bridgeModule: ServerModule = {
           );
       }
       return c.json({ question: questions.file(caller, request) }, 201);
+    });
+
+    /**
+     * ADR 0202 decision 9: workspace chats and the planner chat may hand work to Hermes. A read-only side chat and a
+     * lane chat may not, so Hermes is no side channel between lanes (R7.5). The hermes module refuses the rest.
+     */
+    const refuseHermes = (caller: BridgeCaller): HermesAsker => {
+      if (caller.readOnly && !workspaces.get(caller.workspaceId).planner)
+        refuseReadOnly(caller, "ask Hermes");
+      if (runs.laneOf(caller.workspaceId))
+        throw new ApiError(
+          403,
+          "hermes_refused",
+          "A lane chat cannot ask Hermes; ask your coordinator with ask_coordinator",
+        );
+      if (!hermesAsker)
+        throw new ApiError(
+          422,
+          "not_supported",
+          "No module hands work to Hermes: enable the hermes module",
+        );
+      return hermesAsker;
+    };
+
+    host.routes.post("/hermes/asks", async (c) => {
+      const caller = bridgeCaller(c);
+      const asker = refuseHermes(caller);
+      const request = parseJsonBody(AskHermesRequest, await c.req.text(), "Hermes ask");
+      const receipt = c.req.header("idempotency-key");
+      if (!receipt)
+        throw new ApiError(
+          400,
+          "receipt_missing",
+          "An ask needs the tool call id as Idempotency-Key",
+        );
+      return c.json({ handoff: await asker.ask(caller, request, receipt) }, 201);
+    });
+
+    host.routes.post("/hermes/asks/:id/cancel", async (c) => {
+      const caller = bridgeCaller(c);
+      return c.json({ handoff: await refuseHermes(caller).cancel(caller, c.req.param("id")) });
     });
 
     host.routes.post("/lanes", async (c) => {

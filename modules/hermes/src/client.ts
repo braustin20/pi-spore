@@ -70,6 +70,9 @@ export interface Connector extends Hermes {
   refresh(): Promise<HermesStatus>;
 }
 
+/** Hermes sends `: keepalive` every 10 s while a run works (spike Q4); three missed ones mean a dead stream. */
+export const STREAM_IDLE_MS = 30_000;
+
 const UNREACHABLE = new Set(["hermes_unreachable", "hermes_timeout", "hermes_unavailable"]);
 const IDEMPOTENCY_KEY = /^[\x21-\x7e]{1,255}$/;
 
@@ -300,6 +303,12 @@ export function createConnector(options: ConnectorOptions): Connector {
     const config = await ready();
     const path = runPath(id, "/events");
     const stream = new AbortController();
+    const idle = new AbortController();
+    let cancelIdle = () => {};
+    const armIdle = () => {
+      cancelIdle();
+      cancelIdle = options.timer(async () => idle.abort(), STREAM_IDLE_MS);
+    };
     streams.add(stream);
     try {
       const { response } = await send(
@@ -311,14 +320,15 @@ export function createConnector(options: ConnectorOptions): Connector {
             accept: "text/event-stream",
             ...(lastEventId === undefined ? {} : { "last-event-id": lastEventId }),
           },
-          signal: stream.signal,
+          signal: AbortSignal.any([stream.signal, idle.signal]),
         },
         false,
       );
       if (!response.body) throw new ApiError(502, "hermes_bad_response", `GET ${path} has no body`);
       let last = lastEventId;
       // Closing the generator, by the end or by a caller that stops reading, cancels the body.
-      const frames = sseFrames(response.body);
+      armIdle();
+      const frames = sseFrames(response.body, armIdle);
       try {
         while (true) {
           let next: IteratorResult<SseFrame>;
@@ -328,6 +338,12 @@ export function createConnector(options: ConnectorOptions): Connector {
             next = { done: true, value: undefined };
           }
           if (stream.signal.aborted) throw turnedOff(`the event stream of run ${id}`);
+          if (idle.signal.aborted)
+            throw new ApiError(
+              502,
+              "hermes_stream_lost",
+              `The event stream of run ${id} sent nothing for ${STREAM_IDLE_MS / 1000} s; resume after event ${last ?? "none"} or read the run`,
+            );
           if (next.done)
             throw new ApiError(
               502,
@@ -345,6 +361,7 @@ export function createConnector(options: ConnectorOptions): Connector {
         await frames.return(undefined);
       }
     } finally {
+      cancelIdle();
       streams.delete(stream);
     }
   }

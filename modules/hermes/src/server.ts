@@ -1,8 +1,10 @@
 import { join } from "node:path";
+import { BridgeKey } from "@pi-spore/mod-bridge/server";
 import type { JobTimer, ServerModule } from "@pi-spore/module-api";
 import Type from "typebox";
 import { createConnector } from "./client.js";
 import { HermesKey } from "./contract.js";
+import { setupHandoffs } from "./handoffs.js";
 import { expandHome } from "./key.js";
 
 export * from "./contract.js";
@@ -36,7 +38,8 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
   const timer = options.timer ?? realTimer;
   return {
     id: "hermes",
-    requires: [],
+    // The handoffs deliver results to chats, put controls on Home, and name the workspace and project (card 1.2).
+    requires: ["agents", "attention", "workspaces", "projects", "bridge"],
     core: false,
     setup(host) {
       const keys = {
@@ -93,6 +96,12 @@ export function createHermesModule(options: HermesModuleOptions = {}): ServerMod
         },
       });
       host.provide(HermesKey, connector);
+      host.use(BridgeKey).setHermesAsker(
+        setupHandoffs(host, connector, {
+          profile: async () => (await host.settings.resolve()).get(keys.profile).value,
+          enabled: async () => (await host.settings.resolve()).get(keys.enabled).value,
+        }),
+      );
 
       let failures = 0;
       const poll = async () => {
