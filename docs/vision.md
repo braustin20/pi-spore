@@ -13,12 +13,13 @@ not built in v1.
 - R1.1 A local server, a browser UI, and a thin CLI (`pi-spore`). One user. No accounts, no hosting.
 - R1.2 The server binds to `127.0.0.1` only and requires a token that the CLI and the UI read from
   `~/.pi-spore/`. A phone may reach it through `tailscale serve` on this machine, only on hosts and for Tailscale
-  logins the user lists (ADR 0143). Never through Funnel.
+  logins the user lists (ADR 0143). Never through Funnel. The one exception is the Hermes MCP listener (R19.4): off by
+  default, its own port and token, bound to this machine's Tailscale address only (ADR 0202).
 - R1.3 pi-spore replaces Orca for agent and Unity work: worktrees, setup, terminals, Unity launch, agent status.
-- R1.4 Every agent is a Pi agent that loads the same auth, models, settings, skills, extensions, prompt templates,
-  AGENTS.md files, and MCP config as the `pi` CLI. Extensions that work in `pi` today (Strata auto-start,
-  claude-bridge, pi-subagents, pi-mcp-adapter) work unchanged in pi-spore. Extensions the user excludes for
-  agents (R3.7; by default pi-lens) do not load in agents.
+- R1.4 Every workbench agent is a Pi agent that loads the same auth, models, settings, skills, extensions, prompt
+  templates, AGENTS.md files, and MCP config as the `pi` CLI. Extensions that work in `pi` today (Strata
+  auto-start, claude-bridge, pi-subagents, pi-mcp-adapter) work unchanged in pi-spore. Extensions the user excludes
+  for agents (R3.7; by default pi-lens) do not load in agents. A remote peer (R19) is not a workbench agent.
 - R1.5 Features beyond a small core are modules in this repo with a typed contract (see architecture).
 - R1.6 State survives a server restart: workspaces, runs, pipeline stages, questions, approvals, cards, and
   transcripts. Work that was cut off resumes or is clearly marked as interrupted. Nothing is silently lost.
@@ -235,11 +236,33 @@ not built in v1.
 - R18.5 Stale numbers are shown as stale and are not used for routing.
 - R18.6 Codex usage is polled with the Codex CLI login, because the `openai` login reports none (ADR 0153).
 
+## R19. Remote peers
+
+- R19.1 A remote peer is an agent outside pi-spore that works with it over the tailnet. Today there is one: the
+  Hermes profile `pi-spore` on the user's home server (ADR 0202). It is a teammate, not a workbench agent. It never
+  runs in a worktree, never takes a pipeline, run, lane, or stage role, and never uses a live agent slot (R3.6).
+- R19.2 Off by default. With `hermes.enabled` off, pi-spore opens no connection, no listener, no tool, and no rail
+  entry.
+- R19.3 Order of work: explicit task handoffs both ways first, then a Hermes chat page on the same connector, then a
+  provider setup handoff as a separate later capability.
+- R19.4 A Pi workspace or planner chat hands a question or task to the peer, and the result comes back to that chat
+  as a durable delivery (R1.6). The peer asks a Pi workspace through a desktop MCP listener; a request reaches a Pi
+  chat only after the user's yes on Home.
+- R19.5 A peer message is task input, never the user's authorization. Every approval and clarify question the peer
+  raises goes to the user. pi-spore never answers one by itself.
+- R19.6 Outcomes are not exactly-once. pi-spore admits each run once, shows what is known after a cut-off, and never
+  resends or resolves a run on its own.
+- R19.7 The peer owns its model routing. pi-spore sends no provider or model override and never edits the peer's
+  config.
+- R19.8 The peer's key and the listener's token live in files under `~/.pi-spore/hermes/` (folder `0700`, files
+  `0600`). Neither goes into settings, argv, logs, prompts, the browser, or a repo. The user token never leaves this
+  machine.
+
 ## Out of scope for v1
 
 - v2: full-text search over conversations, MCP manager UI (v1 shows the MCP servers read-only), services with
   ports, snooze and wait-on rules.
 - Not planned: Perforce or other VCS (the provider interface must not assume Git), voice input, push
   notifications on phones, changelog page, multi-user, hosting, external runtime plugins, other agent CLIs as
-  workbench agents, schedules, auto-merge. A phone opens the UI over Tailscale (ADR 0143) in a phone layout
-  (ADR 0159).
+  workbench agents (a remote peer under R19 is not a workbench agent), schedules, auto-merge. A phone opens the UI
+  over Tailscale (ADR 0143) in a phone layout (ADR 0159).

@@ -1796,6 +1796,86 @@ See [ADR 0176](decisions/0176-live-agent-graph.md). Requirements R3.3, R6, R7, R
     fade.
   - No trees: "No agents work now." and a link to the New workspace page.
 
+## 11h. Remote peers (Hermes)
+
+See [ADR 0202](decisions/0202-hermes-remote-teammate.md) and the facts in
+[hermes-protocol.md](spikes/hermes-protocol.md) and [hermes-pi-spore-profile.md](spikes/hermes-pi-spore-profile.md).
+Requirements R19, R1.2, R1.4. **Planned, not built yet** (cards Hermes 1.1 to 2.3).
+
+The Hermes profile `pi-spore` on the user's Unraid server is a remote teammate. It is not a workbench agent: no
+worktree, no pipeline, run, lane, or stage role, and no live agent slot. It is not Homelab Maintainer and has none of
+its memories or chats. Its terminal runs in the Hermes container with the `local` backend, so it is **not a
+sandbox**.
+
+### Trust boundary
+
+```text
+ desktop (pi-spore)                                          │ tailnet │ Unraid, Hermes container
+                                                             │         │
+ browser, CLI ──► 127.0.0.1:7420  main server                │         │
+   (tailscale serve proxies here; ADR 0143)                  │         │
+   guardRequest: loopback peer, Host, Origin; user token     │         │
+                  │                                          │         │
+                  ├─ agents module ─► pi --mode rpc workers  │         │
+                  │   (local; agent tokens; ADR 0002, 0032)  │         │
+                  │                                          │         │
+                  └─ hermes module                           │         │
+                      connector, outbound ───── HTTP + SSE ──┼────────►│ :8642 Hermes API, one gateway
+                        key ~/.pi-spore/hermes/pi-spore.key  │         │   /p/pi-spore/... (own key; 401 for
+                                                             │         │   other profiles' keys)
+                      MCP listener ◄──────── MCP over HTTP ──┼─────────┤ profile pi-spore: mcp_servers entry,
+                        desktop Tailscale IP only,           │         │   token from its .env
+                        port hermes.mcp.port                 │         │
+                        token ~/.pi-spore/hermes/mcp.token   │         │   terminal: local backend,
+                        task tools only, no shell            │         │   cwd /opt/data/pi-spore-bridge
+                                                             │         │ :9119 dashboard (not used by pi-spore)
+```
+
+What crosses the boundary: task text, results, approval and clarify questions and answers, run and session status.
+What never crosses it: the user token, agent tokens, a shell, an agent home, or a session database. The Hermes key
+crosses only in the `Authorization` header of a request to Hermes, and the MCP token only in the header of a request
+to the listener.
+
+| Port | Machine | Bound to | Caller | Auth |
+|---|---|---|---|---|
+| `7420` (`PI_SPORE_PORT`) | desktop | `127.0.0.1` only | browser, CLI, agents, `tailscale serve` | user token, agent tokens |
+| `hermes.mcp.port` | desktop | the desktop's Tailscale address only | the `pi-spore` profile's MCP client | MCP token |
+| `8642` | Unraid | Unraid's Tailscale address ([hermes-setup.md](spikes/hermes-setup.md) 1.5) | the hermes module | `pi-spore` profile key |
+| `9119` | Hermes container | all container interfaces (operator-reported) | not pi-spore | dashboard login; card Hermes 0.6 |
+
+The main server keeps its guards unchanged. The listener does not use `guardRequest`, because its peer is not
+loopback. It has its own checks: the MCP token, a known Host, no `Origin`, and caps on body size and request rate.
+The Tailscale grant that lets Unraid reach the listener port is applied by the operator with the user's yes (card
+Hermes 1.4).
+
+### Connector
+
+- Module `modules/hermes`, interface key `HermesKey`. Settings, global only: `hermes.enabled` (default `false`),
+  `hermes.url` (default `http://hermes-docker:8642`), `hermes.profile` (default `pi-spore`), `hermes.keyFile`
+  (default `~/.pi-spore/hermes/<profile>.key`). Off means no request to Hermes, no listener, no tool, no rail entry.
+- Startup check: `/p/<profile>/health` (tested minor `0.23.x`), then the required flags of `/v1/capabilities`
+  (spike Q1), then the model id in `/v1/models`. Status `disabled`, `unreachable`, `unauthorized`, `incompatible`,
+  or `ready`.
+- Every `POST /v1/runs` has an `Idempotency-Key`; a retry sends the identical body. SSE event names are in
+  `data.event`; resume with `Last-Event-ID`; after a stream loss, poll the run status.
+- No provider or model override. The provider and model shown come from the session record; blank run runtime
+  fields show as unknown.
+
+### Handoffs
+
+- Table `hermes_handoffs` holds both directions (`out`: Pi asks Hermes; `in`: Hermes asks Pi).
+- **Pi to Hermes:** `ask_hermes` in workspace and planner chats, refused in stage, lane, side, and helper chats, and
+  in a chat that works on a Hermes request. A job (`hermes.ask`) makes one API session per handoff, starts the run,
+  follows it, and delivers the result to the asking chat in the same commit as the end state.
+- **Hermes approvals and clarify** become Home items for the user. Answers post the exact spike bodies, `once` or
+  `deny` only. A stale answer shows "expired" and posts nothing.
+- **Uncertain** (`unknown` after a Hermes restart): pi-spore reads the session's messages and tool events and shows
+  them. The user picks "Mark as interrupted", "Send again", or "Drop". pi-spore never picks.
+- **Hermes to Pi:** the listener's tools `list_targets`, `submit_request`, `get_request`, `cancel_request`, each
+  deduped by `request_id`. A request becomes a Home approval. On Accept, a new workspace chat in a target from
+  `hermes.inbound.projects` gets it, marked as remote input, not the user's approval. Results wait in the table until
+  Hermes reads them.
+
 ## 11. Unity module
 
 See [ADR 0011](decisions/0011-unity-support.md).
@@ -2101,6 +2181,9 @@ once; it proxies `https://<machine>.<tailnet>.ts.net/` to the loopback port and 
 The token check follows for `/api/*` and sockets. pi-spore never runs `tailscale` and never uses Funnel.
 `pi-spore remote` prints the serve command and the URLs.
 
+The Hermes MCP listener is the one listener outside these rules. It binds the desktop's Tailscale address, on its
+own port and token, and is off by default (section 11h, ADR 0202).
+
 `config.toml` sketch:
 
 ```toml
@@ -2279,6 +2362,9 @@ open flags are not touched. The archive button shows on touch screens. Diffs are
   usage/<plan>.json      latest plan usage snapshots (written by the usage tap)
   usage/routing.jsonl    routing decisions (written by the router)
   logs/actions/<workspace>/<run>.log   action run output
+  hermes/                (0700) Hermes key and MCP listener token, read by the hermes module (ADR 0202)
+    pi-spore.key         Hermes profile key (0600)
+    mcp.token            MCP listener token (0600)
 ```
 
 The server and agent stderr are not written to files.
