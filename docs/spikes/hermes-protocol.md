@@ -5,8 +5,7 @@
 - Target: the Hermes API server on the tailnet node `hermes-docker`, port `8642`, profile `homelab-maintainer`.
   Every path below is under `http://hermes-docker:8642/p/homelab-maintainer`.
 - Hermes version on the target: **0.23.3** (release date 2026.9.24), from `/health`.
-- Status: **live probes done, except the restart test (Q3), which waits for the user.** Two security findings
-  block phases. See [Gaps](#gaps-that-block-a-phase).
+- Status: **live probes done.** Security findings block phases. See [Gaps](#gaps-that-block-a-phase).
 
 ## How each answer is marked
 
@@ -106,16 +105,43 @@ Idempotency-Key: "has space"
 
 ### 3. Run lifetime
 
-Source v0.23.3. **Live restart test pending** (the user restarts Hermes once).
+Probed on v0.23.3. The user restarted Hermes once at 19:28 (gateway pid 725, then 335; `draining`, port closed
+about 15 s, then `starting`).
 
-- Probed: `GET /v1/runs/{id}` of a completed run answers `200` with `status`, `output`, `usage`, `session_id`,
-  `admission_id`, `execution_generation`, `pending_controls`. An unknown id answers
-  `404 {"error": {"code": "run_not_found"}}`.
-- Source: in session-authority mode the status comes from the durable admission row, so it should survive a
-  restart. A run whose owner died before it settled shows `unknown`, and later turns in that session wait for
-  `POST /v1/runs/{id}/resolve-unknown`.
-- Statuses seen live: `running`, `completed`, `cancelled`. In source also: `queued`, `waiting_for_approval`,
-  `failed`, `unknown`, `interrupted`.
+```text
+before the restart: run_c1e83207... ("sleep 600") status running
+
+after the restart:
+GET /v1/runs/run_c8690ae0...  -> 200 "status": "completed", "output": "pong"      (finished before)
+GET /v1/runs/run_313a6965...  -> 200 "status": "cancelled"                       (finished before)
+GET /v1/runs/run_c1e83207...  -> 200 "status": "unknown", "execution_generation": 7, "usage": {}
+GET /v1/runs/run_c1e83207.../events -> 404 run_not_found       (the SSE buffer is gone)
+POST /v1/runs, first Idempotency-Key and body again -> 202 Idempotency-Replayed: true, "status": "completed"
+
+POST /v1/runs {"input": "Reply with the word pong ...", "session_id": "pi-spore-spike-1795663303"}
+-> 202 {"run_id": "run_8cbd4b1d...", "status": "started"}
+   15 s later: "status": "queued"     (it waits behind the unknown run)
+
+POST /v1/runs/run_c1e83207.../resolve-unknown {}  -> 400 invalid_params
+POST /v1/runs/run_c1e83207.../resolve-unknown
+     {"admission_id": "86e103ea...", "execution_generation": 7}
+-> 200 {"run_id": "run_c1e83207...", "status": "terminal", "outcome": "interrupted", "authority_epoch": 9, ...}
+GET /v1/runs/run_c1e83207...  -> "status": "cancelled"
+run_8cbd4b1d... then ran: "status": "completed", "output": "pong"
+```
+
+- Run status survives a restart. It is stored in the durable admission row.
+- A run cut off by a restart becomes `unknown`. Every later run in **that session** waits in `queued` until the
+  client sends `POST /v1/runs/{id}/resolve-unknown` with exactly `{admission_id, execution_generation}` from the
+  status. Then the cut-off run ends `cancelled`, and the queue moves on. The connector must do this, or the
+  session stalls. Whether the cut-off tool call ran to the end is not known; treat it as "maybe ran".
+- The `202` of `POST /v1/runs` says `"status": "started"` even when the run is queued. Read the real state from
+  `GET /v1/runs/{id}`.
+- The SSE stream of a run does not survive a restart (`404`). Poll the status instead.
+- An unknown id answers `404 {"error": {"code": "run_not_found"}}`.
+- How long a finished run stays: 24 h after it ends (`retention_seconds`); not waited out live.
+- Statuses seen live: `queued`, `running`, `unknown`, `completed`, `cancelled`. In source also:
+  `waiting_for_approval`, `failed`, `interrupted`.
 
 ### 4. SSE
 
@@ -317,7 +343,8 @@ chats.
 | List runs | none | no |
 | Pull outbox | none | no |
 | Container reaches desktop | tailnet | yes |
-| Run survives a restart | `GET /v1/runs/{id}` | pending |
+| Run status survives a restart | `GET /v1/runs/{id}` | yes; a cut-off run is `unknown` |
+| Clear a cut-off run | `POST /v1/runs/{id}/resolve-unknown` | yes |
 
 ## Gaps that block a phase
 
@@ -331,9 +358,7 @@ chats.
    `hermes-docker` in the Tailscale policy, then `curl http://hermes-docker:9119/` from the desktop fails.
 4. **Clarify is off (blocks a clarify feature only).** Unblock: turn on the `clarify` toolset for `api_server`
    and probe `clarify.request`. Not needed for the first phase.
-5. **Restart behavior (Q3) pending.** Unblock: the user restarts Hermes once; then `GET /v1/runs/{id}` of the
-   spike runs answers.
-6. **Listener needs setup (blocks the Hermes-to-Pi phase).** Unblock: card Hermes 1.4 adds the MCP endpoint and
+5. **Listener needs setup (blocks the Hermes-to-Pi phase).** Unblock: card Hermes 1.4 adds the MCP endpoint and
    the Hermes `mcp_servers` entry; a probe shows one tool call with a `request_id` arriving once.
 
 ## Sources
