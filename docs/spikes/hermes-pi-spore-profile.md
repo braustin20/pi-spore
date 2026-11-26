@@ -5,15 +5,16 @@
   (card Hermes 0.2). Those two docs stay as the record of what was planned and probed then. This doc adds newer
   facts and one correction. Where they differ, this doc wins.
 - Decision that uses these facts: [ADR 0202](../decisions/0202-hermes-remote-teammate.md).
-- Status: **operator setup done on Unraid; nothing probed from the desktop yet.**
+- Status: **operator setup done on Unraid. Key moved to the desktop and auth probed from the desktop on
+  2026-11-25 (card Hermes 0.4).**
 
 ## How each fact is marked
 
 - **operator-reported, verified inside the container**: the operator (Homelab Maintainer, for the user) ran the
   check inside the Hermes container on Unraid on 2026-11-26 and reported the result. No pi-spore agent saw it.
 - **operator-reported**: the operator reported a setting or an action. No check result came with it.
-- **probed from the desktop**: a live request from the desktop by a card. **No fact in this doc has this mark yet.**
-  Card Hermes 0.4 adds the first ones.
+- **probed from the desktop**: a live request from the desktop by a card. Card Hermes 0.4 made the first ones, on
+  2026-11-25 at 20:29-20:30 -08:00, against Hermes 0.23.3.
 - **spike**: a fact from [hermes-protocol.md](hermes-protocol.md), probed on v0.23.3 against `homelab-maintainer`.
 
 No key, token, or `Authorization` value appears in this doc.
@@ -29,10 +30,31 @@ Operator-reported. Homelab Maintainer made a new profile `pi-spore` for pi-spore
 | Profile API root | `http://hermes-docker:8642/p/pi-spore` |
 | OpenAI-compatible base | `http://hermes-docker:8642/p/pi-spore/v1` |
 | Advertised model id | `pi-spore` |
-| Desktop key file (planned) | `~/.pi-spore/hermes/pi-spore.key`, folder `0700`, file `0600` |
+| Desktop key file | `~/.pi-spore/hermes/pi-spore.key`, folder `0700`, file `0600` |
 
-The key is on Unraid only. The move to the desktop is **pending** (card Hermes 0.4). The old key
+These are the defaults of card Hermes 1.1 (`hermes.url`, `hermes.profile`, `hermes.keyFile`). The old key
 `~/.pi-spore/hermes/homelab-maintainer.key` from the spike is the old integration key. Card Hermes 0.5 retires it.
+
+## Key move to the desktop
+
+Card Hermes 0.4, 2026-11-25. The existing `pi-spore` key was moved. No new key was made.
+
+1. Probed from the desktop: no receiving key pair existed. A fresh RSA 4096 pair was made on the desktop with
+   `umask 077` in `~/.pi-spore/hermes/transfer/` (folder `0700`, `receive.key` `0600`). Only `receive.pub` left
+   the desktop.
+2. Operator-reported: Homelab Maintainer encrypted the existing key with RSA-OAEP, SHA-256, MGF1 SHA-256. It sent
+   the base64 of the ciphertext and its SHA-256 as chat text, not as an attachment.
+3. Probed from the desktop: the SHA-256 of the decoded 512-byte ciphertext **matched**
+   (`d7efcde19c90390494492ad19184e5243cec9da3bb6927341800bee5fdee0cb0`).
+4. Probed from the desktop: `openssl pkeyutl -decrypt ... -out ~/.pi-spore/hermes/pi-spore.key` wrote the key
+   straight to its file, never to stdout. Only its mode and length were checked:
+
+```text
+drwx------ <user> ~/.pi-spore/hermes
+-rw------- <user> 64 bytes ~/.pi-spore/hermes/pi-spore.key   (no newline, no non-printable bytes)
+```
+
+The receiving pair and the transfer files stay in place until card Hermes 0.5.
 
 ## What the profile does not have
 
@@ -69,7 +91,22 @@ Operator-reported, verified inside the container.
 | default profile key on `/p/pi-spore/...` | 401 |
 | `homelab-maintainer` key on `/p/pi-spore/...` | 401 |
 
-Not yet checked from the desktop (card Hermes 0.4).
+Probed from the desktop (card Hermes 0.4), with the key read from its file:
+
+| Request | Key | Result |
+|---|---|---|
+| `GET /p/pi-spore/health` | none | 200, `"version": "0.23.3"` |
+| `GET /p/pi-spore/v1/capabilities` | `pi-spore` | 200. Every required flag from spike Q1 is `true`. No `clarify` flag. |
+| `GET /p/pi-spore/v1/capabilities` | none | 401 `gateway_auth_failed` |
+| `GET /p/pi-spore/v1/models` | `pi-spore` | 200, model ids `["pi-spore"]` |
+| `GET /p/homelab-maintainer/v1/capabilities` | `pi-spore` | 401 `gateway_auth_failed` |
+| `GET /p/pi-spore/v1/capabilities` | `homelab-maintainer` | 401 `gateway_auth_failed` |
+| `GET /p/pi-spore/api/sessions?limit=50` | `pi-spore` | 200, 3 sessions, all source `api_server`, none of `homelab-maintainer` |
+
+The capabilities `model` field says `hermes-agent`; `/v1/models` says `pi-spore`. Card 1.1 checks `/v1/models`.
+
+The sessions (ids only, messages not read): `pi-spore-fallback-9f6d53fba0e8`, `pi-spore-setup-4c6b9dec5cd2`,
+`pi-spore-setup-d71f82403bbe`. The default profile's endpoint was not probed from the desktop.
 
 ## Profile config
 
@@ -103,6 +140,11 @@ Operator-reported, verified inside the container.
   - `gateway_runtime.fallback_active: true`.
 - The run API's runtime provider and model fields were **blank** in this build. Blank fields are not proof that
   routing failed. Read the provider and model from the session record.
+
+Probed from the desktop (card Hermes 0.4): `POST /p/pi-spore/v1/runs` "Reply with the word pong and nothing else."
+with `Idempotency-Key: pi-spore-migration-ik-1` and session `pi-spore-migration-1` answered 202, then `completed`
+with output `pong`. Run runtime provider and model were blank. The session record showed model `gpt-6.1-sol` and no
+provider field.
 
 So Codex `gpt-6.1-sol` is the configured **fallback**, not the primary. Hermes owns this routing. pi-spore does not
 change it (ADR 0202).
@@ -158,14 +200,11 @@ Hermes 0.6, separate from pi-spore's work.
 
 Do not mark these done until a card proves them:
 
-- desktop reach of `/p/pi-spore` with the `pi-spore` key, and the auth table above from the desktop (card 0.4);
-- the key move to the desktop (card 0.4);
 - a positive human approval (`once`) that allows only the intended step (card 1.5);
 - the approval timeout: an unanswered approval is blocked after `approvals.timeout` (card 1.5);
 - approval and clarify round trips through the pi-spore UI (card 1.5);
 - a clarify round trip at all: `clarify.request` on `/v1/runs`, then an answer (card 1.5);
-- the Hermes-to-Pi MCP listener and its Hermes `mcp_servers` entry (cards 1.3, 1.4, 1.5);
-- the Hermes version on the container today. The spike saw 0.23.3. This setup did not report one.
+- the Hermes-to-Pi MCP listener and its Hermes `mcp_servers` entry (cards 1.3, 1.4, 1.5).
 
 ## What happens to the spike's gaps
 
@@ -174,7 +213,7 @@ Do not mark these done until a card proves them:
 | 1. Dangerous commands run without approval | Corrected above. `deny` blocks on `pi-spore`. The rest is card 1.5. |
 | 2. The key reads every session of the profile | Accepted: the `pi-spore` profile holds only pi-spore and setup-test sessions (ADR 0202). |
 | 3. Dashboard on 9119 | Card 0.6. No auth bypass shown. |
-| 4. Clarify is off | The `clarify` toolset is on for `pi-spore` (operator-reported). Round trip not verified. |
+| 4. Clarify is off | The `clarify` toolset is on for `pi-spore` (operator-reported). Capabilities still show no `clarify` flag (probed from the desktop). Round trip not verified. |
 | 5. Listener needs setup | Still open: cards 1.3 and 1.4. |
 
 The Evidence table of [hermes-setup.md](hermes-setup.md) was never filled in. The spike's probes reached
