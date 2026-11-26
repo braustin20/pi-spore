@@ -13,9 +13,10 @@ The listener already binds the desktop's Tailscale IPv4 address only, never `0.0
 `<ip>:<port>` as `Host`, with its own token. The grant is the second lock: with it, a stranger on the tailnet cannot
 even complete a TCP connection, so the token is never the only thing between a random device and a `401`.
 
-Placeholders: `<desktop-tailscale-ip>` is the desktop's Tailscale IPv4 address (the address the listener bound; see
-[mcp-entry.md](mcp-entry.md)); `<hermes.mcp.port>` is pi-spore's setting for this port, default `7430`;
-`tag:hermes-docker` is whatever the policy calls the Unraid node — a device name works too.
+Placeholders: `<desktop-tailscale-ip>` and `<hermes-docker-tailscale-ip>` are the two Tailscale IPv4 addresses (the
+desktop's comes from the address the listener bound; see [mcp-entry.md](mcp-entry.md)); `<hermes.mcp.port>` is
+pi-spore's setting for this port, default `7430`; `desktop` and `hermes-docker` are the names the policy file gives
+those two nodes — a `hosts` alias, a device name, or a tag, whatever the rest of the file uses.
 
 ## How a Tailscale policy works here, and what that means
 
@@ -34,49 +35,66 @@ rule, and anything no rule accepts is already blocked. So:
 Read the current policy out of the Tailscale admin console first and keep a copy as the "before" evidence.
 
 1. **Find every rule or grant that matches this port for anyone other than `hermes-docker`.** Look for `*`,
-   `autogroup:member`, `autogroup:admin`, any group or tag that contains another device, and any `dst` with `*` or a
-   port range covering `<hermes.mcp.port>`, on either side.
-2. **Narrow each one** so it no longer covers `<desktop-tailscale-ip>:<hermes.mcp.port>` — exclude that destination,
-   or drop the port from the range, or narrow the source list. Change nothing else; in particular leave the desktop's
-   main-server rules as ADR 0143 has them.
-3. **Add the one narrow grant for this port.** In an `acls` rule this is:
+   `autogroup:member`, `autogroup:admin`, any group or tag that contains another device, and any `ip` or `dst` entry
+   with `*` or a port range covering `<hermes.mcp.port>`, on either side.
+2. **Narrow each one** so it no longer covers this port on the desktop — exclude that destination, drop the port from
+   the range, or narrow the source list. Change nothing else; in particular leave the desktop's main-server rules as
+   ADR 0143 has them.
+3. **Add the one narrow grant for this port.** A grant keeps the destination identity and the protocol and port apart:
+   `dst` names the node, `ip` names `tcp:<port>`. Same shape as
+   [hermes-setup.md](../../spikes/hermes-setup.md) §1.7, which uses it for the reverse direction:
 
-   ```json
+   ```jsonc
    {
-     "action": "accept",
-     "src": ["tag:hermes-docker"],
-     "dst": ["<desktop-tailscale-ip>:<hermes.mcp.port>"]
+     "hosts": {
+       "desktop": "<desktop-tailscale-ip>",
+       "hermes-docker": "<hermes-docker-tailscale-ip>"
+     },
+     "grants": [
+       // Only the Hermes container's node may reach the pi-spore MCP port on the desktop.
+       { "src": ["hermes-docker"], "dst": ["desktop"], "ip": ["tcp:<hermes.mcp.port>"] }
+       // ... your other rules ...
+     ]
    }
    ```
 
-   A `grants` entry with the same `src` and `dst` is equivalent; use whichever form this tailnet's policy is written
-   in, and keep it consistent with the rest of the file.
+   `ip: ["tcp:<hermes.mcp.port>"]` is what makes this TCP-only and this-port-only: no `udp`, no range, no `*`.
+   The `hosts` names stand for the two Tailscale IPv4 addresses; if the desktop is ever removed from the tailnet and
+   added back, its address changes and `hosts` has to be updated — and the listener URL in step S4 with it.
+
+   If this tailnet's policy still uses the older `acls` section, the same rule is the port-qualified form the spike
+   shows for it — `dst` carries the port there, unlike `grants`:
+
+   ```jsonc
+   { "action": "accept", "src": ["hermes-docker"], "dst": ["desktop:<hermes.mcp.port>"] }
+   ```
+
+   Use whichever section the file is written in, and keep it consistent with the rest of the file. Do not mix them:
+   an `acls` rule cannot go in `grants`, and a grants entry does not take a port in `dst`.
 
 4. **Add the tests.** One accept for the node that must reach it, and one deny for **every other device** — each one
    named, because `autogroup:member` cannot be used in a deny test here: it contains `hermes-docker` too, so that test
    would fail against a correct policy.
 
-   ```json
+   ```jsonc
    "tests": [
-     {
-       "src": "tag:hermes-docker",
-       "accept": ["<desktop-tailscale-ip>:<hermes.mcp.port>"]
-     },
-     {
-       "src": "tag:<other-device-tag>",
-       "deny": ["<desktop-tailscale-ip>:<hermes.mcp.port>"]
-     }
+     { "src": "hermes-docker", "accept": ["desktop:<hermes.mcp.port>"] },
+     // Repeat for each other tailnet device or user you have, for example a phone:
+     { "src": "<other-user-or-device>", "deny": ["desktop:<hermes.mcp.port>"] }
    ]
    ```
+
+   In a `tests` entry the `dst` is `<host>:<port>` in both policy styles.
 
    Enumerate the other devices from the admin console's machine list at apply time and add one deny test each: every
    other tailnet node, container host, phone, and laptop. A device that shares a node is not a separate source — see
    the test note below.
 
-**Check before applying.** The exact field names and quoting of `grants`, `acls`, and `tests` in this tailnet's policy
-file (JSON or HuJSON) are operator-side, and the admin console validates them on save — that validation is the check.
-If the console rejects the shape above, use the form the console's own editor documents, keep the meaning (one narrow
-accept, one test per other device), and record the saved text in the evidence table rather than inventing a variant.
+**Check before applying.** The names this file uses for the two nodes (`hosts` aliases, tags, or bare device names) are
+operator-side, and the admin console validates the policy on save — that validation is the check. If the console
+rejects the shape above, use the form the console's own editor documents, keep the meaning (one narrow TCP grant for
+this port to one node, one deny test per other device), and record the saved text in the evidence table rather than
+inventing a variant.
 
 Do not add anything else:
 
@@ -151,6 +169,16 @@ server keeps its loopback, `Host`, and `Origin` guards (ADR 0143, ADR 0202 §10)
 
 ## Rollback
 
-Delete the grant for this port, restore each narrowed rule to its "before" text, and delete the `tests` entries for
-this port — then save, and confirm the policy still saves clean. Then confirm test 1 now fails from `hermes-docker`
-too; a "connection refused" from `hermes-docker` is the expected answer. See [runbook.md](runbook.md#rollback).
+Order matters, because the policy will stop proving anything once the broad rules come back.
+
+1. Turn the listener off first (pi-spore Settings, `hermes.mcp.enabled: false`). The settings check closes the port,
+   so a client gets "connection refused". Confirm that from `hermes-docker`: test 1 must fail **while the grant and the
+   tests are still in place**. That is the last piece of policy evidence you can collect.
+2. Then delete the grant and the `tests` entries for this port, and restore each rule you narrowed. Save.
+3. Confirm the saved policy matches the "before" copy you kept, apart from anything unrelated that moved in the
+   meantime. Diff the two texts and keep that as the restoration evidence.
+
+Expect the port to answer again from every node after step 3: a broad rule that allows it does so for all of them, and
+restoring it restores that reach. That is why step 1 comes first. Once the broad allowances are back, the only thing
+keeping the port closed is the listener being off — so a later "denied" result proves the shutdown, not the policy, and
+must not be recorded as a deny test. See [runbook.md](runbook.md#rollback).
