@@ -11,13 +11,21 @@ explicit yes**. See [runbook.md](runbook.md).
 ## Rules for the whole procedure
 
 - The token is printed **nowhere**: not to a terminal, not into a log, transcript, chat answer, artifact, or commit.
-  Every command below reads or writes a file, never an argument that holds the secret.
-- It is never in `argv`, never in a prompt, and never in `settings.json`. `hermes.keyFile` and pi-spore's settings
-  hold paths, never values.
-- The token is narrow: it only calls the four `pi_spore` MCP tools. It is **not** pi-spore's user token
-  (`~/.pi-spore/token`) and **not** the Hermes API key (`~/.pi-spore/hermes/pi-spore.key`). Keep the three apart: a
-  leak of this one costs a stranger nothing but a refused request, because every request still needs the user's
-  Accept on Home.
+  Every command below reads or writes a file, and no command passes the secret as an argument to an external program.
+  (A shell builtin such as `printf` is fine: it runs in the shell, so no argument list is written anywhere.)
+- It is never in the `argv` of an external program, never in a prompt, and never in `settings.json`.
+  `hermes.keyFile` and pi-spore's settings hold paths, never values.
+- The token is scoped to the four `pi_spore` MCP tools. It is **not** pi-spore's user token (`~/.pi-spore/token`) and
+  **not** the Hermes API key (`~/.pi-spore/hermes/pi-spore.key`), so a leak of this one does not open the workbench or
+  the Hermes API. It is still a real secret, because a holder who can reach the listener can:
+  - read the allowed workspace and project names with `list_targets`;
+  - read a request's stored result with `get_request`, for any `request_id` they know;
+  - cancel a pending, accepted, or running request with `cancel_request`, without a fresh Accept — the chat is told to
+    stop, and steps it already finished are not undone;
+  - add pending requests, which appear on the user's Home, up to the rate cap (120 a minute).
+  What the token cannot do is make a Pi chat work on anything: only the user's Accept on Home starts a chat, and the
+  token cannot give it one. That is why the blast radius stops at disclosure, cancellation, and junk items — not at
+  "nothing".
 - Only two things may leave the desktop: the base64 of the RSA-OAEP ciphertext, and the SHA-256 of that ciphertext.
   Both are one-shot and safe to paste in chat. Ciphertext for the *other* direction's key must never be reused.
 - No SSH, on the user's decision of 2026-11-25. Homelab Maintainer runs the Unraid side inside the Hermes container
@@ -36,13 +44,21 @@ mkdir -p ~/.pi-spore/hermes
 chmod 700 ~/.pi-spore/hermes
 openssl rand -hex 32 > ~/.pi-spore/hermes/mcp.token
 chmod 600 ~/.pi-spore/hermes/mcp.token
-ls -ln ~/.pi-spore/hermes/mcp.token          # -rw------- (0600), 64 bytes
+ls -ln ~/.pi-spore/hermes/mcp.token          # -rw------- (0600), 65 bytes
 ls -lnd ~/.pi-spore/hermes                   # drwx------ (0700)
 ```
 
-Nothing above echoes the value. Do not add `cat`, and do not "check" the file by printing it: `ls -ln` and byte count
-are the whole check. If pi-spore reports `503 mcp_token_unusable`, or its log says the listener could not read its
-token, the file or its folder mode is wrong — the error names the path only, never the content.
+The file is **65 bytes**: 64 hex characters plus the newline `>` adds. That is correct — the loader trims it, and the
+token is the 64 characters. Do not "fix" the length with `tr -d` or `printf`: the file is read once by the loader, and
+rewriting it risks putting the value on a command line.
+
+Nothing above echoes the value. Do not add `cat`, and do not "check" the file by printing it: `ls -ln` and the byte
+count are the whole check.
+
+If the token file is missing, unreadable, too open, or empty, the listener **does not open at all**: the listener state
+says `failed` and names the path, and the port answers nothing — not even a `401`. The `503 mcp_token_unusable` answer
+belongs to a different case: the file went bad while the listener was already open. Both name the path only, never the
+content.
 
 Keep the file. It is the source for every later rotation, and the listener needs it to stay.
 
@@ -55,7 +71,8 @@ direction.
 The transfer folder below is `/opt/data/pi-spore-bridge/transfer` — the profile's own terminal working directory
 (`terminal.cwd`), which the profile already uses for bridge files
 ([hermes-pi-spore-profile.md](../../spikes/hermes-pi-spore-profile.md)). The folder name is the operator's choice;
-anywhere inside `/opt/data` that is not a Hermes home works.
+anywhere inside `/opt/data` that is not a Hermes home works. Only the **ciphertext** and the key pair are ever written
+to disk there; the decrypted token never touches a file (step 2c).
 
 ### 2a. Unraid makes the pair
 
@@ -110,38 +127,58 @@ sha256sum mcp.token.enc
 Compare that hash with text 2 **before** decrypting. A mismatch means a bad paste: delete `mcp.token.enc`, ask for
 texts 1 and 2 again. Do not retry a decrypt on a mismatched file.
 
-Still in that shell, write it into the profile's `.env`. No value is ever an argument or a screen output: the `printf`
-format string is the only literal, and the token arrives by file redirect.
+Still in that shell, write it into the profile's `.env`. The decrypted token goes into a **shell variable only**: no
+plaintext file is ever created, nothing is printed, and no external program gets the value as an argument.
 
 ```bash
+# 1. prove the ciphertext decrypts for this key, writing nothing
 openssl pkeyutl -decrypt -inkey receive.key \
   -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 \
-  -in mcp.token.enc -out mcp.token
-tr -d '\n' < mcp.token > mcp.token.flat
+  -in mcp.token.enc -out /dev/null
+# 2. the token into a shell variable; command substitution drops the trailing newline, so it holds 64 characters
+tok=$(openssl pkeyutl -decrypt -inkey receive.key \
+  -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256 -pkeyopt rsa_mgf1_md:sha256 \
+  -in mcp.token.enc)
+# 3. check the length only, never the value
+[ "$(printf %s "$tok" | wc -c)" -eq 64 ] || { echo "not 64 characters: stop, do not write"; }
+# 4. replace the line: one delete, one append. printf is a shell builtin, so nothing is exec'd and nothing prints
 sed -i '/^PI_SPORE_MCP_TOKEN=/d' /opt/data/profiles/pi-spore/.env
-{ printf 'PI_SPORE_MCP_TOKEN='; cat mcp.token.flat; printf '\n'; } >> /opt/data/profiles/pi-spore/.env
+printf 'PI_SPORE_MCP_TOKEN=%s\n' "$tok" >> /opt/data/profiles/pi-spore/.env
+unset tok
 ```
 
-Then the checks that do not print it, and the cleanup, still in that shell:
+Only decrypt and write once step 1 and the length check pass. The two lines of step 4 belong together: if anything
+between them fails, the line is simply absent, Hermes then refuses the connect and names `PI_SPORE_MCP_TOKEN`, and the
+fix is to run step 4 again. That state is visible and safe — a placeholder is never sent.
+
+Run this in a plain `sh` inside the container, as above: it keeps no history file. Do not export the variable, do not
+`echo` it, and do not paste the value into any other command.
+
+Then the checks that do not print it, still in that container shell — note that the glob has to expand **inside** the
+container, where `/opt/data` lives:
 
 ```bash
 ls -ln /opt/data/profiles/pi-spore/.env
 grep -c '^PI_SPORE_MCP_TOKEN=' /opt/data/profiles/pi-spore/.env     # 1
 awk -F= '/^PI_SPORE_MCP_TOKEN=/{print length($2)}' /opt/data/profiles/pi-spore/.env   # 64
-rm -f mcp.token mcp.token.flat mcp.token.enc
+grep -l '^PI_SPORE_MCP_TOKEN=' /opt/data/profiles/*/.env /opt/data/.env 2>/dev/null
 exit
 ```
 
 - `.env` keeps the owner and mode it had before the edit — the same rule the spike used for `API_SERVER_KEY`.
-- One `PI_SPORE_MCP_TOKEN=` line only, in **this profile's** `.env`, not in the shared `<hermes-data>/.env`: an entry
-  in the wrong file reaches other profiles. Check with
-  `docker exec <container> grep -l "^PI_SPORE_MCP_TOKEN=" /opt/data/profiles/*/.env /opt/data/.env` and expect only
-  `profiles/pi-spore/.env`.
-- Keep `receive.key`, `receive.pub`, and the desktop's `transfer/` files until step S6's evidence run proves the
-  connection, then delete them:
-  `docker exec <container> rm -f /opt/data/pi-spore-bridge/transfer/receive.key /opt/data/pi-spore-bridge/transfer/receive.pub`
-  (use `shred -u` instead of `rm -f` if the image has it — check before applying). On the desktop:
-  `rm -rf ~/.pi-spore/hermes/transfer`.
+- The last check prints file names only, never contents, and expects exactly
+  `/opt/data/profiles/pi-spore/.env`. One `PI_SPORE_MCP_TOKEN=` line only, in **this profile's** `.env`, never in the
+  shared `<hermes-data>/.env`: an entry in the wrong file reaches other profiles. Running that check as
+  `docker exec <container> grep … '/opt/data/profiles/*/.env'` is wrong: the host shell expands the glob before Docker
+  runs, finds nothing, and hands grep a literal `*` that never matches. Stay in the container shell, or quote the
+  pattern and run it as `docker exec <container> sh -c 'grep -l … /opt/data/profiles/*/.env'`.
+- Keep `receive.key`, `receive.pub`, and `mcp.token.enc` until step S6's evidence run proves the connection, then
+  delete them: `rm -f receive.key receive.pub mcp.token.enc` in the transfer folder (use `shred -u` instead of `rm -f`
+  if the image has it — check before applying).
+- On the desktop, delete **only this card's** files:
+  `rm -f ~/.pi-spore/hermes/transfer/unraid-receive.pub ~/.pi-spore/hermes/transfer/mcp.token.enc`. Do not
+  `rm -rf ~/.pi-spore/hermes/transfer`: the card Hermes 0.4 receiving pair lives there, and
+  [hermes-pi-spore-profile.md](../../spikes/hermes-pi-spore-profile.md) keeps it until card Hermes 0.5 retires it.
 - **Check before applying:** whether a `.env` change is picked up on the next MCP connect or needs a gateway restart.
   The safe move is `docker exec <container> hermes gateway restart`, which the spike used for an `API_SERVER_KEY`
   change.
