@@ -1619,6 +1619,34 @@ describe("bridge routes for a run (R7.3)", () => {
     expect(refused.status).toBe(403);
     expect(await refused.json()).toMatchObject({ error: { code: "not_coordinator" } });
   });
+
+  it("refuses ask_hermes in a lane chat, so Hermes is no side channel between lanes (ADR 0202, R7.5)", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "lane-hermes");
+    const { run, coordinator } = await createRun(server, projectId, "lane-hermes");
+    await artifacts.write(
+      { scope: "workspace", id: run.workspaceId },
+      "briefs/one.md",
+      "Build one",
+    );
+    await json(
+      await asAgent(server, coordinator.agentId, run.workspaceId)("POST", "lanes", {
+        name: "one",
+        brief: "briefs/one.md",
+        wave: 1,
+        pipeline: "p",
+      }),
+      201,
+    );
+    const { asWorker, asCoordinator } = await laneWithWorker(server, run, coordinator);
+    const ask = { kind: "question", text: "ping?" };
+    const refused = await asWorker("POST", "hermes/asks", ask);
+    expect(refused.status).toBe(403);
+    expect(await refused.json()).toMatchObject({ error: { code: "hermes_refused" } });
+    // The coordinator is no lane chat: it passes, and only the missing hermes module stops it here.
+    const coordinatorAsk = await asCoordinator("POST", "hermes/asks", ask);
+    expect(await coordinatorAsk.json()).toMatchObject({ error: { code: "not_supported" } });
+  });
 });
 
 describe("questions up the chain (R7.5, ADR 0008)", () => {

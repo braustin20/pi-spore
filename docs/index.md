@@ -40,7 +40,7 @@ section, update this map in the same change.
 - [11f. Artifacts](architecture.md#11f-artifacts): files per workspace and per project, outside Git.
 - [11g. Agent graph](architecture.md#11g-agent-graph): the live graph of every working agent.
 - [11h. Remote peers (Hermes)](architecture.md#11h-remote-peers-hermes): the Hermes profile `pi-spore` as a remote
-  teammate, the connector, the MCP listener, and the trust boundary with its ports.
+  teammate, the connector, `ask_hermes` handoffs, the MCP listener, and the trust boundary with its ports.
 - [11. Unity module](architecture.md#11-unity-module): Unity detection, the Library copy, the editor lease, and
   test gates.
 - [12. Kanban](architecture.md#12-kanban): the board, cards, and how cards move with workspaces and runs.

@@ -43,8 +43,19 @@ export const RunStatusName = Type.Union([
   Type.Literal("interrupted"),
 ]);
 
-/** A control the run waits on. Its `prompt_id` is the `request_id` of the answer. */
-export const PendingControl = Open({ prompt_id: Type.String() });
+const Maybe = Type.Optional(Type.String());
+
+/**
+ * A control the run waits on. Its `prompt_id` is the `request_id` of the answer. The other fields are shown to the
+ * user when present; the spike did not see their names on a live approval, so none is required (card Hermes 1.5).
+ */
+export const PendingControl = Open({
+  prompt_id: Type.String(),
+  kind: Maybe,
+  command: Maybe,
+  description: Maybe,
+  question: Maybe,
+});
 
 // This build can leave the run's runtime fields blank. Blank means unknown, never a failure (ADR 0202 decision 7).
 const Blank = Type.Optional(Type.Union([Type.String(), Type.Null()]));
@@ -98,6 +109,7 @@ export const SessionMessage = Open({
   id: Type.Integer(),
   role: Type.String(),
   content: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+  tool_name: Blank,
 });
 
 /** `GET /api/sessions/{id}/messages`. */
