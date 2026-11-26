@@ -1821,3 +1821,59 @@ describe("start_helper", () => {
     expect(resolveCurrentSubagentCapabilityCeiling("s1")).toBeUndefined();
   });
 });
+
+describe("ask_hermes (ADR 0202 decision 9)", () => {
+  it("sends the ask with the tool call id as its receipt and returns the handoff id at once", async () => {
+    reply("POST /api/bridge/hermes/asks", {
+      status: 201,
+      body: { handoff: { id: "h1", state: "pending" } },
+    });
+    const result = await fakePi()
+      .tool("ask_hermes")
+      .execute("toolu_h", { kind: "task", text: "List /tmp.", title: "tmp" });
+    expect(seen).toEqual([
+      {
+        method: "POST",
+        path: "/api/bridge/hermes/asks",
+        auth: "Bearer agent-token",
+        receipt: "toolu_h",
+        body: { kind: "task", text: "List /tmp.", title: "tmp" },
+      },
+    ]);
+    expect(result.terminate).toBeUndefined();
+    expect(result.content[0]?.text).toContain("handoff h1");
+  });
+
+  it("says Hermes is not Homelab Maintainer, not a sandbox, and asks the user to approve", () => {
+    const tool = fakePi().tool("ask_hermes") as Tool & { description: string };
+    expect(tool.description).toContain("not Homelab Maintainer");
+    expect(tool.description).toContain("not a sandbox");
+    expect(tool.description).toContain("asks the user, not you");
+  });
+
+  it("cancels through the bridge with a receipt", async () => {
+    reply("POST /api/bridge/hermes/asks/h1/cancel", {
+      body: { handoff: { id: "h1", state: "running" } },
+    });
+    const result = await fakePi().tool("cancel_hermes_ask").execute("toolu_c", { id: "h1" });
+    expect(seen[0]).toMatchObject({
+      path: "/api/bridge/hermes/asks/h1/cancel",
+      receipt: "toolu_c",
+    });
+    expect(result.content[0]?.text).toContain("not undone");
+  });
+
+  it.each([
+    ["a workspace chat", {}, true],
+    ["the planner chat", { PI_SPORE_CHAT_KIND: "planner" }, true],
+    ["a run coordinator", { PI_SPORE_RUN_ROLE: "coordinator", PI_SPORE_RUN_ID: "U1" }, true],
+    ["a side chat", { PI_SPORE_CHAT_KIND: "side" }, false],
+    ["a stage chat", { PI_SPORE_CHAT_KIND: "stage", PI_SPORE_STAGE_ROLE: "worker" }, false],
+    ["a lane chat", { PI_SPORE_RUN_ROLE: "lane", PI_SPORE_RUN_ID: "U1" }, false],
+  ])("in %s registers it: %s", (_name, env, registered) => {
+    for (const [key, value] of Object.entries(env)) vi.stubEnv(key, value);
+    const pi = fakePi();
+    expect(pi.tools.has("ask_hermes")).toBe(registered);
+    expect(pi.tools.has("cancel_hermes_ask")).toBe(registered);
+  });
+});
