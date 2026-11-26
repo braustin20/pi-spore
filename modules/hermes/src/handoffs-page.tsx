@@ -111,17 +111,18 @@ export function ControlRow({
 }
 
 /**
- * The facts of a run Hermes lost track of, then the user's pick. Nothing is picked for the user. `resend` offers "Send
- * again" (handoffs); a chat run has none, since its session waits until the lost run is resolved.
+ * The facts of a run Hermes lost track of, then the user's pick. Nothing is picked for the user. "Mark as interrupted"
+ * is always there; `more` adds "Send again" and "Drop" (handoffs). A chat run gets neither: its session waits until
+ * the lost run is resolved.
  */
 export function Reconcile({
   load,
   act,
-  resend: canResend,
+  more,
 }: {
   load: () => Promise<HermesRunFacts>;
   act: (body: unknown) => Promise<void>;
-  resend: boolean;
+  more: boolean;
 }) {
   const { confirm, dialog } = useConfirm();
   const [facts, setFacts] = useState<HermesRunFacts | undefined>();
@@ -170,14 +171,16 @@ export function Reconcile({
             <Button size="sm" onClick={() => void act({ action: "interrupt" })}>
               Mark as interrupted
             </Button>
-            {canResend && (
-              <Button size="sm" onClick={() => void resend()}>
-                Send again
-              </Button>
+            {more && (
+              <>
+                <Button size="sm" onClick={() => void resend()}>
+                  Send again
+                </Button>
+                <Button size="sm" onClick={() => void act({ action: "drop" })}>
+                  Drop
+                </Button>
+              </>
             )}
-            <Button size="sm" onClick={() => void act({ action: "drop" })}>
-              Drop
-            </Button>
           </div>
         </>
       )}
@@ -327,7 +330,7 @@ export function Handoffs() {
             )}
             {handoff.state === "uncertain" && !handoff.resolution && (
               <Reconcile
-                resend
+                more
                 load={async () =>
                   parse(
                     HermesReconcile,

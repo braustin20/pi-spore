@@ -2001,7 +2001,8 @@ Hermes 1.4).
 - **Approvals and clarify, one path.** `src/controls.ts` holds the `hermes_controls` rows of handoffs and chat runs
   alike (the `handoff_id` column holds the owner: a handoff id or a chat run id, both from `host.newId`), the sync
   from `pending_controls`, and the answer: `open` to `answering`, the exact body, `expired` on a 409, 400, or 404 or
-  past its time. Both the handoff route and the chat route call it.
+  past its time. A refusal before sending (`hermes_not_ready`, `hermes_key_file`) opens it again, so the user can
+  answer once Hermes is ready. Both the handoff route and the chat route call it.
 - **Hermes to Pi (planned, card 1.3):** the listener's tools `list_targets`, `submit_request`, `get_request`, `cancel_request`, each
   deduped by `request_id`. A request becomes a Home approval. On Accept, a new workspace chat in a target from
   `hermes.inbound.projects` gets it, marked as remote input, not the user's approval. Results wait in the table until
@@ -2022,28 +2023,39 @@ Tests use the fake Hermes; they are not live proof (card Hermes 2.3).
   `pi-spore-chat-<id>` and stores the title and the optional project link (migrations namespace `hermes-chat`).
 - **Transcript.** `GET /api/hermes/chat/sessions/:id/messages?limit=&offset=&order=` passes Hermes's paging through
   (limit 1 to 200, default 100). Any session may be read. The page reads the newest 100 (`order=latest`), with
-  "Load older", and shows user, assistant (in `Markdown`), and tool messages.
+  "Load older", and shows user, assistant (in `Markdown`), and tool messages. Pages merge by message id, so reading
+  the newest page again (after a run ends, or on a snapshot) keeps the older pages shown and repeats nothing.
 - **Runs.** `POST /api/hermes/chat/sessions/:id/runs` `{ text }` stores a `hermes_chat_runs` row and posts the run
   with `Idempotency-Key` = the row id: no provider or model. One run per session at a time (409
-  `hermes_run_active`; a run left `unknown` and not picked counts). A post with no answer (a 5xx or a timeout) stays
-  `sending` with "Hermes did not answer, so the message may have reached it"; only the user's Retry (`POST
-  /api/hermes/chat/runs/:id/retry`) posts again, with the same key and the identical body. A refusal, or a check
-  that fails before sending, is `failed`. `POST .../:id/stop` sends `stop`; the page says completed steps are not
-  undone. No Steer: the connector does not read `run_steer`, and the spike did not probe the steer body.
+  `hermes_run_active`; a run left `unknown` counts until it is marked as interrupted). A post with no answer (a 5xx
+  or a timeout) stays `sending` with "Hermes did not answer, so the message may have reached it" and sets
+  `run_posted`; only the user's Retry (`POST /api/hermes/chat/runs/:id/retry`) posts again, with the same key and the
+  identical body. A refusal is `failed`. A check that fails before sending is `failed` only if no earlier try may have
+  reached Hermes (`run_posted` 0); otherwise the run stays `sending`, so no second run can start beside it. A Retry
+  24 h or more after the send (Hermes's key retention) sends nothing: the run ends `failed`, saying the first try may
+  have reached Hermes. The page shows the input of a run Hermes never got. `POST .../:id/stop` sends `stop`; the page
+  says completed steps are not undone. A stop that fails leaves `stopRequested` false. No Steer: the connector does
+  not read `run_steer`, and the spike did not probe the steer body.
 - **Relay.** A follower per run reads the run status, then the SSE stream, and publishes on topic
-  `hermes:session:<id>`: `delta` for text, `run` (the whole run view: state, tool rows, controls, provider and
-  model, error, `reconnecting`) for the rest. The subscription's snapshot holds the newest 20 runs, with the text
-  and tool rows seen in this server process. A drop after new frames resumes at once with `Last-Event-ID`; a drop
-  without, or Hermes down, reads the status, sets `reconnecting` ("Reconnecting: <why>"), and waits 1 s, doubling to
-  32 s. A restart follows every run not ended again from the first frame, so its text fills again. Off stops the
-  follower; opening the session follows again. The browser never talks to Hermes.
+  `hermes:session:<id>`: `delta` for text, with `seq` (1 for the run's first delta, then one more each), and `run`
+  (the whole run view: state, tool rows, controls, provider and model, error, `reconnecting`, and `textSeq`, the
+  deltas in its text) for the rest. The subscription's snapshot holds the newest 20 runs, with the text and tool
+  rows seen in this server process; a completed run's copy is dropped, since the stored transcript has it. The hub
+  sends deltas published while a snapshot was built after it, so the page skips a delta whose `seq` is not above the
+  run's `textSeq`. A snapshot (a reconnect) also reads the transcript again, since a run may have ended meanwhile. A
+  drop after new frames resumes at once with `Last-Event-ID`; a drop without, or Hermes down or off, reads the status
+  (off: nothing is sent), sets `reconnecting` ("Reconnecting: <why>"), and waits 1 s, doubling to 32 s, then looks
+  again, so it follows once Hermes is on. A restart follows every run not ended again from the first frame, so its
+  text fills again. The browser never talks to Hermes.
 - **Approvals and clarify.** Shown inline in the run, answered through `POST /api/hermes/chat/runs/:id/controls/
   :promptId` (`{choice}` `once` or `deny`, or `{answer}`), the shared answer path above. Each open control is also a
   Home notice (source `hermes-chat`, link `#/hermes/<session id>`); one answer closes both.
-- **Unknown.** A run Hermes left `unknown` stops being followed, gets a Home notice, and blocks new sends. The page
-  shows the reconcile view of card 1.2 (`GET .../:id/reconcile`): "Mark as interrupted" (`resolve-unknown` with
-  the exact pair, `POST .../:id/resolve` `{ action: "interrupt" }`) or "Drop". No "Send again": the session waits
-  until the lost run is resolved. pi-spore never picks.
+- **Unknown.** A run Hermes left `unknown` stops being followed, gets a Home notice, and blocks new sends: Hermes
+  holds every later run of the session until it is resolved, and the page says so. The page shows the reconcile
+  view of card 1.2 (`GET .../:id/reconcile`) with one pick, "Mark as interrupted" (`resolve-unknown` with the exact
+  pair, `POST .../:id/resolve` `{ action: "interrupt" }`). No "Send again" (it would only wait) and no "Drop" (it would
+  leave the session stuck). If the resolve fails and Hermes no longer calls the run unknown, its own end is stored, so
+  the session is free. pi-spore never picks.
 - **Page.** `#/hermes` and `#/hermes/:sessionId` (`src/chat-page.tsx`). A rail entry shows only while the status is
   not `disabled` (`RailItem.useVisible`); the page and the rail read `GET /api/hermes/status` every 5 s, which the
   server answers from its cache. Left: the profile, the status chip, the version or the failure detail (it names

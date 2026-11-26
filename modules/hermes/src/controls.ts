@@ -178,6 +178,15 @@ export function createControls(host: ServerHost, hermes: Hermes): Controls {
           (error.status === 409 || error.status === 400 || error.status === 404)
         )
           throw expire();
+        // The connector refused before sending (Hermes off, not ready, or no key): the user may answer again.
+        if (
+          error instanceof ApiError &&
+          (error.code === "hermes_not_ready" || error.code === "hermes_key_file")
+        ) {
+          setState(owner, promptId, "open");
+          homeItems.changed();
+          throw error;
+        }
         // No answer came back, yet Hermes may have taken the post. Only a run that still waits on the request may get
         // another; one that no longer does took it (or timed out). Unknown stays `answering` until the next sync.
         let waiting: boolean | undefined;

@@ -51,6 +51,7 @@ const run = (fields: Partial<HermesChatRun> = {}): HermesChatRun => ({
   runId: "run_1",
   stopRequested: false,
   text: "",
+  textSeq: 0,
   tools: [],
   controls: [],
   createdAt: 1,
@@ -68,7 +69,8 @@ const control = (fields: Partial<HermesControl>): HermesControl => ({
   ...fields,
 });
 
-type Answer = unknown | (() => unknown);
+/** A value, or a function of the full path (with its query). */
+type Answer = unknown | ((path: string) => unknown);
 
 /** A fake ApiClient: GET answers by path without its query, POSTs are recorded, topics are pushed by the test. */
 function fakeApi(answers: Record<string, Answer>) {
@@ -81,7 +83,7 @@ function fakeApi(answers: Record<string, Answer>) {
       const key = path.split("?")[0] as string;
       if (!(key in answers)) throw new Error(`No answer for ${path}`);
       const answer = answers[key];
-      return typeof answer === "function" ? (answer as () => unknown)() : answer;
+      return typeof answer === "function" ? (answer as (path: string) => unknown)(path) : answer;
     },
     send: async (method: string, path: string, body: unknown) => {
       sent.push({ method, path, body });
@@ -220,7 +222,19 @@ describe("the Hermes page", () => {
       "hermes/status": READY,
       "hermes/chat/sessions": { enabled: true, sessions: [] },
       "hermes/handoffs": { enabled: true, handoffs: [] },
-      projects: { projects: [] },
+      projects: {
+        projects: [
+          {
+            id: "p1",
+            name: "app",
+            slug: "app",
+            path: "/work/app",
+            vcs: "git",
+            traits: [],
+            createdAt: 1,
+          },
+        ],
+      },
     });
     const page = await render(fake);
     await click("New session");
@@ -230,9 +244,18 @@ describe("the Hermes page", () => {
     expect(page.textContent).toContain("Project (optional)");
     expect(button("Create")?.disabled).toBe(true);
     await type(page.querySelector("input") as HTMLInputElement, "Ping test");
+    const select = page.querySelector("select") as HTMLSelectElement;
+    await act(async () => {
+      select.value = "p1";
+      select.dispatchEvent(new Event("change", { bubbles: true }));
+    });
     await click("Create");
     expect(fake.sent).toEqual([
-      { method: "POST", path: "hermes/chat/sessions", body: { title: "Ping test" } },
+      {
+        method: "POST",
+        path: "hermes/chat/sessions",
+        body: { title: "Ping test", projectId: "p1" },
+      },
     ]);
   });
 
@@ -260,7 +283,7 @@ describe("the Hermes page", () => {
         }),
       ],
     });
-    await fake.push("hermes:session:s1", { type: "delta", runId: "r1", delta: "ted." });
+    await fake.push("hermes:session:s1", { type: "delta", runId: "r1", delta: "ted.", seq: 1 });
     expect(page.textContent).toContain("Listed.");
     expect(page.textContent).toContain("terminal: ls /tmp");
     expect(page.textContent).toContain("Provider unknown, model unknown.");
@@ -355,7 +378,7 @@ describe("the Hermes page", () => {
     expect(fake.sent).toEqual([{ method: "POST", path: "hermes/chat/runs/r2/retry", body: {} }]);
   });
 
-  it("shows what is known about a run Hermes lost, then offers interrupt or drop, never Send again", async () => {
+  it("shows what is known about a run Hermes lost, then offers only Mark as interrupted", async () => {
     const fake = fakeApi({
       "hermes/status": READY,
       "hermes/chat/sessions": { enabled: true, sessions: SESSIONS },
@@ -375,13 +398,103 @@ describe("the Hermes page", () => {
     await click("Check what is known");
     expect(page.textContent).toContain("Run status now: unknown");
     expect(page.textContent).toContain("Last tool started: terminal: rm -r /tmp/x");
+    expect(page.textContent).toContain(
+      "Hermes holds this session until the lost run is marked as interrupted.",
+    );
     expect(button("Send again")).toBeUndefined();
-    expect(button("Drop")).toBeDefined();
+    expect(button("Drop")).toBeUndefined();
+    expect(button("Send")?.disabled).toBe(true);
     expect(fake.sent).toEqual([]);
     await click("Mark as interrupted");
     expect(fake.sent).toEqual([
       { method: "POST", path: "hermes/chat/runs/r1/resolve", body: { action: "interrupt" } },
     ]);
+  });
+
+  it("skips a delta the snapshot already holds, so no text shows twice", async () => {
+    const fake = chat();
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", {
+      type: "snapshot",
+      runs: [run({ text: "po", textSeq: 1 })],
+    });
+    await fake.push("hermes:session:s1", { type: "delta", runId: "r1", delta: "po", seq: 1 });
+    await fake.push("hermes:session:s1", { type: "delta", runId: "r1", delta: "ng", seq: 2 });
+    expect(page.textContent).toContain("pong");
+    expect(page.textContent).not.toContain("popong");
+  });
+
+  it("reads the transcript again when a reconnect snapshot shows the run ended", async () => {
+    let stored: unknown[] = [{ id: 1, role: "user", content: "ping" }];
+    const fake = fakeApi({
+      "hermes/status": READY,
+      "hermes/chat/sessions": { enabled: true, sessions: SESSIONS },
+      "hermes/chat/sessions/s1/messages": () => ({ messages: [...stored].reverse() }),
+    });
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", {
+      type: "snapshot",
+      runs: [run({ text: "po", textSeq: 1 })],
+    });
+    // The socket drops; the run completes meanwhile; the new socket gets a fresh snapshot.
+    stored = [...stored, { id: 2, role: "assistant", content: "the reply" }];
+    await fake.push("hermes:session:s1", {
+      type: "snapshot",
+      runs: [run({ state: "completed" })],
+    });
+    await act(async () => undefined);
+    expect(page.textContent).toContain("the reply");
+  });
+
+  it("loads older messages, and keeps them when the newest page is read again", async () => {
+    // 150 stored messages, ids 1 to 150; the page reads 100 at a time from the newest.
+    let stored = Array.from({ length: 150 }, (_, index) => ({
+      id: index + 1,
+      role: "assistant",
+      content: `message ${index + 1}`,
+    }));
+    const fake = fakeApi({
+      "hermes/status": READY,
+      "hermes/chat/sessions": { enabled: true, sessions: SESSIONS },
+      "hermes/chat/sessions/s1/messages": (path: string) => {
+        const query = new URLSearchParams(path.split("?")[1]);
+        const offset = Number(query.get("offset"));
+        const limit = Number(query.get("limit"));
+        expect(query.get("order")).toBe("latest");
+        return { messages: [...stored].reverse().slice(offset, offset + limit) };
+      },
+    });
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [] });
+    expect(page.textContent).toContain("message 51");
+    expect(page.textContent).not.toContain("message 50 ");
+    await click("Load older");
+    expect(fake.gets).toContain(
+      "hermes/chat/sessions/s1/messages?limit=100&offset=100&order=latest",
+    );
+    const text = () => page.textContent ?? "";
+    expect(text()).toContain("message 1");
+    expect(text().indexOf("message 50")).toBeLessThan(text().indexOf("message 51"));
+    // A run ends: the newest page is read again, and the older pages stay.
+    stored = [...stored, { id: 151, role: "assistant", content: "message 151" }];
+    await fake.push("hermes:session:s1", { type: "run", run: run({ state: "completed" }) });
+    await act(async () => undefined);
+    expect(text()).toContain("message 151");
+    expect(text()).toContain("message 1");
+    expect(page.querySelectorAll(".md").length).toBe(151);
+  });
+
+  it("keeps the user's text on the page when Hermes never got it", async () => {
+    const fake = chat();
+    const page = await render(fake, "s1");
+    const { runId: _never, ...unsent } = run({
+      state: "failed",
+      input: "Please list /tmp.",
+      error: "Hermes is unreachable: no answer",
+    });
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [unsent] });
+    expect(page.textContent).toContain("Please list /tmp.");
+    expect(page.textContent).toContain("Hermes is unreachable: no answer");
   });
 
   it("shows a down Hermes plainly, and loads the sessions without a reload once it is back", async () => {

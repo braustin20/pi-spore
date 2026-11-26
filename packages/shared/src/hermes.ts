@@ -230,9 +230,13 @@ export const HermesChatRun = Type.Object({
   model: Type.Optional(Type.String()),
   error: Type.Optional(Type.String()),
   stopRequested: Type.Boolean(),
-  resolution: Type.Optional(Type.Union([Type.Literal("interrupted"), Type.Literal("dropped")])),
-  /** The reply text streamed so far in this server process. The stored transcript has the rest. */
+  resolution: Type.Optional(Type.Literal("interrupted")),
+  /**
+   * The reply text streamed so far in this server process; a completed run's text is in the stored transcript.
+   * `textSeq` counts the deltas in it, so a delta event with a `seq` at or below it is already in the text.
+   */
   text: Type.String(),
+  textSeq: Type.Integer(),
   tools: Type.Array(HermesChatTool),
   /** Set while the event stream is lost and pi-spore tries again, with why. */
   reconnecting: Type.Optional(Type.String()),
@@ -246,7 +250,13 @@ export type HermesChatRun = Static<typeof HermesChatRun>;
 export const HermesChatEvent = Type.Union([
   Type.Object({ type: Type.Literal("snapshot"), runs: Type.Array(HermesChatRun) }),
   Type.Object({ type: Type.Literal("run"), run: HermesChatRun }),
-  Type.Object({ type: Type.Literal("delta"), runId: Type.String(), delta: Type.String() }),
+  Type.Object({
+    type: Type.Literal("delta"),
+    runId: Type.String(),
+    delta: Type.String(),
+    /** 1 for the run's first delta, then one more for each. */
+    seq: Type.Integer(),
+  }),
 ]);
 export type HermesChatEvent = Static<typeof HermesChatEvent>;
 
@@ -265,9 +275,12 @@ export const SendHermesChatRequest = Type.Object(
 );
 export type SendHermesChatRequest = Static<typeof SendHermesChatRequest>;
 
-/** The user's pick for a chat run left `unknown`. No "Send again": the session waits until the run is resolved. */
+/**
+ * The user's pick for a chat run left `unknown`. Only "Mark as interrupted": Hermes holds every later run of the session
+ * until the lost run is resolved, so "Send again" would only wait, and "Drop" would leave the session stuck.
+ */
 export const ResolveHermesChatRunRequest = Type.Object(
-  { action: Type.Union([Type.Literal("interrupt"), Type.Literal("drop")]) },
+  { action: Type.Literal("interrupt") },
   { additionalProperties: false },
 );
 export type ResolveHermesChatRunRequest = Static<typeof ResolveHermesChatRunRequest>;

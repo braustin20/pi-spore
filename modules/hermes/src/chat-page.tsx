@@ -31,7 +31,7 @@ import {
   Textarea,
   type Tone,
 } from "@pi-spore/ui";
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ControlRow, Handoffs, Reconcile } from "./handoffs-page.js";
 
 /** How often the status is read again. The server answers from its cache, so this sends Hermes nothing. */
@@ -244,7 +244,8 @@ function RunBlock({ run }: { run: HermesChatRun }) {
   const live = !ENDED.has(run.state);
   return (
     <div className="flex flex-col gap-2 border-l-2 border-line pl-3 text-sm">
-      {live && (
+      {/* Not in the stored transcript yet: a live run's input, or one Hermes never got. */}
+      {(live || !run.runId) && (
         <div className="flex flex-col gap-1 self-end rounded-lg bg-raised px-3 py-2">
           <span className="text-xs font-medium text-muted">You</span>
           <span className="break-words whitespace-pre-wrap">{run.input}</span>
@@ -302,8 +303,13 @@ function RunBlock({ run }: { run: HermesChatRun }) {
         )}
       </div>
       {run.state === "unknown" && !run.resolution && (
+        <span className="text-muted">
+          Hermes holds this session until the lost run is marked as interrupted.
+        </span>
+      )}
+      {run.state === "unknown" && !run.resolution && (
         <Reconcile
-          resend={false}
+          more={false}
           load={async () =>
             parse(
               HermesRunFacts,
@@ -318,12 +324,17 @@ function RunBlock({ run }: { run: HermesChatRun }) {
   );
 }
 
-/** Applies one event of the session topic to the runs shown. */
+/**
+ * Applies one event of the session topic to the runs shown. A delta whose `seq` the run's text already holds is
+ * skipped: a snapshot built while deltas came in has them, and the hub sends them again after it.
+ */
 function reduce(runs: HermesChatRun[], event: HermesChatEvent): HermesChatRun[] {
   if (event.type === "snapshot") return event.runs;
   if (event.type === "delta")
     return runs.map((run) =>
-      run.id === event.runId ? { ...run, text: run.text + event.delta } : run,
+      run.id === event.runId && event.seq > run.textSeq
+        ? { ...run, text: run.text + event.delta, textSeq: event.seq }
+        : run,
     );
   const index = runs.findIndex((run) => run.id === event.run.id);
   return index === -1
@@ -334,13 +345,17 @@ function reduce(runs: HermesChatRun[], event: HermesChatEvent): HermesChatRun[] 
 function SessionView({ session, ready }: { session: HermesChatSession; ready: boolean }) {
   const api = useApi();
   const [messages, setMessages] = useState<HermesChatMessages["messages"] | undefined>();
+  const messagesRef = useRef<HermesChatMessages["messages"] | undefined>(undefined);
   const [more, setMore] = useState(false);
   const [runs, setRuns] = useState<HermesChatRun[]>([]);
   const [text, setText] = useState("");
   const [error, setError] = useState<string | undefined>();
   const id = session.id;
 
-  /** The newest page, oldest first. Hermes pages from the newest with `order=latest`. */
+  /**
+   * A page counted from the newest (`order=latest`). Pages merge by message id, so a reload of the newest page keeps
+   * the older ones shown, and a page that overlaps after new messages came in repeats nothing.
+   */
   const loadMessages = useCallback(
     (offset = 0) =>
       api
@@ -348,9 +363,15 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
           `hermes/chat/sessions/${encodeURIComponent(id)}/messages?limit=${PAGE}&offset=${offset}&order=latest`,
         )
         .then((body) => {
-          const page = parse(HermesChatMessages, body, "Hermes messages").messages.reverse();
-          setMore(page.length === PAGE);
-          setMessages((shown) => (offset === 0 ? page : [...page, ...(shown ?? [])]));
+          const page = parse(HermesChatMessages, body, "Hermes messages").messages;
+          if (offset > 0 || messagesRef.current === undefined) setMore(page.length === PAGE);
+          setMessages((shown) => {
+            const byId = new Map((shown ?? []).map((entry) => [entry.id, entry]));
+            for (const entry of page) byId.set(entry.id, entry);
+            const merged = [...byId.values()].sort((a, b) => a.id - b.id);
+            messagesRef.current = merged;
+            return merged;
+          });
         })
         .catch((caught: unknown) => setError(message(caught))),
     [api, id],
@@ -363,15 +384,15 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
       api.subscribe(`hermes:session:${id}`, (event) => {
         const next = event as HermesChatEvent;
         setRuns((shown) => reduce(shown, next));
-        // An ended run is in the stored transcript now.
-        if (next.type === "run" && ENDED.has(next.run.state)) void loadMessages();
+        // An ended run is in the stored transcript now. A snapshot (a reconnect) may hold runs that ended meanwhile.
+        if (next.type === "snapshot" || (next.type === "run" && ENDED.has(next.run.state)))
+          void loadMessages();
       }),
     [api, id, loadMessages],
   );
 
-  const active = runs.find(
-    (run) => !ENDED.has(run.state) || (run.state === "unknown" && !run.resolution),
-  );
+  // A run left unknown holds the session in Hermes until it is marked as interrupted.
+  const active = runs.find((run) => !ENDED.has(run.state) || run.state === "unknown");
   const send = async () => {
     setError(undefined);
     try {

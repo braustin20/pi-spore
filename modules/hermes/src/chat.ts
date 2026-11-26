@@ -26,8 +26,10 @@ const ENDED: ReadonlySet<string> = new Set([
   "interrupted",
   "unknown",
 ]);
-/** Errors on a run post that mean nothing reached Hermes. Any other 5xx may have reached it. */
+/** Errors on a run post that mean this try sent nothing. Any other 5xx may have reached Hermes. */
 const NOT_SENT: ReadonlySet<string> = new Set(["hermes_not_ready", "hermes_key_file"]);
+/** How long Hermes keeps an Idempotency-Key (spike Q2). A later retry could start a second run. */
+const KEY_RETENTION_MS = 24 * 3_600_000;
 /**
  * The wait before following a run again after the stream was lost with no new frame, or Hermes did not answer. It
  * doubles to `RETRY_MAX_MS`. These differ from the status poll's waits, so tests can fire one without the other.
@@ -58,8 +60,10 @@ interface RunRow {
   provider: string | null;
   model: string | null;
   error: string | null;
+  /** 1 once a post may have reached Hermes, so the run may exist even with no `run_id`. */
+  run_posted: number;
   stop_requested: number;
-  resolution: "interrupted" | "dropped" | null;
+  resolution: "interrupted" | null;
   tool_started: string | null;
   tool_finished: string | null;
   created_at: number;
@@ -69,6 +73,8 @@ interface RunRow {
 /** What the stream showed in this process. A restarted pi-spore follows from the first frame, so it fills again. */
 interface Live {
   text: string;
+  /** Deltas in `text`. */
+  seq: number;
   tools: HermesChatTool[];
   last: string | undefined;
   reconnecting: string | undefined;
@@ -93,6 +99,7 @@ export const CHAT_MIGRATIONS = [
     provider TEXT,
     model TEXT,
     error TEXT,
+    run_posted INTEGER NOT NULL DEFAULT 0,
     stop_requested INTEGER NOT NULL DEFAULT 0,
     resolution TEXT,
     tool_started TEXT,
@@ -132,7 +139,7 @@ export function setupChat(
   const liveOf = (id: string) => {
     let entry = live.get(id);
     if (!entry) {
-      entry = { text: "", tools: [], last: undefined, reconnecting: undefined };
+      entry = { text: "", seq: 0, tools: [], last: undefined, reconnecting: undefined };
       live.set(id, entry);
     }
     return entry;
@@ -173,6 +180,7 @@ export function setupChat(
       ...Object.fromEntries(Object.entries(optional).filter(([, value]) => value != null)),
       stopRequested: row.stop_requested === 1,
       text: entry?.text ?? "",
+      textSeq: entry?.seq ?? 0,
       tools: entry?.tools ?? [],
       controls: controls.list(row.id, timeout),
       createdAt: row.created_at,
@@ -274,6 +282,8 @@ export function setupChat(
     update(id, fields);
     if (run.status === "unknown") homeItems.changed();
     await publishRun(id);
+    // A completed run's text and tools are in the stored transcript now, so the server keeps no copy.
+    if (run.status === "completed") live.delete(id);
     return ended;
   };
 
@@ -290,7 +300,13 @@ export function setupChat(
     switch (event.event) {
       case "message.delta":
         entry.text += event.delta;
-        publish(row.session_id, { type: "delta", runId: row.id, delta: event.delta });
+        entry.seq += 1;
+        publish(row.session_id, {
+          type: "delta",
+          runId: row.id,
+          delta: event.delta,
+          seq: entry.seq,
+        });
         return false;
       case "tool.started":
         entry.tools.push({
@@ -342,8 +358,8 @@ export function setupChat(
   const following = new Set<string>();
   /**
    * Follows a run until it ends or is `unknown`: the status first, then the SSE stream from the last frame seen in
-   * this process. A drop after new frames resumes at once; a drop without, or Hermes down, waits `RETRY_FIRST_MS`,
-   * doubling. Off stops it; opening the session again, or a restart, follows again. It never posts a run.
+   * this process. A drop after new frames resumes at once; a drop without, or Hermes down or off, waits
+   * `RETRY_FIRST_MS`, doubling. Off, it only reads settings until Hermes is on again. It never posts a run.
    */
   const follow = (id: string) => {
     if (following.has(id)) return;
@@ -352,10 +368,17 @@ export function setupChat(
       let failures = 0;
       while (true) {
         const row = load(id);
-        if (!row?.run_id || ENDED.has(row.state) || !(await options.enabled())) return;
+        if (!row?.run_id || ENDED.has(row.state)) return;
         const entry = liveOf(id);
         let progressed = false;
         try {
+          // Off sends nothing: wait, and look again.
+          if (!(await options.enabled()))
+            throw new ApiError(
+              503,
+              "hermes_not_ready",
+              "Hermes is off; set hermes.enabled to true",
+            );
           if (await applyRun(id, await hermes.getRun(row.run_id))) return;
           await setReconnecting(id, undefined);
           for await (const frame of hermes.runEvents(row.run_id, entry.last)) {
@@ -402,11 +425,17 @@ export function setupChat(
       follow(id);
     } catch (error) {
       if (!(error instanceof ApiError)) throw error;
-      // A refusal or a check before sending: nothing reached Hermes. A 5xx or no answer: it may have.
-      if (error.status < 500 || NOT_SENT.has(error.code))
+      // A refusal: Hermes did not admit it, or it would have replayed the first run. A check before sending: this try
+      // sent nothing, but an earlier try may have. A 5xx or no answer: it may have reached Hermes.
+      if (error.status < 500 || (NOT_SENT.has(error.code) && row.run_posted === 0))
         update(id, { state: "failed", error: error.message });
+      else if (NOT_SENT.has(error.code))
+        update(id, {
+          error: `Nothing was sent now (${error.message}). An earlier try may have reached Hermes; Retry when Hermes is ready.`,
+        });
       else
         update(id, {
+          run_posted: 1,
           error: `Hermes did not answer, so the message may have reached it. Retry sends the same message with the same key. (${error.message})`,
         });
     }
@@ -570,15 +599,14 @@ export function setupChat(
       // Hermes runs one run of a session at a time, and a run left `unknown` blocks the session until it is resolved.
       const busy = store.get<{ id: string }>(
         `SELECT id FROM hermes_chat_runs WHERE session_id = ?
-         AND (state NOT IN ('completed', 'cancelled', 'failed', 'interrupted', 'unknown')
-              OR (state = 'unknown' AND resolution IS NULL))`,
+         AND state NOT IN ('completed', 'cancelled', 'failed', 'interrupted')`,
         sessionId,
       );
       if (busy)
         throw new ApiError(
           409,
           "hermes_run_active",
-          `Run ${busy.id} of this session has not ended; stop it, or wait for it`,
+          `Run ${busy.id} of this session has not ended; stop it, wait for it, or mark it as interrupted`,
         );
       const now = host.now();
       store.run(
@@ -600,6 +628,16 @@ export function setupChat(
     const row = found(c.req.param("id"));
     if (row.state !== "sending")
       throw new ApiError(409, "hermes_run_sent", `Run ${row.id} reached Hermes; nothing to retry`);
+    if (host.now() - row.created_at >= KEY_RETENTION_MS) {
+      // Hermes may have dropped the key, so the same post could start the run a second time. Sending nothing frees the
+      // session; the first try may still have run.
+      update(row.id, {
+        state: "failed",
+        error:
+          "pi-spore did not send it again: Hermes keeps a key for 24 h only, so a retry now could run it twice. The first try may have reached Hermes; check the transcript.",
+      });
+      return c.json({ run: await publishRun(row.id) });
+    }
     return c.json({ run: await post(row.id) });
   });
 
@@ -608,7 +646,14 @@ export function setupChat(
     if (!row.run_id || ENDED.has(row.state))
       throw new ApiError(409, "hermes_run_ended", `Run ${row.id} is not running`);
     update(row.id, { stop_requested: 1 });
-    await hermes.stop(row.run_id);
+    try {
+      await hermes.stop(row.run_id);
+    } catch (error) {
+      // The stop did not get through, so the page must not say the run was stopped.
+      update(row.id, { stop_requested: 0 });
+      await publishRun(row.id);
+      throw error;
+    }
     await applyRun(row.id, await hermes.getRun(row.run_id));
     return c.json({ run: await publishRun(row.id) });
   });
@@ -631,40 +676,46 @@ export function setupChat(
 
   host.routes.post("/chat/runs/:id/resolve", async (c) => {
     const row = found(c.req.param("id"));
-    const request = parseJsonBody(ResolveHermesChatRunRequest, await c.req.text(), "pick");
+    parseJsonBody(ResolveHermesChatRunRequest, await c.req.text(), "pick");
     // One pick only: the request that claims the row acts, so a double click sends nothing twice.
     const { changes } = store.run(
-      "UPDATE hermes_chat_runs SET resolution = ?, updated_at = ? WHERE id = ? AND state = 'unknown' AND resolution IS NULL",
-      request.action === "interrupt" ? "interrupted" : "dropped",
+      "UPDATE hermes_chat_runs SET resolution = 'interrupted', updated_at = ? WHERE id = ? AND state = 'unknown' AND resolution IS NULL",
       host.now(),
       row.id,
     );
     if (changes === 0)
       throw new ApiError(409, "hermes_run_not_unknown", `Run ${row.id} waits for no pick`);
-    if (request.action === "interrupt") {
-      try {
-        if (!row.run_id)
-          throw new ApiError(409, "hermes_no_run", `Run ${row.id} has no Hermes run`);
-        // The exact pair from the run status now (spike Q3).
-        const run = await hermes.getRun(row.run_id);
-        const admission = run.admission_id ?? row.admission_id;
-        const generation = run.execution_generation ?? row.execution_generation;
-        if (admission == null || generation == null)
-          throw new ApiError(
-            409,
-            "hermes_no_admission",
-            `Hermes names no admission for run ${row.run_id}`,
-          );
-        await hermes.resolveUnknown(row.run_id, {
-          admission_id: admission,
-          execution_generation: generation,
-        });
-      } catch (error) {
-        update(row.id, { resolution: null });
-        throw error;
-      }
-      update(row.id, { state: "interrupted" });
+    let status: Run["status"] | undefined;
+    try {
+      if (!row.run_id) throw new ApiError(409, "hermes_no_run", `Run ${row.id} has no Hermes run`);
+      // The exact pair from the run status now (spike Q3).
+      const run = await hermes.getRun(row.run_id);
+      status = run.status;
+      const admission = run.admission_id ?? row.admission_id;
+      const generation = run.execution_generation ?? row.execution_generation;
+      if (admission == null || generation == null)
+        throw new ApiError(
+          409,
+          "hermes_no_admission",
+          `Hermes names no admission for run ${row.run_id}`,
+        );
+      await hermes.resolveUnknown(row.run_id, {
+        admission_id: admission,
+        execution_generation: generation,
+      });
+    } catch (error) {
+      // A run Hermes no longer calls unknown has its own end; store it, so the session is free again.
+      update(
+        row.id,
+        status !== undefined && status !== "unknown"
+          ? { state: status, error: null, resolution: null }
+          : { resolution: null },
+      );
+      await publishRun(row.id);
+      homeItems.changed();
+      throw error;
     }
+    update(row.id, { state: "interrupted" });
     homeItems.changed();
     return c.json({ run: await publishRun(row.id) });
   });

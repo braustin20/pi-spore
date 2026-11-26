@@ -1,5 +1,9 @@
 // The Hermes chat page's routes and relay against a FAKE Hermes (card Hermes 2.1). Passing tests here are not live
 // proof: that is card Hermes 2.3.
+
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type {
   HermesChatEvent,
   HermesChatMessages,
@@ -14,11 +18,14 @@ import { RETRY_FIRST_MS, SESSION_TOPIC } from "./chat.js";
 import { type Harness, harness, TIMEOUT_MS } from "./test-helpers.js";
 
 let open: Harness[];
+let scratch: string;
 beforeEach(() => {
   open = [];
+  scratch = realpathSync(mkdtempSync(join(tmpdir(), "pi-spore-hermes-chat-")));
 });
 afterEach(async () => {
   for (const h of open) await h.close();
+  rmSync(scratch, { recursive: true, force: true });
 });
 
 async function start(options: Parameters<typeof harness>[0] = {}) {
@@ -99,6 +106,16 @@ async function streaming(h: Harness, run: HermesChatRun) {
 const events = (h: Harness, sessionId: string) =>
   h.server.events.eventsOf(`${SESSION_TOPIC}${sessionId}`) as HermesChatEvent[];
 
+/** The newest run view published for a run, as a live browser has it. */
+function published(h: Harness, run: HermesChatRun): HermesChatRun {
+  const views = events(h, run.sessionId).flatMap((event) =>
+    event.type === "run" && event.run.id === run.id ? [event.run] : [],
+  );
+  const last = views.at(-1);
+  if (!last) throw new Error(`No run event for ${run.id}`);
+  return last;
+}
+
 const inboxNotices = async (h: Harness) =>
   (await json<Inbox>(await h.server.request("GET", "/api/attention/inbox"))).items.filter(
     (item) => item.kind === "notice" && item.source === "hermes-chat",
@@ -137,12 +154,23 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
       { name: "terminal", preview: "ls /tmp", state: "running" },
     ]);
     h.fake.emit("run_fake1", { event: "tool.completed", tool: "terminal", error: false });
-    h.fake.finish("run_fake1", "pong");
+    h.fake.emit("run_fake1", { event: "message.delta", delta: "po" });
+    await reaches(h, run, (now) => now.textSeq === 1);
+    // A browser that opens the session now gets the text so far and its count, so it skips the delta sent again.
+    expect(await runOf(h, session.id, run.id)).toMatchObject({ text: "po", textSeq: 1 });
+    h.fake.finish("run_fake1", "ng");
     const done = await reaches(h, run, (now) => now.state === "completed");
-    expect(done.text).toBe("pong");
-    expect(done.tools).toEqual([{ name: "terminal", preview: "ls /tmp", state: "done" }]);
     expect(done).toMatchObject({ provider: "openai-codex", model: "gpt-6.1-sol" });
-    expect(events(h, session.id)).toContainEqual({ type: "delta", runId: run.id, delta: "pong" });
+    expect(published(h, run)).toMatchObject({
+      state: "completed",
+      text: "pong",
+      textSeq: 2,
+      tools: [{ name: "terminal", preview: "ls /tmp", state: "done" }],
+    });
+    expect(events(h, session.id).filter((event) => event.type === "delta")).toEqual([
+      { type: "delta", runId: run.id, delta: "po", seq: 1 },
+      { type: "delta", runId: run.id, delta: "ng", seq: 2 },
+    ]);
 
     const { messages } = await json<HermesChatMessages>(
       await h.server.request(
@@ -152,7 +180,7 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     );
     expect(messages.map(({ role, content }) => ({ role, content }))).toEqual([
       { role: "user", content: "Reply with pong." },
-      { role: "assistant", content: "pong" },
+      { role: "assistant", content: "ng" },
     ]);
     expect(h.fake.requests.find((request) => request.path.endsWith("/messages"))?.path).toContain(
       session.id,
@@ -247,8 +275,8 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
       '{"request_id":"clarify-1","execution_generation":1,"answer":"pong"}',
     );
     h.fake.finish("run_fake1", "pong it is");
-    const done = await reaches(h, run, (now) => now.state === "completed");
-    expect(done.text).toBe("pong it is");
+    await reaches(h, run, (now) => now.state === "completed");
+    expect(published(h, run).text).toBe("pong it is");
     expect(await inboxNotices(h)).toEqual([]);
   });
 
@@ -272,8 +300,8 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     await until(() => h.fake.requests.some((request) => request.headers["last-event-id"] === "0"));
     await reaches(h, run, (now) => now.reconnecting === undefined);
     h.fake.finish("run_fake1", "ng");
-    const done = await reaches(h, run, (now) => now.state === "completed");
-    expect(done.text).toBe("pong");
+    await reaches(h, run, (now) => now.state === "completed");
+    expect(published(h, run).text).toBe("pong");
     // Nothing was posted again.
     expect(runPosts(h)).toHaveLength(1);
   });
@@ -296,6 +324,14 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     // The session waits on the lost run.
     expect((await send(h, session.id)).status).toBe(409);
 
+    // No Drop: it would leave the session stuck behind the lost run.
+    expect(
+      (
+        await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/resolve`, {
+          action: "drop",
+        })
+      ).status,
+    ).toBe(400);
     const facts = await json<HermesRunFacts>(
       await h.server.request("GET", `/api/hermes/chat/runs/${run.id}/reconcile`),
     );
@@ -318,6 +354,8 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     ).toBe(409);
     expect(posts(h, "/resolve-unknown")).toHaveLength(1);
     expect(await inboxNotices(h)).toEqual([]);
+    // The session is free again.
+    expect((await send(h, session.id)).status).toBe(201);
   });
 
   it("does not post again on its own after a lost answer; Retry sends the same key and body", async () => {
@@ -343,6 +381,227 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     expect(
       (await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/retry`, {})).status,
     ).toBe(409);
+  });
+
+  it("pages the stored transcript with limit, offset, and order", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    for (const [index, text] of ["one", "two"].entries()) {
+      const run = await sent(h, session.id, `say ${text}`);
+      await streaming(h, run);
+      h.fake.finish(`run_fake${index + 1}`, text);
+      await reaches(h, run, (now) => now.state === "completed");
+    }
+    const page = async (query: string) =>
+      (
+        await json<HermesChatMessages>(
+          await h.server.request(
+            "GET",
+            `/api/hermes/chat/sessions/${session.id}/messages?${query}`,
+          ),
+        )
+      ).messages.map((entry) => entry.content);
+    expect(await page("limit=2&offset=2&order=oldest")).toEqual(["say two", "two"]);
+    expect(await page("limit=1&offset=0&order=latest")).toEqual(["two"]);
+    expect(await page("limit=2&offset=1&order=latest")).toEqual(["say two", "one"]);
+    expect(
+      (await h.server.request("GET", `/api/hermes/chat/sessions/${session.id}/messages?limit=0`))
+        .status,
+    ).toBe(400);
+  });
+
+  it("links a new session to a project, and refuses a project that does not exist", async () => {
+    const h = await start();
+    const folder = join(scratch, "app");
+    mkdirSync(join(folder, ".pi-spore"), { recursive: true });
+    writeFileSync(join(folder, ".pi-spore", "config.toml"), "");
+    const { project } = await json<{ project: { id: string } }>(
+      await h.server.request("POST", "/api/projects", { path: folder }),
+      201,
+    );
+    const { session } = await json<{ session: HermesChatSession }>(
+      await h.server.request("POST", "/api/hermes/chat/sessions", {
+        title: "With a project",
+        projectId: project.id,
+      }),
+      201,
+    );
+    expect(session.projectId).toBe(project.id);
+    const { sessions } = await json<HermesChatSessionList>(
+      await h.server.request("GET", "/api/hermes/chat/sessions"),
+    );
+    expect(sessions.find((entry) => entry.id === session.id)?.projectId).toBe(project.id);
+    const made = posts(h, "/api/sessions").length;
+    expect(
+      (
+        await h.server.request("POST", "/api/hermes/chat/sessions", {
+          title: "x",
+          projectId: "01NOPROJECT",
+        })
+      ).status,
+    ).toBe(404);
+    expect(posts(h, "/api/sessions")).toHaveLength(made);
+  });
+
+  it("keeps a maybe-sent run as sending when a Retry finds Hermes not ready", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    h.fake.options.holdRuns = true;
+    const pending = send(h, session.id);
+    await until(() => runPosts(h).length === 1);
+    await h.timers.fire(TIMEOUT_MS);
+    const { run } = await json<{ run: HermesChatRun }>(await pending, 201);
+    h.fake.options.holdRuns = false;
+    h.settings({});
+    const { run: refused } = await json<{ run: HermesChatRun }>(
+      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/retry`, {}),
+    );
+    expect(refused.state).toBe("sending");
+    expect(refused.error).toContain("An earlier try may have reached Hermes");
+    expect(runPosts(h)).toHaveLength(1);
+    // The session stays busy, so no second run can start beside the first.
+    expect((await send(h, session.id)).status).toBe(409);
+    h.settings({ enabled: true });
+    const { run: retried } = await json<{ run: HermesChatRun }>(
+      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/retry`, {}),
+    );
+    expect(retried.runId).toBe("run_fake1");
+  });
+
+  it("sends nothing on a Retry after Hermes's 24 h key window, and frees the session", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    h.fake.options.holdRuns = true;
+    const pending = send(h, session.id);
+    await until(() => runPosts(h).length === 1);
+    await h.timers.fire(TIMEOUT_MS);
+    const { run } = await json<{ run: HermesChatRun }>(await pending, 201);
+    h.fake.options.holdRuns = false;
+    h.server.advance(24 * 3_600_000);
+    const { run: late } = await json<{ run: HermesChatRun }>(
+      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/retry`, {}),
+    );
+    expect(late.state).toBe("failed");
+    expect(late.error).toContain("24 h");
+    expect(runPosts(h)).toHaveLength(1);
+  });
+
+  it("follows a live run again after a pi-spore restart, and refills its text from the stream", async () => {
+    const home = join(scratch, "home");
+    const h = await start({ home });
+    const session = await newSession(h);
+    const run = await sent(h, session.id);
+    await streaming(h, run);
+    h.fake.emit("run_fake1", { event: "message.delta", delta: "po" });
+    await reaches(h, run, (now) => now.text === "po");
+    open.splice(open.indexOf(h), 1);
+    await h.close({ keepFake: true });
+    const streams = () => h.fake.requests.filter((r) => r.path.endsWith("/events")).length;
+    const before = streams();
+    const second = await start({ home, firstId: 10_000, reuse: h });
+    // The restart alone follows the run: no browser has opened the session yet.
+    await until(() => streams() > before);
+    await until(() =>
+      second.server.events
+        .eventsOf(`${SESSION_TOPIC}${session.id}`)
+        .some((event) => (event as HermesChatEvent).type === "delta"),
+    );
+    second.fake.finish("run_fake1", "ng");
+    await until(() => {
+      try {
+        return published(second, run).state === "completed";
+      } catch {
+        return false;
+      }
+    });
+    expect(published(second, run).text).toBe("pong");
+    expect(runPosts(second)).toHaveLength(1);
+    await h.fake.close();
+  });
+
+  it("sends Hermes nothing while it is off during a run, and follows again once it is on", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    const run = await sent(h, session.id);
+    await streaming(h, run);
+    h.settings({});
+    // The poll's check (here: Reload) closes open streams.
+    await h.server.request("POST", "/api/hermes/refresh", {});
+    // Read from the events, not a snapshot: opening the session would follow the run again by itself.
+    const view = () => {
+      try {
+        return published(h, run);
+      } catch {
+        return undefined;
+      }
+    };
+    await until(() => view()?.reconnecting?.includes("turned off") === true);
+    // The follower waits, wakes while Hermes is off, sends nothing, and waits again.
+    await until(() => h.timers.delays().includes(RETRY_FIRST_MS));
+    const before = h.fake.requests.length;
+    await h.timers.fire(RETRY_FIRST_MS);
+    await until(() => h.timers.delays().includes(2 * RETRY_FIRST_MS));
+    expect(view()?.reconnecting).toContain("Hermes is off");
+    expect(h.fake.requests.length).toBe(before);
+    h.settings({ enabled: true });
+    await h.timers.fire(2 * RETRY_FIRST_MS);
+    await until(() => h.fake.requests.slice(before).some((r) => r.path.endsWith("/events")));
+    await until(
+      () => (h.fake.run("run_fake1") as { listeners?: Set<unknown> }).listeners?.size === 1,
+    );
+    h.fake.finish("run_fake1", "back");
+    await until(() => view()?.state === "completed");
+    expect(view()?.text).toBe("back");
+  });
+
+  it("shows a failed run with its error", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    const run = await sent(h, session.id);
+    await streaming(h, run);
+    (h.fake.run("run_fake1") as { status: string }).status = "failed";
+    h.fake.emit("run_fake1", { event: "run.failed" });
+    const failed = await reaches(h, run, (now) => now.state === "failed");
+    expect(failed.error).toBe("Hermes says the run failed.");
+    // The session is free again.
+    expect((await send(h, session.id)).status).toBe(201);
+  });
+
+  it("does not say a run was stopped when the stop did not get through", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    const run = await sent(h, session.id);
+    await streaming(h, run);
+    h.fake.options.serverError = true;
+    expect(
+      (await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/stop`, {})).status,
+    ).toBe(502);
+    expect(published(h, run)).toMatchObject({ state: "running", stopRequested: false });
+  });
+
+  it("opens an approval again when the answer was refused before sending", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    const run = await sent(h, session.id);
+    await streaming(h, run);
+    h.fake.requestApproval("run_fake1", "prompt-1");
+    await reaches(h, run, (now) => now.controls.length === 1);
+    h.settings({ keyFile: join(scratch, "missing.key") });
+    const refused = await h.server.request(
+      "POST",
+      `/api/hermes/chat/runs/${run.id}/controls/prompt-1`,
+      { choice: "once" },
+    );
+    expect(refused.status).toBe(503);
+    expect(published(h, run).controls[0]?.state).toBe("open");
+    expect(posts(h, "/approval")).toHaveLength(0);
+    h.settings({ enabled: true });
+    await json(
+      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/controls/prompt-1`, {
+        choice: "once",
+      }),
+    );
+    expect(posts(h, "/approval")).toHaveLength(1);
   });
 
   it("lists other sources and handoff sessions read-only, and never sends into them", async () => {
