@@ -79,7 +79,7 @@ Only these four tools exist on the `pi_spore` server:
 | --- | --- | --- |
 | `list_targets` | none | The pi-spore workspaces you may send a request to. Empty means the user allows none; say so and stop. |
 | `submit_request` | `request_id`, `target`, `kind`, `title`, `text`, `hop_count` | Sends one request. `kind` is `question` (you want an answer) or `task` (you want something done). |
-| `get_request` | `request_id` | Reads that request's state: `pending`, `accepted`, `running`, `completed` (with the result), `cancelled`, `failed` (with the reason). |
+| `get_request` | `request_id` | Reads that request's state: `pending`, `accepted`, `running`, `completed` (with the result), `cancelled`, `failed` (with the reason). `uncertain` is a state pi-spore uses for its own asks to you; it does not occur for a request you sent. |
 | `cancel_request` | `request_id` | Cancels it. Does not undo steps the Pi chat already finished. |
 
 How to use them:
