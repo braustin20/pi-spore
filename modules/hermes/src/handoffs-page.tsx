@@ -1,6 +1,6 @@
 /**
- * The Hermes handoffs page and the workspace Details panel (card Hermes 1.2). Card Hermes 2.1 (the chat page) adds the
- * rail entry and the session views to this page; it extends these components rather than replacing them.
+ * Hermes handoffs on the Hermes page, and the workspace Details panel (card Hermes 1.2). The chat page (card Hermes
+ * 2.1, `chat-page.tsx`) shows `Handoffs` when no session is open, and reuses `ControlRow` and `Reconcile`.
  */
 import { useApi } from "@pi-spore/module-api";
 import {
@@ -8,6 +8,7 @@ import {
   HermesHandoff,
   type HermesHandoffState,
   HermesReconcile,
+  type HermesRunFacts,
   parse,
   type Workspace,
 } from "@pi-spore/shared";
@@ -18,8 +19,6 @@ import {
   EmptyState,
   Input,
   Notice,
-  Page,
-  PageHeader,
   Panel,
   PanelHeader,
   type Tone,
@@ -47,7 +46,7 @@ const time = (ms: number) => new Date(ms).toLocaleString();
 const message = (caught: unknown) => (caught instanceof Error ? caught.message : String(caught));
 
 /** One approval or clarify question. Only an open one takes an answer; the server posts it to Hermes once. */
-function ControlRow({
+export function ControlRow({
   control,
   answer,
 }: {
@@ -111,23 +110,27 @@ function ControlRow({
   );
 }
 
-/** The facts of an uncertain handoff, then the user's pick. Nothing is picked for the user. */
-function Reconcile({
-  handoff,
+/**
+ * The facts of a run Hermes lost track of, then the user's pick. Nothing is picked for the user. "Mark as interrupted"
+ * is always there; `more` adds "Send again" and "Drop" (handoffs). A chat run gets neither: its session waits until
+ * the lost run is resolved.
+ */
+export function Reconcile({
+  load,
   act,
+  more,
 }: {
-  handoff: HermesHandoff;
+  load: () => Promise<HermesRunFacts>;
   act: (body: unknown) => Promise<void>;
+  more: boolean;
 }) {
-  const api = useApi();
   const { confirm, dialog } = useConfirm();
-  const [facts, setFacts] = useState<HermesReconcile | undefined>();
+  const [facts, setFacts] = useState<HermesRunFacts | undefined>();
   const [error, setError] = useState<string | undefined>();
   const check = () => {
     setError(undefined);
-    api
-      .get(`hermes/handoffs/${handoff.id}/reconcile`)
-      .then((body) => setFacts(parse(HermesReconcile, body, "Hermes reconcile")))
+    load()
+      .then(setFacts)
       .catch((caught: unknown) => setError(message(caught)));
   };
   const resend = async () => {
@@ -168,12 +171,16 @@ function Reconcile({
             <Button size="sm" onClick={() => void act({ action: "interrupt" })}>
               Mark as interrupted
             </Button>
-            <Button size="sm" onClick={() => void resend()}>
-              Send again
-            </Button>
-            <Button size="sm" onClick={() => void act({ action: "drop" })}>
-              Drop
-            </Button>
+            {more && (
+              <>
+                <Button size="sm" onClick={() => void resend()}>
+                  Send again
+                </Button>
+                <Button size="sm" onClick={() => void act({ action: "drop" })}>
+                  Drop
+                </Button>
+              </>
+            )}
           </div>
         </>
       )}
@@ -224,15 +231,15 @@ export function HermesPanel({
           </div>
         ))}
         <a href="#/hermes" className="text-accent">
-          Open the Hermes handoffs page
+          Open the Hermes page
         </a>
       </div>
     </CollapsibleSection>
   );
 }
 
-/** Handoffs from Pi chats to Hermes (card Hermes 1.2). Home items and the workspace Details panel link here. */
-export function HandoffsPage() {
+/** Handoffs from Pi chats to Hermes (card Hermes 1.2), on the Hermes page that Home items and Details link to. */
+export function Handoffs() {
   const api = useApi();
   const [handoffs, setHandoffs] = useState<HermesHandoff[] | undefined>();
   const [enabled, setEnabled] = useState(true);
@@ -259,12 +266,13 @@ export function HandoffsPage() {
   };
 
   return (
-    <Page>
-      <PageHeader title="Hermes handoffs">
+    <section className="flex flex-col gap-3">
+      <div className="flex items-center justify-between gap-2">
+        <h2 className="m-0 text-base font-semibold">Handoffs</h2>
         <Button size="sm" onClick={load}>
           Reload
         </Button>
-      </PageHeader>
+      </div>
       {error && <Notice tone="fail">{error}</Notice>}
       {!enabled && (
         <Notice>
@@ -322,7 +330,14 @@ export function HandoffsPage() {
             )}
             {handoff.state === "uncertain" && !handoff.resolution && (
               <Reconcile
-                handoff={handoff}
+                more
+                load={async () =>
+                  parse(
+                    HermesReconcile,
+                    await api.get(`hermes/handoffs/${handoff.id}/reconcile`),
+                    "Hermes reconcile",
+                  )
+                }
                 act={(body) => send(`hermes/handoffs/${handoff.id}/resolve`, body)}
               />
             )}
@@ -332,6 +347,6 @@ export function HandoffsPage() {
           </div>
         </Panel>
       ))}
-    </Page>
+    </section>
   );
 }

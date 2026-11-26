@@ -53,6 +53,7 @@ function ServerStatus() {
 }
 
 const noBadge = () => 0;
+const alwaysVisible = () => true;
 
 /** Follows the visual viewport on phones. See the phone rules in packages/ui/src/styles.css. */
 function useKeyboardInset() {
@@ -73,9 +74,11 @@ function RailLink({
   inHeader?: boolean;
 }) {
   const Icon = page.rail?.icon;
-  // The page list never changes after load, so each link always calls the same hook.
+  // The page list never changes after load, so each link always calls the same hooks.
   const count = (page.rail?.useBadge ?? noBadge)();
+  const visible = (page.rail?.useVisible ?? alwaysVisible)();
   const active = railActive(page.path, path);
+  if (!visible) return null;
   const label = count > 0 ? `${page.title} (${count})` : page.title;
   return (
     <Tooltip label={label}>

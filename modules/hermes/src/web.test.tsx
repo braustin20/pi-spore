@@ -4,8 +4,8 @@ import type { HermesHandoff, HermesStatus, Workspace } from "@pi-spore/shared";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { HandoffsPage, HermesPanel, REFRESH_MS } from "./handoffs-page.js";
-import { HermesSection, hermesWeb } from "./web.js";
+import { Handoffs, HermesPanel, REFRESH_MS } from "./handoffs-page.js";
+import { HermesSection } from "./web.js";
 
 (globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -98,7 +98,7 @@ async function renderPage(handoffs: HermesHandoff[], reconcile?: unknown, enable
   await act(async () => {
     createRoot(root).render(
       <ApiContext value={api}>
-        <HandoffsPage />
+        <Handoffs />
       </ApiContext>,
     );
   });
@@ -108,7 +108,7 @@ async function renderPage(handoffs: HermesHandoff[], reconcile?: unknown, enable
   return { root, sent, button, buttons };
 }
 
-describe("Hermes handoffs page", () => {
+describe("Hermes handoffs on the Hermes page", () => {
   it("shows the state, the times, and unknown for a blank provider and model, and cancels", async () => {
     const { root, sent, button } = await renderPage([handoff({ model: "gpt-6.1-sol" })]);
     expect(root.textContent).toContain("running");
@@ -197,16 +197,6 @@ describe("Hermes handoffs page", () => {
     expect(root.textContent).toContain("Hermes is off");
     expect(root.querySelector('a[href="#/settings"]')).not.toBeNull();
     expect(root.textContent).not.toContain("No handoffs to Hermes yet");
-  });
-
-  it("adds a page with no rail entry", () => {
-    const pages: { path: string; rail?: unknown }[] = [];
-    hermesWeb.setup({
-      use: () => ({ addSection: () => undefined, addPanel: () => undefined }),
-      addPage: (page: { path: string; rail?: unknown }) => pages.push(page),
-    } as never);
-    expect(pages).toEqual([expect.objectContaining({ path: "/hermes" })]);
-    expect(pages[0]?.rail).toBeUndefined();
   });
 });
 

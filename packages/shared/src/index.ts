@@ -140,14 +140,27 @@ export { HealthResponse } from "./health.js";
 export {
   AnswerHermesControlRequest,
   AskHermesRequest,
+  CreateHermesChatSessionRequest,
   HermesAskKind,
+  HermesChatEvent,
+  HermesChatMessage,
+  HermesChatMessages,
+  HermesChatRun,
+  HermesChatRunState,
+  HermesChatSession,
+  HermesChatSessionList,
+  HermesChatTool,
   HermesControl,
   HermesHandoff,
   HermesHandoffState,
   HermesReconcile,
   HermesResolution,
+  HermesRunFacts,
   HermesStatus,
+  ResolveHermesChatRunRequest,
   ResolveHermesHandoffRequest,
+  RetryHermesChatRunRequest,
+  SendHermesChatRequest,
 } from "./hermes.js";
 export { type ImageType, imageHeaders, imageTypeOfPath, sniffImage } from "./images.js";
 export { Job, JobList, JobState } from "./jobs.js";
