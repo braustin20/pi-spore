@@ -122,9 +122,9 @@ state, decide from it whether any change is needed at all, and let step S6's too
 
 | Evidence | How | Result (redacted) |
 | --- | --- | --- |
-| The entry, with `${env:PI_SPORE_MCP_TOKEN}`, the four `tools.include` names, and no `transport`, `trust`, or literal token | `hermes -p pi-spore config get mcp_servers.pi_spore` | pending: needs the user's yes |
+| The **saved** entry: `${env:PI_SPORE_MCP_TOKEN}` as a reference, the four `tools.include` names, and no `transport`, `trust`, or literal value | read `/opt/data/profiles/pi-spore/config.yaml`, with the header masked — the commands in [mcp-entry.md](mcp-entry.md#reload-and-confirm-the-load). Not `hermes config get`: it expands `${env:…}`, so it cannot show what was saved | pending: needs the user's yes |
 | The API platform name, as the CLI reported it | `hermes -p pi-spore tools list --platform api_server` | pending: needs the user's yes |
-| The toolset decision: no change, or the `platform_toolsets` edit with `terminal`, `clarify`, `pi_spore` | the same read-back plus `config get platform_toolsets` | pending: needs the user's yes |
+| The toolset decision: no change, or the `platform_toolsets` edit with `terminal`, `clarify`, `pi_spore` | the same read-back, plus the saved `platform_toolsets` text from the file | pending: needs the user's yes |
 | **The four tools are loaded for `pi-spore` and no other `mcp__*` tool is** | `/tools list` in a `pi-spore` session, or the tool list of that session; never a bare `hermes mcp`, which reads the default profile | pending: needs the user's yes |
 | A plain-HTTP URL to a non-loopback host was accepted | the connect succeeded; otherwise this card stops here and the user decides | pending: needs the user's yes |
 
@@ -158,7 +158,7 @@ Needs the user's yes: it sends real requests to pi-spore, and a Pi chat may work
 | 6 | A `submit_request` arrives as `pending`, and only the user's Accept on Home moves it | `pending` → `accepted` → `running`, at the user's click |
 | 7 | `get_request` reads the result later | `completed` with `result`; nothing was pushed into the Hermes session |
 | 8 | A **new** `request_id` with `hop_count: 1`, sent while working on a pi-spore ask | the tool call fails: HTTP 200, `isError: true`, text naming `hop_count above 0`. Not `403` — a tool error never carries an HTTP code or the internal `hop_refused` name. A used `request_id` is answered from storage first, so the hop check needs a fresh id |
-| 9 | The same `request_id` again with a different body | the tool call fails: `isError: true`, text saying the request `was already sent with a different body`. Not `409`, and no `request_id_conflict` name on the wire |
+| 9 | **Check 6's stored** `request_id`, sent again with `hop_count: 0`, the same `target` and `kind`, and one changed body field such as `title` | the tool call fails: `isError: true`, text saying the request `was already sent with a different body`. Not `409`, and no `request_id_conflict` name on the wire. Not check 8's id either: that request was refused before it was stored, so reusing it only brings the hop error back, and with `hop_count: 0` it would create a new pending request instead of a conflict |
 
 Checks 8 and 9 are the two cases where pi-spore refuses inside a tool call: the listener answers `200 OK` with a JSON-RPC
 result whose `isError` is `true` and whose one text item is the message, so the evidence line quotes that text. The
@@ -180,18 +180,19 @@ approval and clarify round trips; nothing here claims them.
 ## Rollback
 
 Each item on its own yes. Rollback is complete when the listener is off, the token is gone from both sides, the entry
-and the skill are gone, and the grant is gone.
+and the skill are gone, and the grant is gone. Take the last policy evidence **before** restoring the broad Tailscale
+allowances, because those allowances restore reach for every node: see the grant row.
 
 | What | Command | Evidence |
 | --- | --- | --- |
-| The listener off | pi-spore Settings: `hermes.mcp.enabled` `false`. `GET /api/hermes/mcp` then answers `{"state":"off"}`, and the check closes the port, so a client gets "connection refused". `503 mcp_off` is only the answer in the moments before that check runs | pending |
-| The MCP entry | delete the `pi_spore` block from `/opt/data/profiles/pi-spore/config.yaml` (or the documented unset form — check before applying), then `/reload-mcp` or `docker exec <container> hermes gateway restart`. Read back with `hermes -p pi-spore config get mcp_servers` | pending |
+| The listener off, first | pi-spore Settings: `hermes.mcp.enabled` `false`. `GET /api/hermes/mcp` then answers `{"state":"off"}`, and the settings check closes the port, so a client gets "connection refused". `503 mcp_off` is only the answer in the moments before that check runs | pending: "connection refused" from `hermes-docker`, taken while the grant is still in place |
+| The MCP entry | delete the `pi_spore` block from `/opt/data/profiles/pi-spore/config.yaml` (or the documented unset form — check before applying), then `/reload-mcp` or `docker exec <container> hermes gateway restart`. Read the **file** back: `grep -c "^  pi_spore:"` and `grep -c "PI_SPORE_MCP_TOKEN"` on `/opt/data/profiles/pi-spore/config.yaml`, both `0` | pending |
 | The toolset | only if S4 changed it: put that profile's API toolset selection back to what its read-back showed before, the same surface S4 used; confirm with `hermes -p pi-spore tools list --platform api_server` | pending |
 | The skill | `docker exec <container> rm -rf /opt/data/profiles/pi-spore/skills/pi-spore-remote-teammate` | pending |
 | The token on Unraid | inside the container shell: `sed -i '/^PI_SPORE_MCP_TOKEN=/d' /opt/data/profiles/pi-spore/.env`, then `grep -c` for zero, and `ls -ln` to show the mode is unchanged | pending |
-| The token on the desktop | `rm -f ~/.pi-spore/hermes/mcp.token`. This also stops the listener from serving anything, even if `hermes.mcp.enabled` is still on: the check refuses to open, so the port does not answer | pending |
+| The token on the desktop, on its own | `rm -f ~/.pi-spore/hermes/mcp.token`. With the listener still enabled the port **stays open**: the token is read per request, so every request answers `503 mcp_token_unusable` and nothing is served. "Connection refused" is the evidence for the listener-off row, or for a start that never opened (no Tailscale address, or no token file when the check first ran) — not for this row | pending |
 | The transfer files | on the desktop, `rm -f ~/.pi-spore/hermes/transfer/unraid-receive.pub ~/.pi-spore/hermes/transfer/mcp.token.enc` — **not** the whole folder, which holds the card Hermes 0.4 pair until card Hermes 0.5 retires it; on Unraid, `rm -f /opt/data/pi-spore-bridge/transfer/receive.key /opt/data/pi-spore-bridge/transfer/receive.pub /opt/data/pi-spore-bridge/transfer/mcp.token.enc` | pending |
-| The grant | delete the grant and the `tests` entries for this port, restore each narrowed rule from the "before" copy, save, then confirm S3 test 1 now fails from `hermes-docker` too | pending |
+| The grant, last | with the listener already off and test 1 already confirmed failing from `hermes-docker`: delete the grant and the `tests` entries for this port, restore each narrowed rule, save | pending: a diff of the saved policy against the "before" copy. **After** this, the port answers again from every node a broad rule allows, so no later "denied" result is policy evidence — it only shows the listener is off |
 
 ## What this card does not cover
 

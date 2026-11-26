@@ -125,7 +125,6 @@ Every Hermes command in this card carries `-p pi-spore`. A bare `hermes mcp` rea
 that this profile loaded four tools.
 
 ```bash
-docker exec <container> hermes -p pi-spore config get mcp_servers.pi_spore
 docker exec <container> hermes -p pi-spore tools list --platform api_server
 docker exec <container> hermes gateway status
 ```
@@ -134,11 +133,28 @@ The running gateway watches `config.yaml` on its own: a removed entry is torn do
 a minute. In a running session, `/reload-mcp` reconnects the MCP servers. `docker exec <container> hermes gateway
 restart` also works, and is the command the spike used.
 
-Two separate pieces of evidence, and both belong in the runbook:
+Three separate pieces of evidence, and all three belong in the runbook.
 
-1. **The saved config**, from the two commands above: the entry is there with `${env:PI_SPORE_MCP_TOKEN}` and the four
-   `tools.include` names, and the platform read-back shows what API sessions get.
-2. **The live connection, on this profile.** Ask a `pi-spore` session to list its tools, or use the in-session
+1. **The saved YAML**, read from the file — not from `hermes config get`. That command resolves the saved
+   configuration through `load_config()`, which **expands** `${env:…}` references and masks `Authorization` by default,
+   or prints it in full when `security.redact_secrets` is off. So it cannot show what was saved, and it is not safe to
+   paste. Read the file, with the header value hidden:
+
+   ```sh
+   cfg=/opt/data/profiles/pi-spore/config.yaml
+   # the entry, with any Authorization value replaced by a fixed word
+   sed -n '/^  pi_spore:/,/^  [^ ]/p' "$cfg" | sed 's/^\([[:space:]]*Authorization:\).*/\1 <value not shown>/'
+   # the reference is really there, and nowhere else
+   grep -Fq 'Bearer ${env:PI_SPORE_MCP_TOKEN}' "$cfg" \
+     && echo "the header is a reference" || echo "the header is NOT a reference: fix it"
+   grep -c 'PI_SPORE_MCP_TOKEN' "$cfg"
+   ```
+
+   Expect the url and the four `tools.include` names, `Authorization: <value not shown>`, "the header is a reference",
+   and the count `1`. If the reference check fails, a literal value was saved: treat it as a leaked token and rotate.
+2. **The platform read-back**, from `hermes -p pi-spore tools list --platform api_server` above: what an API session of
+   this profile gets.
+3. **The live connection, on this profile.** Ask a `pi-spore` session to list its tools, or use the in-session
    `/tools list`, and expect exactly `mcp__pi_spore__list_targets`, `mcp__pi_spore__submit_request`,
    `mcp__pi_spore__get_request`, `mcp__pi_spore__cancel_request` and no other `mcp__*` name. The decisive proof is
    step S6's first call: `mcp__pi_spore__list_targets` answers from inside a `pi-spore` run, which only happens if the
@@ -205,7 +221,9 @@ Step S4 only, in [runbook.md](runbook.md#rollback):
 ```bash
 docker exec <container> hermes -p pi-spore config unset mcp_servers.pi_spore   # check before applying: the unset form
 # or edit /opt/data/profiles/pi-spore/config.yaml and delete the pi_spore block
-docker exec <container> hermes -p pi-spore config get mcp_servers
+# read the file back: the entry is gone, and no secret line of it is printed
+docker exec <container> sh -c 'grep -c "^  pi_spore:" /opt/data/profiles/pi-spore/config.yaml'
+docker exec <container> sh -c 'grep -c "PI_SPORE_MCP_TOKEN" /opt/data/profiles/pi-spore/config.yaml'
 ```
 
-Removing the entry takes the tools away; the token on Unraid and the grant are removed in the other rollback steps.
+Both counts must be `0`. The token on Unraid and the grant are removed in the other rollback steps.
