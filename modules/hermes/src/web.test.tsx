@@ -85,10 +85,39 @@ const handoff = (fields: Partial<HermesHandoff>): HermesHandoff => ({
   ...fields,
 });
 
+const workspace = (id: string, name: string) => ({
+  id,
+  projectId: "p1",
+  name,
+  slug: name.toLowerCase(),
+  isolation: "in-place",
+  path: `/tmp/${name}`,
+  state: "active",
+  planner: false,
+  createdAt: 1,
+  updatedAt: 1,
+});
+const project = {
+  id: "p1",
+  name: "App",
+  slug: "app",
+  path: "/tmp/app",
+  vcs: "folder",
+  traits: [],
+  createdAt: 1,
+};
+
 async function renderPage(handoffs: HermesHandoff[], reconcile?: unknown, enabled = true) {
   const sent: { method: string; path: string; body: unknown }[] = [];
   const api = {
-    get: async (path: string) => (path.endsWith("/reconcile") ? reconcile : { enabled, handoffs }),
+    get: async (path: string) =>
+      path.endsWith("/reconcile")
+        ? reconcile
+        : path === "workspaces"
+          ? { workspaces: [workspace("w1", "Alpha"), workspace("w2", "Beta")] }
+          : path === "projects"
+            ? { projects: [project] }
+            : { enabled, handoffs },
     send: async (method: string, path: string, body: unknown) => {
       sent.push({ method, path, body });
       return {};
@@ -185,6 +214,46 @@ describe("Hermes handoffs on the Hermes page", () => {
     ]);
   });
 
+  it("offers Accept and Decline with a reason on a request from Hermes, beside its target, and no Cancel", async () => {
+    const request = (id: string, workspaceId: string, requestId: string) => {
+      const { agentId: _none, ...fields } = handoff({
+        id,
+        workspaceId,
+        direction: "in",
+        requestId,
+        title: "Fix the build",
+        state: "pending",
+      });
+      return fields;
+    };
+    const { root, sent, buttons } = await renderPage([
+      request("h1", "w1", "r-1"),
+      request("h2", "w2", "r-2"),
+    ]);
+    // Two requests alike but for their targets: each panel names its own, where its buttons are.
+    const panels = [...root.querySelectorAll("button")]
+      .filter((b) => b.textContent === "Accept")
+      .map((b) => b.closest("section, div.flex.flex-col")?.textContent ?? "");
+    expect(panels[0]).toContain("For App / Alpha, from the Hermes profile pi-spore, request r-1.");
+    expect(panels[1]).toContain("For App / Beta, from the Hermes profile pi-spore, request r-2.");
+    expect(panels[0]).not.toContain("Beta");
+    expect(buttons("Cancel")).toEqual([]);
+    await act(async () => buttons("Accept")[1]?.click());
+    const reason = root.querySelector('input[aria-label="Reason to decline"]') as HTMLInputElement;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")?.set?.call(
+        reason,
+        "not now",
+      );
+      reason.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => buttons("Decline")[0]?.click());
+    expect(sent).toEqual([
+      { method: "POST", path: "hermes/handoffs/h2/accept", body: {} },
+      { method: "POST", path: "hermes/handoffs/h1/decline", body: { reason: "not now" } },
+    ]);
+  });
+
   it("says Hermes is offline on a pending handoff that waits for it", async () => {
     const { root } = await renderPage([
       handoff({ state: "pending", error: "Hermes is offline: no answer" }),
@@ -196,7 +265,7 @@ describe("Hermes handoffs on the Hermes page", () => {
     const { root } = await renderPage([], undefined, false);
     expect(root.textContent).toContain("Hermes is off");
     expect(root.querySelector('a[href="#/settings"]')).not.toBeNull();
-    expect(root.textContent).not.toContain("No handoffs to Hermes yet");
+    expect(root.textContent).not.toContain("No Hermes handoffs yet");
   });
 });
 

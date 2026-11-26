@@ -33,6 +33,7 @@ import {
   OpenWorkspacePrRequest,
   PushLineRequest,
   parseJsonBody,
+  ReplyHermesRequest,
   ReviseLaneRequest,
   StageReport,
   StartBridgeRunRequest,
@@ -374,6 +375,13 @@ export const bridgeModule: ServerModule = {
     host.routes.post("/hermes/asks/:id/cancel", async (c) => {
       const caller = bridgeCaller(c);
       return c.json({ handoff: await refuseHermes(caller).cancel(caller, c.req.param("id")) });
+    });
+
+    host.routes.post("/hermes/replies", async (c) => {
+      const caller = bridgeCaller(c);
+      const asker = refuseHermes(caller);
+      const request = parseJsonBody(ReplyHermesRequest, await c.req.text(), "Hermes reply");
+      return c.json({ request: await asker.reply(caller, request) });
     });
 
     host.routes.post("/lanes", async (c) => {

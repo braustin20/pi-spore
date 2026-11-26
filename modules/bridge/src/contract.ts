@@ -3,7 +3,9 @@ import type {
   Approval,
   AskHermesRequest,
   HermesHandoff,
+  HermesHandoffState,
   OpenWorkspacePrRequest,
+  ReplyHermesRequest,
 } from "@pi-spore/shared";
 
 /**
@@ -16,6 +18,14 @@ export interface HermesAsker {
   ask(caller: BridgeCaller, request: AskHermesRequest, receipt: string): Promise<HermesHandoff>;
   /** Stops the handoff's run. Steps Hermes already did are not undone. */
   cancel(caller: BridgeCaller, id: string): Promise<HermesHandoff>;
+  /**
+   * Stores the result of a request from Hermes (card Hermes 1.3), which Hermes reads with `get_request`. Only the chat
+   * the user gave the request to may reply, once, while it works on it.
+   */
+  reply(
+    caller: BridgeCaller,
+    request: ReplyHermesRequest,
+  ): Promise<{ requestId: string; state: HermesHandoffState }>;
 }
 
 /** What other modules set on the bridge. */
@@ -28,7 +38,7 @@ export interface Bridge {
     request: (caller: BridgeCaller, request: OpenWorkspacePrRequest) => Promise<Approval>,
   ): void;
   /**
-   * Sets who answers `POST /api/bridge/hermes/asks` and its cancel. The hermes module sets it, so the bridge does not
+   * Sets who answers `POST /api/bridge/hermes/asks`, its cancel, and `POST /api/bridge/hermes/replies`. The hermes module sets it, so the bridge does not
    * depend on it, and a disabled hermes module leaves the routes at 422 `not_supported`. At most one asker.
    */
   setHermesAsker(asker: HermesAsker): void;

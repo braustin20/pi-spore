@@ -77,11 +77,23 @@ export const HermesResolution = Type.Union([
   Type.Literal("dropped"),
 ]);
 
-/** One handoff from a Pi chat to Hermes. `provider` and `model` come from the Hermes session record; absent is unknown. */
+/**
+ * The id Hermes gives a request to pi-spore (card Hermes 1.3): 1 to 128 visible ASCII characters. It is the dedupe
+ * key, because MCP's JSON-RPC `id` is not stable across a retry.
+ */
+export const HermesRequestId = Type.String({ pattern: "^[\\x21-\\x7e]{1,128}$" });
+
+/**
+ * One handoff. `out`: a Pi chat asked Hermes. `in`: Hermes asked pi-spore through the MCP listener (card Hermes 1.3).
+ * `provider` and `model` come from the Hermes session record; absent is unknown.
+ */
 export const HermesHandoff = Type.Object({
   id: Type.String(),
-  direction: Type.Literal("out"),
-  agentId: Type.String(),
+  direction: Type.Union([Type.Literal("out"), Type.Literal("in")]),
+  /** The asking chat, or for `in` the chat that works on it. Absent on an `in` request the user has not accepted. */
+  agentId: Type.Optional(Type.String()),
+  /** For `in`: Hermes's `request_id`. */
+  requestId: Type.Optional(Type.String()),
   workspaceId: Type.String(),
   projectId: Type.String(),
   profile: Type.String(),
@@ -94,7 +106,10 @@ export const HermesHandoff = Type.Object({
   provider: Type.Optional(Type.String()),
   model: Type.Optional(Type.String()),
   result: Type.Optional(Type.String()),
-  /** Why it failed, or, while `pending`, why it waits (such as "Hermes is offline: ..."). */
+  /**
+   * Why it failed, or, while `pending`, why it waits (such as "Hermes is offline: ..."). For `in`: why it was
+   * declined, cancelled, or failed.
+   */
   error: Type.Optional(Type.String()),
   resolution: Type.Optional(HermesResolution),
   /** The new handoff of a "Send again". */
@@ -294,3 +309,16 @@ export const ResolveHermesChatRunRequest = Type.Object(
   { additionalProperties: false },
 );
 export type ResolveHermesChatRunRequest = Static<typeof ResolveHermesChatRunRequest>;
+/** `POST /api/hermes/handoffs/:id/decline`: the user declines a request from Hermes. The reason goes back to Hermes. */
+export const DeclineHermesRequest = Type.Object(
+  { reason: Type.Optional(Type.String({ minLength: 1, maxLength: 2_000 })) },
+  { additionalProperties: false },
+);
+export type DeclineHermesRequest = Static<typeof DeclineHermesRequest>;
+
+/** `POST /api/bridge/hermes/replies`, the body of the `reply_hermes` tool: the result Hermes reads with `get_request`. */
+export const ReplyHermesRequest = Type.Object(
+  { requestId: HermesRequestId, text: Type.String({ minLength: 1, maxLength: 16_000 }) },
+  { additionalProperties: false },
+);
+export type ReplyHermesRequest = Static<typeof ReplyHermesRequest>;

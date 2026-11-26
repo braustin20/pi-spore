@@ -1,5 +1,7 @@
 import { randomBytes } from "node:crypto";
 import { chmodSync, mkdirSync, writeFileSync } from "node:fs";
+import { request as httpRequest } from "node:http";
+import { createServer } from "node:net";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
@@ -12,10 +14,12 @@ import { pipelinesModule } from "@pi-spore/mod-pipelines/server";
 import { projectsModule } from "@pi-spore/mod-projects/server";
 import { runsModule } from "@pi-spore/mod-runs/server";
 import { vcsFolderModule } from "@pi-spore/mod-vcs-folder/server";
+import { vcsGitModule } from "@pi-spore/mod-vcs-git/server";
 import { workspacesModule } from "@pi-spore/mod-workspaces/server";
 import type { JobTimer, Logger, ServerModule } from "@pi-spore/module-api";
 import { createTestServer, type TestServer } from "@pi-spore/server-core/testing";
 import { type FakeHermes, startFakeHermes } from "../test-fixtures/fake-hermes.mjs";
+import type { TailscaleLookup } from "./mcp/listener.js";
 import { createHermesModule, type Hermes, HermesKey } from "./server.js";
 
 export const TIMEOUT_MS = 10_000;
@@ -69,6 +73,10 @@ export interface Harness {
   agents: Agents;
   key: string;
   keyFile: string;
+  /** A generated FAKE MCP token in `<home>/hermes/mcp.token` (folder 0700, file 0600). */
+  mcpToken: string;
+  /** A free loopback port for the MCP listener; `settings({ mcp: { enabled: true, port: h.mcpPort } })` uses it. */
+  mcpPort: number;
   log: LogLine[];
   timers: ReturnType<typeof fakeTimer>;
   /** The job runner's timer: delayed job steps (the handoff backoff) wait here until a test fires them. */
@@ -92,6 +100,8 @@ export async function harness(
     firstId?: number;
     /** The FAKE Hermes of an earlier harness, which stays up across the restart. */
     reuse?: Harness;
+    /** The FAKE Tailscale lookup. Default: loopback, so tests never bind a real interface. */
+    mcpLookup?: TailscaleLookup;
   } = {},
 ): Promise<Harness> {
   const key = options.reuse?.key ?? `fake-${randomBytes(24).toString("hex")}`;
@@ -127,6 +137,8 @@ export async function harness(
   const server = await createTestServer(
     [
       projectsModule,
+      // Git, so a test can make a run and its lanes in a real temp repository.
+      vcsGitModule,
       vcsFolderModule,
       workspacesModule,
       agents,
@@ -137,7 +149,10 @@ export async function harness(
       pipelinesModule,
       runsModule,
       bridgeModule,
-      createHermesModule({ timer: timers.timer }),
+      createHermesModule({
+        timer: timers.timer,
+        mcpAddress: { lookup: options.mcpLookup ?? (() => "127.0.0.1"), allowLoopback: true },
+      }),
       probe,
     ],
     {
@@ -153,11 +168,17 @@ export async function harness(
   const keyFile = join(folder, "pi-spore.key");
   writeFileSync(keyFile, key, { mode: 0o600 });
   chmodSync(keyFile, 0o600);
-  const settings = (values: Record<string, unknown>) =>
+  const mcpToken = options.reuse?.mcpToken ?? `fake-mcp-${randomBytes(24).toString("hex")}`;
+  writeFileSync(join(folder, "mcp.token"), mcpToken, { mode: 0o600 });
+  chmodSync(join(folder, "mcp.token"), 0o600);
+  let written: Record<string, unknown> = {};
+  const settings = (values: Record<string, unknown>) => {
+    written = values;
     writeFileSync(
       join(server.paths.root, "settings.json"),
       JSON.stringify({ hermes: { url: fake.url, ...values } }),
     );
+  };
   // Off leaves hermes.enabled unset, so its default decides. The URL is always the fake's, so a request that should
   // not happen reaches the fake, where the test sees it, and never a real host.
   settings({ ...(options.enabled === false ? {} : { enabled: true }), ...options.settings });
@@ -169,14 +190,101 @@ export async function harness(
     agents: agentsApi,
     key,
     keyFile,
+    mcpToken,
+    mcpPort: await freePort(),
     log,
     timers,
     jobTimers,
     settings,
     close: async ({ keepFake = false } = {}) => {
+      // The module has no stop hook (shutdown ends the process), so the test turns the listener off. The rest stays,
+      // for a harness that plays pi-spore after a restart on this home.
+      settings({ ...written, mcp: { enabled: false } });
+      await server.request("GET", "/api/hermes/mcp");
       await agents.manager().stopAll();
       server.close();
       if (!options.reuse && !keepFake) await fake.close();
+    },
+  };
+}
+
+/** A loopback port with nothing listening on it. */
+export async function freePort(): Promise<number> {
+  const server = createServer();
+  await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address() as { port: number };
+  await new Promise<void>((resolve) => server.close(() => resolve()));
+  return port;
+}
+
+export interface RawAnswer {
+  status: number;
+  headers: Record<string, string | string[] | undefined>;
+  body: string;
+}
+
+/** One HTTP request with exactly these headers (Host too), as `fetch` would not allow. */
+export function rawRequest(
+  url: string,
+  options: { method?: string; headers?: Record<string, string>; body?: string } = {},
+): Promise<RawAnswer> {
+  return new Promise((resolve, reject) => {
+    // A fresh connection each time, so a closed listener shows as refused, not as a reset kept-alive socket.
+    const sent = httpRequest(url, {
+      method: options.method ?? "POST",
+      headers: options.headers,
+      agent: false,
+    });
+    sent.on("response", (response) => {
+      const chunks: Buffer[] = [];
+      response.on("data", (chunk: Buffer) => chunks.push(chunk));
+      response.on("end", () =>
+        resolve({
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(chunks).toString("utf8"),
+        }),
+      );
+    });
+    sent.on("error", reject);
+    sent.end(options.body);
+  });
+}
+
+/**
+ * A FAKE MCP client: it posts JSON-RPC to the listener the way Hermes's Streamable HTTP client does (one message per
+ * POST, `Accept: application/json, text/event-stream`). It is not Hermes; passing tests with it are not live proof.
+ */
+export function fakeMcpClient(url: string, token: string) {
+  let id = 0;
+  const rpc = async (method: string, params?: unknown) => {
+    const answer = await rawRequest(url, {
+      headers: {
+        authorization: `Bearer ${token}`,
+        "content-type": "application/json",
+        accept: "application/json, text/event-stream",
+      },
+      body: JSON.stringify({ jsonrpc: "2.0", id: ++id, method, ...(params ? { params } : {}) }),
+    });
+    if (answer.status !== 200) throw new Error(`MCP answered ${answer.status}: ${answer.body}`);
+    return JSON.parse(answer.body) as {
+      result?: Record<string, unknown>;
+      error?: { code: number; message: string };
+    };
+  };
+  return {
+    rpc,
+    /** Calls a tool. `isError` and the text come back as they are; a JSON text is parsed. */
+    async call(name: string, args: Record<string, unknown> = {}) {
+      const { result, error } = await rpc("tools/call", { name, arguments: args });
+      if (error || !result) throw new Error(`MCP error ${error?.code}: ${error?.message}`);
+      const text = (result.content as { text: string }[])[0]?.text ?? "";
+      const isError = result.isError === true;
+      return {
+        isError,
+        text,
+        value: isError ? undefined : (JSON.parse(text) as Record<string, unknown>),
+      };
     },
   };
 }

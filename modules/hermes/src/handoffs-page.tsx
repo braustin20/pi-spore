@@ -9,8 +9,10 @@ import {
   type HermesHandoffState,
   HermesReconcile,
   type HermesRunFacts,
+  ProjectList,
   parse,
   type Workspace,
+  WorkspaceList,
 } from "@pi-spore/shared";
 import {
   Button,
@@ -106,6 +108,41 @@ export function ControlRow({
           )}
         </div>
       )}
+    </div>
+  );
+}
+
+/**
+ * A request from Hermes that waits for the user's yes (card Hermes 1.3). Only this page decides it: the routes take the
+ * user token, never an agent's.
+ */
+function RequestDecision({
+  decide,
+}: {
+  decide: (action: "accept" | "decline", body: { reason?: string }) => Promise<void>;
+}) {
+  const [reason, setReason] = useState("");
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="text-muted">
+        Accept gives it to the workspace's chat as input from a remote agent, not as your approval.
+      </span>
+      <Button size="sm" onClick={() => void decide("accept", {})}>
+        Accept
+      </Button>
+      <Input
+        aria-label="Reason to decline"
+        placeholder="Reason (optional)"
+        value={reason}
+        onChange={(event) => setReason(event.target.value)}
+      />
+      <Button
+        size="sm"
+        variant="danger"
+        onClick={() => void decide("decline", reason.trim() ? { reason: reason.trim() } : {})}
+      >
+        Decline
+      </Button>
     </div>
   );
 }
@@ -238,19 +275,38 @@ export function HermesPanel({
   );
 }
 
-/** Handoffs from Pi chats to Hermes (card Hermes 1.2), on the Hermes page that Home items and Details link to. */
+/**
+ * Handoffs from Pi chats to Hermes (card Hermes 1.2) and requests from Hermes (card Hermes 1.3), on the Hermes page
+ * that Home items and Details link to.
+ */
 export function Handoffs() {
   const api = useApi();
   const [handoffs, setHandoffs] = useState<HermesHandoff[] | undefined>();
   const [enabled, setEnabled] = useState(true);
   const [error, setError] = useState<string | undefined>();
+  /** "<project> / <workspace>" by workspace id, for the target of each request from Hermes. */
+  const [targets, setTargets] = useState<ReadonlyMap<string, string>>(new Map());
   const load = useCallback(() => {
     api
       .get("hermes/handoffs")
-      .then((body) => {
+      .then(async (body) => {
         const list = parse(HandoffList, body, "Hermes handoffs");
         setEnabled(list.enabled);
         setHandoffs(list.handoffs);
+        if (!list.handoffs.some((handoff) => handoff.direction === "in")) return;
+        const [{ workspaces }, { projects }] = await Promise.all([
+          api.get("workspaces").then((answer) => parse(WorkspaceList, answer, "workspaces")),
+          api.get("projects").then((answer) => parse(ProjectList, answer, "projects")),
+        ]);
+        const project = new Map(projects.map((entry) => [entry.id, entry.name]));
+        setTargets(
+          new Map(
+            workspaces.map((entry) => [
+              entry.id,
+              `${project.get(entry.projectId) ?? entry.projectId} / ${entry.name}`,
+            ]),
+          ),
+        );
       })
       .catch((caught: unknown) => setError(message(caught)));
   }, [api]);
@@ -283,19 +339,22 @@ export function Handoffs() {
           page.
         </Notice>
       )}
-      {enabled && handoffs?.length === 0 && <EmptyState title="No handoffs to Hermes yet." />}
+      {enabled && handoffs?.length === 0 && <EmptyState title="No Hermes handoffs yet." />}
       {handoffs?.map((handoff) => (
         <Panel key={handoff.id}>
-          <PanelHeader title={handoff.title ?? `${handoff.kind} ${handoff.id}`} />
+          <PanelHeader
+            title={`${handoff.direction === "in" ? "From Hermes: " : ""}${handoff.title ?? `${handoff.kind} ${handoff.id}`}`}
+          />
           <div className="flex flex-col gap-2 text-sm">
             <div className="flex flex-wrap items-center gap-2">
               <Chip tone={STATE_TONE[handoff.state]}>{handoff.state}</Chip>
               {handoff.resolution && <Chip tone="neutral">{handoff.resolution}</Chip>}
               <span className="text-muted">
-                Asked {time(handoff.createdAt)}, changed {time(handoff.updatedAt)}. Provider{" "}
-                {handoff.provider ?? "unknown"}, model {handoff.model ?? "unknown"}.
+                Asked {time(handoff.createdAt)}, changed {time(handoff.updatedAt)}.
+                {handoff.direction === "out" &&
+                  ` Provider ${handoff.provider ?? "unknown"}, model ${handoff.model ?? "unknown"}.`}
               </span>
-              {!ENDED.has(handoff.state) && (
+              {handoff.direction === "out" && !ENDED.has(handoff.state) && (
                 <Button
                   size="sm"
                   onClick={() => void send(`hermes/handoffs/${handoff.id}/cancel`, {})}
@@ -304,8 +363,19 @@ export function Handoffs() {
                 </Button>
               )}
             </div>
+            {handoff.direction === "in" && (
+              <span>
+                For <strong>{targets.get(handoff.workspaceId) ?? handoff.workspaceId}</strong>, from
+                the Hermes profile {handoff.profile}, request {handoff.requestId}.
+              </span>
+            )}
             <p className="m-0 break-words whitespace-pre-wrap">{handoff.text}</p>
-            {handoff.state === "pending" && handoff.error && (
+            {handoff.direction === "in" && handoff.state === "pending" && (
+              <RequestDecision
+                decide={(action, body) => send(`hermes/handoffs/${handoff.id}/${action}`, body)}
+              />
+            )}
+            {handoff.direction === "out" && handoff.state === "pending" && handoff.error && (
               <Notice tone="warn">{handoff.error}</Notice>
             )}
             {handoff.controls.map((control) => (
@@ -325,7 +395,7 @@ export function Handoffs() {
                 {handoff.result}
               </pre>
             )}
-            {handoff.state !== "pending" && handoff.error && (
+            {(handoff.direction === "in" || handoff.state !== "pending") && handoff.error && (
               <Notice tone="fail">{handoff.error}</Notice>
             )}
             {handoff.state === "uncertain" && !handoff.resolution && (

@@ -49,6 +49,9 @@
       "path": "../vcs-folder"
     },
     {
+      "path": "../vcs-git"
+    },
+    {
       "path": "../projects"
     },
     {
