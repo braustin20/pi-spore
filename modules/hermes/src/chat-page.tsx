@@ -235,7 +235,7 @@ function StoredMessage({ entry }: { entry: HermesChatMessages["messages"][number
 }
 
 /** One run sent from the page. The server publishes every change, so the block needs no reload. */
-function RunBlock({ run }: { run: HermesChatRun }) {
+function RunBlock({ run, inputStored }: { run: HermesChatRun; inputStored: boolean }) {
   const api = useApi();
   const { confirm, dialog } = useConfirm();
   const [error, setError] = useState<string | undefined>();
@@ -264,7 +264,7 @@ function RunBlock({ run }: { run: HermesChatRun }) {
     <div className="flex flex-col gap-2 border-l-2 border-line pl-3 text-sm">
       {dialog}
       {/* Not in the stored transcript yet: a live run's input, or one Hermes never got. */}
-      {(live || !run.runId) && (
+      {(live ? !inputStored : !run.runId) && (
         <div className="flex flex-col gap-1 self-end rounded-lg bg-raised px-3 py-2">
           <span className="text-xs font-medium text-muted">You</span>
           <span className="break-words whitespace-pre-wrap">{run.input}</span>
@@ -462,6 +462,8 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
   };
   // Every run still going or that did not complete, and the newest one, for its status line.
   const shown = runs.filter((run, index) => run.state !== "completed" || index === runs.length - 1);
+  // A transcript read after a reconnect may hold the live run's input already: the newest stored user message.
+  const lastStoredInput = messages?.findLast((entry) => entry.role === "user")?.content;
   const sendable = !session.readOnly;
 
   return (
@@ -491,7 +493,7 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
           <p className="m-0 text-muted">No messages yet.</p>
         )}
         {shown.map((run) => (
-          <RunBlock key={run.id} run={run} />
+          <RunBlock key={run.id} run={run} inputStored={run.input === lastStoredInput} />
         ))}
       </div>
       <div className="flex flex-col gap-2 border-t border-line px-6 py-3 max-md:px-4">
