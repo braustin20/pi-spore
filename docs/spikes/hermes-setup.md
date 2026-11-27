@@ -207,6 +207,8 @@ Then publish no port at all, and use the container's own tailnet name and IP in 
 
 - Dashboard (port 9119): leave `HERMES_DASHBOARD` unset. If you use it, set `HERMES_DASHBOARD_HOST=127.0.0.1` and
   do not publish 9119. Reach it some other way (for example the Unraid console), not from pi-spore.
+  The live setup differs: the dashboard answers on the LAN and the tailnet behind basic auth, by the user's decision
+  of 2026-11-26 (see [hermes-pi-spore-profile.md](hermes-pi-spore-profile.md#dashboard-port-9119)).
 - Webapp (port 9120): leave `webapp.enabled` off, and do not publish 9120.
 - Gateway WebSocket (`/api/ws`): it is for local clients (TUI, Desktop on the same host) and needs a single-use
   ticket from `hermes gateway attach` on the host. Do not set up remote access to it. The docs do not say whether it
@@ -305,8 +307,8 @@ curl -sS -o /dev/null -w 'HTTP %{http_code}\n' \
 # 3. Gateway WebSocket path from the desktop, no key: expect a 4xx code, never 101.
 curl -sS -o /dev/null -w 'HTTP %{http_code}\n' http://<unraid-ts-name>:8642/api/ws
 
-# 4. Dashboard and Webapp ports: expect "refused" or a timeout.
-nc -zv -w 5 <unraid-ts-name> 9119
+# 4. Webapp port: expect "refused" or a timeout. The dashboard (9119) answers with a login page, by the
+#    decision in step 1.6.
 nc -zv -w 5 <unraid-ts-name> 9120
 
 # 5. No Funnel on the desktop.
@@ -354,7 +356,7 @@ the card stays blocked and lists them.
 | 1 | `capabilities` with key | `HTTP 200` and a `features` object | |
 | 2 | `capabilities` without key | `HTTP 401` | |
 | 3 | `/api/ws` from the desktop | a `4xx` code, never `101` | |
-| 4 | Ports 9119 and 9120 from the desktop | refused or timeout | |
+| 4 | Port 9120 from the desktop | refused or timeout | |
 | 7 | Port 8642 from a LAN machine off the tailnet | refused or timeout | |
 | 8 | Port 8642 from another tailnet device | timeout | |
 | 5, 11 | `tailscale funnel status` on both machines | no Funnel | |
