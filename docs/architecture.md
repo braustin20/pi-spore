@@ -999,7 +999,13 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `empty lane: its branch adds no commits`, and the coordinator is told that its worker may have left work
   uncommitted (ADR 0195). `finish` still skips the commit when the diff is empty, because then a restart already made
   it. A conflict aborts, puts the lane back to
-  `passed`, and sends the files to the coordinator. `gate` runs each run gate on the merged tree through
+  `passed`, and sends the files to the coordinator. When the merge changes a file named `package.json` or
+  `package-lock.json` (any folder, also a rename's old name, or a staged list over 500 files) and the project has a
+  `setup` action, `setup` runs first on the merged tree: the run worktree installed its dependencies once, when it
+  was made, so a lane that adds a package would fail `check`. The checkpoint keeps a `setup` flag, so a restart
+  resumes at the same action and never runs `setup` twice. A red `setup` ends the merge like a red gate
+  (`gate setup failed`). A rejected merge keeps what `setup` installed until a later merge installs again.
+  `gate` runs each run gate on the merged tree through
   `ActionsKey.start` with a key per merge job and attempt. `finish` commits when all passed (`merged`, wakes waiting
   lanes); on a red gate it writes the diff to `runs/<run>/lanes/<lane>-gates.diff`, aborts, puts the lane back to
   `passed`, and sends the diff path and the last 4 KiB of the log. The run line only holds merges whose gates passed.
@@ -1007,7 +1013,8 @@ The `runs` module (not core, requires `projects`, `workspaces`, `agents`, `artif
   `finished` run, `finish` pushes the run line after the commit with the VCS `publish` push, never forced, so the
   open PR shows the merge (ADR 0165). The message says so and never names `open_run_pr`. A failed push leaves the
   lane `merged`, and the message gives the error and says the PR does not show the merge.
-  Each step keeps its name in memory, as the lane's `mergeStep`: `merging`, `gate <action>`, `committing`, `pushing`.
+  Each step keeps its name in memory, as the lane's `mergeStep`: `merging`, `gate <action>` (also `gate setup`),
+  `committing`, `pushing`.
   The Runs panel chip reads `Merging: <step>`. `publish` also sets the coordinator's working label under source `runs`,
   `Merging lane "<name>": <step>` (no step yet after a restart), and clears it, and the step, in the publish that ends
   the merge (merged, conflict, red gate, cancel). A handover clears the old coordinator's label.

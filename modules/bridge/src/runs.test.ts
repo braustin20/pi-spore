@@ -9,7 +9,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { actionsModule } from "@pi-spore/mod-actions/server";
 import { createAgentsModule } from "@pi-spore/mod-agents/server";
@@ -190,6 +190,12 @@ const git = (cwd: string, ...args: string[]) =>
     cwd,
     encoding: "utf8",
   }).trim();
+
+/** The action runs the gate fixture recorded, oldest first. Each run appends its own name. */
+const counterLines = () =>
+  existsSync(join(scratch, "counter.txt"))
+    ? readFileSync(join(scratch, "counter.txt"), "utf8").split("\n").filter(Boolean)
+    : [];
 
 /** config.toml text that declares each gate action as the gate-action fixture in the given mode. */
 const gateConfig = (modes: Record<string, string>) =>
@@ -845,6 +851,7 @@ async function laneChanges(
     server,
     (await laneOf(server, run.id, laneId)).workspaceId as string,
   );
+  mkdirSync(dirname(join(workspace.path, file)), { recursive: true });
   writeFileSync(join(workspace.path, file), content);
   git(workspace.path, "add", ".");
   git(workspace.path, "commit", "-q", "-m", `change ${file}`);
@@ -1030,6 +1037,164 @@ describe("merging a lane (ADR 0150)", () => {
     expect(git(runWorkspace.path, "status", "--porcelain")).toBe("");
     expect(existsSync(join(runWorkspace.path, "feature.txt"))).toBe(false);
     expect(git(folder, "rev-parse", "main")).toBe(main);
+  });
+
+  it("runs setup before the gates when the merge changes a dependency file", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "merge-setup", {
+      setup: "pass",
+      check: "pass",
+      test: "pass",
+    });
+    const { run, coordinator } = await createRun(server, projectId, "merge-setup");
+    const lane = await startLane(run, coordinator, "deps");
+    await laneChanges(server, run, lane.id, "package-lock.json", '{"lockfileVersion": 3}\n');
+    // The worktrees ran `setup` when they were made: count only the runs this merge adds.
+    const before = counterLines().length;
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "merged");
+    expect(counterLines().slice(before)).toEqual(["setup", "check", "test"]);
+    expect(git(folder, "show", `${run.line}:package-lock.json`)).toBe('{"lockfileVersion": 3}');
+  });
+
+  it("runs no setup when the merge changes no dependency file", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "merge-no-setup", {
+      setup: "pass",
+      check: "pass",
+      test: "pass",
+    });
+    const { run, coordinator } = await createRun(server, projectId, "merge-no-setup");
+    const lane = await startLane(run, coordinator, "plain");
+    await laneChanges(server, run, lane.id, "feature.txt", "lane change\n");
+    const before = counterLines().length;
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "merged");
+    expect(counterLines().slice(before)).toEqual(["check", "test"]);
+  });
+
+  it("ends the merge like a red gate when setup fails on the merged tree", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "merge-setup-red", {
+      setup: "fail",
+      check: "pass",
+      test: "pass",
+    });
+    const main = git(folder, "rev-parse", "main");
+    const { run, coordinator } = await createRun(server, projectId, "merge-setup-red");
+    const lane = await startLane(run, coordinator, "nested-deps");
+    await laneChanges(server, run, lane.id, "packages/x/package.json", '{"name": "x"}\n');
+    const before = git(folder, "rev-parse", run.line);
+    const counterBefore = counterLines().length;
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    await untilDelivered(server, run.coordinatorAgentId, "gate setup failed");
+    const delivery = await deliveredWith(server, run.coordinatorAgentId, "gate setup failed");
+    expect(delivery).toContain("gate output: boom");
+    expect(await laneOf(server, run.id, lane.id)).toMatchObject({
+      state: "passed",
+      message: "gate setup failed",
+    });
+    expect(counterLines().slice(counterBefore)).toEqual(["setup"]);
+    expect(git(folder, "rev-parse", run.line)).toBe(before);
+    const runWorkspace = await workspaceOf(server, run.workspaceId);
+    expect(git(runWorkspace.path, "status", "--porcelain")).toBe("");
+    expect(git(folder, "rev-parse", "main")).toBe(main);
+  });
+
+  it("runs no setup when the project has no setup action", async () => {
+    const server = await start();
+    const { projectId } = await project(server, "merge-setup-none", GREEN);
+    const { run, coordinator } = await createRun(server, projectId, "merge-setup-none");
+    const lane = await startLane(run, coordinator, "deps");
+    await laneChanges(server, run, lane.id, "package.json", '{"name": "app"}\n');
+    const before = counterLines().length;
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    // The point is the missing action: a merge that asked for `setup` on this project could not start one.
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "merged");
+    expect(counterLines().slice(before)).toEqual(["check", "test"]);
+  });
+
+  it("runs setup when the merge renames a dependency file away", async () => {
+    const server = await start();
+    const { projectId, folder } = await project(server, "merge-setup-rename", {
+      setup: "pass",
+      check: "pass",
+      test: "pass",
+    });
+    writeFileSync(join(folder, "package.json"), '{"name": "app"}\n');
+    git(folder, "add", "package.json");
+    git(folder, "commit", "-q", "-m", "add package.json");
+    const { run, coordinator } = await createRun(server, projectId, "merge-setup-rename");
+    const lane = await startLane(run, coordinator, "rename");
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "running");
+    const laneWorkspace = await workspaceOf(
+      server,
+      (await laneOf(server, run.id, lane.id)).workspaceId as string,
+    );
+    // Only the file's old name shows a dependency file here: the merge renames it to `deps.json`.
+    git(laneWorkspace.path, "mv", "package.json", "deps.json");
+    git(laneWorkspace.path, "commit", "-q", "-m", "rename package.json");
+    await passLane(server, run.id, lane.id);
+    const before = counterLines().length;
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    await until(async () => (await laneOf(server, run.id, lane.id)).state === "merged");
+    expect(counterLines().slice(before)).toEqual(["setup", "check", "test"]);
+    expect(git(folder, "show", `${run.line}:deps.json`)).toBe('{"name": "app"}');
+    expect(() => git(folder, "show", `${run.line}:package.json`)).toThrow();
+  });
+
+  it("keeps setup's place in the gates when a restart cuts a gate off", async () => {
+    const home = join(scratch, "home");
+    const first = await start({ home });
+    const { projectId, folder } = await project(first, "merge-setup-restart", {
+      setup: "pass",
+      check: "hang-first",
+      test: "pass",
+    });
+    const { run, coordinator } = await createRun(first, projectId, "merge-setup-restart");
+    const lane = await startLane(run, coordinator, "deps");
+    await laneChanges(first, run, lane.id, "package-lock.json", '{"lockfileVersion": 3}\n');
+    const before = counterLines().length;
+
+    await runs.mergeLane(coordinator, { laneId: lane.id });
+
+    // setup passed and the next gate hangs with the merge in the run worktree. Then the server stops.
+    await until(() => counterLines().length >= before + 2);
+    const entry = servers.pop();
+    entry?.server.services.jobs.stop();
+    // End the hung gate process, so none outlives the first server. A real restart marks the cut-off run
+    // interrupted, so the test sets that by hand once the process is gone.
+    const { runs: gateRuns } = await json<{
+      runs: { id: string; action: string; status: string }[];
+    }>(await first.request("GET", `/api/actions/workspaces/${run.workspaceId}/runs`));
+    const hung = gateRuns.find((found) => found.action === "check") as { id: string };
+    await json(await first.request("POST", `/api/actions/runs/${hung.id}/cancel`));
+    await until(async () => {
+      const { runs: ended } = await json<{ runs: { id: string; status: string }[] }>(
+        await first.request("GET", `/api/actions/workspaces/${run.workspaceId}/runs`),
+      );
+      return ended.find((found) => found.id === hung.id)?.status === "cancelled";
+    });
+    first.store.run("UPDATE actions_runs SET status = 'interrupted' WHERE id = ?", hung.id);
+    await entry?.agents.manager().stopAll();
+    entry?.server.close();
+
+    const restarted = await start({ home, firstId: 1_000 });
+
+    // The resumed gate takes the interrupted run back, retries it, and goes on to the last gate: never setup again.
+    await until(async () => (await laneOf(restarted, run.id, lane.id)).state === "merged");
+    expect(counterLines().slice(before)).toEqual(["setup", "check", "check", "test"]);
+    expect(git(folder, "show", `${run.line}:package-lock.json`)).toBe('{"lockfileVersion": 3}');
   });
 
   it("tells the coordinator to call open_run_pr when the last lane is merged", async () => {
