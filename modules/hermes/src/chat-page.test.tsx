@@ -663,6 +663,74 @@ describe("the Hermes page", () => {
     expect(page.textContent).toContain("Hermes is unreachable: no answer");
   });
 
+  describe("follows the bottom of the messages", () => {
+    /** The message list, with a fake layout: happy-dom lays out nothing, so the test sets the heights. */
+    const layout = (page: HTMLElement) => {
+      const box = page.querySelector('[role="log"]') as HTMLElement;
+      const size = { height: 1000 };
+      Object.defineProperty(box, "scrollHeight", { configurable: true, get: () => size.height });
+      Object.defineProperty(box, "clientHeight", { configurable: true, value: 400 });
+      Object.defineProperty(box, "scrollTop", { configurable: true, writable: true, value: 0 });
+      const scrollTo = async (top: number) => {
+        box.scrollTop = top;
+        await act(async () => box.dispatchEvent(new Event("scroll")));
+      };
+      return { box, size, scrollTo };
+    };
+
+    it("shows the bottom, and keeps it there as new output comes in", async () => {
+      const fake = chat([{ id: 1, role: "user", content: "ping" }]);
+      const page = await render(fake, "s1");
+      const { box, size } = layout(page);
+      await fake.push("hermes:session:s1", { type: "snapshot", runs: [run({ text: "Lis" })] });
+      expect(box.scrollTop).toBe(1000);
+
+      size.height = 1400;
+      await fake.push("hermes:session:s1", { type: "delta", runId: "r1", delta: "ted.", seq: 1 });
+      expect(box.scrollTop).toBe(1400);
+    });
+
+    it("follows while the reader is near the bottom", async () => {
+      const fake = chat();
+      const page = await render(fake, "s1");
+      const { box, size, scrollTo } = layout(page);
+      await fake.push("hermes:session:s1", { type: "snapshot", runs: [run()] });
+      // 50 px above the bottom counts as at the bottom.
+      await scrollTo(550);
+      size.height = 1300;
+      await fake.push("hermes:session:s1", {
+        type: "run",
+        run: run({ tools: [{ name: "terminal", preview: "ls", state: "running" }] }),
+      });
+      expect(box.scrollTop).toBe(1300);
+    });
+
+    it("leaves a reader who scrolled up where they are", async () => {
+      const fake = chat();
+      const page = await render(fake, "s1");
+      const { box, size, scrollTo } = layout(page);
+      await fake.push("hermes:session:s1", { type: "snapshot", runs: [run()] });
+      await scrollTo(100);
+      size.height = 1400;
+      await fake.push("hermes:session:s1", { type: "delta", runId: "r1", delta: "more", seq: 1 });
+      await fake.push("hermes:session:s1", { type: "run", run: run({ state: "completed" }) });
+      expect(box.scrollTop).toBe(100);
+    });
+
+    it("goes to the bottom when the user sends, even if they scrolled up", async () => {
+      const fake = chat();
+      const page = await render(fake, "s1");
+      const { box, size, scrollTo } = layout(page);
+      await fake.push("hermes:session:s1", { type: "snapshot", runs: [] });
+      await scrollTo(100);
+      size.height = 1200;
+      await type(page.querySelector("textarea") as HTMLTextAreaElement, "hi");
+      expect(box.scrollTop).toBe(100);
+      await click("Send");
+      expect(box.scrollTop).toBe(1200);
+    });
+  });
+
   it("shows a down Hermes plainly, and loads the sessions without a reload once it is back", async () => {
     vi.useFakeTimers();
     let status: HermesStatus = {

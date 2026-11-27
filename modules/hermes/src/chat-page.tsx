@@ -31,6 +31,7 @@ import {
   Textarea,
   type Tone,
   useConfirm,
+  useFollowBottom,
 } from "@pi-spore/ui";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ControlRow, Handoffs, Reconcile } from "./handoffs-page.js";
@@ -365,6 +366,7 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
   const api = useApi();
   const [messages, setMessages] = useState<HermesChatMessages["messages"] | undefined>();
   const messagesRef = useRef<HermesChatMessages["messages"] | undefined>(undefined);
+  const follow = useFollowBottom();
   const [more, setMore] = useState(false);
   const [runs, setRuns] = useState<HermesChatRun[]>([]);
   const [text, setText] = useState("");
@@ -454,6 +456,7 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
       const body = (await api.send("POST", `hermes/chat/sessions/${encodeURIComponent(id)}/runs`, {
         text,
       })) as { run: HermesChatRun };
+      follow.toBottom();
       setText("");
       setRuns((shown) => reduce(shown, { type: "run", run: body.run }));
     } catch (caught) {
@@ -480,7 +483,12 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
           Provider {session.provider ?? "unknown"}, model {session.model ?? "unknown"}
         </span>
       </div>
-      <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4 max-md:px-4">
+      <div
+        ref={follow.ref}
+        onScroll={follow.onScroll}
+        role="log"
+        className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto px-6 py-4 max-md:px-4"
+      >
         {more && (
           <Button size="sm" onClick={() => void loadOlder()}>
             Load older
