@@ -676,6 +676,37 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     );
   });
 
+  it("follows a queued run with no generation yet without Reconnecting, and uses its generation once it starts", async () => {
+    const h = await start();
+    h.fake.options.queueRuns = true;
+    const session = await newSession(h);
+    const run = await sent(h, session.id);
+    // Hermes v0.23.3 sends `execution_generation: null` while the run is queued.
+    await streaming(h, run);
+    const queued = await runOf(h, session.id, run.id);
+    expect(queued).toMatchObject({ state: "queued" });
+    expect(queued.reconnecting).toBeUndefined();
+    expect(queued.error).toBeUndefined();
+
+    h.fake.startQueued("run_fake1");
+    h.fake.requestApproval("run_fake1", "prompt-1");
+    await reaches(h, run, (now) => now.controls.length === 1);
+    await json(
+      await h.server.request("POST", `/api/hermes/chat/runs/${run.id}/controls/prompt-1`, {
+        choice: "once",
+      }),
+    );
+    expect(posts(h, "/approval").map((request) => request.raw)).toEqual([
+      '{"request_id":"prompt-1","execution_generation":1,"choice":"once"}',
+    ]);
+    h.fake.finish("run_fake1", "pong");
+    const done = await reaches(h, run, (now) => now.state === "completed");
+    expect(done.reconnecting).toBeUndefined();
+    expect(
+      events(h, session.id).some((event) => event.type === "run" && event.run.reconnecting),
+    ).toBe(false);
+  });
+
   it("shows a blank provider and model as absent, not as an error", async () => {
     const h = await start();
     h.fake.options.blankSessionMeta = true;

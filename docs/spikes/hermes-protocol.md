@@ -137,6 +137,8 @@ run_8cbd4b1d... then ran: "status": "completed", "output": "pong"
   client sends `POST /v1/runs/{id}/resolve-unknown` with exactly `{admission_id, execution_generation}` from the
   status. Then the cut-off run ends `cancelled`, and the queue moves on. The connector must do this, or the
   session stalls. Whether the cut-off tool call ran to the end is not known; treat it as "maybe ran".
+- A queued run has `"execution_generation": null` (source v0.23.3: `session_admissions.generation` is NULL until
+  the run is `started`).
 - The `202` of `POST /v1/runs` says `"status": "started"` even when the run is queued. Read the real state from
   `GET /v1/runs/{id}`.
 - The SSE stream of a run does not survive a restart (`404`). Poll the status instead.
