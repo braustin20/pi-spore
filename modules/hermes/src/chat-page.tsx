@@ -507,8 +507,11 @@ function SessionView({ session, ready }: { session: HermesChatSession; ready: bo
               placeholder={active ? "Wait for the run to end, or stop it." : "Message Hermes"}
               onChange={(event) => setText(event.target.value)}
               onKeyDown={(event) => {
-                if (event.key === "Enter" && (event.metaKey || event.ctrlKey) && text.trim())
-                  void send();
+                if (event.key !== "Enter" || event.shiftKey || event.nativeEvent.isComposing)
+                  return;
+                // Enter never adds a line; it sends only when the Send button would.
+                event.preventDefault();
+                if (ready && text.trim() && active === undefined) void send();
               }}
             />
             <div className="flex justify-end">

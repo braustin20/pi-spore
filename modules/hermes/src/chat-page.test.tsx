@@ -137,6 +137,17 @@ async function type(element: HTMLInputElement | HTMLTextAreaElement, value: stri
   });
 }
 
+async function press(element: HTMLElement, init: KeyboardEventInit = {}) {
+  const event = new KeyboardEvent("keydown", {
+    key: "Enter",
+    bubbles: true,
+    cancelable: true,
+    ...init,
+  });
+  await act(async () => element.dispatchEvent(event));
+  return event;
+}
+
 const chat = (messages: unknown[] = []) =>
   fakeApi({
     "hermes/status": READY,
@@ -308,6 +319,65 @@ describe("the Hermes page", () => {
     expect(fake.sent).toEqual([
       { method: "POST", path: "hermes/chat/sessions/s1/runs", body: { text: "hi" } },
     ]);
+  });
+
+  it("sends on Enter and clears the box, and on Ctrl or Cmd+Enter too", async () => {
+    const fake = chat();
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [] });
+    const box = page.querySelector("textarea") as HTMLTextAreaElement;
+    await type(box, "hi");
+    expect((await press(box)).defaultPrevented).toBe(true);
+    expect(fake.sent).toEqual([
+      { method: "POST", path: "hermes/chat/sessions/s1/runs", body: { text: "hi" } },
+    ]);
+    expect(box.value).toBe("");
+    // The sent run is still queued, so let it end before the next send.
+    await fake.push("hermes:session:s1", {
+      type: "run",
+      run: run({ id: "r9", state: "completed" }),
+    });
+    await type(box, "again");
+    await press(box, { ctrlKey: true });
+    await type(box, "more");
+    await fake.push("hermes:session:s1", {
+      type: "run",
+      run: run({ id: "r9", state: "completed" }),
+    });
+    await press(box, { metaKey: true });
+    expect(fake.sent.map((post) => post.body)).toEqual([
+      { text: "hi" },
+      { text: "again" },
+      { text: "more" },
+    ]);
+  });
+
+  it("adds a new line on Shift+Enter, and does not send while an IME composes", async () => {
+    const fake = chat();
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [] });
+    const box = page.querySelector("textarea") as HTMLTextAreaElement;
+    await type(box, "hi");
+    expect((await press(box, { shiftKey: true })).defaultPrevented).toBe(false);
+    expect((await press(box, { isComposing: true })).defaultPrevented).toBe(false);
+    expect(fake.sent).toEqual([]);
+    expect(box.value).toBe("hi");
+  });
+
+  it("does not send on Enter with blank text, or while a run is active", async () => {
+    const fake = chat();
+    const page = await render(fake, "s1");
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [] });
+    const box = page.querySelector("textarea") as HTMLTextAreaElement;
+    await type(box, "  ");
+    await press(box);
+    expect(fake.sent).toEqual([]);
+    await fake.push("hermes:session:s1", { type: "run", run: run() });
+    await type(box, "hi");
+    // No new line either: the run holds the session.
+    expect((await press(box)).defaultPrevented).toBe(true);
+    expect(fake.sent).toEqual([]);
+    expect(box.value).toBe("hi");
   });
 
   it("stops a run, and says completed steps are not undone once it is cancelled", async () => {
