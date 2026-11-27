@@ -196,6 +196,23 @@ Operator-reported, verified inside the container.
 This proves no auth bypass and no WAN exposure. pi-spore does not use the dashboard. The operator review is card
 Hermes 0.6, separate from pi-spore's work.
 
+### Decision (card Hermes 0.6, 2026-11-26)
+
+Probed from the desktop, read-only:
+
+- The container has its own LAN address (`192.168.0.2`) and its own tailnet node (`hermes-docker`). The Unraid
+  host publishes no Hermes port.
+- Port 9119 answers on both: `/` redirects to `/login`, and `/api/status` answers without login. So any LAN machine
+  reaches the login page, with or without Tailscale.
+- `/api/status` reports `auth_required: true` and `auth_providers: ["basic"]`. `/api/sessions`, `/api/config`,
+  `/api/profiles`, and `/api/logs` answer 401 without login. Auth fails closed on the endpoints tried.
+- Port 9120 is refused on both addresses.
+
+The user uses the dashboard from the desktop and the phone. **Decision: keep it as it is.** The home LAN is trusted,
+and basic auth guards the dashboard. No bind, Tailscale, or Docker change was made.
+
+Side finding, not acted on by the user's choice: port 8642 also answers on the LAN (401 without a key).
+
 ## Not yet verified
 
 Do not mark these done until a card proves them:
@@ -212,7 +229,7 @@ Do not mark these done until a card proves them:
 |---|---|
 | 1. Dangerous commands run without approval | Corrected above. `deny` blocks on `pi-spore`. The rest is card 1.5. |
 | 2. The key reads every session of the profile | Accepted: the `pi-spore` profile holds only pi-spore and setup-test sessions (ADR 0202). |
-| 3. Dashboard on 9119 | Card 0.6. No auth bypass shown. |
+| 3. Dashboard on 9119 | Card 0.6 decided 2026-11-26: kept on LAN and tailnet behind basic auth. |
 | 4. Clarify is off | The `clarify` toolset is on for `pi-spore` (operator-reported). Capabilities still show no `clarify` flag (probed from the desktop). Round trip not verified. |
 | 5. Listener needs setup | Still open: cards 1.3 and 1.4. |
 
