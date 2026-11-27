@@ -1,7 +1,224 @@
 # Hermes live acceptance
 
 Live checks of the Hermes integration (ADR 0202) against the real Unraid Hermes profile `pi-spore`. Fakes do not
-count. Phase 1 (card Hermes 1.5, handoffs in both directions) is not written yet.
+count. Phase 1 is handoffs in both directions (card Hermes 1.5). Phase 2 is the Hermes chat page (card Hermes 2.3).
+
+## Phase 1: handoffs in both directions (card Hermes 1.5)
+
+Run on 2026-11-27 (UTC), except line 1 and line 15 (04:30). Times below are UTC.
+
+- Hermes: `0.23.3` (`GET /p/pi-spore/health`), at `http://hermes-docker:8642`, profile `pi-spore`. Model
+  `gpt-6.1-sol`; line 1 reports provider `openai-codex`. The run API leaves the provider blank.
+- pi-spore: commit `b88f904` (main), the user's server on port 7420 (Hermes module built 2026-11-26 16:55 -08:00,
+  after the last code change). `hermes.approvalSeconds` 300, Hermes `approvals.timeout` default. No config changed.
+- Pi to Hermes: `ask_hermes` from this card's workspace chat (workspace `01M8DM6XPVHCZMSAQHEJ17R53M`, agent
+  `01M8DM722P7WB7KPP53TT6CK57`). The user answered every approval and question on Home or the Hermes page it links
+  to. The agent sent only the API answers named below (line 4 late answer, line 5 probes).
+- Hermes to Pi: a chat session on the Hermes page (`pi-spore-chat-01M8F088ZF7ZY77C7DYFWZM2T5`), so `hop_count: 0`.
+  The target was this workspace, so this chat received the requests.
+- Facts come from `GET /api/hermes/handoffs`, `GET /api/attention/inbox` (the Home items), and the Hermes session
+  records (`GET /p/pi-spore/api/sessions/<id>/messages`). Screenshots: `p1-*.png` in
+  [`hermes-acceptance/`](hermes-acceptance/), taken with `node scripts/screenshot.mjs` against the user's server.
+  No key, token, or header is in this doc.
+- Delivery: every handoff result arrived in the chat as exactly one message. The messages queue while the chat
+  works and arrive after its turn ends, so some came late. No result came twice.
+
+| # | Check | Result |
+| --- | --- | --- |
+| 1 | Harmless question arrives once | Pass |
+| 2 | `once` allows only the intended step | Pass |
+| 3 | `deny` blocks through the UI | Pass |
+| 4 | Timeout fails closed; a late answer posts nothing | Pass. The Home item closes at expiry; it shows no "expired" label (as in Phase 2 line 5) |
+| 5 | Double answer, stale answer, wrong run, wrong generation | Pass |
+| 6 | Clarify round trip | Pass on the third try. **Failed twice**: Hermes waits 1 minute, Home says 300 s. Bug card 01M8EZZQZE3TN1DW39P2Z0N30W |
+| 7 | Cancel | Pass |
+| 8 | Hermes gateway restart mid-run | Pass |
+| 9 | pi-spore restart mid-run | Pass, on the user's server |
+| 10 | `submit_request`, Accept, reply, `get_request` | Pass |
+| 11 | Decline, `get_request` shows `cancelled` | Pass |
+| 12 | Same `request_id` twice gives one approval | Pass |
+| 13 | Loop try from a chat working on a Hermes request | Pass |
+| 14 | Target outside `hermes.inbound.projects` | Pass, with an unknown id (all three projects are listed) |
+| 15 | Key isolation and the session list | Pass |
+| 16 | `hermes.enabled` off: no traffic, MCP port closed | Pass |
+| 17 | Rollback on paper | Pass, with one doc fix: the runbook's rollback commands used an old path (fixed here) |
+
+### 1. Question
+
+- 04:30:36. Handoff `01M8DMA07DK1X1CSBSKMHSBDZ8`, run `run_c536b4b7a30049248a6e92f20d9a26bd`, session
+  `pi-spore-01M8DMA07DK1X1CSBSKMHSBDZ8`. `completed` at 04:30:42. No tool call.
+- Reply: "Hermes version: unknown; provider: openai-codex; model: gpt-6.1-sol." One message in the chat.
+
+### 2. Allow once
+
+The command was a Python heredoc that writes one file in `/opt/data/pi-spore-bridge`; Hermes flags it as "script
+execution via heredoc".
+
+- 17:06:25. Handoff `01M8EZHY22J7MWKBW8PP0CQ389`, run `run_42806d81b9314bcdbbd81cee855fea99`. Home item
+  `control:01M8EZHY22J7MWKBW8PP0CQ389:c86cb7afccd744a8ad9cd12e20e6715b` at 17:06:33.
+- The user picked "Allow once" by 17:06:50. Reply `DONE` at 17:06:52.
+- Session: one tool call, `terminal`, exit 0, "Command required approval (script execution via heredoc) and was
+  approved by the user." No other tool.
+- File (read back by a later read-only handoff, `01M8F04RW4ZT1QWFTJ9BZ6RC1S`): `approval-1.txt`, 29 bytes, written
+  17:06:49.886, text `PI_SPORE_ACCEPTANCE_1_5_ONCE`.
+
+### 3. Deny
+
+- 17:07:06. Handoff `01M8EZKA8BWJ3616JNZS46KRR0`. The user picked "Deny". Reply `BLOCKED`.
+- Session: one `terminal` call, exit -1, "BLOCKED: Command denied by user. The user has NOT consented to this
+  action." No other tool. No `denied-1.txt` in the folder.
+
+### 4. Timeout
+
+- 17:07:38. Handoff `01M8EZM9Z4KFJGGR0FBPVC4KJM`, control `180075b2feb8409b8f662cb9ce651e74` from 17:07:47.773,
+  expires 17:12:47.773 (300 s). Not answered.
+- 17:12:49.858. `completed`, reply `BLOCKED`. Tool result: "BLOCKED: Command timed out without user response."
+  Control `expired`. No Home item at 17:13:10. No `expired-1.txt` in the folder.
+- 17:13:17. Late answer from the agent, `POST /api/hermes/handoffs/01M8EZM9Z4KFJGGR0FBPVC4KJM/controls/180075b2...`
+  `{"choice":"once"}`: `409 control_expired`, "This Hermes request is expired; nothing was sent". The Hermes
+  session did not change.
+
+### 5. Double, stale, wrong run, wrong generation
+
+- User double-click: handoff `01M8F02WZCHAGDX1HRTAE0H393`, run `run_2552e3304fff46e6ad37cea594232439`. One approval
+  reached Hermes: one `terminal` call, approved; `approval-5.txt` (31 bytes, 17:15:55.390,
+  `PI_SPORE_ACCEPTANCE_1_5_DOUBLE`). Reply `DONE`. The browser shows no second post; the server-side check is below.
+- Two answers at the same moment (agent, two parallel `POST .../controls/c5a4055725b24b3e80e301c1e762277d`
+  `{"choice":"deny"}`, 17:16:25.7, handoff `01M8F041Y3P705MJG2BAH9JVYX`): one answered; the other got `409
+  control_expired`, "This Hermes request is answering; nothing was sent". Hermes saw one deny. Reply `BLOCKED`.
+- Stale: 17:13:17, an answer to line 2's answered control: `409 control_expired`, "This Hermes request is answered;
+  nothing was sent".
+- The build has no test route for a wrong run or generation, so the agent probed Hermes directly with the user's yes.
+  Handoff `01M8F05GT1D772WN3TPRYKA98X`, run `run_acdb58ba156e43aab1a7c3106af1c1a9`, pending approval
+  `eef4c8df...` at generation 1. 17:17:16.748, `POST /v1/runs/<run>/approval` with generation 7 and `deny`:
+  `409 stale_generation`. Afterwards the run was still `waiting_for_approval` with the same prompt, and pi-spore's
+  control still `open`. A real deny through pi-spore then closed it. No `denied-5c.txt` in the folder.
+- Wrong run: `POST /v1/runs/run_000.../approval`: `404 run_not_found`.
+
+### 6. Clarify
+
+- First try, 17:07:55, handoff `01M8EZMG5DA3KPD8GBVC3P54VK`, control `d898f79984`. pi-spore set it to expire at
+  17:12:55; the Home item said "287 s left". Hermes ended the clarify at about 17:09:27: `"outcome": "timed_out",
+  "notice": "[user did not respond within 1m]"`. Reply `COLOR=null`. The second try
+  (`01M8EZR6AMAF7SQ6CCPJ0A7HJA`) ended the same way, `COLOR=unanswered`.
+- Cause: pi-spore gives a clarify control the approval timeout (300 s). Hermes 0.23.3 waits 1 minute for a clarify.
+  Phase 2 line 6 passed only because the answer came in under 1 s. Bug card 01M8EZZQZE3TN1DW39P2Z0N30W.
+- Third try, handoff `01M8F01YC5GKHYABJNMP8YEV8D`, told to answer within a minute: control at 17:15:16, answered
+  "blue" on Home by 17:15:24. Tool result `"status": "answered", "user_response": "blue"`, `"outcome":
+  "submitted"`. Reply `COLOR=blue`.
+
+### 7. Cancel
+
+- Handoff `01M8F060GF6SVTPYACCD72DDBX`, run `run_f3e88ec5c1fc4909a267942e9664360a`: `sleep 5`, then `sleep 120`.
+- 17:17:38, step 2 running. `cancel_hermes_ask` answered "Asked Hermes to stop handoff ... Steps it completed are
+  not undone." At 17:17:47.494 the handoff was `cancelled`; the Hermes run status `cancelled`; step 2's result
+  `[Command interrupted]`, exit 130. Chat message: "It was cancelled. Steps Hermes completed are not undone."
+
+### 8. Hermes gateway restart
+
+- 17:20:54. Handoff `01M8F0CEQPEY2RDVPF5V2ZX3JQ`, run `run_972e1a547ab3414fad294833c32d938f`, ten `sleep 55`.
+- About 17:23 to 17:24, the user had Homelab Maintainer run `docker exec <container> hermes gateway restart`.
+- 17:24:29. pi-spore status `ready`, handoff still `running`; the Hermes run status `unknown`.
+- 17:24:53.895. Handoff `uncertain`. Home item `uncertain:01M8F0CEQPEY2RDVPF5V2ZX3JQ`, "A Hermes handoff needs your
+  decision". Chat message: "Hermes restarted during the run; whether its last step finished is not known. ... Side
+  effects that already happened in Hermes are not undone." [p1-08-home.png](hermes-acceptance/p1-08-home.png),
+  [p1-08-uncertain.png](hermes-acceptance/p1-08-uncertain.png).
+- Reconcile view (`GET /api/hermes/handoffs/<id>/reconcile`): run status `unknown`, last tool started `terminal:
+  sleep 55`, last tool finished `terminal`, and the stored messages (three finished `sleep 55`).
+- 17:25:46 to 17:26:46: the Hermes session stayed at 8 messages, the run `unknown`, no new session, no pick. So no
+  `resolve-unknown` and no new run before the user chose.
+- 17:28:31. The user clicked "Mark as interrupted". Handoff `cancelled`, resolution `interrupted`; the Hermes run
+  `cancelled`. No Home item left.
+
+### 9. pi-spore restart
+
+- 17:28:55. Handoff `01M8F0V3WE2M0NKVVV7A79SVS4`, run `run_22388e906bcc4e42bab212fd9d5bf484`: `sleep 5`, `sleep 90`,
+  `sleep 5`.
+- During step 2 the user ran `pi-spore restart` on the user's own server (uptime 11.7 s at 17:29:30). This chat
+  restarted with it.
+- 17:30:50. `completed`, reply `L9_FINISHED`. The session holds three `terminal` calls, one each; no new session.
+  The chat got `L9_FINISHED` once.
+
+### 10 to 14. Requests from Hermes
+
+- 10 and 12. Run 1 of the Hermes chat session called `list_targets`, then `submit_request` `acc15-l10-20261127`
+  twice with the same body. Both answers: `{"request_id":"acc15-l10-20261127","state":"pending",...}`. One row
+  `01M8F08VPJGE2SZWJREQ45J7ZE` (17:18:56.722), one Home item `request:01M8F08VPJGE2SZWJREQ45J7ZE`.
+- The user accepted by 17:19:16; the row went `running` with this chat as its agent. The chat answered with
+  `reply_hermes` `L10_OK` at 17:19:41. `get_request` then gave
+  `{"request_id":"acc15-l10-20261127","state":"completed",...,"result":"L10_OK"}`.
+- 13. While working on that request, the chat called `ask_hermes`: refused, "This chat works on a request from
+  Hermes, so it cannot ask Hermes (no loops) (hermes_refused)". No handoff was made.
+- 11. `acc15-l11-20261127`, row `01M8F0AVKQBQ2H8K8XPE11QR1A` (17:20:02.167). The user declined at 17:20:08.
+  `get_request`: `{"request_id":"acc15-l11-20261127","state":"cancelled",...,"reason":"Declined by the user"}`.
+- 14. `acc15-l14-20261127` to `01M8NOTALLOWEDXXXXXXXXXXXX`: a tool error, `01M8NOTALLOWEDXXXXXXXXXXXX is not a target
+  pi-spore allows; call list_targets`. No row, no Home item. A real workspace outside the list could not be tried
+  without a config change: all three projects are allowed.
+- The request message itself reached the chat after the chat had already answered it, because messages queue while
+  the chat works. The chat did not answer twice.
+
+### 15. Isolation
+
+- 04:30:42, from the desktop. The `pi-spore` key on `/p/homelab-maintainer/api/sessions`: `401`
+  `gateway_auth_failed`.
+- `/p/pi-spore/api/sessions?limit=200`: 22 sessions, all source `api_server`, all ids `pi-spore-*` (handoffs,
+  `pi-spore-chat-*`, and the setup sessions). None of `homelab-maintainer`'s.
+
+### 16. Hermes off
+
+- A sampler on the desktop counted TCP connections to `hermes-docker:8642` and listeners on `7430` twice a second.
+- On (17:31:02 to 17:32:06): 1 to 5 connections, `7430` listening.
+- The user set `hermes.enabled` to `false` and ran `pi-spore restart` (uptime 15.9 s at 17:32:22).
+  `GET /api/hermes/status` `{"state":"disabled"}`, `GET /api/hermes/mcp` `{"state":"off"}`.
+- Off, 17:32:28 to 17:35:39: 373 samples. `7430` listening in none. A connection showed in the first 7 samples
+  (17:32:28 to 17:32:31), then none; at 17:32:33 `ss -tnp` showed no socket of the server process to Hermes. The
+  first samples are most likely a socket from before the restart closing; the Hermes log below shows no request.
+- Hermes API log for profile `pi-spore`, 17:32:00 to 17:36:00 (read by Homelab Maintainer for the user): "No pi-spore
+  API access-log entries were recorded".
+- 17:38:23. The user set `hermes.enabled` back to `true`: status `ready`, the listener `listening`.
+
+### 17. Rollback on paper
+
+Read once on 2026-11-27, 17:38 to 17:40, without changing anything. The desktop checks ran on the desktop; the
+Unraid checks ran as one read-only handoff (`01M8F1DH0WSQ6S55DZQ89EYK87`, one `terminal` call, no approval, no file
+content printed).
+
+Card 1.4 ([runbook](../hermes/pi-spore-profile/runbook.md#rollback)):
+
+| Step | Target now | Check |
+| --- | --- | --- |
+| Listener off | `hermes.mcp.enabled` true, `listening` | Line 16 showed the port closes when Hermes is off |
+| MCP entry | `profiles/pi-spore/config.yaml`: one `  pi_spore:` line, one `PI_SPORE_MCP_TOKEN` reference; backup `config.yaml.before-hermes-1-4b` present | OK |
+| Toolset | S4 changed nothing | Nothing to undo |
+| Skill | `profiles/pi-spore/skills/pi-spore-remote-teammate` present | OK |
+| Token on Unraid | one `PI_SPORE_MCP_TOKEN=` line in `profiles/pi-spore/.env` | OK |
+| Token on the desktop | `~/.pi-spore/hermes/mcp.token`, `0600`, 65 bytes | OK |
+| Transfer files | desktop `transfer/unraid-receive.pub`, `transfer/mcp.token.enc`; Unraid `transfer/` holds `mcp.token.enc`, `receive.key`, `receive.pub` | OK |
+| Firewall rule | zone `tailscale` has the one rich rule for `7430` from `hermes-docker` | OK |
+| Grant | not applied (S3 skipped) | Nothing to undo. `tailscale serve status` shows only the `7420` handler; no Funnel |
+
+Finding: the runbook's rollback commands named `/opt/data/profiles/pi-spore/`. That folder does not exist; the profile
+is at `/home/hermes/.hermes/profiles/pi-spore/`. `rm -rf` on the old skill path would have "worked" and removed
+nothing. This change fixes the paths in the rollback table.
+
+Card 0.4 has no rollback of its own; card Hermes 0.5 retires what it left. On paper:
+
+| Step | Target now |
+| --- | --- |
+| Desktop key | `~/.pi-spore/hermes/pi-spore.key`, `0600`, 64 bytes. Removing it turns Hermes `unauthorized` |
+| Desktop receiving pair and transfer files | `transfer/receive.key`, `receive.pub`, `ciphertext.bin`, `pi-spore.key.enc.b64`, `decrypt.err` present |
+| Profile key on Unraid | revoke or rotate `API_SERVER_KEY` of `pi-spore`: an operator step for Homelab Maintainer, with a yes |
+| Test session | `pi-spore-migration-1` still listed (line 15) |
+
+### Follow-ups
+
+- Bug card 01M8EZZQZE3TN1DW39P2Z0N30W: a clarify control shows the approval timeout (300 s), but Hermes waits 1
+  minute (line 6).
+- The approval Home item closes at expiry and shows no "expired" label; the handoffs page shows `expired`. Card line
+  4 asked for "expired" on Home. Same as Phase 2 line 5.
+- Line 5's user double-click shows that one approval reached Hermes; the browser side of the click was not recorded.
+  The server guard was proved with two parallel API answers.
+- Line 14 used an unknown id, not a real workspace outside the list.
 
 ## Phase 2: the Hermes chat page (card Hermes 2.3)
 
