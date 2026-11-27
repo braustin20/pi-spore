@@ -328,7 +328,13 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
     });
     request.on("end", () => {
       const url = new URL(request.url, "http://fake");
-      requests.push({ method: request.method, path: url.pathname, headers: request.headers, raw });
+      requests.push({
+        method: request.method,
+        path: url.pathname,
+        search: url.search,
+        headers: request.headers,
+        raw,
+      });
       if (options.holdAll) {
         held.add(response);
         return;

@@ -19,6 +19,8 @@ export interface FakeHermesOptions {
 export interface FakeRequest {
   method: string;
   path: string;
+  /** The query string, with its `?`, or empty. */
+  search: string;
   headers: IncomingHttpHeaders;
   raw: string;
 }

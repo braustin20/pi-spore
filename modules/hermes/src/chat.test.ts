@@ -722,6 +722,35 @@ describe("the Hermes chat page's server (FAKE Hermes)", () => {
     expect(done.error).toBeUndefined();
   });
 
+  it("ends a run with an unknown provider and model when Hermes fails the session list", async () => {
+    const h = await start();
+    const session = await newSession(h);
+    const run = await sent(h, session.id);
+    await streaming(h, run);
+    h.fake.options.answers["/api/sessions"] = { status: 500, raw: "{}" };
+    h.fake.finish("run_fake1", "pong");
+    const done = await reaches(h, run, (now) => now.state === "completed");
+    expect(done.provider).toBeUndefined();
+    expect(done.model).toBeUndefined();
+    expect(done.error).toBeUndefined();
+    const warned = h.log.filter((line) => line.level === "warn");
+    expect(warned).toEqual([
+      {
+        level: "warn",
+        message: "Could not read the Hermes session record",
+        fields: { call: "chat", error: expect.stringContaining("Hermes answered 500") },
+      },
+    ]);
+    expect(
+      h.fake.requests
+        .filter((request) => request.method === "GET" && request.path.endsWith("/api/sessions"))
+        .map((request) => request.search),
+    ).toEqual(["?source=api_server&limit=100&offset=0"]);
+    // The chat still takes the next message.
+    h.fake.options.answers = {};
+    expect((await send(h, session.id)).status).toBe(201);
+  });
+
   it("refuses agent tokens on every chat route", async () => {
     const h = await start();
     const session = await newSession(h);

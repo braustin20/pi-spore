@@ -640,6 +640,34 @@ describe("ask_hermes edge cases (FAKE Hermes)", () => {
       provider: "openai-codex",
       model: "gpt-6.1-sol",
     });
+    // The blank record read right after the session is made stores nothing, and is not an error.
+    expect(h.log.filter((line) => line.level === "warn")).toEqual([]);
+    // One page of pi-spore's own sessions per read: once after the session is made, once at the end.
+    expect(
+      h.fake.requests
+        .filter((request) => request.method === "GET" && request.path.endsWith("/api/sessions"))
+        .map((request) => request.search),
+    ).toEqual(["?source=api_server&limit=100&offset=0", "?source=api_server&limit=100&offset=0"]);
+  });
+
+  it("delivers the end with an unknown provider and model when Hermes fails the session list", async () => {
+    const setup = await start();
+    const { h } = setup;
+    h.fake.options.blankSessionMeta = true;
+    const run = await askAndRun(setup);
+    h.fake.options.answers["/api/sessions"] = { status: 500, raw: "{}" };
+    h.fake.finish(run.runId, "pong");
+    await state(h, run.id, "completed");
+    const done = await handoff(h, run.id);
+    expect(done.provider).toBeUndefined();
+    expect(done.model).toBeUndefined();
+    expect(h.log.filter((line) => line.level === "warn")).toEqual([
+      {
+        level: "warn",
+        message: "Could not read the Hermes session record",
+        fields: { call: "handoff", error: expect.stringContaining("Hermes answered 500") },
+      },
+    ]);
   });
 
   it("stores the end of a handoff whose chat is gone, and delivers to nobody", async () => {
