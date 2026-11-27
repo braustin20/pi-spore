@@ -351,6 +351,13 @@ describe("the Hermes page", () => {
       expect(row.body).toBe(wrapped);
     });
 
+    it("shows a plain line, with nothing to open, for an empty result", async () => {
+      const page = await render(chat([{ id: 1, role: "tool", tool: "check", content: "" }]), "s1");
+      await act(async () => undefined);
+      expect(page.textContent).toContain("Tool check");
+      expect(page.querySelector("details, pre")).toBeNull();
+    });
+
     it("shows HTML in a result as text", async () => {
       const html = "<script>alert(1)</script><b>bold</b> and more text after the tags";
       const row = await toolRow(wrap(html));
