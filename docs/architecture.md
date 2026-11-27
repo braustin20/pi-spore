@@ -1900,7 +1900,8 @@ Hermes 1.4).
   the last id. Turning `hermes.enabled` off closes open streams at the next check (poll or refresh) with 503
   `hermes_not_ready`. A stream that sends nothing for 30 s, not even the 10 s keepalive, fails 502
   `hermes_stream_lost`, so a half-open connection does not hold a handoff forever. Unknown fields are allowed
-  everywhere in Hermes data.
+  everywhere in Hermes data. A queued run's `execution_generation` is `null` (Hermes gives it when the run starts);
+  pi-spore reads that as not known yet. A string or a negative number still fails 502 `hermes_bad_response`.
 - Approval answers are exactly `{request_id, execution_generation, choice}`, `choice` `once` or `deny` (the type and
   a closed schema both refuse `session` and `always`). Clarify answers are exactly
   `{request_id, execution_generation, answer}`. `resolveUnknown` sends exactly `{admission_id,

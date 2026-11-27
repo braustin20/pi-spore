@@ -12,6 +12,7 @@ export interface FakeHermesOptions {
   dropStreamAfter?: number | undefined;
   loseAnswers?: boolean;
   blankSessionMeta?: boolean;
+  queueRuns?: boolean;
   answers: Record<string, { status: number; raw: string }>;
 }
 
@@ -26,7 +27,7 @@ export interface FakeRun {
   run_id: string;
   status: string;
   admission_id: string;
-  execution_generation: number;
+  execution_generation: number | null;
   session_id: string | undefined;
 }
 
@@ -41,6 +42,7 @@ export interface FakeHermes {
   requestApproval(runId: string, promptId: string): void;
   requestClarify(runId: string, promptId: string): void;
   run(runId: string): FakeRun | undefined;
+  startQueued(runId: string): void;
   setSessionMeta(id: string, meta: { model: string; billing_provider: string }): void;
   restart(): void;
   release(): void;

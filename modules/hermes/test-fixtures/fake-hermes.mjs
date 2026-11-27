@@ -15,7 +15,10 @@
 // dropStreamAfter (cut each event stream after n frames), answers ({ "<path below the profile>": { status, raw } }:
 // that path answers this status and raw body, for broken or unexpected answers), loseAnswers (take an approval or
 // clarify answer, then reset the connection instead of answering, like a response lost on the way back),
-// blankSessionMeta (new sessions have no model or provider yet; `setSessionMeta` fills them in later).
+// blankSessionMeta (new sessions have no model or provider yet; `setSessionMeta` fills them in later), queueRuns
+// (a new run waits as `queued` until `startQueued`).
+// A queued run has `execution_generation: null`: Hermes v0.23.3 gives the generation only when the run starts
+// (`session_admissions.generation` is NULL until `started`).
 import { createServer } from "node:http";
 
 const REQUIRED = {
@@ -179,14 +182,16 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
         return error(response, 409, "permission_denied");
       counter += 1;
       // A run left unknown holds every later run of its session until resolve-unknown (spike, "unknown").
-      const blocked = [...runs.values()].some(
-        (other) => other.session_id === body?.session_id && other.status === "unknown",
-      );
+      const blocked =
+        options.queueRuns ||
+        [...runs.values()].some(
+          (other) => other.session_id === body?.session_id && other.status === "unknown",
+        );
       const run = {
         run_id: `run_fake${counter}`,
         status: blocked ? "queued" : "running",
         admission_id: `adm_fake${counter}`,
-        execution_generation: 1,
+        execution_generation: blocked ? null : 1,
         session_id: body?.session_id,
         output: null,
         pending_controls: [],
@@ -257,7 +262,7 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
         run.status = "cancelled";
         for (const other of runs.values())
           if (other.session_id === run.session_id && other.status === "queued")
-            other.status = "running";
+            Object.assign(other, { status: "running", execution_generation: 1 });
         return json(response, 200, {
           run_id: run.run_id,
           status: "terminal",
@@ -385,6 +390,10 @@ export async function startFakeHermes({ key, profile = "pi-spore" }) {
       emit(run, { event: "clarify.request", request_id: promptId });
     },
     run: (runId) => runs.get(runId),
+    /** Starts a queued run: it gets its generation, as in Hermes. */
+    startQueued(runId) {
+      Object.assign(runs.get(runId), { status: "running", execution_generation: 1 });
+    },
     /** Sets the model and provider of a session's record, as Hermes does once its routing picked them. */
     setSessionMeta(id, { model, billing_provider }) {
       Object.assign(sessions.get(id), { model, billing_provider });

@@ -115,6 +115,26 @@ describe("Hermes client runs", () => {
     });
   });
 
+  it("reads a null execution_generation as not known yet, and still refuses a string or a negative one", async () => {
+    h = await ready();
+    const answer = (generation: string) => ({
+      status: 200,
+      raw: `{"run_id":"run_q","status":"queued","execution_generation":${generation}}`,
+    });
+    h.fake.options.answers["/v1/runs/run_q"] = answer("null");
+    expect(await h.hermes.getRun("run_q")).toMatchObject({
+      status: "queued",
+      execution_generation: null,
+    });
+    for (const bad of ['"1"', "-1"]) {
+      h.fake.options.answers["/v1/runs/run_q"] = answer(bad);
+      await expect(h.hermes.getRun("run_q")).rejects.toMatchObject({
+        code: "hermes_bad_response",
+        message: expect.stringContaining("/execution_generation"),
+      });
+    }
+  });
+
   it("stops a run", async () => {
     h = await ready();
     const { run_id } = await h.hermes.startRun({ input: "sleep", session_id: "s" }, "k-7");

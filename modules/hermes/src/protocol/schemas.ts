@@ -59,13 +59,15 @@ export const PendingControl = Open({
 
 // This build can leave the run's runtime fields blank. Blank means unknown, never a failure (ADR 0202 decision 7).
 const Blank = Type.Optional(Type.Union([Type.String(), Type.Null()]));
+const Generation = Type.Integer({ minimum: 0 });
 
 /** `GET /v1/runs/{id}`. */
 export const Run = Open({
   run_id: Type.String(),
   status: RunStatusName,
   admission_id: Type.Optional(Type.String()),
-  execution_generation: Type.Optional(Type.Integer()),
+  // `null` while the run is queued: Hermes gives the generation only when the run starts (source v0.23.3).
+  execution_generation: Type.Optional(Type.Union([Generation, Type.Null()])),
   session_id: Type.Optional(Type.String()),
   output: Type.Optional(Type.Union([Type.String(), Type.Null()])),
   pending_controls: Type.Optional(Type.Array(PendingControl)),
@@ -129,8 +131,6 @@ export const StartRunBody = Closed({
   session_id: Type.String({ minLength: 1 }),
 });
 export type StartRunBody = Static<typeof StartRunBody>;
-
-const Generation = Type.Integer({ minimum: 0 });
 
 /** `POST /v1/runs/{id}/approval`. pi-spore never sends `session` or `always`. */
 export const ApprovalAnswer = Closed({
