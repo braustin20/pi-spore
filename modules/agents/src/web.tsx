@@ -20,6 +20,7 @@ import {
   Select,
   Tooltip,
   useConfirm,
+  useFollowBottom,
   usePhone,
 } from "@pi-spore/ui";
 import { MessageSquare } from "lucide-react";
@@ -27,7 +28,6 @@ import {
   type ComponentType,
   useCallback,
   useEffect,
-  useLayoutEffect,
   useMemo,
   useReducer,
   useRef,
@@ -263,8 +263,7 @@ function ChatView({
   const [state, dispatch] = useReducer(reducePage, undefined, emptyPage);
   const [models, setModels] = useState<ModelList | undefined>();
   const [error, setError] = useState<string | undefined>();
-  const scroller = useRef<HTMLDivElement>(null);
-  const stick = useRef(true);
+  const follow = useFollowBottom();
   const changed = useRef(onChatChanged);
   changed.current = onChatChanged;
 
@@ -293,16 +292,6 @@ function ChatView({
       }
     });
   }, [api, agentId]);
-
-  // Follow new output only while the reader is already at the bottom.
-  const onScroll = () => {
-    const box = scroller.current;
-    if (box) stick.current = box.scrollTop + box.clientHeight >= box.scrollHeight - 80;
-  };
-  useLayoutEffect(() => {
-    const box = scroller.current;
-    if (box && stick.current) box.scrollTop = box.scrollHeight;
-  });
 
   const call = useCallback(
     (method: "POST", path: string, body?: unknown) =>
@@ -451,7 +440,7 @@ function ChatView({
         </>
       )}
 
-      <div ref={scroller} onScroll={onScroll} className="min-h-0 flex-1 overflow-y-auto">
+      <div ref={follow.ref} onScroll={follow.onScroll} className="min-h-0 flex-1 overflow-y-auto">
         <div className="flex flex-col gap-3 px-4 py-5 xl:px-6">
           {agent?.kind === "side" && (
             <Notice>
