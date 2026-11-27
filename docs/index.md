@@ -264,7 +264,8 @@ these docs is applied by pi-spore.
   `pi-spore`: operator-reported setup facts, what is not yet verified, and the correction of the spike's approval
   finding. (ADR 0202)
 - [hermes-acceptance.md](spikes/hermes-acceptance.md): live acceptance against the real profile `pi-spore`,
-  with screenshots in `spikes/hermes-acceptance/`. Phase 2 is the Hermes chat page. (card Hermes 2.3)
+  with screenshots in `spikes/hermes-acceptance/`. Phase 1 is handoffs in both directions (card Hermes 1.5). Phase 2
+  is the Hermes chat page (card Hermes 2.3).
 - [pi-lens-value.md](spikes/pi-lens-value.md): is pi-lens worth its memory cost for pi-spore agents? (ADR 0025)
 - [q1-rpc-agents.md](spikes/q1-rpc-agents.md): does `pi --mode rpc` load the whole Pi setup, do dialogs reach the
   client, and how much memory does an agent use? (ADR 0002)

@@ -7,8 +7,9 @@ the MCP listener and requests from Hermes (card Hermes 1.3, `modules/hermes/src/
 **Status, 2026-11-26: applied (card Hermes 1.4b).** S1, S2, S4, S5 and S6 are done, each with the user's yes and an
 evidence line. S3 was skipped by the user, for good: the tailnet policy is unchanged, and a desktop firewalld rule
 that admits only `hermes-docker` on the MCP port takes its place (see S4). This build keeps the profile under
-`/home/hermes/.hermes/profiles/pi-spore/`, not `/opt/data/profiles/pi-spore/`; the evidence lines use the real path,
-and the commands below still show the old one. This runbook is the record.
+`/home/hermes/.hermes/profiles/pi-spore/`, not `/opt/data/profiles/pi-spore/`. The evidence lines and the rollback
+table use the real path (rollback fixed by card Hermes 1.5); the step commands still show the old one. This runbook
+is the record.
 
 ## How to use this
 
@@ -206,10 +207,10 @@ allowances, because those allowances restore reach for every node: see the grant
 | What | Command | Evidence |
 | --- | --- | --- |
 | The listener off, first | pi-spore Settings: `hermes.mcp.enabled` `false`. `GET /api/hermes/mcp` then answers `{"state":"off"}`, and the settings check closes the port, so a client gets "connection refused". `503 mcp_off` is only the answer in the moments before that check runs | pending: "connection refused" from `hermes-docker`, taken while the grant is still in place |
-| The MCP entry | delete the `pi_spore` block from `/opt/data/profiles/pi-spore/config.yaml` (or the documented unset form — check before applying), then `/reload-mcp` or `docker exec <container> hermes gateway restart`. Read the **file** back: `grep -c "^  pi_spore:"` and `grep -c "PI_SPORE_MCP_TOKEN"` on `/opt/data/profiles/pi-spore/config.yaml`, both `0` | pending |
+| The MCP entry | delete the `pi_spore` block from `/home/hermes/.hermes/profiles/pi-spore/config.yaml` (or the documented unset form — check before applying), then `/reload-mcp` or `docker exec <container> hermes gateway restart`. Read the **file** back: `grep -c "^  pi_spore:"` and `grep -c "PI_SPORE_MCP_TOKEN"` on `/home/hermes/.hermes/profiles/pi-spore/config.yaml`, both `0` | pending |
 | The toolset | only if S4 changed it: put that profile's API toolset selection back to what its read-back showed before, the same surface S4 used; confirm with `hermes -p pi-spore tools list --platform api_server` | pending |
-| The skill | `docker exec <container> rm -rf /opt/data/profiles/pi-spore/skills/pi-spore-remote-teammate` | pending |
-| The token on Unraid | inside the container shell: `sed -i '/^PI_SPORE_MCP_TOKEN=/d' /opt/data/profiles/pi-spore/.env`, then `grep -c` for zero, and `ls -ln` to show the mode is unchanged | pending |
+| The skill | `docker exec <container> rm -rf /home/hermes/.hermes/profiles/pi-spore/skills/pi-spore-remote-teammate` | pending |
+| The token on Unraid | inside the container shell: `sed -i '/^PI_SPORE_MCP_TOKEN=/d' /home/hermes/.hermes/profiles/pi-spore/.env`, then `grep -c` for zero, and `ls -ln` to show the mode is unchanged | pending |
 | The token on the desktop, on its own | `rm -f ~/.pi-spore/hermes/mcp.token`. With the listener still enabled the port **stays open**: the token is read per request, so every request answers `503 mcp_token_unusable` and nothing is served. "Connection refused" is the evidence for the listener-off row, or for a start that never opened (no Tailscale address, or no token file when the check first ran) — not for this row | pending |
 | The transfer files | on the desktop, `rm -f ~/.pi-spore/hermes/transfer/unraid-receive.pub ~/.pi-spore/hermes/transfer/mcp.token.enc` — **not** the whole folder, which holds the card Hermes 0.4 pair until card Hermes 0.5 retires it; on Unraid, `rm -f /opt/data/pi-spore-bridge/transfer/receive.key /opt/data/pi-spore-bridge/transfer/receive.pub /opt/data/pi-spore-bridge/transfer/mcp.token.enc` | pending |
 | The desktop firewall rule | `sudo firewall-cmd --permanent --zone=tailscale --remove-rich-rule='rule family="ipv4" source address="<hermes-docker-tailscale-ip>/32" port port="7430" protocol="tcp" accept'`, then `sudo firewall-cmd --reload`. Added in S4 because S3 was skipped | pending |
