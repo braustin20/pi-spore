@@ -96,7 +96,7 @@ S2b, 2026-11-26: the public key decoded to a 4096-bit PEM key, different from th
 
 Needs its own yes: it changes the tailnet policy for every device.
 
-**Skipped by the user, for good, on 2026-11-26** (Home question `01M8DEES0Z3RTZ38FZ0V003XAX`, answer "Let's just skip this for good"). The tailnet policy is unchanged: the template's allow-all grant still lets every tailnet device reach `tcp:7430` on the desktop. The listener's own guards (Tailscale-address bind, `Host` check, bearer token) are the only lock. This is less than ADR 0202 §10 asks, which names the grant as the second lock. S6 check 4 cannot pass while this stands.
+**Skipped by the user, for good, on 2026-11-26** (Home question `01M8DEES0Z3RTZ38FZ0V003XAX`, answer "Let's just skip this for good"). The tailnet policy is unchanged: the template's allow-all grant still lets every tailnet device reach `tcp:7430` on the desktop. The listener's own guards (Tailscale-address bind, `Host` check, bearer token) are the only lock. ADR 0202 §10 named the grant as the second lock; [ADR 0203](../../decisions/0203-hermes-mcp-port-locked-by-desktop-firewall.md) replaces it with the desktop firewalld rule added in S4, which admits only `hermes-docker`. S6 check 4 passes on that rule.
 
 Rule, narrowing, the policy `tests` block, and the live tests in [network-rule.md](network-rule.md). Tailscale policy
 is additive: one narrow grant, plus the removal or narrowing of every broad rule that already matches this port, plus a
