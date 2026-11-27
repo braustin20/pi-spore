@@ -33,6 +33,7 @@ import {
   useConfirm,
   useFollowBottom,
 } from "@pi-spore/ui";
+import { ChevronRight } from "lucide-react";
 import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { ControlRow, Handoffs, Reconcile } from "./handoffs-page.js";
 
@@ -212,16 +213,49 @@ function SessionRow({ session, selected }: { session: HermesChatSession; selecte
 
 const roleLabel: Record<string, string> = { user: "You", assistant: "Hermes", tool: "Tool" };
 
+const UNTRUSTED_OPEN = /^<untrusted_tool_result\b[^>]*>\s*/;
+const UNTRUSTED_CLOSE = "</untrusted_tool_result>";
+
+/**
+ * The short line of a tool result. Hermes wraps mcp_ and browser_ results in `<untrusted_tool_result>` with a
+ * notice first; the line skips both, as Hermes's desktop app does, so it shows what the tool said.
+ */
+function toolPreview(content: string): string {
+  let text = content.trim();
+  const open = UNTRUSTED_OPEN.exec(text);
+  const close = text.lastIndexOf(UNTRUSTED_CLOSE);
+  if (open && close >= open[0].length) {
+    const inner = text.slice(open[0].length, close);
+    const notice = inner.indexOf("\n\n");
+    text = (notice < 0 ? inner : inner.slice(notice + 2)).trim();
+  }
+  const line = text.split("\n", 1)[0] ?? "";
+  return line.length > 200 ? `${line.slice(0, 200)}…` : line;
+}
+
 /** A stored message. Roles other than user, assistant, and tool (such as `session_meta`) are not shown. */
 function StoredMessage({ entry }: { entry: HermesChatMessages["messages"][number] }) {
   const label = roleLabel[entry.role];
   if (!label) return null;
-  if (entry.role === "tool")
+  if (entry.role === "tool") {
+    if (!entry.content) return <div className="text-xs text-muted">Tool {entry.tool ?? ""}</div>;
     return (
-      <div className="text-xs text-muted">
-        Tool {entry.tool ?? ""}: <span className="break-words">{entry.content?.slice(0, 200)}</span>
-      </div>
+      <details className="group text-xs text-muted">
+        <summary className="flex cursor-pointer list-none items-center gap-1 [&::-webkit-details-marker]:hidden">
+          <ChevronRight
+            aria-hidden="true"
+            className="size-3.5 shrink-0 transition-transform group-open:rotate-90"
+          />
+          <span className="min-w-0 truncate">
+            Tool {entry.tool ?? ""}: {toolPreview(entry.content)}
+          </span>
+        </summary>
+        <pre className="m-0 mt-1 max-h-80 overflow-auto rounded-lg border border-line bg-panel p-2.5 font-mono text-xs text-fg [overflow-wrap:anywhere] whitespace-pre-wrap">
+          {entry.content}
+        </pre>
+      </details>
     );
+  }
   return (
     <div
       className={cn(
