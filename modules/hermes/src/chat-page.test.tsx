@@ -451,6 +451,33 @@ describe("the Hermes page", () => {
     expect(page.textContent).toContain("the reply");
   });
 
+  it("shows a live run's message once when the stored transcript holds it after a reconnect", async () => {
+    const input = "Reply with pong.";
+    let stored: unknown[] = [];
+    const fake = fakeApi({
+      "hermes/status": READY,
+      "hermes/chat/sessions": { enabled: true, sessions: SESSIONS },
+      "hermes/chat/sessions/s1/messages": () => ({ messages: [...stored].reverse() }),
+    });
+    const page = await render(fake, "s1");
+    const count = () => (page.textContent ?? "").split(input).length - 1;
+    // Sent from this page: Hermes has not stored it yet, so the run block shows it.
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [run({ input })] });
+    expect(count()).toBe(1);
+
+    // A reload or restart while the run is live: the transcript read now holds the message.
+    stored = [{ id: 1, role: "user", content: input }];
+    await fake.push("hermes:session:s1", { type: "snapshot", runs: [run({ input })] });
+    await act(async () => undefined);
+    expect(count()).toBe(1);
+
+    stored = [...stored, { id: 2, role: "assistant", content: "pong" }];
+    await fake.push("hermes:session:s1", { type: "run", run: run({ input, state: "completed" }) });
+    await act(async () => undefined);
+    expect(count()).toBe(1);
+    expect(page.textContent).toContain("pong");
+  });
+
   it("loads older messages, and keeps them when the newest page is read again", async () => {
     // 150 stored messages, ids 1 to 150; the page reads 100 at a time from the newest.
     let stored = Array.from({ length: 150 }, (_, index) => ({
