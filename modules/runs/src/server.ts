@@ -1,9 +1,10 @@
+import { basename } from "node:path";
 import { ActionsKey } from "@pi-spore/mod-actions/server";
 import { AgentsKey } from "@pi-spore/mod-agents/server";
 import { ArtifactsKey } from "@pi-spore/mod-artifacts/server";
 import { ApprovalsKey } from "@pi-spore/mod-attention/server";
 import { PipelinesKey } from "@pi-spore/mod-pipelines/server";
-import { ProjectsKey } from "@pi-spore/mod-projects/server";
+import { ProjectsKey, type WorkspaceLocation } from "@pi-spore/mod-projects/server";
 import { WorkspacesKey } from "@pi-spore/mod-workspaces/server";
 import {
   ApiError,
@@ -25,6 +26,7 @@ import {
   type MergeLaneRequest,
   type OpenRunPrRequest,
   type PipelineStage,
+  type Project,
   parseJsonBody,
   type ReviseLaneRequest,
   type Run,
@@ -178,10 +180,15 @@ const MERGE_JOB = "runs.merge";
 
 const NOT_ENDED = ["running", "waiting", "interrupted"] as const;
 
-/** `gate` and `attempt` are the place in the run's gates; `failure` is the first gate that failed, for `finish`. */
+/**
+ * `gate` and `attempt` are the place in the actions to run; `failure` is the first one that failed, for `finish`.
+ * `setup` says the merge changed a dependency file, so `setup` runs first; every checkpoint of that merge keeps it,
+ * so the index still names the same action after a gate or an interrupt.
+ */
 interface MergeCheckpoint {
   gate: number;
   attempt: number;
+  setup?: true;
   failure?: { action: string; logTail: string };
 }
 
@@ -198,6 +205,16 @@ const RUN_PR = "run-pr";
 
 const DEFAULT_GATES = ["check", "test"];
 const DEFAULT_PIPELINE = "default";
+
+/**
+ * A merge that changes one of these needs the project's `setup` action before the run's gates. The run's worktree
+ * installed its dependencies once, when it was made, so a lane that adds a package fails `check` on the merged tree
+ * and the lane's code cannot fix it.
+ */
+const DEPENDENCY_FILES = ["package.json", "package-lock.json"];
+
+/** How many files of a merge to list. A truncated list runs `setup`, so a big merge plays safe. */
+const MERGE_FILES_LIMIT = 500;
 
 /** `blocked` comes from the lane's pipeline run, which the pipelines module owns. */
 const laneToView = (row: LaneRow, blocked: string | undefined): Lane => ({
@@ -1215,12 +1232,41 @@ export const runsModule: ServerModule = {
       return lane?.state === "merging" ? lane : undefined;
     };
 
-    const merge = async ({ subject }: { subject: LaneSubject }): Promise<StepOutcome<never>> => {
+    /**
+     * Whether a merged tree needs `setup` before the run's gates: the merge changed a dependency file, and the
+     * project has a `setup` action. The merge is uncommitted, so its files are exactly the staged ones. A provider
+     * with no `changes` reports no change: a run needs `integrate`, and Git has both.
+     */
+    const mergeNeedsSetup = async (
+      project: Project,
+      location: WorkspaceLocation,
+      workspaceId: string,
+    ): Promise<boolean> => {
+      const changes = projects.vcsFor(project).changes;
+      if (!changes) return false;
+      const { files, truncated } = await changes.files(
+        location,
+        { kind: "staged" },
+        MERGE_FILES_LIMIT,
+      );
+      const dependency = (path: string) => DEPENDENCY_FILES.includes(basename(path));
+      const touched = files.some(
+        (file) => dependency(file.path) || (file.oldPath !== undefined && dependency(file.oldPath)),
+      );
+      if (!truncated && !touched) return false;
+      return (await actions.list(workspaceId)).some((action) => action.name === "setup");
+    };
+
+    const merge = async ({
+      subject,
+    }: {
+      subject: LaneSubject;
+    }): Promise<StepOutcome<MergeCheckpoint>> => {
       const lane = mergingLane(subject);
       if (!lane) return { next: null };
       setMergeStep(lane.id, "merging");
       const run = requireRun(lane.run_id);
-      const { integrate, location, laneLine } = await mergeSite(run, lane);
+      const { project, integrate, location, laneLine } = await mergeSite(run, lane);
       // A restart may have left an earlier try of this merge in progress.
       await integrate.abort(location);
       // A lane without commits would "merge" as a no-op. Say so instead of showing it as merged.
@@ -1243,7 +1289,11 @@ export const runsModule: ServerModule = {
         await integrate.abort(location);
         return { next: null };
       }
-      if (conflicts.length === 0) return {};
+      if (conflicts.length === 0) {
+        return (await mergeNeedsSetup(project, location, run.workspace_id))
+          ? { checkpoint: { gate: 0, attempt: 0, setup: true } }
+          : {};
+      }
       return {
         next: null,
         commit: () => {
@@ -1278,9 +1328,13 @@ export const runsModule: ServerModule = {
       if (!lane) return { next: null };
       const run = requireRun(lane.run_id);
       const gates = JSON.parse(run.gates) as string[];
+      // A merge that changed a dependency file installs first, so the gates see what it added.
+      const list = checkpoint?.setup ? ["setup", ...gates] : gates;
+      // The flag rides on every checkpoint of this merge, so the index keeps naming the same action.
+      const carried = checkpoint?.setup ? { setup: true as const } : {};
       const index = checkpoint?.gate ?? 0;
       const attempt = checkpoint?.attempt ?? 0;
-      const action = gates[index] as string;
+      const action = list[index] as string;
       setMergeStep(lane.id, `gate ${action}`);
       const started = await actions.start(run.workspace_id, action, "pipeline", {
         key: `${run.id}:${lane.id}:${id}:${action}:${attempt}`,
@@ -1288,18 +1342,18 @@ export const runsModule: ServerModule = {
       gateActions.set(run.id, started.id);
       const ended = await actions.wait(started.id).finally(() => gateActions.delete(run.id));
       if (ended.status === "interrupted") {
-        return { next: "gate", checkpoint: { gate: index, attempt: attempt + 1 } };
+        return { next: "gate", checkpoint: { ...carried, gate: index, attempt: attempt + 1 } };
       }
       if (ended.status === "succeeded") {
-        return index + 1 < gates.length
-          ? { next: "gate", checkpoint: { gate: index + 1, attempt: 0 } }
+        return index + 1 < list.length
+          ? { next: "gate", checkpoint: { ...carried, gate: index + 1, attempt: 0 } }
           : { next: "finish" };
       }
       const { text } = await actions.readLog(ended.id, undefined);
       const logTail = [ended.error, text.slice(-LOG_TAIL_CHARS)].filter(Boolean).join("\n");
       return {
         next: "finish",
-        checkpoint: { gate: index, attempt, failure: { action, logTail } },
+        checkpoint: { ...carried, gate: index, attempt, failure: { action, logTail } },
       };
     };
 
