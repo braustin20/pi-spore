@@ -4,8 +4,11 @@ Card Hermes 1.4, [ADR 0202](../../decisions/0202-hermes-remote-teammate.md) §8,
 the MCP listener and requests from Hermes (card Hermes 1.3, `modules/hermes/src/mcp/listener.ts`,
 `modules/hermes/src/inbound.ts`).
 
-**Status: nothing applied.** Every live step below is pending: it needs the user's yes first, and an evidence line
-after. This runbook is the record of both.
+**Status, 2026-11-26: applied (card Hermes 1.4b).** S1, S2, S4, S5 and S6 are done, each with the user's yes and an
+evidence line. S3 was skipped by the user, for good: the tailnet policy is unchanged, and a desktop firewalld rule
+that admits only `hermes-docker` on the MCP port takes its place (see S4). This build keeps the profile under
+`/home/hermes/.hermes/profiles/pi-spore/`, not `/opt/data/profiles/pi-spore/`; the evidence lines use the real path,
+and the commands below still show the old one. This runbook is the record.
 
 ## How to use this
 
@@ -56,12 +59,13 @@ gets "connection refused" and no HTTP answer at all.
 
 | Yes | Record |
 | --- | --- |
-| Who asked, when, and the user's answer | pending: needs the user's yes |
+| Who asked, when, and the user's answer | Asked by the card Hermes 1.4b chat on 2026-11-26 (Home question `01M8DD2NDKNYANDNSCBRA6AB5H`). The user answered **Yes**. `hermes.inbound.projects`: Pi Spore, Paint Crafter, Super Space Scavengers (all three projects) |
 
 | Evidence | How | Result (redacted) |
 | --- | --- | --- |
-| Token file modes and size | `ls -lnd ~/.pi-spore/hermes`, `ls -ln ~/.pi-spore/hermes/mcp.token` (0700, 0600, **65 bytes**: 64 hex characters plus a newline) | pending: needs the user's yes |
-| Listener state | the listener state from the Settings page or `GET /api/hermes/mcp`, URL only | pending: needs the user's yes |
+| Token file modes and size | `ls -lnd ~/.pi-spore/hermes`, `ls -ln ~/.pi-spore/hermes/mcp.token` (0700, 0600, **65 bytes**: 64 hex characters plus a newline) | 2026-11-26: `drwx------ 1000 1000 ~/.pi-spore/hermes`; `-rw------- 1000 1000 65 ~/.pi-spore/hermes/mcp.token`. Made with `openssl rand -hex 32`; never printed |
+| Settings | global `settings.json`, the `hermes` table only (backup kept as `settings.json.bak-hermes-1-4b`) | `hermes.mcp.enabled: true`; `hermes.inbound.projects`: the three project ids; every other key unchanged (diff empty) |
+| Listener state | the listener state from the Settings page or `GET /api/hermes/mcp`, URL only | `{"state":"listening","url":"http://<desktop-tailscale-ip>:7430/mcp"}`; `ss -ltn` shows `<desktop-tailscale-ip>:7430` and the main server still on `127.0.0.1:7420` only. A local POST with no token answers `401` |
 
 ## S2 — Unraid: the token arrives in the profile's `.env`
 
@@ -74,19 +78,25 @@ and the only thing that crosses the wire is the base64 ciphertext and its SHA-25
 
 | Yes | Record |
 | --- | --- |
-| S2a Unraid key pair, S2b desktop encrypt, S2c Unraid write: the user's answer for each | pending: needs the user's yes |
+| S2a Unraid key pair, S2b desktop encrypt, S2c Unraid write: the user's answer for each | S2a and S2b: asked on 2026-11-26 (Home question `01M8DD5P5ND7VK4A2HDSE4KCQ5`); the user ran S2a through Homelab Maintainer and sent its answer back to go on to S2b. S2c: asked on 2026-11-26 (Home question `01M8DDDPNEN8NQDYXVG7NGEAYV`); the user ran it through Homelab Maintainer |
+
+S2a findings, 2026-11-26: Hermes `v0.23.3`. `pi-spore` approvals read back `mode: manual`, `unattended_mode: deny`, `cron_mode: deny`, `deny: []`. Homelab Maintainer ran the commands inside the container itself (no Docker socket there). The pair is `receive.key` (`0600`, 3268 bytes) and `receive.pub` (800 bytes) in `/opt/data/pi-spore-bridge/transfer`; neither existed before. **Path correction:** this build keeps the profile at `/home/hermes/.hermes/profiles/pi-spore/`, not `/opt/data/profiles/pi-spore/`. `/opt/data/profiles/pi-spore/.env` does not exist; the profile's `.env` is `/home/hermes/.hermes/profiles/pi-spore/.env` (`0600`, owner `99:100`). S2c and later steps use that path.
+
+S2b, 2026-11-26: the public key decoded to a 4096-bit PEM key, different from the card Hermes 0.4 pair. `~/.pi-spore/hermes/transfer/mcp.token.enc` is 512 bytes, SHA-256 `b8abc1b0…eba6fd`. Only its base64 and that hash left the desktop.
 
 | Evidence | How | Result (redacted) |
 | --- | --- | --- |
-| Hash matched before decrypt | `sha256sum mcp.token.enc` vs the desktop's line | pending: needs the user's yes |
-| No plaintext token file on Unraid | the token went to a shell variable only; `ls` the transfer folder shows `receive.key`, `receive.pub`, `mcp.token.enc` and no `mcp.token*` plaintext file | pending: needs the user's yes |
-| One line, right file, no other profile | inside the container shell: `grep -c '^PI_SPORE_MCP_TOKEN='` on `profiles/pi-spore/.env` (1), then `grep -l '^PI_SPORE_MCP_TOKEN=' /opt/data/profiles/*/.env /opt/data/.env` and expect that one path only | pending: needs the user's yes |
-| `.env` owner and mode unchanged | `ls -ln` before and after | pending: needs the user's yes |
-| Gateway restarted, if it needed it | `docker exec <container> hermes gateway status` | pending: needs the user's yes |
+| Hash matched before decrypt | `sha256sum mcp.token.enc` vs the desktop's line | 2026-11-26: matched, `b8abc1b0…eba6fd`; the block printed `written` |
+| No plaintext token file on Unraid | the token went to a shell variable only; `ls` the transfer folder shows `receive.key`, `receive.pub`, `mcp.token.enc` and no `mcp.token*` plaintext file | the transfer folder holds `mcp.token.enc` (512), `receive.key` (3268), `receive.pub` (800), all `0600`, and nothing else |
+| One line, right file, no other profile | inside the container shell: `grep -c '^PI_SPORE_MCP_TOKEN='` on `profiles/pi-spore/.env` (1), then `grep -l '^PI_SPORE_MCP_TOKEN='` over every profile `.env` and the shared `.env` and expect that one path only | count `0` before, `1` after; stored length `64`. `grep -l` over `/home/hermes/.hermes/profiles/*/.env`, `/home/hermes/.hermes/.env`, `/opt/data/profiles/*/.env`, `/opt/data/.env` lists only `/home/hermes/.hermes/profiles/pi-spore/.env` |
+| `.env` owner and mode unchanged | `ls -ln` before and after | `-rw------- 99 100` before and after; 264 bytes to 348 (one 84-byte line added) |
+| Gateway restarted, if it needed it | `docker exec <container> hermes gateway status` | not restarted in S2; deferred to S4, which reloads after the entry is added |
 
 ## S3 — Tailscale: the grant, and the deny tests
 
 Needs its own yes: it changes the tailnet policy for every device.
+
+**Skipped by the user, for good, on 2026-11-26** (Home question `01M8DEES0Z3RTZ38FZ0V003XAX`, answer "Let's just skip this for good"). The tailnet policy is unchanged: the template's allow-all grant still lets every tailnet device reach `tcp:7430` on the desktop. The listener's own guards (Tailscale-address bind, `Host` check, bearer token) are the only lock. ADR 0202 §10 named the grant as the second lock; [ADR 0203](../../decisions/0203-hermes-mcp-port-locked-by-desktop-firewall.md) replaces it with the desktop firewalld rule added in S4, which admits only `hermes-docker`. S6 check 4 passes on that rule.
 
 Rule, narrowing, the policy `tests` block, and the live tests in [network-rule.md](network-rule.md). Tailscale policy
 is additive: one narrow grant, plus the removal or narrowing of every broad rule that already matches this port, plus a
@@ -94,18 +104,18 @@ is additive: one narrow grant, plus the removal or narrowing of every broad rule
 
 | Yes | Record |
 | --- | --- |
-| The user's answer for the policy change | pending: needs the user's yes |
+| The user's answer for the policy change | Asked on 2026-11-26 (Home question `01M8DE8XAJZBGFFW7YGFRPNVQ5`). The user said yes by pasting the current policy for the edit |
 
 | Evidence | How | Result (redacted) |
 | --- | --- | --- |
-| Policy before, so the narrowing can be reverted | the admin console copy | pending: needs the user's yes |
-| Every broad rule that matched this port is narrowed | the list of rules changed, and how | pending: needs the user's yes |
-| The one narrow grant, and the `tests` block | the saved policy text for this port, with one deny test per other device | pending: needs the user's yes |
-| The policy `tests` pass on save | the admin console's test result | pending: needs the user's yes |
-| From `hermes-docker`: `401` without a token | test 1 | pending: needs the user's yes |
-| From each other **node**: no answer, run right after test 1 | test 2, the exact error line and the device that ran it | pending: needs the user's yes |
-| No Funnel; no Serve handler on this port | test 3, before and after | pending: needs the user's yes |
-| Main server unchanged | test 4 | pending: needs the user's yes |
+| Policy before, so the narrowing can be reverted | the admin console copy | 2026-11-26: the template's allow-all grant `{"src":["*"],"dst":["*"],"ip":["*"]}`. The copy is kept in the workspace artifact `s3/policy-before.md`, not in git |
+| Every broad rule that matched this port is narrowed | the list of rules changed, and how | skipped by the user: no rule changed |
+| The one narrow grant, and the `tests` block | the saved policy text for this port, with one deny test per other device | skipped by the user: not added |
+| The policy `tests` pass on save | the admin console's test result | skipped by the user: nothing saved |
+| From `hermes-docker`: `401` without a token | test 1 | see S6 check 3 |
+| From each other **node**: no answer, run right after test 1 | test 2, the exact error line and the device that ran it | skipped by the user: with no grant, other nodes are expected to reach the port |
+| No Funnel; no Serve handler on this port | test 3, before and after | 2026-11-26, desktop, before S4 and again after it: `funnel status` and `serve status` show only `https://<desktop-tailnet-name> (tailnet only)`, `/ proxy http://127.0.0.1:7420` (ADR 0143). No Funnel, no handler for `7430` |
+| Main server unchanged | test 4 | `curl http://127.0.0.1:7420/api/health` answers `200`; `ss -ltn` shows `7420` on `127.0.0.1` only |
 
 ## S4 — Hermes: the `mcp_servers.pi_spore` entry and its toolset
 
@@ -118,15 +128,17 @@ state, decide from it whether any change is needed at all, and let step S6's too
 
 | Yes | Record |
 | --- | --- |
-| The user's answer for the `mcp_servers` entry and the toolset change | pending: needs the user's yes |
+| The user's answer for the `mcp_servers` entry and the toolset change | Asked on 2026-11-26 (Home question `01M8DER25PMX6HV0R8RW7AK0GX`); the user said yes by running the read-only part 1 through Homelab Maintainer. The write (part 2): asked on 2026-11-26 (Home question `01M8DFAH4NRHE6CEYDPTWH5216`); the user ran it through Homelab Maintainer |
+
+S4 part 1 read-back, 2026-11-26. The profile file is `/home/hermes/.hermes/profiles/pi-spore/config.yaml` (362 bytes). Top-level keys: `approvals`, `command_allowlist: []`, `model`, `platform_toolsets`, `terminal`, `fallback_providers`. No `mcp_servers` key and no `PI_SPORE_MCP_TOKEN` in it. `platform_toolsets.api_server` is `[terminal, clarify]`, and `tools list --platform api_server` shows only those two enabled (plugin `a2a` disabled). `skills list` shows only the builtin `hermes-agent`. The gateway runs as the default profile's multiplexer. Homelab Maintainer is itself a Hermes profile in the same container.
 
 | Evidence | How | Result (redacted) |
 | --- | --- | --- |
-| The **saved** entry: `${env:PI_SPORE_MCP_TOKEN}` as a reference, the four `tools.include` names, and no `transport`, `trust`, or literal value | read `/opt/data/profiles/pi-spore/config.yaml`, with the header masked — the commands in [mcp-entry.md](mcp-entry.md#reload-and-confirm-the-load). Not `hermes config get`: it expands `${env:…}`, so it cannot show what was saved | pending: needs the user's yes |
-| The API platform name, as the CLI reported it | `hermes -p pi-spore tools list --platform api_server` | pending: needs the user's yes |
-| The toolset decision: no change, or the `platform_toolsets` edit with `terminal`, `clarify`, `pi_spore` | the same read-back, plus the saved `platform_toolsets` text from the file | pending: needs the user's yes |
-| **The four tools are loaded for `pi-spore` and no other `mcp__*` tool is** | `/tools list` in a `pi-spore` session, or the tool list of that session; never a bare `hermes mcp`, which reads the default profile | pending: needs the user's yes |
-| A plain-HTTP URL to a non-loopback host was accepted | the connect succeeded; otherwise this card stops here and the user decides | pending: needs the user's yes |
+| The **saved** entry: `${env:PI_SPORE_MCP_TOKEN}` as a reference, the four `tools.include` names, and no `transport`, `trust`, or literal value | read `/opt/data/profiles/pi-spore/config.yaml`, with the header masked — the commands in [mcp-entry.md](mcp-entry.md#reload-and-confirm-the-load). Not `hermes config get`: it expands `${env:…}`, so it cannot show what was saved | 2026-11-26: written with `hermes -p pi-spore config set mcp_servers.pi_spore` (not a heredoc), after a backup at `profiles/pi-spore/backups/config.yaml.before-hermes-1-4b`. The file is `/home/hermes/.hermes/profiles/pi-spore/config.yaml`, 362 to 657 bytes, mode `0644` unchanged. The diff against the backup adds only `mcp_servers.pi_spore`: `url: http://<desktop-tailscale-ip>:7430/mcp`, `headers.Authorization: <value not shown>`, `tools.include` the four names, `resources: false`, `prompts: false`. No `transport`, no `trust`. `grep -F 'Bearer ${env:PI_SPORE_MCP_TOKEN}'` matches (the header is a reference); `PI_SPORE_MCP_TOKEN` count `1`. `approvals.mode` still `manual` |
+| The API platform name, as the CLI reported it | `hermes -p pi-spore tools list --platform api_server` | `api_server`. After a 90-second wait, with no restart, it lists `MCP servers: pi_spore [include only: list_targets, submit_request, get_request, cancel_request]`. `hermes -p pi-spore mcp list` shows `pi_spore http://<desktop-tailscale-ip>:7430/mcp 4 selected ✓ enabled` |
+| The toolset decision: no change, or the `platform_toolsets` edit with `terminal`, `clarify`, `pi_spore` | the same read-back, plus the saved `platform_toolsets` text from the file | **No change.** `platform_toolsets.api_server` stays `[terminal, clarify]`. It names no MCP server, so v0.23.3 adds every enabled server (`hermes_cli/tools_config.py` `_merge_mcp_servers`); the resolver gives `['clarify', 'pi_spore', 'terminal']`, and `pi_spore` is the only MCP server on this profile. If the profile ever gains a second MCP server, the list must name `pi_spore` |
+| **The four tools are loaded for `pi-spore` and no other `mcp__*` tool is** | `/tools list` in a `pi-spore` session, or the tool list of that session; never a bare `hermes mcp`, which reads the default profile | **Pass, 2026-11-26**, on the third check: a fresh `pi-spore` API session through `ask_hermes` (handoff `01M8DJBBPRTPT9N9QH9BC261NA`) has exactly `mcp__pi_spore__cancel_request`, `mcp__pi_spore__get_request`, `mcp__pi_spore__list_targets`, `mcp__pi_spore__submit_request`, and no other `mcp__*` tool; tool search for `pi_spore` finds the same four. The gateway reconnected the parked server on its own retry, with no restart. Earlier: two `pi-spore` API sessions opened through pi-spore's `ask_hermes` (handoffs `01M8DFVKD0WAMRWRPBA5YMFJT4`, `01M8DFXS4ZMW51M1W6YQDER1AR`): no `mcp__*` tool. The session's tools are `clarify`, `terminal`, `hermes_tool_search`, `tool_describe`, `tool_call`, `multi_tool_use.parallel`; `hermes_tool_search` for `pi_spore` and for `mcp` returns nothing. No connection to `:7430` was seen on the desktop. Diagnosis, 2026-11-26: the gateway reconciled the entry (`MCP servers reconciled with config (pi-spore): added=['pi_spore']`) and the platform resolver gives `api_server` `['clarify', 'pi_spore', 'terminal']`, so the toolset list is not the cause. Cause 1: the connect fails, `[Errno 113] Connect call failed ('<desktop-tailscale-ip>', 7430)`, and the server is parked after 3 attempts; `curl` from the container fails after 0 ms and `hermes -p pi-spore mcp test pi_spore` fails. The desktop's firewalld zone `tailscale` (on `tailscale0`) does not allow `7430/tcp`. Fix 1, with the user's yes (Home question `01M8DGJNXC4DKXEX52KTZMDNRX`, option "Allow only hermes-docker on 7430"): the user added one firewalld rich rule to the zone `tailscale`, `rule family="ipv4" source address="<hermes-docker-tailscale-ip>/32" port port="7430" protocol="tcp" accept`, and reloaded (backup `/etc/firewalld/zones/tailscale.xml.bak-hermes-1-4b`). Only `hermes-docker` passes the desktop firewall on this port; with S3 skipped, this is the source lock. `ufw` is also active (default deny incoming) and has no rule for `7430`. Cause 2, the gateway's `Config ref '${env:PI_SPORE_MCP_TOKEN}': PI_SPORE_MCP_TOKEN is not set … keeping the literal placeholder` warning: harmless for MCP. Homelab Maintainer read the v0.23.3 source: the generic config expansion (`hermes_cli/config.py` `_env_expand_match`) runs outside the profile's secret scope and logs it, but the MCP connect path (`tools/mcp_tool_discovery.py`) installs the owning profile's secret scope (`build_profile_secret_scope`, from `profiles/pi-spore/.env`), interpolates again, and refuses to connect with `missing_credentials` if a `${…}` is still left (`mcp_tool_config.py` `_require_rendered_remote`). A literal placeholder is never sent. Retest after fix 1 (Home question `01M8DH3K3Q1J3JN8J1A728GVQ4`): `curl` from the container with no token answers `401`; `hermes -p pi-spore mcp test pi_spore` answers `✓ Connected (1556ms)`, `✓ Tools discovered: 4` (`list_targets`, `submit_request`, `get_request`, `cancel_request`). The running gateway still had `pi_spore` parked: a profile-scoped `reload.mcp` (`gateway/session_ancillary.py`) was refused, `mcp_servers_unavailable … did not connect: pi_spore` |
+| A plain-HTTP URL to a non-loopback host was accepted | the connect succeeded; otherwise this card stops here and the user decides | Yes: `http://<desktop-tailscale-ip>:7430/mcp` connects (`mcp test` and the live session above). No `skip_preflight` was needed |
 
 ## S5 — Hermes: the skill
 
@@ -137,12 +149,12 @@ and what that build lists with `hermes -p pi-spore skills list` — **check befo
 
 | Yes | Record |
 | --- | --- |
-| The user's answer for adding the skill file | pending: needs the user's yes |
+| The user's answer for adding the skill file | Asked on 2026-11-26 (Home question `01M8DFXG1H0V3V2M20TTGPTVAP`); the user ran it through Homelab Maintainer |
 
 | Evidence | How | Result (redacted) |
 | --- | --- | --- |
-| The skill is listed for `pi-spore` only | `docker exec <container> hermes -p pi-spore skills list`, and the same listing for another profile shows it absent | pending: needs the user's yes |
-| No other profile gained it | the path is under `profiles/pi-spore/` | pending: needs the user's yes |
+| The skill is listed for `pi-spore` only | `docker exec <container> hermes -p pi-spore skills list`, and the same listing for another profile shows it absent | 2026-11-26: written to `/home/hermes/.hermes/profiles/pi-spore/skills/pi-spore-remote-teammate/SKILL.md` (4624 bytes, SHA-256 `69749680…8f87024`, the text in [skill.md](skill.md)). `hermes -p pi-spore skills list` shows it `local`, `enabled`, next to the builtin `hermes-agent`. The `homelab-maintainer` and default listings do not show it |
+| No other profile gained it | the path is under `profiles/pi-spore/` | the global `skills/pi-spore-remote-teammate` does not exist; the only match under `profiles/*/skills/` is `pi-spore`'s. Note: the `skills` toolset is off for `api_server`, so this proves the skill is installed, not that an API session loads it |
 
 ## S6 — Prove it end to end
 
@@ -168,11 +180,19 @@ real `401`.
 
 | Yes | Record |
 | --- | --- |
-| The user's answer for the live test requests, and which workspace was the target | pending: needs the user's yes |
+| The user's answer for the live test requests, and which workspace was the target | Asked on 2026-11-26 (Home question `01M8DJDRV7K94JMVWNQRZCDFNF`). The user answered **Yes**. Target: the card Hermes 1.4b workspace (`01M8DD1DC8A4FBQSZ7MBXY9NNQ`, project Pi Spore). The requests were sent from a new chat on pi-spore's Hermes page (`/hermes`), so `hop_count: 0` was correct for check 6 |
 
 | Evidence | How | Result (redacted) |
 | --- | --- | --- |
-| Checks 1 to 9 | the table above, one line each, with the state each request reached | pending: needs the user's yes |
+| Check 1 | S4's evidence line | pass: the four `mcp__pi_spore__*` tools, no other `mcp__*` tool |
+| Check 2 | `list_targets` from a `pi-spore` session | pass: the session called `mcp__pi_spore__list_targets`, picked the target `01M8DD1DC8A4FBQSZ7MBXY9NNQ` from it, and submitted to it (check 6) |
+| Check 3 | `curl` from the container, no token | pass: `401` (the S4 retest) |
+| Check 4 | another tailnet node, right after check 3 | pass, with a caveat: from the user's iPhone with Wi-Fi off (Tailscale only), the URL did not load. The lock is the desktop's firewalld rule (only `hermes-docker`), not a Tailscale grant: S3 was skipped |
+| Check 5 | `tailscale funnel status`, `tailscale serve status` | pass: only the `7420` handler from ADR 0143; no Funnel, nothing for `7430`. Main server: `127.0.0.1:7420` only, health `200` |
+| Check 6 | `submit_request` `s6-check6-20261126`, `hop_count: 0` | pass: stored as handoff `01M8DJMWZAJ0WY6W5K8F2QS2PH`; the request reached the workspace chat only after the user's Accept on Home; the chat answered `ok` with `reply_hermes` |
+| Check 7 | `get_request` later | pass: `{"request_id":"s6-check6-20261126","state":"completed","target":"01M8DD1DC8A4FBQSZ7MBXY9NNQ","title":"S6 check 6","result":"ok"}`; nothing was pushed into the Hermes session |
+| Check 8 | a new `request_id` with `hop_count: 1` | pass: the first try's answer was cut off on the Hermes page, so it was sent again from inside a pi-spore ask (handoff `01M8DJY2CSNZFXSZ9TZQXWYBA6`, new id `s6-check8b-20261126`). The tool call failed, marked as an error: `This request came from a pi-spore ask (hop_count above 0); pi-spore refuses it, so no loop forms`. No HTTP code, no internal name. pi-spore stored no row for either check 8 id; the only inbound row is check 6's |
+| Check 9 | check 6's id, `hop_count: 0`, title changed | pass: the tool call failed with `Request s6-check6-20261126 was already sent with a different body; a new request needs a new request_id`; no HTTP code, no internal error name; no second row stored |
 
 Checks 6 to 9 are pi-spore's own rules, proved from the Hermes side. Card Hermes 1.5 is the card that proves the
 approval and clarify round trips; nothing here claims them.
@@ -192,7 +212,8 @@ allowances, because those allowances restore reach for every node: see the grant
 | The token on Unraid | inside the container shell: `sed -i '/^PI_SPORE_MCP_TOKEN=/d' /opt/data/profiles/pi-spore/.env`, then `grep -c` for zero, and `ls -ln` to show the mode is unchanged | pending |
 | The token on the desktop, on its own | `rm -f ~/.pi-spore/hermes/mcp.token`. With the listener still enabled the port **stays open**: the token is read per request, so every request answers `503 mcp_token_unusable` and nothing is served. "Connection refused" is the evidence for the listener-off row, or for a start that never opened (no Tailscale address, or no token file when the check first ran) — not for this row | pending |
 | The transfer files | on the desktop, `rm -f ~/.pi-spore/hermes/transfer/unraid-receive.pub ~/.pi-spore/hermes/transfer/mcp.token.enc` — **not** the whole folder, which holds the card Hermes 0.4 pair until card Hermes 0.5 retires it; on Unraid, `rm -f /opt/data/pi-spore-bridge/transfer/receive.key /opt/data/pi-spore-bridge/transfer/receive.pub /opt/data/pi-spore-bridge/transfer/mcp.token.enc` | pending |
-| The grant, last | with the listener already off and test 1 already confirmed failing from `hermes-docker`: delete the grant and the `tests` entries for this port, restore each narrowed rule, save | pending: a diff of the saved policy against the "before" copy. **After** this, the port answers again from every node a broad rule allows, so no later "denied" result is policy evidence — it only shows the listener is off |
+| The desktop firewall rule | `sudo firewall-cmd --permanent --zone=tailscale --remove-rich-rule='rule family="ipv4" source address="<hermes-docker-tailscale-ip>/32" port port="7430" protocol="tcp" accept'`, then `sudo firewall-cmd --reload`. Added in S4 because S3 was skipped | pending |
+| The grant, last | not applied: S3 was skipped. Otherwise, with the listener already off and test 1 already confirmed failing from `hermes-docker`: delete the grant and the `tests` entries for this port, restore each narrowed rule, save | pending: a diff of the saved policy against the "before" copy. **After** this, the port answers again from every node a broad rule allows, so no later "denied" result is policy evidence — it only shows the listener is off |
 
 ## What this card does not cover
 

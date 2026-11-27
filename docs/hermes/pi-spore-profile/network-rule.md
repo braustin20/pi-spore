@@ -18,6 +18,20 @@ desktop's comes from the address the listener bound; see [mcp-entry.md](mcp-entr
 pi-spore's setting for this port, default `7430`; `desktop` and `hermes-docker` are the names the policy file gives
 those two nodes — a `hosts` alias, a device name, or a tag, whatever the rest of the file uses.
 
+## The desktop's own firewall comes first
+
+A host firewall on the desktop can drop the port before Tailscale policy matters. On 2026-11-26 the desktop's
+firewalld zone `tailscale` (on `tailscale0`) did not allow `7430/tcp`, so `hermes-docker` got `[Errno 113]` and Hermes
+parked the server. The fix was one rich rule that admits only `hermes-docker`:
+
+```bash
+sudo firewall-cmd --permanent --zone=tailscale \
+  --add-rich-rule='rule family="ipv4" source address="<hermes-docker-tailscale-ip>/32" port port="<hermes.mcp.port>" protocol="tcp" accept'
+sudo firewall-cmd --reload
+```
+
+That rule is also the source lock while the Tailscale grant below is not applied ([runbook.md](runbook.md), S3).
+
 ## How a Tailscale policy works here, and what that means
 
 Tailscale policy is **additive and deny-by-default**: rules and grants only `accept`, there is no `deny` or `reject`

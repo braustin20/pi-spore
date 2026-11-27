@@ -115,7 +115,8 @@
       `get_request` whenever it asks. Nothing pushes into a Hermes session. A restart or an offline side loses
       nothing.
     - The main server keeps its loopback, Host, and Origin guards unchanged.
-    - The network rule for the listener (a Tailscale grant from Unraid to the desktop port) and the matching
+    - The network rule for the listener (a Tailscale grant from Unraid to the desktop port; replaced by a desktop
+      firewall rule, [ADR 0203](0203-hermes-mcp-port-locked-by-desktop-firewall.md)) and the matching
       `mcp_servers` entry on the `pi-spore` profile are applied by the operator. Each needs the user's explicit yes
       (card Hermes 1.4).
     - "No pull channel" holds for this HTTP-only design. Hermes has a gateway WebSocket, which has `register_rpc`

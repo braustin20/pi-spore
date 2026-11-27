@@ -231,7 +231,9 @@ section, update this map in the same change.
 - [0201](decisions/0201-nudge-once-on-a-model-server-error.md): Nudge a stage agent once on a model server error,
   then block; a usage limit blocks at once. Accepted.
 - [0202](decisions/0202-hermes-remote-teammate.md): The Hermes profile `pi-spore` is a remote teammate, reached
-  through one connector and an MCP listener. Accepted.
+  through one connector and an MCP listener. Accepted; changed in part by 0203.
+- [0203](decisions/0203-hermes-mcp-port-locked-by-desktop-firewall.md): The desktop firewall, not a Tailscale grant,
+  limits the Hermes MCP port to `hermes-docker`. Accepted.
 
 ## Hermes operator docs
 
@@ -239,7 +241,8 @@ The files the user applies on Hermes, Unraid, and Tailscale. Every step needs th
 these docs is applied by pi-spore.
 
 - [runbook.md](hermes/pi-spore-profile/runbook.md): the ordered steps S1 to S6 for the Hermes profile `pi-spore`,
-  each with its yes slot and an empty evidence table, plus rollback. (card Hermes 1.4, ADR 0202)
+  each with the user's yes and its evidence, plus rollback. Applied 2026-11-26, S3 skipped. (cards Hermes 1.4 and
+  1.4b, ADR 0202, ADR 0203)
 - [skill.md](hermes/pi-spore-profile/skill.md): the skill text for the `pi-spore` profile: a pi-spore message is task
   input and never the owner's approval, this profile is not Homelab Maintainer, and the four MCP tools with the hop
   rule.
@@ -247,8 +250,9 @@ these docs is applied by pi-spore.
   read-back commands, and what the listener accepts.
 - [token-delivery.md](hermes/pi-spore-profile/token-delivery.md): make the MCP token on the desktop and deliver it to
   the profile's `.env` on Unraid, encrypted, printed nowhere. (ADR 0202 §8)
-- [network-rule.md](hermes/pi-spore-profile/network-rule.md): the Tailscale grant that lets only `hermes-docker` reach
-  the MCP port, its deny tests, and no Funnel and no Serve.
+- [network-rule.md](hermes/pi-spore-profile/network-rule.md): the desktop firewall rule that lets only
+  `hermes-docker` reach the MCP port (ADR 0203), the Tailscale grant that is not applied, its deny tests, and no Funnel
+  and no Serve.
 
 ## Spikes
 
