@@ -209,7 +209,7 @@ const DEFAULT_PIPELINE = "default";
 /**
  * A merge that changes one of these needs the project's `setup` action before the run's gates. The run's worktree
  * installed its dependencies once, when it was made, so a lane that adds a package fails `check` on the merged tree
- * and the lane's code cannot fix it.
+ * and the lane's code cannot fix it. npm's two files only: a change to `yarn.lock` or `pnpm-lock.yaml` runs no setup.
  */
 const DEPENDENCY_FILES = ["package.json", "package-lock.json"];
 
@@ -1235,7 +1235,8 @@ export const runsModule: ServerModule = {
     /**
      * Whether a merged tree needs `setup` before the run's gates: the merge changed a dependency file, and the
      * project has a `setup` action. The merge is uncommitted, so its files are exactly the staged ones. A provider
-     * with no `changes` reports no change: a run needs `integrate`, and Git has both.
+     * with no `changes` reports no change: a run needs `integrate`, and Git has both. A merge that is rejected after
+     * `setup` passed keeps what it installed, until a later merge changes one of these files and installs again.
      */
     const mergeNeedsSetup = async (
       project: Project,
@@ -1328,8 +1329,11 @@ export const runsModule: ServerModule = {
       if (!lane) return { next: null };
       const run = requireRun(lane.run_id);
       const gates = JSON.parse(run.gates) as string[];
-      // A merge that changed a dependency file installs first, so the gates see what it added.
-      const list = checkpoint?.setup ? ["setup", ...gates] : gates;
+      // A merge that changed a dependency file installs first, so the gates see what it added. A run with a
+      // `setup` gate of its own keeps one setup run: two entries with the same name would share one action key.
+      const list = checkpoint?.setup
+        ? ["setup", ...gates.filter((gate) => gate !== "setup")]
+        : gates;
       // The flag rides on every checkpoint of this merge, so the index keeps naming the same action.
       const carried = checkpoint?.setup ? { setup: true as const } : {};
       const index = checkpoint?.gate ?? 0;
