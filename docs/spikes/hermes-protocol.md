@@ -268,6 +268,12 @@ GET .../pi-spore-spike-foreign-1795663329/messages -> 0 messages (nothing got in
   more. Query: `limit`, `offset`, `order` (`oldest` or `latest`). No "after id" filter.
 - **Scope finding:** the key reads **every** session of this profile, not only API ones. A read of a `webui`
   session's messages answered `200` (only the status and count were looked at).
+- Probed on v0.23.3, profile `pi-spore`, 2026-11-26: the list query pi-spore sends,
+  `GET /api/sessions?source=api_server&limit=100&offset=0`, answered `200`. So did `offset=100` (`has_more` false)
+  and every subset of `source`, `limit`, and `offset`. The log line `Could not read the Hermes session record
+  { error: 'Error: near ",": syntax error' }` of that day was pi-spore's own SQL, not Hermes: a handoff read its
+  new session's record before Hermes had a model in it, then ran an `UPDATE` with no columns. Fixed; the warning now
+  names its `call` (`chat` or `handoff`), and its `error` names the Hermes status.
 
 ### 9. Version check
 

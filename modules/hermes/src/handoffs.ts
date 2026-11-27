@@ -225,6 +225,7 @@ export function setupHandoffs(
   const load = (id: string) => store.get<Row>("SELECT * FROM hermes_handoffs WHERE id = ?", id);
   const update = (id: string, fields: Partial<Row>) => {
     const names = Object.keys(fields);
+    if (names.length === 0) return;
     store.run(
       `UPDATE hermes_handoffs SET ${names.map((name) => `${name} = ?`).join(", ")}, updated_at = ? WHERE id = ?`,
       ...names.map((name) => fields[name as keyof Row] as string | number | null),
@@ -390,14 +391,17 @@ export function setupHandoffs(
           const fields: Partial<Row> = {};
           if (session.billing_provider) fields.provider = session.billing_provider;
           if (session.model) fields.model = session.model;
-          updateOwned(id, jobId, fields.provider || fields.model ? fields : {});
+          updateOwned(id, jobId, fields);
           return;
         }
         if (!list.has_more) return;
       }
     } catch (error) {
       // Only the shown provider and model depend on it.
-      host.log.warn("Could not read the Hermes session record", { error: String(error) });
+      host.log.warn("Could not read the Hermes session record", {
+        call: "handoff",
+        error: String(error),
+      });
     }
   };
 

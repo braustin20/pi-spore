@@ -259,7 +259,10 @@ export function setupChat(
       }
     } catch (error) {
       // Only the shown provider and model depend on it.
-      host.log.warn("Could not read the Hermes session record", { error: String(error) });
+      host.log.warn("Could not read the Hermes session record", {
+        call: "chat",
+        error: String(error),
+      });
     }
     return {};
   };
